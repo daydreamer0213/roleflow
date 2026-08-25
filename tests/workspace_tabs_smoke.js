@@ -527,7 +527,10 @@ function dedicatedBrowser(initialTabs, createdTabs = []) {
 
   const hiddenDashboardOnly = dedicatedBrowser([
     { ...dashboard, active: false }
-  ], [{ id: "must-not-be-created", windowId: 42, active: false }]);
+  ], [
+    { id: "CDP-search-minimized", windowId: 42, active: false },
+    { id: "CDP-chat-dashboard-minimized", windowId: 42, active: false }
+  ]);
   const hiddenDashboardResult = await prepareWorkspaceTabs({
     browser: hiddenDashboardOnly,
     dashboardUrl: dashboard.url,
@@ -535,9 +538,12 @@ function dedicatedBrowser(initialTabs, createdTabs = []) {
     allowStartupGuidance: false,
     inspectReadiness: async () => ({ status: "ready" })
   });
-  assert.strictEqual(hiddenDashboardResult.status, "ambiguous");
-  assert.strictEqual(hiddenDashboardResult.errorCode, "BROWSER_COMMAND_FAILED");
-  assert.deepStrictEqual(hiddenDashboardOnly.state.createCalls, []);
+  assert.strictEqual(hiddenDashboardResult.status, "ready");
+  assert.deepStrictEqual(hiddenDashboardOnly.state.createCalls, [
+    { openerTabId: dashboard.id, url: "https://www.zhipin.com/web/geek/jobs" },
+    { openerTabId: "CDP-search-minimized", url: "https://www.zhipin.com/web/geek/chat" }
+  ]);
+  assert.deepStrictEqual(hiddenDashboardOnly.state.frontCalls, []);
 
   for (const ambiguousTabs of [
     [{ ...dashboard, active: true }, { ...boss, active: false }, { ...boss, id: "second-boss", active: false }],
@@ -708,17 +714,23 @@ function dedicatedBrowser(initialTabs, createdTabs = []) {
   assert.strictEqual(duplicateDashboardResult.errorCode, "WORKSPACE_DASHBOARD_TAB_AMBIGUOUS");
   assert.deepStrictEqual(duplicateDashboard.state.closeCalls, []);
 
-  const noVisible = dedicatedBrowser([{ ...boss, active: false }]);
+  const noVisible = dedicatedBrowser([
+    { ...boss, active: false },
+    { ...dashboard, active: false }
+  ], [
+    { id: "CDP-chat-minimized", windowId: 42, active: false }
+  ]);
   const noVisibleResult = await prepareWorkspaceTabs({
     browser: noVisible,
     dashboardUrl: dashboard.url,
     bootstrapDedicatedTabs: true,
     inspectReadiness: async () => ({ status: "ready" })
   });
-  assert.strictEqual(noVisibleResult.status, "ambiguous");
-  assert.strictEqual(noVisibleResult.errorCode, "BROWSER_COMMAND_FAILED");
-  assert.match(noVisibleResult.message, /恢复.*专用 Edge/);
-  assert.deepStrictEqual(noVisible.state.createCalls, []);
+  assert.strictEqual(noVisibleResult.status, "ready");
+  assert.strictEqual(noVisibleResult.communicationTabId, "CDP-chat-minimized");
+  assert.deepStrictEqual(noVisible.state.createCalls, [
+    { openerTabId: boss.id, url: "https://www.zhipin.com/web/geek/chat" }
+  ]);
   assert.deepStrictEqual(noVisible.state.frontCalls, []);
 
   const completeButHidden = dedicatedBrowser([

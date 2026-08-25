@@ -300,11 +300,14 @@ async function main() {
 
     websocket.messages.length = 0;
     websocket.visibilityByTarget["cdp-tab"] = "hidden";
-    await rejectsWithCode(
-      () => cdp.createTab("cdp-tab", "https://example.test/no-visible-opener"),
-      "BROWSER_COMMAND_FAILED"
+    assert.strictEqual(
+      await cdp.createTab("cdp-tab", "https://example.test/minimized-window"),
+      "cdp-created-tab",
+      "a minimized window may create a verified background tab without restoring itself"
     );
-    assert.strictEqual(countMethod(websocket.messages, "Target.createTarget"), 0);
+    assert.strictEqual(countMethod(websocket.messages, "Target.createTarget"), 1);
+    assert.strictEqual(countMethod(websocket.messages, "Page.bringToFront"), 0);
+    await cdp.closeTab("cdp-created-tab");
     websocket.visibilityByTarget["cdp-tab"] = "visible";
 
     websocket.mode = "created-visible";

@@ -115,8 +115,8 @@ class CdpBrowserAdapter {
     const visibleBefore = sortedBrowserTabIds(beforeTabs
       .filter((tab) => tab.windowId === opener.windowId && tab.active)
       .map((tab) => tab.id));
-    if (visibleBefore.length !== 1) {
-      throw browserError("BROWSER_COMMAND_FAILED", "CDP tab creation requires exactly one visible page in the opener window.");
+    if (visibleBefore.length > 1) {
+      throw browserError("BROWSER_COMMAND_FAILED", "CDP tab creation requires at most one visible page in the opener window.");
     }
     const result = await this.browserCommand("Target.createTarget", {
       url: String(url || "about:blank"),

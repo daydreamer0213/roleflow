@@ -2,6 +2,7 @@
 param(
   [Parameter(Mandatory = $true)]
   [string]$InstallRoot,
+  [int]$Port = 8787,
   [switch]$PromptDeleteUserData,
   [switch]$DeleteUserData,
   [switch]$ConfirmDelete,
@@ -19,6 +20,7 @@ if ([string]::IsNullOrWhiteSpace($InstallRoot) -or
     $InstallRoot -eq [System.IO.Path]::GetPathRoot($InstallRoot)) {
   throw "Refusing an unsafe install root."
 }
+[void](Wait-RoleFlowStartupMutex -ProjectRoot $InstallRoot -Port $Port)
 
 function Stop-InstalledDashboard {
   try {

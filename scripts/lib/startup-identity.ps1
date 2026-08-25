@@ -209,3 +209,48 @@ function Get-RoleFlowListenerPid {
   if (-not [int]::TryParse([string]$snapshot.listeners[0].owningProcess, [ref]$processId) -or $processId -le 0) { return $null }
   return $processId
 }
+
+function Get-RoleFlowStartupMutexName {
+  param(
+    [Parameter(Mandatory = $true)][string]$ProjectRoot,
+    [int]$Port = 8787
+  )
+  if ($Port -lt 1 -or $Port -gt 65535) { throw "ROLEFLOW_STARTUP_PORT_INVALID" }
+  $Identity = "{0}|{1}" -f ((Resolve-RoleFlowNormalizedPath -Path $ProjectRoot).ToLowerInvariant()), $Port
+  $Hasher = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $Hash = $Hasher.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Identity))
+  } finally {
+    $Hasher.Dispose()
+  }
+  $Suffix = (-join ($Hash | ForEach-Object { $_.ToString("x2") })).Substring(0, 24)
+  return "Local\RoleFlow-Startup-$Suffix"
+}
+
+function Wait-RoleFlowStartupMutex {
+  param(
+    [Parameter(Mandatory = $true)][string]$ProjectRoot,
+    [int]$Port = 8787,
+    [int]$TimeoutSeconds = 120
+  )
+  $Mutex = $null
+  $Acquired = $false
+  try {
+    $Mutex = [System.Threading.Mutex]::new(
+      $false,
+      (Get-RoleFlowStartupMutexName -ProjectRoot $ProjectRoot -Port $Port)
+    )
+    try {
+      $Acquired = $Mutex.WaitOne([TimeSpan]::FromSeconds($TimeoutSeconds))
+    } catch [System.Threading.AbandonedMutexException] {
+      $Acquired = $true
+    }
+    if (-not $Acquired) {
+      throw "ROLEFLOW_STARTUP_STILL_RUNNING: another RoleFlow startup is still running."
+    }
+  } finally {
+    if ($Acquired) { try { $Mutex.ReleaseMutex() } catch {} }
+    if ($null -ne $Mutex) { $Mutex.Dispose() }
+  }
+  return $true
+}

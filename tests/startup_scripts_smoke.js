@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const http = require("node:http");
 const net = require("node:net");
@@ -81,6 +82,7 @@ async function main() {
   await testExistingDashboardRecoversStoppedBrowser();
   await testInstalledLauncherPreservesUtf8Output();
   await testConcurrentInstalledLaunchUsesOneDashboard();
+  await testUpgradePreparationWaitsForInstalledLauncher();
   testPortableModeRejectsInvalidCdpPort();
   testEdgeModeRejectsDedicatedAuthority();
   testDashboardCommandRejectsMissingOrConflictingAuthority();
@@ -109,6 +111,10 @@ function createProjectFixture() {
     path.join(root, "scripts", "launch-installed.ps1"),
     path.join(projectRoot, "scripts", "launch-installed.ps1")
   );
+  fs.copyFileSync(
+    path.join(root, "scripts", "prepare-uninstall.ps1"),
+    path.join(projectRoot, "scripts", "prepare-uninstall.ps1")
+  );
   const identityHelper = path.join(root, "scripts", "lib", "startup-identity.ps1");
   if (fs.existsSync(identityHelper)) {
     fs.copyFileSync(
@@ -124,6 +130,22 @@ function createProjectFixture() {
   fs.writeFileSync(path.join(projectRoot, "src", "cli.js"), fixtureCliSource(), "utf8");
   fs.writeFileSync(path.join(tempRoot, "foreign-health.js"), foreignHealthSource(), "utf8");
   fs.writeFileSync(path.join(tempRoot, "startup-helper-probe.ps1"), startupHelperProbeSource(), "utf8");
+  fs.writeFileSync(path.join(tempRoot, "startup-mutex-holder.ps1"), String.raw`param(
+  [Parameter(Mandatory = $true)][string]$MutexName,
+  [Parameter(Mandatory = $true)][string]$ReadyPath
+)
+$mutex = [System.Threading.Mutex]::new($false, $MutexName)
+$acquired = $false
+try {
+  $acquired = $mutex.WaitOne([TimeSpan]::FromSeconds(5))
+  if (-not $acquired) { throw "fixture could not acquire startup mutex" }
+  Set-Content -LiteralPath $ReadyPath -Value "ready" -Encoding ascii
+  Start-Sleep -Milliseconds 1200
+} finally {
+  if ($acquired) { try { $mutex.ReleaseMutex() } catch {} }
+  $mutex.Dispose()
+}
+`, "utf8");
 }
 
 function testRunScriptFromOutsideCwd() {
@@ -384,6 +406,33 @@ async function testConcurrentInstalledLaunchUsesOneDashboard() {
   });
   await stopRegisteredProcess(health.pid);
   await waitForPortClosed(dashboardPort);
+}
+
+async function testUpgradePreparationWaitsForInstalledLauncher() {
+  const readyPath = path.join(tempRoot, "startup-mutex-ready.txt");
+  const identity = `${path.resolve(projectRoot).replace(/[\\/]+$/, "").toLowerCase()}|${dashboardPort}`;
+  const suffix = crypto.createHash("sha256").update(identity, "utf8").digest("hex").slice(0, 24);
+  const holder = runPowerShellAsync([
+    "-File", path.join(tempRoot, "startup-mutex-holder.ps1"),
+    "-MutexName", `Local\\RoleFlow-Startup-${suffix}`,
+    "-ReadyPath", readyPath
+  ], { timeout: 10000 });
+  await waitFor(() => fs.existsSync(readyPath), 5000, "startup mutex holder did not become ready");
+
+  const startedAt = Date.now();
+  const result = runPowerShell([
+    "-File", path.join(projectRoot, "scripts", "prepare-uninstall.ps1"),
+    "-InstallRoot", projectRoot,
+    "-Port", String(dashboardPort),
+    "-SkipDashboardStop",
+    "-SkipDeletePrompt"
+  ], { timeout: 10000 });
+  const elapsedMs = Date.now() - startedAt;
+  const holderResult = await holder;
+
+  assert.strictEqual(holderResult.status, 0, combinedOutput(holderResult));
+  assert.strictEqual(result.status, 0, combinedOutput(result));
+  assert(elapsedMs >= 800, `upgrade preparation bypassed the active launcher mutex after ${elapsedMs}ms`);
 }
 
 function testPortableModeRejectsInvalidCdpPort() {

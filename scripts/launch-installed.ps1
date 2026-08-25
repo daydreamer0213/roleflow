@@ -66,22 +66,13 @@ $(if ($CanOpenLogs) { "`r`n是否打开诊断日志文件夹？" } else { "" })
   }
 }
 
-function Get-RoleFlowStartupMutexName {
-  $Identity = "{0}|{1}" -f ([System.IO.Path]::GetFullPath($ProjectRoot).TrimEnd("\").ToLowerInvariant()), $Port
-  $Hasher = [System.Security.Cryptography.SHA256]::Create()
-  try {
-    $Hash = $Hasher.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Identity))
-  } finally {
-    $Hasher.Dispose()
-  }
-  $Suffix = (-join ($Hash | ForEach-Object { $_.ToString("x2") })).Substring(0, 24)
-  return "Local\RoleFlow-Startup-$Suffix"
-}
-
 $StartupMutex = $null
 $StartupMutexAcquired = $false
 try {
-  $StartupMutex = [System.Threading.Mutex]::new($false, (Get-RoleFlowStartupMutexName))
+  $StartupMutex = [System.Threading.Mutex]::new(
+    $false,
+    (Get-RoleFlowStartupMutexName -ProjectRoot $ProjectRoot -Port $Port)
+  )
   try {
     $StartupMutexAcquired = $StartupMutex.WaitOne([TimeSpan]::FromSeconds(30))
   } catch [System.Threading.AbandonedMutexException] {

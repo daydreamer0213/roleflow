@@ -276,7 +276,7 @@ async function prepareWorkspaceTabs({
       "RoleFlow 专用 Edge（推荐）同时出现多个前台标签页，无法安全继续。"
     ));
   }
-  if (!current.guidanceTab && initialVisibleIds.length !== 1) {
+  if (!current.guidanceTab && initialVisibleIds.length > 1) {
     return ambiguousWorkspaceResult(workingTabs, dashboardUrl, workspaceError(
       "BROWSER_COMMAND_FAILED",
       "请恢复 RoleFlow 专用 Edge（推荐）窗口后重试；创建标签页前必须能确认唯一前台页。"
@@ -286,7 +286,7 @@ async function prepareWorkspaceTabs({
   try {
     if (!current.guidanceTab) {
       const dashboardTab = current.dashboardTab;
-      requireSingleVisibleTab(workingTabs, dashboardTab.windowId);
+      requireAtMostOneVisibleTab(workingTabs, dashboardTab.windowId);
       const searchTabId = await browser.createTab(
         dashboardTab.id,
         "https://www.zhipin.com/web/geek/jobs"
@@ -361,7 +361,7 @@ async function prepareWorkspaceTabs({
 
     let communicationTab = current.fixedTabs?.communicationTab || null;
     if (!communicationTab) {
-      requireSingleVisibleTab(workingTabs, current.guidanceTab.windowId);
+      requireAtMostOneVisibleTab(workingTabs, current.guidanceTab.windowId);
       const chatUrl = new URL("/web/geek/chat", current.guidanceTab.url).toString();
       const communicationTabId = await browser.createTab(current.guidanceTab.id, chatUrl);
       createdIds.push(communicationTabId);
@@ -380,7 +380,7 @@ async function prepareWorkspaceTabs({
     let dashboardTab = current.dashboardTab;
     if (!dashboardTab) {
       const beforeDashboard = await browser.listTabs();
-      requireSingleVisibleTab(beforeDashboard, current.guidanceTab.windowId);
+      requireAtMostOneVisibleTab(beforeDashboard, current.guidanceTab.windowId);
       const dashboardTabId = await browser.createTab(current.guidanceTab.id, dashboardUrl);
       createdIds.push(dashboardTabId);
       const afterDashboard = await browser.listTabs();
@@ -515,9 +515,9 @@ function visibleIdsInWindow(tabs, windowId) {
     .map((tab) => tab.id));
 }
 
-function requireSingleVisibleTab(tabs, windowId) {
+function requireAtMostOneVisibleTab(tabs, windowId) {
   const visibleIds = visibleIdsInWindow(tabs, windowId);
-  if (visibleIds.length !== 1) {
+  if (visibleIds.length > 1) {
     throw workspaceError(
       "BROWSER_COMMAND_FAILED",
       "请恢复 RoleFlow 专用 Edge（推荐）窗口后重试；创建标签页前必须能确认唯一前台页。"
