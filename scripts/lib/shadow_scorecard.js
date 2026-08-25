@@ -167,5 +167,6 @@ function hasEvidence(value) {
 
 module.exports = {
   SHADOW_SCORECARD_VERSION,
-  buildShadowScorecard
+  buildShadowScorecard,
+  inspectBoundaries
 };
