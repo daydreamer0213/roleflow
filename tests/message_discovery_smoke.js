@@ -1180,6 +1180,7 @@ async function messageGroupBoundarySmoke() {
     threadKey: incrementalThreadKey,
     messageKeys: processedKeys,
     messageGroupKey: safeDigest(["message-group", incrementalThreadKey, ...processedKeys]),
+    messageIntent: "information_request",
     messageCategory: "qualification",
     missingFactKey: "",
     progressUpdate: { stage: "reply_ready" },
@@ -1377,20 +1378,39 @@ async function classificationOutcomeSmoke() {
   assert.strictEqual(summary.results[0].missingFactKey, "project_status");
   assert.deepStrictEqual(summary.results[0].messages, []);
 
+  const interviewMention = createFixture({ suffix: "interview-mention", title: "Interview System Engineer" });
+  summary = await runBossMessageDiscovery({
+    db,
+    profileId: interviewMention.profileId,
+    reader: fakeReader([selectedConversation({ title: interviewMention.title, messageId: "123456789012351" })]),
+    classifyMessageGroup: async () => classification({
+      messageIntent: "information_update",
+      messageCategory: "other",
+      messageSummary: "对方在介绍岗位涉及的面试安排系统。",
+      stage: "reply_ready",
+      messages: ["了解了，谢谢你补充岗位信息。"]
+    })
+  });
+  assert.strictEqual(summary.results[0].messageIntent, "information_update");
+  assert.strictEqual(summary.results[0].stage, "reply_ready");
+  assert.notStrictEqual(summary.results[0].stage, "interview_invited");
+
   const interview = createFixture({ suffix: "interview", title: "Interview Engineer" });
   summary = await runBossMessageDiscovery({
     db,
     profileId: interview.profileId,
-    reader: fakeReader([selectedConversation({ title: interview.title, messageId: "123456789012351" })]),
+    reader: fakeReader([selectedConversation({ title: interview.title, messageId: "123456789012352" })]),
     classifyMessageGroup: async () => classification({
-      messageCategory: "interview_invitation",
-      messageSummary: "对方邀请候选人参加面试。",
+      messageIntent: "interview_invitation",
+      messageCategory: "other",
+      messageSummary: "对方正式邀请候选人参加面试。",
       stage: "interview_invited",
       messages: ["您好，感谢邀请，请问面试时间和形式如何安排？"]
     })
   });
   assert.strictEqual(summary.results[0].stage, "interview_invited");
-  assert.strictEqual(summary.results[0].messageSummary, "对方邀请候选人参加面试。");
+  assert.strictEqual(summary.results[0].messageIntent, "interview_invitation");
+  assert.strictEqual(summary.results[0].messageSummary, "对方正式邀请候选人参加面试。");
   assert.deepStrictEqual(summary.results[0].messages, ["您好，感谢邀请，请问面试时间和形式如何安排？"]);
   assert.strictEqual(summary.results[0].manualActionReason, "");
 
@@ -1505,6 +1525,7 @@ async function classificationOutcomeSmoke() {
     });
     assert.strictEqual(invalidSummary.status, "completed");
     assert.strictEqual(invalidSummary.processed, 1);
+    assert.strictEqual(invalidSummary.results[0].messageIntent, "manual_review");
     assert.strictEqual(invalidSummary.results[0].messageCategory, "other");
     assert.strictEqual(invalidSummary.results[0].stage, "needs_user_action");
     assert.strictEqual(
@@ -1976,6 +1997,7 @@ function messageRow(rowIndex, unread, conversationKey, previewDigest) {
 }
 
 function classification({
+  messageIntent = "information_request",
   messageCategory = "qualification",
   messageSummary = "对方正在确认候选人的任职资格。",
   stage = "reply_ready",
@@ -1983,6 +2005,7 @@ function classification({
 } = {}) {
   return {
     kind: "hr_reply",
+    messageIntent,
     messageCategory,
     messageSummary,
     missingFact: null,

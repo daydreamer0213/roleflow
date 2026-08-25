@@ -14,10 +14,17 @@ const MESSAGE_CATEGORIES = new Set([
   "qualification",
   "salary",
   "availability",
-  "interview_invitation",
   "sensitive",
   "other",
   "identity_uncertain"
+]);
+const MESSAGE_INTENTS = new Set([
+  "interview_invitation",
+  "interest_check",
+  "information_request",
+  "information_update",
+  "general_communication",
+  "manual_review"
 ]);
 
 const TERMINAL_PROGRESS_STAGES = new Set(["rejected", "closed"]);
@@ -30,6 +37,7 @@ const ALLOWED_METADATA_KEYS = new Set([
   "profileId",
   "planId",
   "category",
+  "messageIntent",
   "messageCategory",
   "factKey",
   "missingFactKey",
@@ -394,6 +402,10 @@ function recordDiscoveredMessageGroupClassification(db, input = {}) {
     : "";
   const messageKeys = normalizedMessageKeys(input.messageKeys);
   const messageGroupKey = safeDigestKey(input.messageGroupKey, "messageGroupKey");
+  const messageIntent = String(input.messageIntent || "").trim();
+  if (!MESSAGE_INTENTS.has(messageIntent)) {
+    throw progressError("PROGRESS_MESSAGE_INTENT_INVALID", "message intent is invalid");
+  }
   const messageCategory = String(input.messageCategory || "").trim();
   if (!MESSAGE_CATEGORIES.has(messageCategory)) {
     throw progressError("PROGRESS_MESSAGE_CATEGORY_INVALID", "message category is invalid");
@@ -403,11 +415,12 @@ function recordDiscoveredMessageGroupClassification(db, input = {}) {
     : {};
   const stage = legalStage(progressUpdate.stage);
   const missingFactKey = safeMissingFactKey(input.missingFactKey);
-  const summary = sanitizedMessageSummary(messageCategory, { missingFactKey });
+  const summary = sanitizedMessageSummary(messageCategory, { missingFactKey, messageIntent });
   const classificationMetadata = {
     platform,
     threadKey,
     messageGroupKey,
+    messageIntent,
     messageCategory,
     missingFactKey,
     stage
@@ -448,6 +461,7 @@ function recordDiscoveredMessageGroupClassification(db, input = {}) {
           platform,
           threadKey,
           messageKey,
+          messageIntent,
           messageCategory,
           missingFactKey,
           stage
@@ -552,14 +566,14 @@ function recordManualProgressAction(db, input = {}) {
   return getProgressCard(db, cardId);
 }
 
-function sanitizedMessageSummary(messageCategory, { missingFactKey = "" } = {}) {
+function sanitizedMessageSummary(messageCategory, { missingFactKey = "", messageIntent = "" } = {}) {
+  if (String(messageIntent || "").trim() === "interview_invitation") return "收到面试邀约";
   const category = String(messageCategory || "").trim();
   return {
     project_fact: "项目事实确认",
     qualification: "资格条件确认",
     salary: "薪资问题确认",
     availability: "到岗时间确认",
-    interview_invitation: "收到面试邀约",
     sensitive: "敏感信息人工处理",
     identity_uncertain: "岗位或线程关联待确认",
     other: missingFactKey ? "需要补充用户确认事实" : "招聘方问题已分类"
@@ -993,6 +1007,7 @@ function progressError(code, message) {
 module.exports = {
   PROGRESS_STAGES,
   MESSAGE_CATEGORIES,
+  MESSAGE_INTENTS,
   TERMINAL_PROGRESS_STAGES,
   ensureProgressCard,
   recordProgressEvent,

@@ -141,6 +141,7 @@ try {
     threadKey: digest("group-thread"),
     messageKeys: [digest("group-msg-1"), digest("group-msg-2")],
     messageGroupKey: digest("group"),
+    messageIntent: "information_request",
     messageCategory: "availability",
     missingFactKey: "",
     progressUpdate: {
@@ -152,16 +153,28 @@ try {
   const groupRecorded = recordDiscoveredMessageGroupClassification(db, groupInput);
   assert.strictEqual(groupRecorded.stage, "reply_ready");
   assert.strictEqual(groupRecorded.nextAction, "Review draft before manual send");
+  const groupEvents = listProgressEvents(db, groupCard.id);
   assert.strictEqual(
-    listProgressEvents(db, groupCard.id).length,
+    groupEvents.length,
     3,
     "two message events plus one group event"
+  );
+  assert(
+    groupEvents.every((event) => event.metadata.messageIntent === "information_request"),
+    "group and individual message events must preserve the safe semantic intent"
   );
   assert.strictEqual(recordDiscoveredMessageGroupClassification(db, groupInput).id, groupCard.id);
   assert.strictEqual(
     listProgressEvents(db, groupCard.id).length,
     3,
     "group retry must not duplicate events"
+  );
+  assert.throws(
+    () => recordDiscoveredMessageGroupClassification(db, {
+      ...groupInput,
+      messageIntent: "interview_keyword_seen"
+    }),
+    (error) => error.code === "PROGRESS_MESSAGE_INTENT_INVALID"
   );
   const groupRollbackFixture = createFixture(db, "group-rollback", now);
   const groupRollbackCard = ensureProgressCard(db, {
@@ -176,6 +189,7 @@ try {
       threadKey: digest("group-rollback-thread"),
       messageKeys: [digest("group-rollback-msg")],
       messageGroupKey: digest("group-rollback"),
+      messageIntent: "information_request",
       messageCategory: "availability",
       missingFactKey: "",
       progressUpdate: {

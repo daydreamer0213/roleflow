@@ -236,7 +236,9 @@ async function runBossMessageDiscovery({
       if (!/^MESSAGE_REPLY_[A-Z0-9_]+$/.test(errorCode)
         && !TERMINAL_MODEL_OUTPUT_CODES.has(errorCode)) throw error;
       classification = {
+        messageIntent: "manual_review",
         messageCategory: "other",
+        messageSummary: "模型结果未通过安全校验，需要人工确认。",
         missingFact: null,
         messages: [],
         manualActionReason: "model_contract_invalid",
@@ -254,6 +256,7 @@ async function runBossMessageDiscovery({
       legacyThreadKey: resolved.legacyThreadKey || "",
       messageKeys: incoming.newMessageKeys,
       messageGroupKey: incoming.messageGroupKey,
+      messageIntent: classification.messageIntent,
       messageCategory: classification.messageCategory,
       missingFactKey: classification.missingFact?.key || "",
       progressUpdate: classification.progressUpdate,
@@ -505,6 +508,7 @@ function safeResult(card, result, resolvedJob, contextSource) {
     cardId: card.id,
     jobId: card.jobId,
     stage: card.stage,
+    messageIntent: String(result.messageIntent || ""),
     messageCategory: String(result.messageCategory || ""),
     messageSummary: safeProjectionText(result.messageSummary, 160),
     missingFactKey,
@@ -523,7 +527,6 @@ function safeManualActionReason(result, missingFactKey, messages) {
   }
   if (messages.length) return "";
   const categoryReason = {
-    interview_invitation: "面试邀请需要人工确认时间和安排",
     salary: "薪资问题需要人工确认口径",
     sensitive: "消息涉及敏感信息，需要人工处理",
     identity_uncertain: "岗位或会话身份仍需人工核对"
