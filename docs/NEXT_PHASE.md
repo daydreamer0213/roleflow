@@ -1,6 +1,6 @@
 # RoleFlow 下一阶段主控索引
 
-> 更新于 2026-08-26。`codex/message-discovery-job-analysis` 已完成两个课题的实现，当前工作对象是 v1.1.0 最终门禁、安装器、合并、推送与 Release。
+> 更新于 2026-08-26。消息发现和岗位分析两个课题已进入 v1.1.0；后续开发从本文“下一项开发入口”继续，不再把发布收尾当成功能待办。
 
 ## 当前结论
 
@@ -23,9 +23,9 @@
 
 ## 当前门禁
 
-状态：**聚焦回归已通过，最终发布门禁待当前 SHA 重跑**。
+状态：**两个课题已完成实现与本地发布门禁，生产岗位判定继续使用二维表**。
 
-上一份完整可引用门禁是 2026-08-25 的岗位分析候选 `76a729cb0c00a17700093d9212f510a8ac76a664`，108/108 项通过。结构化消息实现的四条聚焦回归已经通过；v1.1.0 最终提交仍必须重新运行完整 `npm test`、危险夹具扫描、installer `StageOnly`、`git diff --check` 和干净工作树检查，最终结果以发布后的精确 SHA 记录为准。
+2026-08-26 的完整功能候选 `8b050b9d7abf702be02083aab29d35fa5fa13c89` 已通过 108/108 项离线检查。发布规范要求 `v1.1.0` 标签所指精确提交再次通过完整 `npm test`、危险夹具扫描、installer `StageOnly`、`git diff --check` 和干净工作树检查；最终远程身份以标签、Release 目标和同提交 CI 一致为准。
 
 ## 本轮已完成记录
 
@@ -47,18 +47,17 @@
 - `8f92287`：读取器只放行两个已验证的结构化消息类型。
 - `8468b6c`：模型只接收纯文字；简历请求产生本地人工待办，混合组同时保留草稿并完整去重。
 - `78bcdab`：页面先显示 BOSS 人工操作，再显示本地回复草稿；任意网页文案和未批准类型被过滤。
-- Installer `StageOnly` 已在 `D:\DevData\RoleFlow-installer\candidate-995ad3e4a6e1\stage\1.0.0` 完成。
-- 独立禁入扫描检查了 3,144 个暂存条目，没有发现 profile、测试、SQLite、Key、`.env`、secrets、运行目录、报告/日志或 Edge Control bridge。
-- `git diff --check` 和最终 107 项离线回归均通过；实现提交后工作树干净。
-- 完整安装包：`D:\DevData\RoleFlow-installer\acceptance-508781d\output\RoleFlow-Setup-1.0.0.exe`，SHA-256 `4b032feabd0a8f26390dfdd1e6253a3a34b13de70f278c97aefb5f614be795fb`。当前版本覆盖升级第一次成功，桌面快捷方式、启动和三页工作区均通过。
-- 已推送 `main@26ba903` 的重建包：`D:\DevData\RoleFlow-installer\main-26ba903\output\RoleFlow-Setup-1.0.0.exe`，SHA-256 `f97d8fbf110b4745599804bd7024a757ac78def71601a03a77992fe33dba2ba6`，大小 39,892,274 字节。该产物未签名、未发布。
+- v1.1.0 预发布 `StageOnly` 已在 `D:\DevData\RoleFlow-installer\release-8b050b9d7abf\stage\1.1.0` 完成：3,144 个条目、2,586 个文件、175,268,212 字节；没有发现 profile、测试、SQLite、Key、`.env`、secrets、运行目录、报告/日志或 Edge Control bridge，伪造 Edge 创建模式为 0。
+- `8b050b9d7abf702be02083aab29d35fa5fa13c89` 的 `npm test` 退出码为 0，108/108 项通过；聚焦消息回归、`git diff --check` 和干净工作树检查也通过。
+- v1.1.0 预发布安装包：`D:\DevData\RoleFlow-installer\release-8b050b9d7abf\output\RoleFlow-Setup-1.1.0.exe`，大小 39,891,075 字节，SHA-256 `fea7bbef5bb7dcc92812c19bf54b3a0d89743d64a2763583eaa440fd425e338e`。它只证明构建链路，正式 Release 使用最终标签提交重新构建的资产。
+- 消息页模拟人工验收通过：结论和岗位信息优先，简历人工操作位于草稿之前，没有同意/拒绝按钮，草稿复制成功，外部请求为 0；截图为 `D:\DevData\RoleFlow-acceptance\v1.1.0-message-discovery.png`。没有执行 v1.1.0 的真实覆盖安装或启动后 BOSS 验收。
 - 最新真实只读运行 `0b747bea-3332-41f0-ad3d-36fa257cc3c4` 已停在 `review_required`：3/3 搜索目标、35 个岗位、28/28 份所需 JD、待语义分析 0；隐藏实习样本被硬拦截，沟通批次为 0，未出现浏览器超时或风险控制。
 
 ## 下一项开发入口
 
 1. **消息卡片扩展**：只有拿到新的真实只读 DOM 证据后，才分别实现位置确认或面试排期；不能复用简历卡选择器或靠文字猜类型。
 2. **积分路线质量比较**：保留当前冻结报告，不切换生产。先获得人工确认标签；若比较模型漂移，再确定少量同岗位重复模型样本、成本和授权。没有两类证据时继续使用二维表。
-3. **发布后维护**：核对 v1.1.0 精确 SHA、CI、Release 资产哈希和下载可用性；代码签名仍是独立维护项。
+3. **发布维护**：后续版本继续要求标签、CI、Release 目标和资产哈希一致；代码签名仍是独立维护项。
 
 ## 持续安全边界
 
