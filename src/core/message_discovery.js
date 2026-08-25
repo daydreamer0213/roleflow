@@ -223,14 +223,16 @@ async function runBossMessageDiscovery({
 
     let classification;
     try {
-      classification = await classifyMessageGroup({
-        profile,
-        card: resolved.card,
-        job: resolved.job,
-        messages: incoming.messages,
-        facts,
-        contextSource: resolved.contextSource || resolved.job.contextSource || ""
-      });
+      classification = incoming.messages.length
+        ? await classifyMessageGroup({
+          profile,
+          card: resolved.card,
+          job: resolved.job,
+          messages: incoming.messages,
+          facts,
+          contextSource: resolved.contextSource || resolved.job.contextSource || ""
+        })
+        : resumeRequestClassification();
     } catch (error) {
       const errorCode = String(error?.code || "");
       if (!/^MESSAGE_REPLY_[A-Z0-9_]+$/.test(errorCode)
@@ -247,6 +249,13 @@ async function runBossMessageDiscovery({
     } finally {
       for (const item of incoming.messages) item.text = "";
       clearSelectedSnapshot(selected);
+    }
+    if (incoming.manualActions.length) {
+      classification = {
+        ...classification,
+        manualActions: incoming.manualActions,
+        progressUpdate: { ...classification.progressUpdate, stage: "needs_user_action" }
+      };
     }
     throwIfAborted(signal);
     const card = recordDiscoveredMessageGroupClassification(db, {
@@ -422,12 +431,13 @@ function selectUnprocessedFriendMessageGroup(db, cardId, selected, threadKey) {
       item.text = "";
       continue;
     }
-    if (String(item.contentKind || "text") !== "text") {
+    const contentKind = String(item.contentKind || "text");
+    if (!["text", "resume_request", "platform_notice"].includes(contentKind)) {
       clearMessageSources(messages);
       return { ok: false, reasonCode: "BOSS_MESSAGE_CONTENT_UNSUPPORTED" };
     }
     const text = String(item.text || "").replace(/\s+/g, " ").trim();
-    if (!text) {
+    if (contentKind === "text" && !text) {
       item.messageId = "";
       item.text = "";
       continue;
@@ -447,7 +457,8 @@ function selectUnprocessedFriendMessageGroup(db, cardId, selected, threadKey) {
       WHERE card_id = ? AND idempotency_key = ?`).get(cardId, idempotencyKey);
     candidates.push({
       messageKey: digest,
-      text,
+      text: contentKind === "text" ? text : "",
+      contentKind,
       isNew: !exists
     });
     item.text = "";
@@ -462,18 +473,39 @@ function selectUnprocessedFriendMessageGroup(db, cardId, selected, threadKey) {
   if (grouped.length > BOSS_MESSAGE_GROUP_LIMIT) {
     return { ok: false, reasonCode: "BOSS_MESSAGE_GROUP_LIMIT" };
   }
-  if (grouped.reduce((sum, item) => sum + item.text.length, 0) > BOSS_MESSAGE_GROUP_TEXT_LIMIT) {
+  if (grouped.reduce((sum, item) => sum + (item.contentKind === "text" ? item.text.length : 0), 0) > BOSS_MESSAGE_GROUP_TEXT_LIMIT) {
     return { ok: false, reasonCode: "BOSS_MESSAGE_GROUP_TEXT_LIMIT" };
   }
   const newMessageKeys = unprocessed.map((item) => item.messageKey);
   if (newMessageKeys.length === 0) {
     return { ok: false, skipped: true, reasonCode: "BOSS_MESSAGE_ALREADY_PROCESSED" };
   }
+  const hasNewText = unprocessed.some((item) => item.contentKind === "text");
+  const manualActions = unprocessed.some((item) => item.contentKind === "resume_request")
+    ? [{ kind: "resume_request" }]
+    : [];
+  if (!hasNewText && manualActions.length === 0) {
+    return { ok: false, skipped: true, reasonCode: "BOSS_MESSAGE_PLATFORM_NOTICE_ONLY" };
+  }
   return {
     ok: true,
-    messages: grouped.map(({ messageKey: itemKey, text }) => ({ messageKey: itemKey, text })),
+    messages: grouped
+      .filter((item) => item.contentKind === "text")
+      .map(({ messageKey: itemKey, text }) => ({ messageKey: itemKey, text })),
+    manualActions,
     messageGroupKey: safeDigest(["message-group", threadKey, ...grouped.map((item) => item.messageKey)]),
     newMessageKeys
+  };
+}
+
+function resumeRequestClassification() {
+  return {
+    messageIntent: "manual_review",
+    messageCategory: "other",
+    messageSummary: "招聘方请求附件简历，需要你在 BOSS 中确认。",
+    missingFact: null,
+    messages: [],
+    progressUpdate: { stage: "needs_user_action" }
   };
 }
 
@@ -513,11 +545,18 @@ function safeResult(card, result, resolvedJob, contextSource) {
     messageSummary: safeProjectionText(result.messageSummary, 160),
     missingFactKey,
     manualActionReason: safeManualActionReason(result, missingFactKey, messages),
+    manualActions: safeManualActions(result.manualActions),
     contextSource: ["local_cache", "message_discovery_detail"].includes(contextSource) ? contextSource : "",
     contextComplete: hasCompleteJobContext(resolvedJob),
     job: projectMessageDecisionCard(resolvedJob),
     messages
   };
+}
+
+function safeManualActions(value) {
+  return Array.isArray(value) && value.some((item) => item?.kind === "resume_request")
+    ? [{ kind: "resume_request" }]
+    : [];
 }
 
 function safeManualActionReason(result, missingFactKey, messages) {

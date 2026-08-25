@@ -1104,6 +1104,11 @@ async function messageGroupBoundarySmoke() {
     }
   });
   assertStopped(unsupportedSummary, "BOSS_MESSAGE_CONTENT_UNSUPPORTED");
+  assert.strictEqual(
+    listPreviewStates(db, { profileId: unsupported.profileId }).length,
+    0,
+    "unsupported content must not commit the conversation preview"
+  );
 
   const repeated = createFixture({ suffix: "group-repeated", title: "Group Repeated Engineer" });
   const firstSummary = await runBossMessageDiscovery({
@@ -1151,6 +1156,102 @@ async function messageGroupBoundarySmoke() {
   });
   assert.strictEqual(mixedSummary.processed, 1);
   assert.deepStrictEqual(mixedModelTexts, ["old already processed", "new follow-up"]);
+
+  const structured = createFixture({ suffix: "group-structured", title: "Group Structured Engineer" });
+  const languageQuestion = "请问你的英语和粤语水平如何？";
+  const structuredDraft = "您好，我的英语可以用于工作沟通，粤语目前能理解日常表达。";
+  let structuredModelTexts = null;
+  const structuredSummary = await runBossMessageDiscovery({
+    db,
+    profileId: structured.profileId,
+    reader: fakeReader([selectedConversation({
+      title: structured.title,
+      messages: [
+        message("friend", "810000000000000", "岗位竞争情况", "platform_notice"),
+        message("friend", "810000000000001", languageQuestion, "text"),
+        message("friend", "810000000000002", "附件简历请求", "resume_request")
+      ]
+    })]),
+    classifyMessageGroup: async ({ messages }) => {
+      structuredModelTexts = messages.map((item) => item.text);
+      return classification({ messages: [structuredDraft] });
+    },
+    sleepFn: async () => {}
+  });
+  assert.strictEqual(structuredSummary.processed, 1);
+  assert.deepStrictEqual(structuredModelTexts, [languageQuestion]);
+  assert.strictEqual(structuredSummary.results[0].stage, "needs_user_action");
+  assert.deepStrictEqual(structuredSummary.results[0].messages, [structuredDraft]);
+  assert.deepStrictEqual(structuredSummary.results[0].manualActions, [{ kind: "resume_request" }]);
+  assert.strictEqual(
+    listProgressEvents(db, structured.card.id).filter((event) => event.type === "incoming_message_classified").length,
+    3,
+    "every supported incoming item in the mixed group must receive a message-level idempotency event"
+  );
+  const structuredPersisted = allText(db, "candidate_progress_events");
+  for (const forbidden of [languageQuestion, structuredDraft, "岗位竞争情况", "附件简历请求", "同意", "拒绝"]) {
+    assert(!structuredPersisted.includes(forbidden), `${forbidden} must not be persisted from a structured message group`);
+  }
+
+  const resumeOnly = createFixture({ suffix: "group-resume-only", title: "Group Resume Only Engineer" });
+  let resumeOnlyModelCalls = 0;
+  const resumeOnlySummary = await runBossMessageDiscovery({
+    db,
+    profileId: resumeOnly.profileId,
+    reader: fakeReader([selectedConversation({
+      title: resumeOnly.title,
+      messages: [message("friend", "820000000000000", "附件简历请求", "resume_request")]
+    })]),
+    classifyMessageGroup: async () => {
+      resumeOnlyModelCalls += 1;
+      return classification();
+    },
+    sleepFn: async () => {}
+  });
+  assert.strictEqual(resumeOnlyModelCalls, 0, "a resume-only group must not call the text model");
+  assert.strictEqual(resumeOnlySummary.processed, 1);
+  assert.deepStrictEqual(resumeOnlySummary.results[0].messages, []);
+  assert.deepStrictEqual(resumeOnlySummary.results[0].manualActions, [{ kind: "resume_request" }]);
+  assert.strictEqual(resumeOnlySummary.results[0].stage, "needs_user_action");
+
+  const platformOnly = createFixture({ suffix: "group-platform-only", title: "Group Platform Only Engineer" });
+  let platformOnlyModelCalls = 0;
+  const platformOnlySummary = await runBossMessageDiscovery({
+    db,
+    profileId: platformOnly.profileId,
+    reader: fakeReader([selectedConversation({
+      title: platformOnly.title,
+      messages: [message("friend", "830000000000000", "岗位竞争情况", "platform_notice")]
+    })]),
+    classifyMessageGroup: async () => {
+      platformOnlyModelCalls += 1;
+      return classification();
+    },
+    sleepFn: async () => {}
+  });
+  assert.strictEqual(platformOnlyModelCalls, 0, "a platform-only group must not call the text model");
+  assert.strictEqual(platformOnlySummary.processed, 0);
+  assert.deepStrictEqual(platformOnlySummary.results, []);
+  assert.strictEqual(
+    listPreviewStates(db, { profileId: platformOnly.profileId }).length,
+    1,
+    "a platform-only group must commit its row preview so it is not rediscovered as HR communication"
+  );
+
+  const unknownCard = createFixture({ suffix: "group-unknown-card", title: "Group Unknown Card Engineer" });
+  const unknownCardSummary = await runBossMessageDiscovery({
+    db,
+    profileId: unknownCard.profileId,
+    reader: fakeReader([selectedConversation({
+      title: unknownCard.title,
+      messages: [message("friend", "840000000000000", "未知操作卡片", "unknown")]
+    })]),
+    classifyMessageGroup: async () => {
+      throw new Error("an unknown card must not call the model");
+    }
+  });
+  assertStopped(unknownCardSummary, "BOSS_MESSAGE_CONTENT_UNSUPPORTED");
+  assert.strictEqual(listPreviewStates(db, { profileId: unknownCard.profileId }).length, 0);
 
   const systemOnly = createFixture({ suffix: "group-system", title: "Group System Engineer" });
   const systemSummary = await runBossMessageDiscovery({
@@ -1942,8 +2043,8 @@ function selectedConversation({
   };
 }
 
-function message(direction, messageId, text) {
-  return { direction, messageId, text };
+function message(direction, messageId, text, contentKind = "text") {
+  return { direction, messageId, text, contentKind };
 }
 
 function fact(key, daysAgo) {
