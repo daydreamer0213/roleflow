@@ -298,7 +298,8 @@ function fakeBrowser({
   createTabGate = null,
   createStarted = null,
   loseFocusAfterGuardedClick = false,
-  clickAtError = null
+  clickAtError = null,
+  startNetworkLogError = null
 } = {}) {
   const calls = {
     listTabs: 0, createTab: [], bringToFront: [], navigate: [], evalValue: [], clickAt: [],
@@ -412,6 +413,7 @@ function fakeBrowser({
     },
     async startNetworkLog(tabId, options) {
       calls.startNetworkLog.push([tabId, options]);
+      if (startNetworkLogError) throw startNetworkLogError;
       return { tabId, entries: [], meta: { enabled: true } };
     },
     async getNetworkLogMark(tabId) {
@@ -1025,10 +1027,15 @@ function assertNoPreparationAction(browser, before) {
   });
   const executionAdapter = new BossSiteAdapter({ browser: executionBrowser, sleepFn: async () => {} });
   const executionInspection = await executionAdapter.inspectCommunicationJob(expectedJob);
+  const executionPreparation = await executionAdapter.prepareCommunicationDispatch(executionInspection);
+  assert.strictEqual(executionBrowser.calls.startNetworkLog.length, 1);
+  assert.strictEqual(executionBrowser.calls.getNetworkLogMark.length, 1);
+  assert.strictEqual(executionBrowser.calls.clickAt.length, 0);
   assert.deepStrictEqual(
     await executionAdapter.dispatchCommunication(executionInspection),
     { state: "dispatched", jobId: "fake123" }
   );
+  await executionPreparation.cancel();
   assert.strictEqual(executionBrowser.calls.startNetworkLog.length, 1);
   assert.strictEqual(executionBrowser.calls.getNetworkLogMark.length, 1);
   assert.deepStrictEqual(executionBrowser.calls.bringToFront, []);
@@ -1041,6 +1048,34 @@ function assertNoPreparationAction(browser, before) {
   assert.strictEqual(executionBrowser.calls.guardedClick.length, 1);
   assert(executionBrowser.calls.guardedClick[0][1].includes("elementFromPoint"));
   assert(!executionBrowser.calls.guardedClick[0][1].includes("candidates[0].click()"));
+
+  const preparationError = Object.assign(new Error("network observer unavailable"), {
+    code: "BROWSER_DISCONNECTED"
+  });
+  const preparationFailureBrowser = fakeBrowser({
+    tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],
+    startNetworkLogError: preparationError
+  });
+  const preparationFailureAdapter = new BossSiteAdapter({ browser: preparationFailureBrowser, sleepFn: async () => {} });
+  const preparationFailureInspection = await preparationFailureAdapter.inspectCommunicationJob(expectedJob);
+  await assert.rejects(
+    () => preparationFailureAdapter.prepareCommunicationDispatch(preparationFailureInspection),
+    (error) => error === preparationError
+  );
+  assert.strictEqual(preparationFailureBrowser.calls.startNetworkLog.length, 1);
+  assert.strictEqual(preparationFailureBrowser.calls.getNetworkLogMark.length, 0);
+  assert.strictEqual(preparationFailureBrowser.calls.clickAt.length, 0);
+
+  const cancelledPreparationBrowser = fakeBrowser({
+    tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }]
+  });
+  const cancelledPreparationAdapter = new BossSiteAdapter({ browser: cancelledPreparationBrowser, sleepFn: async () => {} });
+  const cancelledPreparationInspection = await cancelledPreparationAdapter.inspectCommunicationJob(expectedJob);
+  const cancelledPreparation = await cancelledPreparationAdapter.prepareCommunicationDispatch(cancelledPreparationInspection);
+  await cancelledPreparation.cancel();
+  await cancelledPreparation.cancel();
+  assert.strictEqual(cancelledPreparationBrowser.calls.stopNetworkLog.length, 1);
+  assert.strictEqual(cancelledPreparationBrowser.calls.clickAt.length, 0);
 
   const inactiveBrowser = fakeBrowser({
     tabs: [{ id: "search", url: searchUrl, windowId: "window-1", active: false }]
@@ -1115,6 +1150,7 @@ function assertNoPreparationAction(browser, before) {
     ["communication-created", false]
   ]);
   assert.strictEqual(clickFailureBrowser.calls.clickAt.length, 1);
+  assert.strictEqual(clickFailureBrowser.calls.stopNetworkLog.length, 1);
 
   const observedSuccessBrowser = fakeBrowser({
     tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],

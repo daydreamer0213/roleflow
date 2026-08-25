@@ -42,25 +42,25 @@ stopNetworkLog
 
 Failure code: `BOSS_COMMUNICATION_BROWSER_CAPABILITY_MISSING`, with only missing method names in public diagnostics.
 
-- [ ] **Step 1: Write a failing no-mutation preflight test**
+- [x] **Step 1: Write a failing no-mutation preflight test**
 
 Inject a portable browser lacking the four network methods. Assert `communicate()` fails with the typed capability error before binding lifecycle begins, before a communication session starts, before batch status or item state changes, and before `clickAt()`.
 
-- [ ] **Step 2: Tighten the success fixture**
+- [x] **Step 2: Tighten the success fixture**
 
 Add explicit no-op network methods to the portable success fake so tests no longer pass with an unrealistically capable site mock hiding an incomplete browser adapter.
 
-- [ ] **Step 3: Run the focused test and confirm RED**
+- [x] **Step 3: Run the focused test and confirm RED**
 
 Run: `node tests/communication_cli_authority_smoke.js`
 
 Expected: FAIL because the current CLI reaches execution without checking the adapter contract.
 
-- [ ] **Step 4: Implement the capability assertion at the earliest safe boundary**
+- [x] **Step 4: Implement the capability assertion at the earliest safe boundary**
 
 Call it immediately after creating/selecting the browser implementation and before tab binding, runtime reconciliation, session creation, or persistent communication state mutation. Keep the method list in one constant/helper rather than scattering `typeof` checks.
 
-- [ ] **Step 5: Run the focused test and confirm GREEN**
+- [x] **Step 5: Run the focused test and confirm GREEN**
 
 Run: `node tests/communication_cli_authority_smoke.js`
 
@@ -93,37 +93,37 @@ Network.loadingFinished
 Network.loadingFailed
 ```
 
-- [ ] **Step 1: Write a failing adapter-contract test**
+- [x] **Step 1: Write a failing adapter-contract test**
 
 Instantiate the real `CdpBrowserAdapter` with the fake global WebSocket already used by `browser_transport_smoke.js`. Assert all four methods exist and `startNetworkLog()` sends `Network.enable` on the selected target socket.
 
-- [ ] **Step 2: Write failing success/failure event tests**
+- [x] **Step 2: Write failing success/failure event tests**
 
 Feed an allowlisted Fetch/XHR request, response, and loading-finished sequence; assert a monotonically sequenced sanitized entry is returned after the mark. Also cover HTTP failure, `loadingFailed`, no matching request, and duplicate/late events.
 
-- [ ] **Step 3: Write failing privacy and bound tests**
+- [x] **Step 3: Write failing privacy and bound tests**
 
 Assert non-allowlisted host/path events are never retained. For retained entries, the adapter may return a bounded `content` field to the in-process BOSS classifier, but must strip query parameters and must never return request post data, headers, cookies, or any body beyond `maxBodyBytes`. Cover `maxEntries`, `maxBodies`, and `maxBodyBytes`, and prove that the later persisted outcome contains only the sanitized business classification rather than `content`.
 
-- [ ] **Step 4: Write failing cleanup tests**
+- [x] **Step 4: Write failing cleanup tests**
 
 Assert normal stop sends `Network.disable` and closes the socket. Assert target loss, browser disconnect, start replacement, and a thrown body-read command leave no observer in the adapter map.
 
-- [ ] **Step 5: Run the focused transport test and confirm RED**
+- [x] **Step 5: Run the focused transport test and confirm RED**
 
 Run: `node tests/browser_transport_smoke.js`
 
 Expected: FAIL because `CdpBrowserAdapter` has no network-log contract.
 
-- [ ] **Step 6: Implement the minimal observer**
+- [x] **Step 6: Implement the minimal observer**
 
 Use one command-ID counter and pending-command map on the persistent socket. Filter URL and resource type before allocating an entry. Store only a normalized allowlisted endpoint URL without query text. Request a response body only for an allowlisted completed response and only while body limits permit it. The bounded body may cross the adapter/site boundary in memory because the existing classifier derives the BOSS business code there; it must never cross the outcome-sanitization/storage boundary.
 
-- [ ] **Step 7: Delegate from `CdpBrowserAdapter`**
+- [x] **Step 7: Delegate from `CdpBrowserAdapter`**
 
 Keep a `Map` keyed by numeric tab ID. Starting a new observer for a tab first stops the old one. `getNetworkLogMark()` and `readNetworkLog()` require the active matching observer. `stopNetworkLog()` is idempotent and removes the map entry in `finally`.
 
-- [ ] **Step 8: Run the focused transport test and confirm GREEN**
+- [x] **Step 8: Run the focused transport test and confirm GREEN**
 
 Run: `node tests/browser_transport_smoke.js`
 
@@ -143,15 +143,15 @@ Expected: PASS.
 - Every success, known failure, stop signal, and thrown error must call `stopNetworkLog()`.
 - The persisted result remains sanitized endpoint/status/business-code evidence only.
 
-- [ ] **Step 1: Write a failing observer-start test**
+- [x] **Step 1: Write a failing observer-start test**
 
 Make `startNetworkLog()` throw from `prepareCommunicationDispatch()`. Assert `clickAt()` is zero, no click-result verifier runs, and the item transitions from `verified` to the safe non-clicked `stopped` state rather than `click_dispatched`/`ambiguous`.
 
-- [ ] **Step 2: Write cleanup-path tests**
+- [x] **Step 2: Write cleanup-path tests**
 
 Cover successful verified communication, HTTP/business failure, no matching request, target mismatch, and thrown DOM verification. Assert `stopNetworkLog()` is called exactly once in each path.
 
-- [ ] **Step 3: Run focused tests and confirm RED where applicable**
+- [x] **Step 3: Run focused tests and confirm RED where applicable**
 
 Run:
 
@@ -162,11 +162,11 @@ node tests/communication_executor_smoke.js
 
 Expected: any missing preparation/cleanup guarantee fails before production edits.
 
-- [ ] **Step 4: Split preparation from the one-way dispatch boundary**
+- [x] **Step 4: Split preparation from the one-way dispatch boundary**
 
 Move the existing stable readiness check, guarded target check, and `startNetworkLog()`/mark acquisition into `BossSiteAdapter.prepareCommunicationDispatch()`, retaining prepared state only for the exact inspected job and tab. In `dispatchAndVerify()`, call that preparation while the item is `verified`; on preparation failure stop the item without incrementing `click_count`. Then recheck stop control, unresolved ambiguity, execution permission, and exact authorization before recording `click_dispatched`. `dispatchCommunication()` consumes the prepared state, performs an immediate target identity recheck, and clicks once. Do not move the durable ledger to after the physical click; preserve ambiguity on any failure after that boundary.
 
-- [ ] **Step 5: Run focused tests and confirm GREEN**
+- [x] **Step 5: Run focused tests and confirm GREEN**
 
 Run the two commands above. Expected: PASS.
 
@@ -175,7 +175,7 @@ Run the two commands above. Expected: PASS.
 **Files:**
 - Modify only files required by failures found above.
 
-- [ ] **Step 1: Run the complete communication regression set**
+- [x] **Step 1: Run the complete communication regression set**
 
 Run:
 
@@ -189,17 +189,17 @@ node tests/dashboard_communication_batch_smoke.js
 
 Expected: PASS; no test accesses real BOSS.
 
-- [ ] **Step 2: Run the complete offline suite**
+- [x] **Step 2: Run the complete offline suite**
 
 Run: `npm test`
 
 Expected: every offline check passes.
 
-- [ ] **Step 3: Perform a privacy/safety diff review**
+- [x] **Step 3: Perform a privacy/safety diff review**
 
 Search changed code for request headers, post data, cookies, authorization, raw URLs, response-body persistence, automatic retries, and foreground calls. Confirm the adapter filters before storage and releases all WebSockets.
 
-- [ ] **Step 4: Review and commit**
+- [x] **Step 4: Review and commit**
 
 Run `git diff --check`, inspect every changed hunk, then commit the capability implementation and regressions with:
 

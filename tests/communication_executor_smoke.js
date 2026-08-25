@@ -26,7 +26,18 @@ const {
 } = require("../src/core/candidate_progress");
 
 function runPermittedBatch(input) {
-  return runCommunicationBatch({ ...input, executionGate: () => true });
+  return runCommunicationBatch({
+    ...input,
+    adapter: preparedAdapter(input.adapter),
+    executionGate: () => true
+  });
+}
+
+function preparedAdapter(adapter) {
+  return {
+    async prepareCommunicationDispatch() { return { async cancel() {} }; },
+    ...adapter
+  };
 }
 
 async function singleItemCheckpointSmoke() {
@@ -173,7 +184,15 @@ async function cliSingleItemPassThroughSmoke() {
           { id: 31, windowId: 7, url: "https://www.zhipin.com/web/geek/jobs" },
           { id: 32, windowId: 7, url: "https://www.zhipin.com/web/geek/chat" }
         ];
-      }
+      },
+      async navigate() {},
+      async cdp() {},
+      async evalValue() {},
+      async clickAt() {},
+      async startNetworkLog() {},
+      async getNetworkLogMark() { return 0; },
+      async readNetworkLog() { return []; },
+      async stopNetworkLog() {}
     }),
     createSiteAdapterFn: () => ({
       async preflight({ tabId }) {
@@ -252,7 +271,15 @@ async function cliSingleItemPassThroughSmoke() {
             { id: 41, windowId: 8, url: "https://www.zhipin.com/web/geek/jobs" },
             { id: 42, windowId: 8, url: "https://www.zhipin.com/web/geek/chat" }
           ];
-        }
+        },
+        async navigate() {},
+        async cdp() {},
+        async evalValue() {},
+        async clickAt() {},
+        async startNetworkLog() {},
+        async getNetworkLogMark() { return 0; },
+        async readNetworkLog() { return []; },
+        async stopNetworkLog() {}
       }),
       createSiteAdapterFn: () => ({
         async preflight({ tabId }) {
@@ -267,6 +294,7 @@ async function cliSingleItemPassThroughSmoke() {
         async beginCommunicationSession() {},
         async restoreCommunicationSearchPage() {},
         async inspectCommunicationJob() { return { state: "ready" }; },
+        async prepareCommunicationDispatch() { return { async cancel() {} }; },
         async dispatchCommunication() {},
         async verifyCommunicationResult() { return { state: "succeeded" }; }
       })
@@ -925,6 +953,102 @@ async function dispatchFailureSmoke() {
   fixture.close();
 }
 
+async function preparationFailureBeforeClickLedgerSmoke() {
+  const fixture = createFixture(1);
+  const preparationError = Object.assign(new Error("network observation unavailable"), {
+    code: "BOSS_COMMUNICATION_OBSERVER_UNAVAILABLE"
+  });
+  let preparations = 0;
+  let dispatches = 0;
+  let verifications = 0;
+  await assert.rejects(
+    () => runPermittedBatch({
+      db: fixture.db,
+      batchId: fixture.batch.id,
+      accessController: { async reserve() {} },
+      adapter: {
+        async inspectCommunicationJob() { return { state: "ready" }; },
+        async prepareCommunicationDispatch() { preparations += 1; throw preparationError; },
+        async dispatchCommunication() { dispatches += 1; },
+        async verifyCommunicationResult() { verifications += 1; return { state: "succeeded" }; }
+      },
+      sleepFn: async () => {}
+    }),
+    (error) => error === preparationError
+  );
+  const item = listCommunicationBatchItems(fixture.db, fixture.batch.id)[0];
+  assert.strictEqual(preparations, 1);
+  assert.strictEqual(dispatches, 0);
+  assert.strictEqual(verifications, 0);
+  assert.strictEqual(item.status, "stopped");
+  assert.strictEqual(item.clickCount, 0);
+  assert.strictEqual(getCommunicationBatch(fixture.db, fixture.batch.id).status, "interrupted");
+  fixture.close();
+
+  const revoked = createFixture(1);
+  const gateError = Object.assign(new Error("execution permission revoked after preparation"), {
+    code: "BOSS_COMMUNICATION_CALIBRATION_REQUIRED"
+  });
+  let gateCalls = 0;
+  let cancellations = 0;
+  let revokedDispatches = 0;
+  await assert.rejects(
+    () => runCommunicationBatch({
+      db: revoked.db,
+      batchId: revoked.batch.id,
+      executionGate() {
+        gateCalls += 1;
+        if (gateCalls === 3) throw gateError;
+        return true;
+      },
+      accessController: { async reserve() {} },
+      adapter: preparedAdapter({
+        async inspectCommunicationJob() { return { state: "ready" }; },
+        async prepareCommunicationDispatch() {
+          return { async cancel() { cancellations += 1; } };
+        },
+        async dispatchCommunication() { revokedDispatches += 1; },
+        async verifyCommunicationResult() { return { state: "succeeded" }; }
+      }),
+      sleepFn: async () => {}
+    }),
+    (error) => error === gateError
+  );
+  const revokedItem = listCommunicationBatchItems(revoked.db, revoked.batch.id)[0];
+  assert.strictEqual(gateCalls, 3);
+  assert.strictEqual(cancellations, 1);
+  assert.strictEqual(revokedDispatches, 0);
+  assert.strictEqual(revokedItem.status, "stopped");
+  assert.strictEqual(revokedItem.clickCount, 0);
+  revoked.close();
+
+  const paused = createFixture(1);
+  let pauseCancellations = 0;
+  let pauseDispatches = 0;
+  const pausedSummary = await runPermittedBatch({
+    db: paused.db,
+    batchId: paused.batch.id,
+    accessController: { async reserve() {} },
+    adapter: {
+      async inspectCommunicationJob() { return { state: "ready" }; },
+      async prepareCommunicationDispatch() {
+        setCommunicationBatchStatus(paused.db, { batchId: paused.batch.id, status: "paused" });
+        return { async cancel() { pauseCancellations += 1; } };
+      },
+      async dispatchCommunication() { pauseDispatches += 1; },
+      async verifyCommunicationResult() { return { state: "succeeded" }; }
+    },
+    sleepFn: async () => {}
+  });
+  const pausedItem = listCommunicationBatchItems(paused.db, paused.batch.id)[0];
+  assert.strictEqual(pausedSummary.batchStatus, "paused");
+  assert.strictEqual(pauseCancellations, 1);
+  assert.strictEqual(pauseDispatches, 0);
+  assert.strictEqual(pausedItem.status, "stopped");
+  assert.strictEqual(pausedItem.clickCount, 0);
+  paused.close();
+}
+
 async function observedOutcomeFailureSmoke() {
   const fixture = createFixture(2);
   let dispatches = 0;
@@ -1238,11 +1362,11 @@ async function calibrationGateSmoke() {
     db: enabledAtEntry.db,
     batchId: enabledAtEntry.batch.id,
     accessController: { async reserve() {} },
-    adapter: {
+    adapter: preparedAdapter({
       async inspectCommunicationJob() { entryInspections += 1; return { state: "ready" }; },
       async dispatchCommunication() {},
       async verifyCommunicationResult() { return { state: "succeeded" }; }
-    }
+    })
   });
   assert.strictEqual(entryInspections, 1);
   assert.strictEqual(getCommunicationBatch(enabledAtEntry.db, enabledAtEntry.batch.id).status, "completed");
@@ -1263,11 +1387,11 @@ async function calibrationGateSmoke() {
         return true;
       },
       accessController: { async reserve() {} },
-      adapter: {
+      adapter: preparedAdapter({
         async inspectCommunicationJob() { return { state: "ready" }; },
         async dispatchCommunication() { dispatches += 1; },
         async verifyCommunicationResult() { return { state: "succeeded" }; }
-      }
+      })
     }),
     (error) => error === gateError
   );
@@ -1413,6 +1537,7 @@ Promise.resolve()
   .then(runningAmbiguityEntryGuardSmoke)
   .then(postClaimAmbiguityRollbackSmoke)
   .then(stopDuringSlicedPacingSmoke)
+  .then(preparationFailureBeforeClickLedgerSmoke)
   .then(dispatchFailureSmoke)
   .then(observedOutcomeFailureSmoke)
   .then(auditSanitizationSmoke)

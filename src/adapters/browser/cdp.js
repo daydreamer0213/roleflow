@@ -1,5 +1,6 @@
 const DEFAULT_TIMEOUT_MS = 15000;
 const { sameBrowserTabId, sortedBrowserTabIds } = require("../../core/browser_tab_identity");
+const { CdpNetworkLog } = require("./cdp_network_log");
 const BROWSER_ERROR_CODES = new Set([
   "BROWSER_TIMEOUT",
   "BROWSER_DISCONNECTED",
@@ -11,6 +12,7 @@ class CdpBrowserAdapter {
     this.host = host;
     this.port = Number(port || 9222);
     this.timeoutMs = positiveTimeout(timeoutMs);
+    this.networkObservers = new Map();
   }
 
   async listTabs({ scope = "all" } = {}) {
@@ -165,6 +167,7 @@ class CdpBrowserAdapter {
   }
 
   async closeTab(tabId) {
+    await this.stopNetworkLog(tabId);
     const result = await this.browserCommand("Target.closeTarget", { targetId: tabId });
     if (result?.success !== true) {
       throw browserError("BROWSER_COMMAND_FAILED", "CDP did not confirm that the tab was closed.");
@@ -184,6 +187,48 @@ class CdpBrowserAdapter {
     await this.cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", ...point });
     await this.cdp(tabId, "Input.dispatchMouseEvent", { type: "mousePressed", ...point, button: "left", clickCount: 1 });
     return this.cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseReleased", ...point, button: "left", clickCount: 1 });
+  }
+
+  async startNetworkLog(tabId, options = {}) {
+    await this.stopNetworkLog(tabId);
+    const tab = await this.findTab(tabId);
+    let observer;
+    observer = new CdpNetworkLog({
+      wsUrl: tab.webSocketDebuggerUrl,
+      timeoutMs: this.timeoutMs,
+      options,
+      onFatal: () => {
+        if (this.networkObservers.get(tabId) === observer) this.networkObservers.delete(tabId);
+      }
+    });
+    this.networkObservers.set(tabId, observer);
+    try {
+      return await observer.start();
+    } catch (error) {
+      if (this.networkObservers.get(tabId) === observer) this.networkObservers.delete(tabId);
+      throw error;
+    }
+  }
+
+  async getNetworkLogMark(tabId) {
+    return this.requireNetworkObserver(tabId).getMark();
+  }
+
+  async readNetworkLog(tabId, options = {}) {
+    return this.requireNetworkObserver(tabId).read(options);
+  }
+
+  async stopNetworkLog(tabId) {
+    const observer = this.networkObservers.get(tabId);
+    if (!observer) return { stopped: true };
+    this.networkObservers.delete(tabId);
+    return observer.stop();
+  }
+
+  requireNetworkObserver(tabId) {
+    const observer = this.networkObservers.get(tabId);
+    if (!observer) throw browserError("BROWSER_COMMAND_FAILED", "CDP network observer is not active.");
+    return observer;
   }
 
   async cdp(tabId, method, params = {}) {

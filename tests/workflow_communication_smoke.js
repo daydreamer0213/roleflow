@@ -303,6 +303,7 @@ async function workflowCommunicationSmoke() {
       accessController: { async reserve() { visits += 1; } },
       adapter: {
         async inspectCommunicationJob() { return { state: states.shift() }; },
+        async prepareCommunicationDispatch() { return { async cancel() {} }; },
         async dispatchCommunication() {},
         async verifyCommunicationResult() { return { state: "succeeded" }; }
       },

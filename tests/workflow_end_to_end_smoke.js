@@ -305,6 +305,7 @@ async function executeFakeCommunication(database, batchId, states) {
     accessController: { async reserve() {} },
     adapter: {
       async inspectCommunicationJob() { return { state: queue.shift() || "ready" }; },
+      async prepareCommunicationDispatch() { return { async cancel() {} }; },
       async dispatchCommunication() {},
       async verifyCommunicationResult() { return { state: "succeeded" }; }
     },

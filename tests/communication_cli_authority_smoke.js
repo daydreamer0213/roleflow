@@ -81,8 +81,55 @@ let db;
         { id: "CDP-chat", windowId: 17, url: "https://www.zhipin.com/web/geek/chat" }
       ];
     },
-    async createTab() { throw new Error("portable communication must not create tabs"); }
+    async createTab() { throw new Error("portable communication must not create tabs"); },
+    async navigate() {},
+    async cdp() {},
+    async evalValue() {},
+    async clickAt() {},
+    async startNetworkLog() {},
+    async getNetworkLogMark() { return 0; },
+    async readNetworkLog() { return []; },
+    async stopNetworkLog() {}
   };
+  const beforeCapabilityFailure = getCommunicationBatch(db, batchId);
+  const beforeCapabilityEvents = Number(db.prepare("SELECT COUNT(*) AS count FROM events").get().count);
+  let capabilityAdapterCreations = 0;
+  let capabilityRuns = 0;
+  const browserWithoutNetworkObservation = {
+    ...portableBrowser,
+    startNetworkLog: undefined,
+    getNetworkLogMark: undefined,
+    readNetworkLog: undefined,
+    stopNetworkLog: undefined
+  };
+  await assert.rejects(
+    () => communicate(db, {
+      batch: batchId,
+      browser: "portable",
+      "cdp-port": "9222",
+      "single-item": "1"
+    }, {
+      createBrowserFn: () => browserWithoutNetworkObservation,
+      createSiteAdapterFn: () => {
+        capabilityAdapterCreations += 1;
+        throw new Error("capability failure must happen before site adapter creation");
+      },
+      runCommunicationBatchFn: async () => {
+        capabilityRuns += 1;
+        return { terminal: 0, total: 0 };
+      }
+    }),
+    (error) => error.code === "BOSS_COMMUNICATION_BROWSER_CAPABILITY_MISSING"
+      && /startNetworkLog/.test(error.message)
+      && /getNetworkLogMark/.test(error.message)
+      && /readNetworkLog/.test(error.message)
+      && /stopNetworkLog/.test(error.message)
+  );
+  assert.strictEqual(capabilityAdapterCreations, 0);
+  assert.strictEqual(capabilityRuns, 0);
+  assert.deepStrictEqual(portableEvents, []);
+  assert.deepStrictEqual(getCommunicationBatch(db, batchId), beforeCapabilityFailure);
+  assert.strictEqual(Number(db.prepare("SELECT COUNT(*) AS count FROM events").get().count), beforeCapabilityEvents);
   const portableAdapter = {
     async preflight({ tabId } = {}) {
       portableEvents.push(`preflight:${tabId}`);
@@ -161,7 +208,15 @@ let db;
         { id: 1995685619, windowId: 1995685675, url: "https://www.zhipin.com/web/geek/chat" }
       ];
     },
-    async createTab() { createTabCalls += 1; throw new Error("edge communication must not create tabs"); }
+    async createTab() { createTabCalls += 1; throw new Error("edge communication must not create tabs"); },
+    async navigate() {},
+    async cdp() {},
+    async evalValue() {},
+    async clickAt() {},
+    async startNetworkLog() {},
+    async getNetworkLogMark() { return 0; },
+    async readNetworkLog() { return []; },
+    async stopNetworkLog() {}
   };
   const edgeAdapter = {
     async preflight({ tabId }) {

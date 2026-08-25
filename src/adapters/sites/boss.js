@@ -769,6 +769,7 @@ class BossSiteAdapter {
     this.communicationOperationInFlight = "";
     this.communicationDispatchedJobIds = new Set();
     this.lastCommunicationDispatch = null;
+    this.preparedCommunicationDispatch = null;
     this.resetPacing();
   }
 
@@ -2083,6 +2084,7 @@ class BossSiteAdapter {
   }
 
   async restoreCommunicationSearchPage() {
+    await this.cancelPreparedCommunicationDispatch();
     if (!this.communicationTabsBound || this.communicationSearchRestored) return;
     this.communicationSearchRestored = true;
     const binding = this.communicationBinding;
@@ -2218,12 +2220,12 @@ class BossSiteAdapter {
     }
   }
 
-  async dispatchCommunication(inspection, signal = null) {
-    if (!this.browser) throw bossError("BOSS_BROWSER_REQUIRED", "BOSS communication dispatch requires a browser connection.");
-    this.beginCommunicationOperation("dispatch");
+  async prepareCommunicationDispatch(inspection, signal = null) {
+    if (!this.browser) throw bossError("BOSS_BROWSER_REQUIRED", "BOSS communication preparation requires a browser connection.");
+    this.beginCommunicationOperation("dispatch_preparation");
     let tabId = null;
-    let dispatched = false;
     let networkLogStarted = false;
+    let prepared = null;
     try {
       const expectedJob = communicationJobFromInspection(inspection);
       if (!expectedJob) {
@@ -2232,17 +2234,18 @@ class BossSiteAdapter {
       if (this.communicationDispatchedJobIds.has(expectedJob.jobId)) {
         throw bossError("BOSS_COMMUNICATION_ALREADY_DISPATCHED", "This BOSS job already entered communication dispatch and cannot be clicked again.");
       }
+      for (const method of ["cdp", "clickAt", "startNetworkLog", "getNetworkLogMark", "readNetworkLog", "stopNetworkLog"]) {
+        if (typeof this.browser[method] !== "function") {
+          throw bossError("BOSS_COMMUNICATION_BROWSER_CAPABILITY_MISSING", `Communication browser is missing ${method}.`);
+        }
+      }
       throwIfAborted(signal);
+      await this.cancelPreparedCommunicationDispatch();
       tabId = await this.prepareCommunicationTab();
       if (this.communicationTabsBound) await this.assertBoundCommunicationTabs({ requireSearchPage: false });
-      if (typeof this.browser.cdp !== "function"
-        || typeof this.browser.clickAt !== "function") {
-        throw bossError("BOSS_COMMUNICATION_TAB_NOT_ACTIVE", "The BOSS communication tab cannot be focused safely in the background.");
-      }
       await this.browser.evalValue(tabId, PAGE_HELPERS);
       await this.waitForStableCommunicationDispatchReadiness(tabId, expectedJob, signal);
       throwIfAborted(signal);
-      this.communicationDispatchedJobIds.add(expectedJob.jobId);
       await this.browser.startNetworkLog(tabId, {
         maxEntries: 12,
         maxBodies: 4,
@@ -2255,6 +2258,71 @@ class BossSiteAdapter {
       });
       networkLogStarted = true;
       const mark = await this.browser.getNetworkLogMark(tabId);
+      prepared = {
+        jobId: expectedJob.jobId,
+        tabId,
+        expectedJob,
+        networkSequence: Number(mark?.mark?.lastSequence || 0)
+      };
+      this.preparedCommunicationDispatch = prepared;
+      let cancelled = false;
+      return {
+        state: "prepared",
+        jobId: expectedJob.jobId,
+        cancel: async () => {
+          if (cancelled) return;
+          cancelled = true;
+          if (this.preparedCommunicationDispatch === prepared) {
+            await this.cancelPreparedCommunicationDispatch();
+          }
+        }
+      };
+    } finally {
+      if (!prepared && networkLogStarted && tabId !== null) {
+        await this.stopCommunicationNetworkLog(tabId);
+      }
+      this.finishCommunicationOperation("dispatch_preparation");
+    }
+  }
+
+  async cancelPreparedCommunicationDispatch() {
+    const prepared = this.preparedCommunicationDispatch;
+    if (!prepared) return;
+    this.preparedCommunicationDispatch = null;
+    await this.stopCommunicationNetworkLog(prepared.tabId);
+    await this.closeCommunicationOutcomeObserver(prepared.tabId);
+  }
+
+  async dispatchCommunication(inspection, signal = null) {
+    if (!this.browser) throw bossError("BOSS_BROWSER_REQUIRED", "BOSS communication dispatch requires a browser connection.");
+    const expectedJob = communicationJobFromInspection(inspection);
+    if (!expectedJob) {
+      throw bossError("BOSS_COMMUNICATION_INSPECTION_INVALID", "A verified BOSS communication inspection is required before dispatch.");
+    }
+    if (!samePreparedCommunicationDispatch(this.preparedCommunicationDispatch, expectedJob)) {
+      await this.prepareCommunicationDispatch(inspection, signal);
+    }
+    this.beginCommunicationOperation("dispatch");
+    let tabId = this.preparedCommunicationDispatch?.tabId ?? null;
+    let dispatched = false;
+    try {
+      if (this.communicationDispatchedJobIds.has(expectedJob.jobId)) {
+        throw bossError("BOSS_COMMUNICATION_ALREADY_DISPATCHED", "This BOSS job already entered communication dispatch and cannot be clicked again.");
+      }
+      throwIfAborted(signal);
+      const prepared = this.preparedCommunicationDispatch;
+      if (!samePreparedCommunicationDispatch(prepared, expectedJob)) {
+        throw bossError("BOSS_COMMUNICATION_PREPARATION_LOST", "The prepared BOSS communication target changed before dispatch.");
+      }
+      tabId = prepared.tabId;
+      if (this.communicationTabsBound) await this.assertBoundCommunicationTabs({ requireSearchPage: false });
+      if (typeof this.browser.cdp !== "function"
+        || typeof this.browser.clickAt !== "function") {
+        throw bossError("BOSS_COMMUNICATION_TAB_NOT_ACTIVE", "The BOSS communication tab cannot be focused safely in the background.");
+      }
+      await this.browser.evalValue(tabId, PAGE_HELPERS);
+      throwIfAborted(signal);
+      this.communicationDispatchedJobIds.add(expectedJob.jobId);
       await this.browser.cdp(tabId, "Emulation.setFocusEmulationEnabled", { enabled: true });
       try {
         if (this.communicationTabsBound) await this.assertBoundCommunicationTabs({ requireSearchPage: false });
@@ -2276,13 +2344,17 @@ class BossSiteAdapter {
         jobId: expectedJob.jobId,
         tabId,
         expectedJob,
-        networkSequence: Number(mark?.mark?.lastSequence || 0)
+        networkSequence: prepared.networkSequence
       };
+      this.preparedCommunicationDispatch = null;
       dispatched = true;
       return { state: "dispatched", jobId: expectedJob.jobId };
     } finally {
       if (!dispatched && tabId !== null) {
-        if (networkLogStarted) await this.stopCommunicationNetworkLog(tabId);
+        if (this.preparedCommunicationDispatch?.tabId === tabId) {
+          this.preparedCommunicationDispatch = null;
+          await this.stopCommunicationNetworkLog(tabId);
+        }
         await this.closeCommunicationOutcomeObserver(tabId);
       }
       this.finishCommunicationOperation("dispatch");
@@ -3124,6 +3196,14 @@ function communicationJobFromInspection(inspection = {}) {
     return null;
   }
   return { jobId, url, title, company };
+}
+
+function samePreparedCommunicationDispatch(prepared, expectedJob) {
+  return Boolean(prepared
+    && prepared.jobId === expectedJob.jobId
+    && isBrowserTabId(prepared.tabId)
+    && sameBossCommunicationTitle(prepared.expectedJob, expectedJob)
+    && sameBossCommunicationCompany(prepared.expectedJob, expectedJob));
 }
 
 function guardedBossCommunicationClickExpression(expectedJob) {

@@ -267,6 +267,28 @@ async function dispatchAndVerify({ db, batchId, batch, item, inspection, adapter
     return interruptAndThrow(db, batchId, error, logger);
   }
   transitionCommunicationItem(db, { itemId: item.id, batchId, expectedStatus: "opening", status: "verified" });
+
+  let preparation = null;
+  try {
+    preparation = await adapter.prepareCommunicationDispatch(inspection, signal);
+    const afterPreparation = observeControl(db, batchId, signal, logger);
+    if (afterPreparation) {
+      await cancelCommunicationPreparation(preparation, logger, item);
+      stopVerifiedBeforeClick(db, batchId, item, "COMMUNICATION_CONTROL_CHANGED");
+      return afterPreparation;
+    }
+    assertNoUnresolvedAmbiguity(db, batchId, ambiguityReader);
+    assertExecutionEnabled(executionGate);
+    const authorized = listCommunicationBatchItems(db, batchId).find((candidate) => candidate.id === item.id);
+    if (authorized?.status !== "verified" || Number(authorized?.clickCount || 0) !== 0) {
+      throw codedError("COMMUNICATION_ITEM_TRANSITION_CONFLICT", "authorized communication item changed before dispatch");
+    }
+  } catch (error) {
+    await cancelCommunicationPreparation(preparation, logger, item);
+    stopVerifiedBeforeClick(db, batchId, item, errorCode(error));
+    return interruptAndThrow(db, batchId, error, logger);
+  }
+
   transitionCommunicationItem(db, {
     itemId: item.id,
     batchId,
@@ -329,6 +351,33 @@ async function dispatchAndVerify({ db, batchId, batch, item, inspection, adapter
     evidence: { outcome: communicationOutcomeEvidence(result) }
   });
   recordAudit(db, item, "communication_result", "succeeded");
+}
+
+async function cancelCommunicationPreparation(preparation, logger, item) {
+  if (typeof preparation?.cancel !== "function") return;
+  try {
+    await preparation.cancel();
+  } catch (error) {
+    logger?.warn("communication_preparation_cleanup_failed", {
+      batchId: item.batchId,
+      itemId: item.id,
+      jobId: item.jobId,
+      code: errorCode(error)
+    });
+  }
+}
+
+function stopVerifiedBeforeClick(db, batchId, item, code) {
+  const current = listCommunicationBatchItems(db, batchId).find((candidate) => candidate.id === item.id);
+  if (current?.status !== "verified") return;
+  transitionCommunicationItem(db, {
+    itemId: item.id,
+    batchId,
+    expectedStatus: "verified",
+    status: "stopped",
+    errorCode: code
+  });
+  recordAudit(db, item, "communication_result", "stopped");
 }
 
 function commitVerifiedCommunication(db, { batch, item, expectedStatus, status, outcome, evidence }) {
@@ -671,7 +720,7 @@ function errorCode(error) {
 function validateDependencies({ db, batchId, adapter, accessController, executionGate, ambiguityReader }) {
   if (!db) throw new Error("db is required");
   if (!Number.isInteger(Number(batchId)) || Number(batchId) <= 0) throw codedError("COMMUNICATION_BATCH_INVALID", "batchId is required");
-  for (const method of ["inspectCommunicationJob", "dispatchCommunication", "verifyCommunicationResult"]) {
+  for (const method of ["inspectCommunicationJob", "prepareCommunicationDispatch", "dispatchCommunication", "verifyCommunicationResult"]) {
     if (typeof adapter?.[method] !== "function") throw new Error(`adapter.${method} is required`);
   }
   if (typeof accessController?.reserve !== "function") throw new Error("accessController.reserve is required");

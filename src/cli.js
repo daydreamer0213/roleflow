@@ -135,6 +135,17 @@ const { prepareWorkspaceTabs, inspectBossOperatorTabs, assertBossRuntimeTabBindi
 const { resolveRuntimePaths } = require("./core/runtime_paths");
 
 const ROOT = path.resolve(__dirname, "..");
+const COMMUNICATION_BROWSER_METHODS = [
+  "listTabs",
+  "navigate",
+  "cdp",
+  "evalValue",
+  "clickAt",
+  "startNetworkLog",
+  "getNetworkLogMark",
+  "readNetworkLog",
+  "stopNetworkLog"
+];
 let runtimePaths = resolveRuntimePaths({ appRoot: ROOT });
 let logger = createNoopLogger();
 
@@ -293,6 +304,7 @@ async function communicate(
   const browserMode = browserArgs.browser;
   const browser = createBrowserFn(browserArgs);
   if (!browser) throw new Error("沟通执行需要已配置的 Edge 浏览器连接。");
+  assertCommunicationBrowserCapabilities(browser);
   const runId = `communication-${batchId}-${crypto.randomUUID()}`;
   const workflowRun = getWorkflowRunByCommunicationBatch(db, batchId);
   const communicationLogger = logger.child({
@@ -400,6 +412,15 @@ async function communicate(
       }
     }
   }
+}
+
+function assertCommunicationBrowserCapabilities(browser) {
+  const missing = COMMUNICATION_BROWSER_METHODS.filter((method) => typeof browser?.[method] !== "function");
+  if (!missing.length) return;
+  throw codedError(
+    "BOSS_COMMUNICATION_BROWSER_CAPABILITY_MISSING",
+    `沟通浏览器缺少必要能力：${missing.join(", ")}`
+  );
 }
 
 function settleCommunicationProcessFailure(db, batchId, error, communicationLogger) {

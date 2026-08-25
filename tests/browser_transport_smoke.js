@@ -413,6 +413,149 @@ async function main() {
     await rejectsWithCode(() => cdp.clickAt("cdp-tab", { x: 120, y: 48 }), "BROWSER_COMMAND_FAILED");
     assert.strictEqual(countMethod(websocket.messages, "Input.dispatchMouseEvent"), 3);
 
+    websocket.mode = "respond";
+    websocket.messages.length = 0;
+    websocket.responseBodies = {
+      "allowed-success": { body: JSON.stringify({ code: 0, private: "in-memory-only" }), base64Encoded: false },
+      "allowed-http-failure": { body: JSON.stringify({ code: 10003 }), base64Encoded: false }
+    };
+    for (const method of ["startNetworkLog", "getNetworkLogMark", "readNetworkLog", "stopNetworkLog"]) {
+      assert.strictEqual(typeof cdp[method], "function", `portable CDP must implement ${method}`);
+    }
+    await cdp.startNetworkLog("cdp-tab", {
+      maxEntries: 3,
+      maxBodies: 2,
+      maxBodyBytes: 8192,
+      resourceTypes: ["XHR", "Fetch"],
+      bodyUrlIncludes: ["/wapi/zpgeek/friend/add.json"],
+      urlIncludes: ["/wapi/zpchat/config/get", "/wapi/zpgeek/friend/add.json"],
+      captureBodies: true,
+      clear: true
+    });
+    assert.strictEqual(countMethod(websocket.messages, "Network.enable"), 1);
+    assert.deepStrictEqual(await cdp.getNetworkLogMark("cdp-tab"), { mark: { lastSequence: 0 } });
+    const observerSocket = latestSocket(websocket, "/devtools/page/cdp-tab");
+    emitNetworkRequest(observerSocket, {
+      requestId: "external-same-path",
+      url: "https://tracker.example/wapi/zpgeek/friend/add.json?secret=external",
+      type: "Fetch"
+    });
+    emitNetworkRequest(observerSocket, {
+      requestId: "document-request",
+      url: "https://www.zhipin.com/wapi/zpgeek/friend/add.json?secret=document",
+      type: "Document"
+    });
+    emitNetworkRequest(observerSocket, {
+      requestId: "allowed-success",
+      url: "https://www.zhipin.com/wapi/zpgeek/friend/add.json?securityId=private",
+      type: "Fetch",
+      headers: { Cookie: "must-not-leak", Authorization: "must-not-leak" },
+      postData: "must-not-leak"
+    });
+    emitNetworkResponse(observerSocket, { requestId: "allowed-success", status: 200, type: "Fetch" });
+    emitNetworkFinished(observerSocket, "allowed-success");
+    emitNetworkRequest(observerSocket, {
+      requestId: "allowed-http-failure",
+      url: "https://www.zhipin.com/wapi/zpchat/config/get?friendId=private",
+      type: "XHR"
+    });
+    emitNetworkResponse(observerSocket, { requestId: "allowed-http-failure", status: 503, type: "XHR" });
+    emitNetworkFinished(observerSocket, "allowed-http-failure");
+    emitNetworkRequest(observerSocket, {
+      requestId: "allowed-network-failure",
+      url: "https://www.zhipin.com/wapi/zpgeek/friend/add.json?securityId=private-2",
+      type: "Fetch"
+    });
+    emitNetworkFailed(observerSocket, "allowed-network-failure");
+    emitNetworkFinished(observerSocket, "allowed-success");
+    await flushAsyncEvents();
+    const observed = await cdp.readNetworkLog("cdp-tab", {
+      sinceSequence: 0,
+      maxEntries: 12,
+      includeBodies: true,
+      resourceTypes: ["XHR", "Fetch"],
+      urlIncludes: ["/wapi/zpchat/config/get", "/wapi/zpgeek/friend/add.json"],
+      consume: false
+    });
+    assert.strictEqual(observed.entries.length, 3);
+    assert.deepStrictEqual(observed.entries.map((entry) => entry.sequence), [1, 2, 3]);
+    assert.strictEqual(observed.entries[0].url, "https://www.zhipin.com/wapi/zpgeek/friend/add.json");
+    assert.strictEqual(observed.entries[0].status, 200);
+    assert.match(observed.entries[0].content, /"code":0/);
+    assert.strictEqual(observed.entries[1].status, 503);
+    assert.strictEqual(observed.entries[2].failed, true);
+    assert(!JSON.stringify(observed).includes("securityId"));
+    assert(!JSON.stringify(observed).includes("friendId"));
+    assert(!JSON.stringify(observed).includes("must-not-leak"));
+
+    const firstObserverSocket = observerSocket;
+    websocket.responseBodies = {
+      "bounded-1": { body: "1234567890abcdefghijklmnopqrstuvwxyz", base64Encoded: false },
+      "bounded-2": { body: "second-body-must-not-be-read", base64Encoded: false }
+    };
+    await cdp.startNetworkLog("cdp-tab", {
+      maxEntries: 2,
+      maxBodies: 1,
+      maxBodyBytes: 16,
+      resourceTypes: ["XHR", "Fetch"],
+      bodyUrlIncludes: ["/wapi/zpgeek/friend/add.json"],
+      urlIncludes: ["/wapi/zpgeek/friend/add.json"],
+      captureBodies: true,
+      clear: true
+    });
+    assert.strictEqual(firstObserverSocket.closed, true, "replacing an observer must close its socket");
+    const boundedSocket = latestSocket(websocket, "/devtools/page/cdp-tab");
+    for (const requestId of ["bounded-1", "bounded-2", "bounded-3"]) {
+      emitNetworkRequest(boundedSocket, {
+        requestId,
+        url: `https://www.zhipin.com/wapi/zpgeek/friend/add.json?request=${requestId}`,
+        type: "Fetch"
+      });
+      emitNetworkResponse(boundedSocket, { requestId, status: 200, type: "Fetch" });
+      emitNetworkFinished(boundedSocket, requestId);
+    }
+    await flushAsyncEvents();
+    const bounded = await cdp.readNetworkLog("cdp-tab", { sinceSequence: 0, includeBodies: true });
+    assert.strictEqual(bounded.entries.length, 2);
+    assert.strictEqual(bounded.entries.filter((entry) => Object.hasOwn(entry, "content")).length, 1);
+    assert(Buffer.byteLength(bounded.entries[0].content, "utf8") <= 16);
+    assert.strictEqual(countMethod(websocket.messages, "Network.getResponseBody"), 2,
+      "one allowlisted body from each observer may be read");
+    await cdp.stopNetworkLog("cdp-tab");
+    assert.strictEqual(boundedSocket.closed, true);
+    assert(countMethod(websocket.messages, "Network.disable") >= 2);
+    await rejectsWithCode(() => cdp.getNetworkLogMark("cdp-tab"), "BROWSER_COMMAND_FAILED");
+
+    await cdp.startNetworkLog("cdp-tab", networkLogOptions());
+    const disconnectedObserver = latestSocket(websocket, "/devtools/page/cdp-tab");
+    disconnectedObserver.emit("close", { code: 1006, reason: "fixture disconnect" });
+    await flushAsyncEvents();
+    assert.strictEqual(cdp.networkObservers.size, 0);
+    await rejectsWithCode(() => cdp.getNetworkLogMark("cdp-tab"), "BROWSER_COMMAND_FAILED");
+
+    websocket.bodyErrors = new Set(["body-error"]);
+    await cdp.startNetworkLog("cdp-tab", networkLogOptions());
+    const bodyErrorObserver = latestSocket(websocket, "/devtools/page/cdp-tab");
+    emitNetworkRequest(bodyErrorObserver, {
+      requestId: "body-error",
+      url: "https://www.zhipin.com/wapi/zpgeek/friend/add.json",
+      type: "Fetch"
+    });
+    emitNetworkResponse(bodyErrorObserver, { requestId: "body-error", status: 200, type: "Fetch" });
+    emitNetworkFinished(bodyErrorObserver, "body-error");
+    await flushAsyncEvents();
+    assert.strictEqual(cdp.networkObservers.size, 0);
+    await rejectsWithCode(() => cdp.getNetworkLogMark("cdp-tab"), "BROWSER_COMMAND_FAILED");
+    websocket.bodyErrors.clear();
+
+    await cdp.startNetworkLog("cdp-tab", networkLogOptions());
+    websocket.messages.length = 0;
+    await cdp.closeTab("cdp-tab");
+    const disableIndex = websocket.messages.findIndex((message) => message.method === "Network.disable");
+    const closeIndex = websocket.messages.findIndex((message) => message.method === "Target.closeTarget");
+    assert(disableIndex >= 0 && closeIndex > disableIndex, "target close must release network observation first");
+    await rejectsWithCode(() => cdp.getNetworkLogMark("cdp-tab"), "BROWSER_COMMAND_FAILED");
+
     reset("ok");
     assert.strictEqual(await edge.createTab("edge-tab", "https://example.test/new"), "edge-created-tab");
     assert.strictEqual(state.edgeRequests[0].command, "list_tabs");
@@ -551,12 +694,22 @@ function reset(mode) {
 }
 
 function installFakeWebSocket() {
-  const control = { mode: "disconnect", messages: [], urls: [], visibilityByTarget: {} };
+  const control = {
+    mode: "disconnect",
+    messages: [],
+    urls: [],
+    visibilityByTarget: {},
+    responseBodies: {},
+    bodyErrors: new Set(),
+    instances: []
+  };
   control.FakeWebSocket = class FakeWebSocket {
     constructor(url) {
       control.urls.push(url);
       this.url = url;
       this.listeners = new Map();
+      this.closed = false;
+      control.instances.push(this);
       queueMicrotask(() => this.emit("open", {}));
     }
 
@@ -573,7 +726,10 @@ function installFakeWebSocket() {
         const dispatchCount = control.messages.filter((item) => item.method === "Input.dispatchMouseEvent").length;
         let result = {};
         let error = null;
-        if (payload.method === "Runtime.evaluate"
+        if (payload.method === "Network.getResponseBody") {
+          if (control.bodyErrors.has(payload.params.requestId)) error = { message: "fixture body read failed" };
+          else result = control.responseBodies[payload.params.requestId] || { body: "", base64Encoded: false };
+        } else if (payload.method === "Runtime.evaluate"
           && payload.params.expression === "document.visibilityState") {
           const targetId = this.url.split("/").at(-1);
           const stateValue = control.mode === "created-visible" && targetId === "cdp-created-tab"
@@ -644,13 +800,61 @@ function installFakeWebSocket() {
       });
     }
 
-    close() {}
+    close() { this.closed = true; }
 
     emit(type, event) {
       for (const listener of this.listeners.get(type) || []) listener(event);
     }
   };
   return control;
+}
+
+function latestSocket(control, urlSuffix) {
+  const socket = control.instances.filter((item) => item.url.endsWith(urlSuffix) && !item.closed).at(-1);
+  assert(socket, `expected an open websocket ending with ${urlSuffix}`);
+  return socket;
+}
+
+function networkLogOptions() {
+  return {
+    maxEntries: 12,
+    maxBodies: 4,
+    maxBodyBytes: 8192,
+    resourceTypes: ["XHR", "Fetch"],
+    bodyUrlIncludes: ["/wapi/zpgeek/friend/add.json"],
+    urlIncludes: ["/wapi/zpchat/config/get", "/wapi/zpgeek/friend/add.json"],
+    captureBodies: true,
+    clear: true
+  };
+}
+
+function emitNetworkRequest(socket, { requestId, url, type, headers = {}, postData = "" }) {
+  socket.emit("message", { data: JSON.stringify({
+    method: "Network.requestWillBeSent",
+    params: { requestId, type, request: { url, method: "POST", headers, postData } }
+  }) });
+}
+
+function emitNetworkResponse(socket, { requestId, status, type }) {
+  socket.emit("message", { data: JSON.stringify({
+    method: "Network.responseReceived",
+    params: { requestId, type, response: { status, url: "must-not-be-trusted" } }
+  }) });
+}
+
+function emitNetworkFinished(socket, requestId) {
+  socket.emit("message", { data: JSON.stringify({ method: "Network.loadingFinished", params: { requestId } }) });
+}
+
+function emitNetworkFailed(socket, requestId) {
+  socket.emit("message", { data: JSON.stringify({
+    method: "Network.loadingFailed",
+    params: { requestId, errorText: "private network error", canceled: false }
+  }) });
+}
+
+function flushAsyncEvents() {
+  return new Promise((resolve) => setImmediate(() => setImmediate(resolve)));
 }
 
 function countMethod(messages, method) {
