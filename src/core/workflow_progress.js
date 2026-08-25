@@ -63,7 +63,8 @@ function getWorkflowProgressSnapshot(db, {
   const phaseKey = phaseKeyFor(workflow);
   const scanSnapshot = parseJson(workflow.scan_filter_snapshot_json, {});
 
-  const counts = countTaskStatuses(db, id);
+  const tasks = readWorkflowTaskRows(db, id);
+  const counts = countTaskStatuses(tasks);
   const detailCoverage = countObservationDetails(db, Number(workflow.scan_batch_id || 0), id);
   const collected = detailCoverage.collected;
   const detailsRead = detailCoverage.read;
@@ -87,20 +88,6 @@ function getWorkflowProgressSnapshot(db, {
     Number(workflow.communication_batch_id || 0),
     communicationSummary?.statusCounts
   );
-
-  const tasks = db.prepare(`
-    SELECT id, position, status, last_error_code, finished_at, model_config_revision
-    FROM workflow_job_tasks
-    WHERE workflow_run_id = ?
-    ORDER BY position ASC, id ASC
-  `).all(id).map((row) => ({
-    id: Number(row.id),
-    position: Number(row.position),
-    status: row.status,
-    lastErrorCode: row.last_error_code === "DETAIL_REQUIRED" ? "DETAIL_REQUIRED" : null,
-    finishedAt: row.finished_at || null,
-    modelConfigRevision: row.model_config_revision || null
-  }));
 
   const revision = String(workflow.model_config_revision || "").trim();
   const etaSamples = selectEtaSamples(db, id, revision);
@@ -184,6 +171,9 @@ function getWorkflowProgressSnapshot(db, {
         running: counts.running,
         retryPending: counts.retryPending,
         failed: counts.failed,
+        historicalFailed: counts.historicalFailed,
+        resolvedAfterFailure: counts.resolvedAfterFailure,
+        unresolvedFailed: counts.unresolvedFailed,
         skipped: counts.skipped,
         detailRequired: counts.detailRequired,
         stopped: counts.stopped,
@@ -193,7 +183,8 @@ function getWorkflowProgressSnapshot(db, {
           id: task.id,
           position: task.position,
           status: String(task.status || ""),
-          lastErrorCode: task.lastErrorCode
+          lastErrorCode: task.lastErrorCode,
+          resolvedAfterFailure: task.resolvedAfterFailure
         })),
         circuitTimeoutJobs: Number(workflow.circuit_timeout_job_count || 0),
         lifetimeTimeoutJobs: Number(workflow.lifetime_timeout_job_count || 0),
@@ -382,13 +373,7 @@ function phaseKeyFor(workflow) {
   return "preparing";
 }
 
-function countTaskStatuses(db, workflowRunId) {
-  const rows = db.prepare(`
-    SELECT status, last_error_code, count(*) AS n
-    FROM workflow_job_tasks
-    WHERE workflow_run_id = ?
-    GROUP BY status, last_error_code
-  `).all(workflowRunId);
+function countTaskStatuses(rows) {
   const counts = {
     pending: 0,
     running: 0,
@@ -398,21 +383,76 @@ function countTaskStatuses(db, workflowRunId) {
     skipped: 0,
     detailRequired: 0,
     stopped: 0,
+    historicalFailed: 0,
+    resolvedAfterFailure: 0,
+    unresolvedFailed: 0,
     terminal: 0,
     total: 0
   };
   for (const row of rows) {
     const key = row.status === "retry_pending" ? "retryPending" : row.status;
     if (Object.hasOwn(counts, key)) {
-      counts[key] += Number(row.n);
-      counts.total += Number(row.n);
+      counts[key] += 1;
+      counts.total += 1;
     }
-    if (row.status === "skipped" && row.last_error_code === "DETAIL_REQUIRED") {
-      counts.detailRequired += Number(row.n);
+    if (row.status === "skipped" && row.lastErrorCode === "DETAIL_REQUIRED") {
+      counts.detailRequired += 1;
+    }
+    if (row.status === "failed") {
+      counts.historicalFailed += 1;
+      if (row.resolvedAfterFailure) counts.resolvedAfterFailure += 1;
+      else counts.unresolvedFailed += 1;
     }
   }
   counts.terminal = counts.succeeded + counts.failed + counts.skipped + counts.stopped;
   return counts;
+}
+
+function readWorkflowTaskRows(db, workflowRunId, { includeDisplay = false } = {}) {
+  const displayColumns = includeDisplay ? ", source.title, source.company" : "";
+  const displayJoin = includeDisplay
+    ? "JOIN job_observations source ON source.id = t.observation_id"
+    : "";
+  return db.prepare(`
+    SELECT t.id, t.position, t.status, t.last_error_code, t.finished_at,
+      t.model_config_revision${displayColumns},
+      (
+        SELECT latest.analysis_json
+        FROM job_observations latest
+        JOIN batches latest_batch ON latest_batch.id = latest.batch_id
+        WHERE latest.job_id = t.job_id
+          AND latest_batch.search_plan_id = workflow.plan_id
+        ORDER BY latest.seen_at DESC, latest.id DESC
+        LIMIT 1
+      ) AS latest_analysis_json
+    FROM workflow_job_tasks t
+    JOIN workflow_runs workflow ON workflow.id = t.workflow_run_id
+    ${displayJoin}
+    WHERE t.workflow_run_id = ?
+    ORDER BY t.position ASC, t.id ASC
+  `).all(workflowRunId).map((row) => {
+    const currentAnalysisResolved = analysisIsComplete(parseJson(row.latest_analysis_json, {}));
+    return {
+      id: Number(row.id),
+      position: Number(row.position),
+      status: String(row.status || ""),
+      lastErrorCode: row.last_error_code === "DETAIL_REQUIRED" ? "DETAIL_REQUIRED" : null,
+      finishedAt: row.finished_at || null,
+      modelConfigRevision: row.model_config_revision || null,
+      resolvedAfterFailure: row.status === "failed" && currentAnalysisResolved,
+      ...(includeDisplay ? {
+        title: String(row.title || ""),
+        company: String(row.company || "")
+      } : {})
+    };
+  });
+}
+
+function analysisIsComplete(analysis) {
+  return String(analysis?.semanticStatus || "") === "complete"
+    || (String(analysis?.semanticStatus || "") === "blocked"
+      && String(analysis?.decisionStatus || "") === "decided"
+      && String(analysis?.recommendation || "") === "not_recommended");
 }
 
 function countObservationDetails(db, scanBatchId, workflowRunId) {
@@ -533,20 +573,16 @@ function countCommunicationItems(db, communicationBatchId, knownStatusCounts = n
 }
 
 function listWorkflowProgressJobs(db, workflowRunId) {
-  return db.prepare(`
-    SELECT t.id AS task_id, t.position, t.status, t.last_error_code,
-      o.title, o.company
-    FROM workflow_job_tasks t
-    JOIN job_observations o ON o.id = t.observation_id
-    WHERE t.workflow_run_id = ?
-    ORDER BY t.position ASC, t.id ASC
-  `).all(String(workflowRunId || "").trim()).map((row) => ({
-    taskId: Number(row.task_id),
-    position: Number(row.position),
-    status: String(row.status || ""),
-    lastErrorCode: row.last_error_code === "DETAIL_REQUIRED" ? "DETAIL_REQUIRED" : null,
-    title: String(row.title || ""),
-    company: String(row.company || "")
+  return readWorkflowTaskRows(db, String(workflowRunId || "").trim(), {
+    includeDisplay: true
+  }).map((row) => ({
+    taskId: row.id,
+    position: row.position,
+    status: row.status,
+    lastErrorCode: row.lastErrorCode,
+    resolvedAfterFailure: row.resolvedAfterFailure,
+    title: row.title,
+    company: row.company
   }));
 }
 

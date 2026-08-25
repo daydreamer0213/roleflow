@@ -38,6 +38,7 @@ try {
   testCollectedDetailCountsComeFromObservations();
   testStageSpecificProgressBreakdown();
   testTruthfulFourTrackReadModel();
+  testFailedTaskResolutionUsesLatestPlanObservation();
   testCommunicationProgressSeparatesAmbiguity();
   testStageMapping();
   testModelIdentityFromPlannerSnapshot();
@@ -432,16 +433,16 @@ function testTruthfulFourTrackReadModel() {
   assert.strictEqual(analyzing.progress.stageIndex, 3);
   assert.strictEqual(analyzing.progress.analysis.terminal, 2);
   assert.deepStrictEqual(analyzing.progress.analysis.tasks, [
-    { id: taskIds[0], position: 1, status: "running", lastErrorCode: null },
-    { id: taskIds[1], position: 2, status: "skipped", lastErrorCode: "DETAIL_REQUIRED" },
-    { id: taskIds[2], position: 3, status: "failed", lastErrorCode: null }
+    { id: taskIds[0], position: 1, status: "running", lastErrorCode: null, resolvedAfterFailure: false },
+    { id: taskIds[1], position: 2, status: "skipped", lastErrorCode: "DETAIL_REQUIRED", resolvedAfterFailure: false },
+    { id: taskIds[2], position: 3, status: "failed", lastErrorCode: null, resolvedAfterFailure: false }
   ]);
   assert(!JSON.stringify(analyzing.progress.analysis.tasks).includes("Private Company"));
   assert(!JSON.stringify(analyzing.progress.analysis.tasks).includes("Private Job Title"));
   const displayRows = listWorkflowProgressJobs(db, analysisScenario.workflowId);
   assert.deepStrictEqual(displayRows.map((row) => Object.keys(row).sort()), Array.from(
     { length: 3 },
-    () => ["company", "lastErrorCode", "position", "status", "taskId", "title"]
+    () => ["company", "lastErrorCode", "position", "resolvedAfterFailure", "status", "taskId", "title"]
   ));
   assert(displayRows.every((row) => row.title === "Private Job Title" && row.company === "Private Company"));
 
@@ -452,6 +453,80 @@ function testTruthfulFourTrackReadModel() {
   });
   assert.strictEqual(review.progress.phaseKey, "review");
   assert.strictEqual(review.progress.stageIndex, 4);
+}
+
+function testFailedTaskResolutionUsesLatestPlanObservation() {
+  const scenario = seedWorkflow(db, {
+    analyses: [{}, {}],
+    localDay: "2026-08-24",
+    modelConfigRevision: "mrev-resolved-failure"
+  });
+  initializeWorkflowJobTasks(db, {
+    workflowRunId: scenario.workflowId,
+    batchId: scenario.batchId,
+    jobs: observationEntries(db, scenario.batchId),
+    modelConfigRevision: "mrev-resolved-failure",
+    now: "2026-08-24T00:00:00.000Z"
+  });
+  const tasks = listWorkflowJobTasks(db, {
+    workflowRunId: scenario.workflowId
+  });
+  db.prepare(`
+    UPDATE workflow_job_tasks
+    SET status = 'failed', last_error_code = 'MODEL_CALL_FAILED', finished_at = ?
+    WHERE workflow_run_id = ?
+  `).run("2026-08-24T00:01:00.000Z", scenario.workflowId);
+
+  const resolvedJob = db.prepare(`
+    SELECT source, source_id, title, company, location, salary, experience,
+      education, url, description
+    FROM jobs
+    WHERE id = ?
+  `).get(tasks[0].jobId);
+  const retryBatchId = createBatch(db, "boss", "analysis-retry", "resolved failure smoke", {
+    profileId: scenario.profileId,
+    searchPlanId: scenario.planId
+  });
+  upsertJob(db, {
+    source: resolvedJob.source,
+    sourceId: resolvedJob.source_id,
+    title: resolvedJob.title,
+    company: resolvedJob.company,
+    location: resolvedJob.location,
+    salary: resolvedJob.salary,
+    experience: resolvedJob.experience,
+    education: resolvedJob.education,
+    url: resolvedJob.url,
+    description: resolvedJob.description,
+    qualityTags: [],
+    analysis: {
+      semanticStatus: "complete",
+      decisionStatus: "decided",
+      decisionSource: "model",
+      recommendation: "apply"
+    }
+  }, retryBatchId);
+
+  const snapshot = getWorkflowProgressSnapshot(db, {
+    workflowRunId: scenario.workflowId,
+    now: "2026-08-24T00:02:00.000Z"
+  });
+  assert.strictEqual(snapshot.progress.analysis.failed, 2);
+  assert.strictEqual(snapshot.progress.analysis.historicalFailed, 2);
+  assert.strictEqual(snapshot.progress.analysis.resolvedAfterFailure, 1);
+  assert.strictEqual(snapshot.progress.analysis.unresolvedFailed, 1);
+  assert.deepStrictEqual(
+    snapshot.progress.analysis.tasks.map((task) => task.resolvedAfterFailure),
+    [true, false]
+  );
+
+  const displayRows = listWorkflowProgressJobs(db, scenario.workflowId);
+  assert.deepStrictEqual(
+    displayRows.map((row) => row.resolvedAfterFailure),
+    [true, false]
+  );
+  assert(!JSON.stringify(displayRows).includes("analysis_json"));
+  assert(!JSON.stringify(displayRows).includes("MODEL_CALL_FAILED"));
 }
 
 function testCommunicationProgressSeparatesAmbiguity() {
