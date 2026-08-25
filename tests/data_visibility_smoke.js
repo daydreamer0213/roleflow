@@ -50,6 +50,7 @@ try {
   dashboardLatestBatchSmoke({ profileId, planId });
   planPolicyUiSmoke({ profileId, planId });
   inboundVisibilitySmoke({ profileId, planId });
+  jobNarrativeUiSmoke({ profileId, planId });
   assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
   console.log("data_visibility_smoke ok");
 } finally {
@@ -101,6 +102,88 @@ function inboundVisibilitySmoke({ profileId, planId }) {
     searchParams: new URLSearchParams({ planId: String(planId), pool: "apply" })
   });
   assert(!recommendationHtml.includes("HR 主动岗位"));
+}
+
+function jobNarrativeUiSmoke({ profileId, planId }) {
+  const batchId = createBatch(db, "boss", "job-narrative", "job narrative UI", {
+    profileId,
+    searchPlanId: planId,
+    filterSnapshot: { execution: { scanKind: "daily" } }
+  });
+  upsertJob(db, job("job-narrative-complete", {
+    title: "岗位主视图测试岗位",
+    company: "主视图测试公司",
+    salary: "18-25K·14薪",
+    risks: ["需要确认团队规模"],
+    analysis: {
+      provider: "mock",
+      semanticStatus: "complete",
+      decisionStatus: "decided",
+      decisionSource: "model",
+      recommendation: "apply",
+      recommendationSchemaVersion: 2,
+      roleSummary: "负责企业知识库与智能助手的落地交付",
+      businessScenario: "企业知识管理",
+      industryContext: "企业软件",
+      fitReasons: ["RAG 项目经验可以直接支持知识库交付", "具备 Python 服务开发经验"],
+      jobQuality: { level: "normal", concerns: [] },
+      hardBlockers: []
+    }
+  }), batchId);
+  upsertJob(db, job("job-narrative-fallback", {
+    title: "公司资料降级测试岗位",
+    company: "资料有限公司",
+    analysis: {
+      provider: "mock",
+      semanticStatus: "complete",
+      decisionStatus: "decided",
+      decisionSource: "model",
+      recommendation: "apply",
+      recommendationSchemaVersion: 2,
+      roleSummary: "负责内部业务系统开发",
+      businessScenario: "",
+      industryContext: "未明确",
+      fitReasons: ["已有后端开发经验"],
+      jobQuality: { level: "normal", concerns: [] },
+      hardBlockers: []
+    }
+  }), batchId);
+
+  const html = renderQueuePage({
+    db,
+    searchParams: new URLSearchParams({ planId: String(planId), pool: "apply", scope: "new" })
+  });
+  const completeArticle = jobArticle(html, "岗位主视图测试岗位");
+  const detailsStart = completeArticle.indexOf("<details");
+  assert(detailsStart > 0, "compact job card must retain its detail boundary");
+  const main = completeArticle.slice(0, detailsStart);
+  const details = completeArticle.slice(detailsStart);
+  let previousIndex = -1;
+  for (const label of ["结论：", "岗位：", "公司与机会：", "匹配：", "薪资：", "需要确认："]) {
+    const index = main.indexOf(label);
+    assert(index > previousIndex, `job main view must show ${label} in decision order`);
+    previousIndex = index;
+  }
+  assert(main.includes("负责企业知识库与智能助手的落地交付"));
+  assert(main.includes("企业知识管理"));
+  assert(main.includes("RAG 项目经验可以直接支持知识库交付"));
+  assert(main.includes("18-25K·14薪"));
+  assert(!main.includes("决策来源"));
+  assert(details.includes("决策来源"), "technical decision provenance must remain in details");
+
+  const fallbackMain = jobArticle(html, "公司资料降级测试岗位").split("<details")[0];
+  assert(fallbackMain.includes("具体业务在当前岗位资料中没有展开"));
+  assert(fallbackMain.includes("可以确认的机会重点是负责内部业务系统开发"));
+  assert(!fallbackMain.includes("未明确领域"));
+}
+
+function jobArticle(html, title) {
+  const titleIndex = html.indexOf(title);
+  assert(titleIndex >= 0, `queue page must contain ${title}`);
+  const start = html.lastIndexOf('<article class="job">', titleIndex);
+  const end = html.indexOf("</article>", titleIndex);
+  assert(start >= 0 && end > titleIndex, `queue page must isolate the card for ${title}`);
+  return html.slice(start, end + "</article>".length);
 }
 
 function uniqueJobsBeforeLimitSmoke({ profileId, planId }) {

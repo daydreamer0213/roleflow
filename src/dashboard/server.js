@@ -5284,7 +5284,6 @@ function renderCompactJobBase(job, filters) {
   const query = compactQuery(filters);
   const context = `${job.profileId ? `<input type="hidden" name="profileId" value="${escapeAttr(job.profileId)}">` : ""}${job.searchPlanId ? `<input type="hidden" name="planId" value="${escapeAttr(job.searchPlanId)}">` : ""}`;
   const jobContext = `<input type="hidden" name="jobId" value="${escapeAttr(job.id)}">${context}`;
-  const fitReason = (analysis.fitReasons || []).slice(0, 2).join("；") || "岗位方向与当前简历的匹配信息待补充。";
   const refreshFailure = compactRefreshFailure(job);
   const visibleRisks = compactVisibleRisks(job.risks);
   const risk = refreshFailure || analysis.error || visibleRisks.slice(0, 2).join("；") || "暂无明显硬风险；工作制与团队情况可在沟通时确认。";
@@ -5297,7 +5296,52 @@ function renderCompactJobBase(job, filters) {
   const feedbackAction = `<form class="follow" method="post" action="/api/feedback${query}">${jobContext}${feedbackReasonSelect("", true)}<input name="note" placeholder="具体哪里推荐错了（可选）" aria-label="推荐反馈说明"><button>提交推荐反馈</button></form>`;
   const retryAnalysisAction = job.decisionBucket === "analysis_pending" ? `<form class="quick-actions" method="post" action="/api/analyze-job">${jobContext}<button>重试语义分析</button></form>` : "";
   const roleEvidenceSummary = renderRoleEvidenceSummary(analysis, "line", "div");
-  return `<article class="job"><div class="job-top"><div><div class="job-title">${escapeHtml(job.title)}${job.url ? ` · <a href="${escapeAttr(job.url)}" target="_blank">打开岗位</a>` : ""}</div><div class="job-meta">${escapeHtml(job.company || "")} · ${escapeHtml(job.location || "")} · ${escapeHtml(salaryLabel)} · ${escapeHtml(experienceLabel)} · ${escapeHtml(compactActivityLabel(job))}${escapeHtml(status)}</div><div class="job-meta">${escapeHtml(compactSeenLabel(job, filters.latestMainBatchId))}</div></div><span class="decision ${escapeAttr(job.decisionBucket || "backup")}">${escapeHtml(compactDecisionLabel(job.decisionBucket))}</span></div><div class="job-reason">${escapeHtml(fitReason)}</div><div class="job-risk">${escapeHtml(risk)}</div>${retryAnalysisAction}${job.followUpNote ? `<div class="line"><strong>沟通记录：</strong>${escapeHtml(job.followUpNote)}</div>` : ""}<form class="quick-actions" method="post" action="/api/mark${query}">${jobContext}<button class="apply" name="status" value="applied">已投</button><button name="status" value="review">待确认</button><button name="status" value="later">7 天后再看</button><button class="skip" name="status" value="skipped">跳过</button></form><details class="details"><summary>查看 JD、沟通与完整记录</summary><div class="detail-body">${roleEvidenceSummary}<div class="line">决策来源：${escapeHtml(compactDecisionSource(analysis))} · 工作节奏：${escapeHtml(compactScheduleLabel(analysis))} · 推荐简历：${escapeHtml(analysis.recommendedResumeVersionName || analysis.recommendedResumeVersion || "待确认")} · 主推项目：${escapeHtml((analysis.primaryProjects || []).join("、") || "待确认")}</div><div class="chips">${chips(visibleRisks, "risk")}${chips(job.qualityTags, "tag")}</div><div class="jd">${escapeHtml(String(job.description || "暂无完整 JD").slice(0, 1500))}</div>${greetingAction}${followUpAction}${hrReplyAction}<form class="detail-actions" method="post" action="/api/mark${query}">${jobContext}<input name="note" placeholder="状态备注（可选）" aria-label="岗位状态备注"><button name="status" value="no_reply">无回复待跟进</button><button name="status" value="interview">约面</button><button name="status" value="rejected">拒绝</button><button name="status" value="invalid">岗位无效</button><button name="status" value="salary_mismatch">薪资不匹配</button></form><form class="follow" method="post" action="/api/follow-up${query}">${jobContext}<input name="note" placeholder="记录沟通进展" aria-label="沟通跟进备注"><button>记录备注</button></form>${feedbackAction}</div></details></article>`;
+  const narrative = compactJobNarrative(job, { salaryLabel, risk });
+  return `<article class="job"><div class="job-top"><div><div class="job-title">${escapeHtml(job.title)}${job.url ? ` · <a href="${escapeAttr(job.url)}" target="_blank">打开岗位</a>` : ""}</div><div class="job-meta">${escapeHtml(job.company || "")} · ${escapeHtml(job.location || "")} · ${escapeHtml(salaryLabel)} · ${escapeHtml(experienceLabel)} · ${escapeHtml(compactActivityLabel(job))}${escapeHtml(status)}</div><div class="job-meta">${escapeHtml(compactSeenLabel(job, filters.latestMainBatchId))}</div></div><span class="decision ${escapeAttr(job.decisionBucket || "backup")}">${escapeHtml(compactDecisionLabel(job.decisionBucket))}</span></div><div class="job-reason"><strong>结论：</strong>${escapeHtml(narrative.conclusion)}</div><div class="line"><strong>岗位：</strong>${escapeHtml(narrative.role)}</div><div class="line"><strong>公司与机会：</strong>${escapeHtml(narrative.companyOpportunity)}</div><div class="line"><strong>匹配：</strong>${escapeHtml(narrative.fit)}</div><div class="line"><strong>薪资：</strong>${escapeHtml(narrative.salary)}</div><div class="job-risk"><strong>需要确认：</strong>${escapeHtml(narrative.risk)}</div>${retryAnalysisAction}${job.followUpNote ? `<div class="line"><strong>沟通记录：</strong>${escapeHtml(job.followUpNote)}</div>` : ""}<form class="quick-actions" method="post" action="/api/mark${query}">${jobContext}<button class="apply" name="status" value="applied">已投</button><button name="status" value="review">待确认</button><button name="status" value="later">7 天后再看</button><button class="skip" name="status" value="skipped">跳过</button></form><details class="details"><summary>查看 JD、沟通与完整记录</summary><div class="detail-body">${roleEvidenceSummary}<div class="line">决策来源：${escapeHtml(compactDecisionSource(analysis))} · 工作节奏：${escapeHtml(compactScheduleLabel(analysis))} · 推荐简历：${escapeHtml(analysis.recommendedResumeVersionName || analysis.recommendedResumeVersion || "待确认")} · 主推项目：${escapeHtml((analysis.primaryProjects || []).join("、") || "待确认")}</div><div class="chips">${chips(visibleRisks, "risk")}${chips(job.qualityTags, "tag")}</div><div class="jd">${escapeHtml(String(job.description || "暂无完整 JD").slice(0, 1500))}</div>${greetingAction}${followUpAction}${hrReplyAction}<form class="detail-actions" method="post" action="/api/mark${query}">${jobContext}<input name="note" placeholder="状态备注（可选）" aria-label="岗位状态备注"><button name="status" value="no_reply">无回复待跟进</button><button name="status" value="interview">约面</button><button name="status" value="rejected">拒绝</button><button name="status" value="invalid">岗位无效</button><button name="status" value="salary_mismatch">薪资不匹配</button></form><form class="follow" method="post" action="/api/follow-up${query}">${jobContext}<input name="note" placeholder="记录沟通进展" aria-label="沟通跟进备注"><button>记录备注</button></form>${feedbackAction}</div></details></article>`;
+}
+
+function compactJobNarrative(job, { salaryLabel, risk }) {
+  const analysis = job.analysis || {};
+  const role = String(analysis.roleSummary || job.title || "岗位职责待补充").trim();
+  const company = String(job.company || "这家公司").trim();
+  const businessScenario = meaningfulJobContext(analysis.businessScenario);
+  const industryContext = meaningfulJobContext(analysis.industryContext);
+  const companyOpportunity = businessScenario
+    ? `${company}的岗位资料显示业务场景与${businessScenario}相关；这个机会的核心是${role}。`
+    : industryContext
+      ? `${company}所在方向为${industryContext}；这个机会的核心是${role}。`
+      : `${company}的具体业务在当前岗位资料中没有展开；可以确认的机会重点是${role}。`;
+  const fit = (Array.isArray(analysis.fitReasons) ? analysis.fitReasons : [])
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .slice(0, 2)
+    .join("；")
+    || (Array.isArray(job.matches) ? job.matches : []).slice(0, 3).join("、")
+    || "岗位方向与当前简历的匹配信息待补充。";
+  return {
+    conclusion: compactJobConclusion(job.decisionBucket),
+    role,
+    companyOpportunity,
+    fit,
+    salary: salaryLabel,
+    risk
+  };
+}
+
+function compactJobConclusion(decisionBucket) {
+  return {
+    primary: "值得优先推进。",
+    apply: "可以推进，优先级低于主投岗位。",
+    caution: "建议先确认关键问题，再决定是否推进。",
+    not_recommended: "当前不建议优先推进。",
+    analysis_pending: "分析尚未完成，暂不做推进判断。",
+    refresh: "岗位信息有变化，刷新分析后再判断。"
+  }[String(decisionBucket || "")] || "可以先保留，待补充信息后再判断。";
+}
+
+function meaningfulJobContext(value) {
+  const text = String(value || "").trim();
+  return text && !["未明确", "未知", "暂无", "待确认"].includes(text) ? text : "";
 }
 
 function renderInboundProgressJob(job) {
