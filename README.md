@@ -1,6 +1,6 @@
 # RoleFlow
 
-[![Release: v1.0.0](https://img.shields.io/badge/release-v1.0.0-2563eb)](https://github.com/daydreamer0213/roleflow/releases/tag/v1.0.0)
+[![Release: v1.1.0](https://img.shields.io/badge/release-v1.1.0-2563eb)](https://github.com/daydreamer0213/roleflow/releases/tag/v1.1.0)
 [![CI](https://github.com/daydreamer0213/roleflow/actions/workflows/ci.yml/badge.svg)](https://github.com/daydreamer0213/roleflow/actions/workflows/ci.yml)
 [![License: AGPL-3.0-only](https://img.shields.io/badge/license-AGPL--3.0--only-0f766e)](LICENSE)
 
@@ -12,9 +12,9 @@ RoleFlow 的筛选规则由搜索关键词、城市、薪资和经验范围驱�
 
 ## 发布状态
 
-`v1.0.0` 是已经发布的正式版；普通用户应从 [v1.0.0 下载页](https://github.com/daydreamer0213/roleflow/releases/tag/v1.0.0) 获取安装器，并以该版本的发布说明为准。安装器尚未代码签名，Windows 可能显示信誉或 SmartScreen 提示。
+`v1.1.0` 是当前正式版；普通用户应从 [v1.1.0 下载页](https://github.com/daydreamer0213/roleflow/releases/tag/v1.1.0) 获取安装器，并以该版本的发布说明为准。安装器尚未代码签名，Windows 可能显示信誉或 SmartScreen 提示。
 
-当前仓库是**尚未发布的 source candidate**。它把默认浏览器改为“RoleFlow 专用 Edge（推荐）”，并把登录资料固定到 `%LOCALAPPDATA%\RoleFlow\BrowserProfile`。这部分不属于已发布 v1.0.0 下载内容；当前候选已于 2026-08-23 通过 101/101 项离线检查，但尚未执行新的真实 Edge、BOSS、安装或卸载验收，也没有把历史真实验收写成这次候选的验收结果。
+v1.1.0 默认使用“RoleFlow 专用 Edge（推荐）”，登录资料固定保存在 `%LOCALAPPDATA%\RoleFlow\BrowserProfile`。本版补齐消息卡片分流、岗位分析主视图和分析重试状态；真实 BOSS 验收只做了低频只读检查，没有点击简历卡片、发送消息、投递或申请。
 
 ## 核心能力
 
@@ -23,19 +23,19 @@ RoleFlow 的筛选规则由搜索关键词、城市、薪资和经验范围驱�
 - 结合岗位职责、技术要求、薪资、活跃度和风险信号给出分层建议。
 - 将主投、先聊确认、备选和待复核岗位整理为本地工作清单。
 - 沟通前必须由用户确认清单；登录失效、页面漂移或结果不明确时停止操作。
-- 当前 source candidate 已于 2026-08-23 运行 `node tests/run_all.js` 并通过 101/101 项离线检查；测试不访问真实 BOSS，也不会创建假的 `msedge.exe`。
+- v1.1.0 候选于 2026-08-26 运行完整离线门禁并通过 108/108 项检查；测试不访问真实 BOSS，也不会创建假的 `msedge.exe`。
 
 RoleFlow 每天最多由用户手动启动三轮任务，前两轮是主要工作轮次，第三轮只在候选库存明显不足时追加。每轮都要经过清单确认才会串行点击沟通；不会后台定时运行，也不会绕过用户确认直接执行。
 
 ## 快速开始
 
-已发布 v1.0.0 的 Windows 普通用户：
+Windows 普通用户：
 
-> **请前往 [v1.0.0 下载页](https://github.com/daydreamer0213/roleflow/releases/tag/v1.0.0)，下载 `RoleFlow-Setup-1.0.0.exe`。**
+> **请前往 [v1.1.0 下载页](https://github.com/daydreamer0213/roleflow/releases/tag/v1.1.0)，下载 `RoleFlow-Setup-1.1.0.exe`。**
 >
-> `RoleFlow-v1.0.0-portable.zip` 是高级免安装版；GitHub 自动生成的 Source code 压缩包不是安装程序。
+> 同页的 `RoleFlow-Setup-1.1.0.exe.sha256` 用于核对文件完整性；GitHub 自动生成的 Source code 压缩包不是安装程序。
 
-当前 source candidate 的日常路径如下；它尚未发布为新的正式安装器：
+安装后的日常路径如下：
 
 1. 在当前源码或候选暂存目录运行 `Install.bat`，再双击 `Start.bat`。默认会启动“RoleFlow 专用 Edge（推荐）”，不需要 Edge Control 或浏览器连接组件。
 2. 第一次在“RoleFlow 专用 Edge（推荐）”中登录 BOSS。登录资料保存在 `%LOCALAPPDATA%\RoleFlow\BrowserProfile`，覆盖升级或更换安装目录后仍会复用；不要把这个目录放进发布包或提交到 Git。
@@ -56,7 +56,7 @@ RoleFlow 每天最多由用户手动启动三轮任务，前两轮是主要工�
 
 ### 浏览器连接
 
-当前 source candidate 默认使用“RoleFlow 专用 Edge（推荐）”，不依赖 Edge Control。Edge Control 扩展和桥接只服务于“使用当前 Edge（高级，需要浏览器连接组件）”，不进入普通安装包，也不会自动下载；高级模式缺少组件时会停止，不会切换浏览器 authority（浏览器控制权）。
+当前版本默认使用“RoleFlow 专用 Edge（推荐）”，不依赖 Edge Control。Edge Control 扩展和桥接只服务于“使用当前 Edge（高级，需要浏览器连接组件）”，不进入普通安装包，也不会自动下载；高级模式缺少组件时会停止，不会切换浏览器 authority（浏览器控制权）。
 
 卸载时 RoleFlow 会先核对 8787 端口、`/health` 返回的安装目录和监听进程，只停止属于当前安装目录的工作台。普通卸载和静默卸载都保留 `%LOCALAPPDATA%\RoleFlow\BrowserProfile`；交互卸载只有在独立确认“删除专用浏览器登录资料”后才删除它。岗位数据库、简历、模型设置、日志和报告仍位于各自安装目录，不会因为浏览器登录资料稳定就悄悄迁移到新的安装目录。
 
@@ -146,7 +146,7 @@ RoleFlow 每天最多由用户手动启动三轮任务，前两轮是主要工�
 
 ## 便携交付
 
-双击 `BuildRelease.bat` 生成 `dist\RoleFlow-portable.zip`。发布包可以包含便携 Node，另一台 Windows 电脑解压后运行 `Install.bat` / `Start.bat`；当前 source candidate 默认使用“RoleFlow 专用 Edge（推荐）”，不依赖 Codex 或 Edge Control。Edge Control 不内置在发布 zip 中，只用于显式高级模式。
+双击 `BuildRelease.bat` 生成 `dist\RoleFlow-portable.zip`。发布包可以包含便携 Node，另一台 Windows 电脑解压后运行 `Install.bat` / `Start.bat`；当前版本默认使用“RoleFlow 专用 Edge（推荐）”，不依赖 Codex 或 Edge Control。Edge Control 不内置在发布 zip 中，只用于显式高级模式。
 
 维护者双击 `BuildInstaller.bat` 可生成标准安装器和同名 `.sha256` 校验文件。构建会先运行一次完整离线回归，再在 `D:\DevData\RoleFlow-installer` 创建不含数据库、简历、密钥、日志、报告、浏览器 profile、测试源码或 Edge Control 的干净暂存目录，然后调用固定的 Inno Setup 6 编译器。构建机需要把编译器放在 `D:\DevData\InnoSetup`，或设置 `ROLEFLOW_ISCC`。
 
@@ -238,9 +238,11 @@ data/                   本地 SQLite（真实文件不进 Git）
 - 打开页面：队列右上角“消息发现”，或 `/messages?profileId=候选人ID`。
 - 前置条件：RoleFlow 专用 Edge（推荐）正在运行，并且固定基线中存在唯一一个已登录的 `BOSS-COMMUNICATION` 消息页。
 - 点击“开始只读发现”后，系统只读取未读会话和预览变化；不会填写输入框、不会点击发送。
-- HR 连续发送的文本会作为一组处理（最多 5 条）；含语音、图片、附件或超长文本时会停止并提示人工粘贴。
+- HR 连续发送的纯文字会作为一组处理（最多 5 条）；含语音、图片、普通附件、未知卡片或超长文本时会停止并提示人工粘贴。
+- 已验证的附件简历请求卡片会显示为 BOSS 人工待办，不会自动点击“同意”或“拒绝”。同一轮既有文字问题又有简历请求时，页面会同时显示人工待办和本地回复草稿。
+- BOSS 的岗位竞争情况卡片不会冒充 HR 文字，也不会进入模型。
 - 生成结果最多 2 条草稿，只保存在本机内存，30 分钟、新运行、放弃、已手动发送或关闭工作台后都会清空。
-- 面试邀约只标记“收到面试邀约”，不会替你确认时间或生成建议回复。
+- 只有明确邀请参加、确认或选择一场面试才标记为正式面试邀约；正文只是提到“面试”不会误判。系统可以生成不承诺具体时间的本地草稿，但不会替你确认安排。
 - 复制草稿后在 BOSS 手动发送，然后回到页面点击“已手动发送”更新进展卡。
 
 ## 开源许可

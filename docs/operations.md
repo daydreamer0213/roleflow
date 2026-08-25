@@ -30,7 +30,7 @@
 1. 记录页面显示的错误编号和请求编号。
 2. 打开工作台“诊断”，按请求编号查最近事件。
 3. 需要更完整的上下文时，搜索 `.runtime\logs` 下的 JSONL。
-4. 运行 `node tests/run_all.js`。当前注册 101 项离线检查，不访问 BOSS；启动边界测试使用注入的进程与 HTTP 探针，不再生成假的 `msedge.exe`。2026-08-23 的当前 source candidate 实际通过 101/101 项离线检查，后续代码变化仍需重新运行，不能沿用历史计数。
+4. 运行 `node tests/run_all.js`。当前注册 108 项离线检查，不访问 BOSS；启动边界测试使用注入的进程与 HTTP 探针，不再生成假的 `msedge.exe`。2026-08-26 的 v1.1.0 候选必须以最终精确提交重新运行 108/108 门禁，不能沿用历史计数。
 5. 只有离线检查通过后，才在已登录 Edge 上做 3–5 条只读小样本验收。
 
 ## 浏览器登录资料
@@ -193,8 +193,10 @@ node -e "const {openDb}=require('./src/core/storage'); const db=openDb('data/job
 | `BOSS_MESSAGE_TAB_AMBIGUOUS` | 检测到多个消息页 | 只保留一个消息页 |
 | `BOSS_MESSAGE_GROUP_LIMIT` | 连续 HR 消息超过 5 条 | 改用人工粘贴 |
 | `BOSS_MESSAGE_GROUP_TEXT_LIMIT` | 连续消息文本超过 1000 字符 | 改用人工粘贴 |
-| `BOSS_MESSAGE_CONTENT_UNSUPPORTED` | 含语音、图片或附件 | 改用人工粘贴 |
+| `BOSS_MESSAGE_CONTENT_UNSUPPORTED` | 含语音、图片、普通附件或未验证的消息卡片 | 改用人工粘贴；不要按可见关键词猜卡片类型 |
 | `BOSS_RISK_CONTROL` / `BOSS_LOGIN_REQUIRED` | 安全验证或登录失效 | 立即停止，处理后重试 |
 | `MESSAGE_DISCOVERY_LEASE_LOST` | BOSS 租约丢失 | 停止后重新启动 |
 
 恢复步骤：先安全停止，再检查 RoleFlow 专用 Edge（推荐）和固定消息页，最后重新开始一轮。出现登录、风控、页面漂移或身份不确定时立即停止，不重试点击。
+
+已验证的附件简历请求不是错误：页面会显示“需要在 BOSS 人工处理附件简历请求”，但不会点击“同意/拒绝”。若同一轮还有 HR 纯文字，模型只读取文字并生成本地草稿；BOSS 岗位竞争情况卡片不进入模型。位置确认、面试排期等尚未取证的卡片仍走上述不支持分支。
