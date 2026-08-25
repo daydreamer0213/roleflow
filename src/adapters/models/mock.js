@@ -397,16 +397,26 @@ MockModelAdapter.prototype.draftMessageGroup = async function draftMessageGroup(
 } = {}) {
   const text = messages.map((message) => String(message.text || "")).join(" ");
   const descriptiveInterviewContext = /(?:线上面试|面试).{0,12}(?:能力|功能|系统|平台|管理|项目)/i.test(text);
-  const interviewInvitation = (
-    /(?:邀请|安排).{0,12}面试/i.test(text)
+  const interviewInvitation = /邀请(?:您|你)?.{0,12}(?:参加|进行)?.{0,4}面试/i.test(text)
     || /请问(?:您|你)?方便参加面试/i.test(text)
-    || /面试.{0,12}(?:时间|安排)/i.test(text)
-  );
-  const messageCategory = interviewInvitation
+    || /(?:为您|为你|给您|给你)安排.{0,12}面试/i.test(text);
+  const interestCheck = /(?:是否|有没有|有无).{0,8}(?:意向|兴趣)/i.test(text)
+    || /(?:方便|愿意).{0,8}(?:了解|沟通|聊)/i.test(text);
+  const informationUpdate = descriptiveInterviewContext
+    || /(?:补充|介绍|说明).{0,12}(?:岗位|公司|流程|安排|信息)/i.test(text);
+  const informationRequest = /[?？]|请|请问|能否|是否|什么|怎么|哪|多少|提供|补充说明/i.test(text);
+  const messageIntent = interviewInvitation
     ? "interview_invitation"
-    : descriptiveInterviewContext
-      ? "other"
-      : /身份证|证件|隐私|账号|账户|家庭|婚育|住址|private|identity card/i.test(text)
+    : interestCheck
+      ? "interest_check"
+      : informationUpdate
+        ? "information_update"
+        : informationRequest
+          ? "information_request"
+          : "general_communication";
+  const messageCategory = descriptiveInterviewContext
+    ? "other"
+    : /身份证|证件|隐私|账号|账户|家庭|婚育|住址|private|identity card/i.test(text)
       ? "sensitive"
       : /哪个岗位|什么岗位|哪个职位|什么职位|岗位不清楚|identity uncertain/i.test(text)
         ? "identity_uncertain"
@@ -414,24 +424,35 @@ MockModelAdapter.prototype.draftMessageGroup = async function draftMessageGroup(
           ? "salary"
           : /到岗|入职|什么时候|availability/i.test(text)
             ? "availability"
-            : "qualification";
+            : /项目|经历|职责|负责/i.test(text)
+              ? "project_fact"
+              : /资格|学历|经验|技能|技术/i.test(text)
+                ? "qualification"
+                : "other";
   const factMap = new Map((facts || []).map((fact) => [String(fact.key || ""), fact]));
-  const required = messageCategory === "availability"
+  const required = messageIntent === "information_request" && messageCategory === "availability"
     ? ["employment_status", "availability_date"]
     : [];
   const missing = required.find((key) => !factMap.has(key));
-  const messageSummary = {
+  const topicSummary = {
     project_fact: "对方正在确认候选人的项目经历。",
     qualification: "对方正在确认候选人的任职资格。",
     salary: "对方正在沟通薪资信息。",
     availability: "对方正在确认候选人的到岗时间。",
-    interview_invitation: "对方邀请候选人参加面试。",
     sensitive: "对方正在询问敏感个人信息。",
-    other: "对方正在介绍当前岗位或项目情况。",
+    other: "对方正在沟通当前岗位或项目情况。",
     identity_uncertain: "当前消息对应的岗位身份仍不明确。"
   }[messageCategory];
+  const messageSummary = {
+    interview_invitation: "对方正式邀请候选人参加面试。",
+    interest_check: "对方正在询问候选人是否愿意了解或继续沟通该岗位。",
+    information_request: topicSummary,
+    information_update: "对方正在补充当前岗位、项目或流程信息。",
+    general_communication: "对方正在进行普通沟通。"
+  }[messageIntent];
   const manualOnly = ["salary", "sensitive", "identity_uncertain"].includes(messageCategory);
   return {
+    messageIntent,
     messageCategory,
     messageSummary,
     requiredFactKeys: required,

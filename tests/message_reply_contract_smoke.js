@@ -15,6 +15,7 @@ const validFacts = [
 
 function safeReply(overrides = {}) {
   return {
+    messageIntent: "information_request",
     messageCategory: "availability",
     messageSummary: "对方正在确认候选人的到岗时间。",
     requiredFactKeys: ["employment_status", "availability_date"],
@@ -39,11 +40,16 @@ function safeReply(overrides = {}) {
 
 async function main() {
   const validated = validateMessageReply(safeReply(), { facts: validFacts, now: NOW });
+  assert.strictEqual(validated.messageIntent, "information_request");
   assert.deepStrictEqual(validated.progressUpdate, {
     stage: "reply_ready",
     nextAction: "Review draft before manual send"
   });
   assert.deepStrictEqual(validated.messages, ["complete draft"]);
+  assert.throws(
+    () => validateMessageReply(safeReply({ messageIntent: "keyword_interview" }), { facts: validFacts, now: NOW }),
+    (error) => error.code === "MESSAGE_REPLY_INTENT_INVALID"
+  );
 
   assert.throws(
     () => validateMessageReply(safeReply({ responseItems: [{ id: "PRIVATE_HR_RAW_TEXT", kind: "question", required: true }] }), { facts: validFacts, now: NOW }),
@@ -69,8 +75,9 @@ async function main() {
     (error) => error.code === "MESSAGE_REPLY_DRAFT_LIMIT"
   );
   const interview = validateMessageReply(safeReply({
-    messageCategory: "interview_invitation",
-    messageSummary: "对方邀请候选人参加面试。",
+    messageIntent: "interview_invitation",
+    messageCategory: "other",
+    messageSummary: "对方正式邀请候选人参加面试。",
     requiredFactKeys: [],
     usedFactKeys: [],
     responseItems: [],
@@ -80,8 +87,9 @@ async function main() {
   assert.deepStrictEqual(interview.messages, ["您好，感谢邀请，请问面试时间和形式如何安排？"]);
   assert.strictEqual(interview.progressUpdate.stage, "interview_invited");
   const interviewWithoutProviderDraft = validateMessageReply(safeReply({
-    messageCategory: "interview_invitation",
-    messageSummary: "对方邀请候选人参加面试。",
+    messageIntent: "interview_invitation",
+    messageCategory: "other",
+    messageSummary: "对方正式邀请候选人参加面试。",
     requiredFactKeys: [],
     usedFactKeys: [],
     responseItems: [],
@@ -92,6 +100,78 @@ async function main() {
     interviewWithoutProviderDraft.messages,
     ["您好，感谢邀请，请问面试时间和形式如何安排？"],
     "a valid interview result must always receive the deterministic local non-committal draft"
+  );
+  const interviewWithSalary = validateMessageReply(safeReply({
+    messageIntent: "interview_invitation",
+    messageCategory: "salary",
+    messageSummary: "对方邀请候选人参加面试，同时询问薪资口径。",
+    requiredFactKeys: [],
+    usedFactKeys: [],
+    responseItems: [],
+    coverage: [],
+    messages: []
+  }), { facts: [], now: NOW });
+  assert.strictEqual(interviewWithSalary.progressUpdate.stage, "interview_invited");
+  assert.deepStrictEqual(
+    interviewWithSalary.messages,
+    [],
+    "a manual-only topic must suppress the local interview draft without erasing the invitation stage"
+  );
+  const interviewMention = validateMessageReply(safeReply({
+    messageIntent: "information_update",
+    messageCategory: "other",
+    messageSummary: "对方在介绍岗位涉及的面试安排系统。",
+    requiredFactKeys: [],
+    usedFactKeys: [],
+    responseItems: [],
+    coverage: [],
+    messages: ["了解了，谢谢你补充岗位信息。"]
+  }), { facts: [], now: NOW });
+  assert.strictEqual(interviewMention.messageIntent, "information_update");
+  assert.strictEqual(interviewMention.progressUpdate.stage, "reply_ready");
+  assert.deepStrictEqual(interviewMention.messages, ["了解了，谢谢你补充岗位信息。"]);
+  for (const messageIntent of [
+    "interest_check",
+    "information_request",
+    "information_update",
+    "general_communication"
+  ]) {
+    const result = validateMessageReply(safeReply({
+      messageIntent,
+      messageCategory: "other",
+      requiredFactKeys: [],
+      usedFactKeys: [],
+      responseItems: [],
+      coverage: [],
+      messages: ["安全草稿"]
+    }), { facts: [], now: NOW });
+    assert.strictEqual(result.messageIntent, messageIntent);
+    assert.strictEqual(result.progressUpdate.stage, "reply_ready");
+  }
+  const manualReview = validateMessageReply(safeReply({
+    messageIntent: "manual_review",
+    messageCategory: "other",
+    messageSummary: "这条消息暂时无法可靠判断，需要人工确认。",
+    requiredFactKeys: [],
+    usedFactKeys: [],
+    responseItems: [],
+    coverage: [],
+    messages: []
+  }), { facts: [], now: NOW });
+  assert.strictEqual(manualReview.messageIntent, "manual_review");
+  assert.strictEqual(manualReview.progressUpdate.stage, "needs_user_action");
+  assert.deepStrictEqual(manualReview.messages, []);
+  assert.throws(
+    () => validateMessageReply(safeReply({
+      messageIntent: "manual_review",
+      messageCategory: "other",
+      requiredFactKeys: [],
+      usedFactKeys: [],
+      responseItems: [],
+      coverage: [],
+      messages: ["must not escape"]
+    }), { facts: [], now: NOW }),
+    (error) => error.code === "MESSAGE_REPLY_MANUAL_ONLY"
   );
   for (const messageSummary of [undefined, "", " ", "x".repeat(161), 42]) {
     assert.throws(
@@ -126,6 +206,7 @@ async function main() {
     { key: "gap.2024-03_2024-08", value: "自主探索", subjectKey: "2024-03_2024-08", updatedAt: "2026-07-01T00:00:00.000Z" }
   ];
   const stablePass = validateMessageReply({
+    messageIntent: "information_request",
     messageCategory: "qualification",
     messageSummary: "对方正在确认候选人的任职资格。",
     requiredFactKeys: ["gap.2024-03_2024-08"],
@@ -138,6 +219,7 @@ async function main() {
   assert.strictEqual(stablePass.progressUpdate.stage, "reply_ready");
   assert.throws(
     () => validateMessageReply({
+      messageIntent: "information_request",
       messageCategory: "qualification",
       messageSummary: "对方正在确认候选人的任职资格。",
       requiredFactKeys: [],
@@ -156,6 +238,7 @@ async function main() {
   );
   assert.throws(
     () => validateMessageReply({
+      messageIntent: "information_request",
       messageCategory: "qualification",
       messageSummary: "对方正在确认候选人的任职资格。",
       requiredFactKeys: ["gap.2024-03_2024-08"],
@@ -170,6 +253,7 @@ async function main() {
   );
   assert.throws(
     () => validateMessageReply({
+      messageIntent: "information_request",
       messageCategory: "qualification",
       messageSummary: "对方正在确认候选人的任职资格。",
       requiredFactKeys: ["gap.2024-03_2024-08"],
@@ -183,6 +267,7 @@ async function main() {
   );
   assert.throws(
     () => validateMessageReply({
+      messageIntent: "information_request",
       messageCategory: "qualification",
       messageSummary: "对方正在确认候选人的任职资格。",
       requiredFactKeys: ["gap.2025-01_2025-06"],
@@ -213,6 +298,7 @@ async function main() {
     adapter: {
       async draftMessageGroup() {
         return {
+          messageIntent: "information_update",
           messageCategory: "other",
           messageSummary: "对方在介绍项目提供的线上面试和简历管理能力。",
           requiredFactKeys: [],
@@ -237,6 +323,7 @@ async function main() {
     now: NOW
   });
   assert.strictEqual(semantic.messageCategory, "other");
+  assert.strictEqual(semantic.messageIntent, "information_update");
   assert.strictEqual(semantic.messageSummary, "对方在介绍项目提供的线上面试和简历管理能力。");
   assert.deepStrictEqual(semantic.messages, ["了解了，这部分业务与我的项目方向有一定关联。"]);
   assert.strictEqual(semanticMessages[0].text, "");
@@ -295,6 +382,7 @@ async function main() {
     async draftMessageGroup(input) {
       stableAdapterInput = input;
       return {
+        messageIntent: "information_request",
         messageCategory: "qualification",
         messageSummary: "对方正在确认候选人的任职资格。",
         requiredFactKeys: ["gap.2024-03_2024-08"],

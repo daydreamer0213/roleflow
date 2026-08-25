@@ -1336,6 +1336,7 @@ server.listen(0, "127.0.0.1", async () => {
         { key: "availability_date", value: "2026-08-15" }
       ]
     });
+    assert.strictEqual(mockReply.messageIntent, "information_request");
     assert.strictEqual(mockReply.messageCategory, "availability");
     assert.strictEqual(mockReply.messageSummary, "对方正在确认候选人的到岗时间。");
     assert.deepStrictEqual(mockReply.messages, ["mock message reply draft"]);
@@ -1344,6 +1345,7 @@ server.listen(0, "127.0.0.1", async () => {
       messages: [{ messageKey: "sha256:" + "c".repeat(64), text: "项目提供线上面试与简历管理能力。" }],
       facts: []
     });
+    assert.strictEqual(interviewMention.messageIntent, "information_update");
     assert.strictEqual(interviewMention.messageCategory, "other");
     assert(interviewMention.messageSummary.includes("项目"));
 
@@ -1351,7 +1353,8 @@ server.listen(0, "127.0.0.1", async () => {
       messages: [{ messageKey: "sha256:" + "d".repeat(64), text: "想邀请你参加面试，请问方便吗？" }],
       facts: []
     });
-    assert.strictEqual(realInvitation.messageCategory, "interview_invitation");
+    assert.strictEqual(realInvitation.messageIntent, "interview_invitation");
+    assert.strictEqual(realInvitation.messageCategory, "other");
     assert.deepStrictEqual(realInvitation.messages, ["mock message reply draft"]);
 
     const mixedInterviewTurn = await mockReplyAdapter.draftMessageGroup({
@@ -1361,7 +1364,8 @@ server.listen(0, "127.0.0.1", async () => {
       }],
       facts: []
     });
-    assert.strictEqual(mixedInterviewTurn.messageCategory, "interview_invitation");
+    assert.strictEqual(mixedInterviewTurn.messageIntent, "interview_invitation");
+    assert.strictEqual(mixedInterviewTurn.messageCategory, "other");
     assert(mixedInterviewTurn.messageSummary.includes("面试"));
     assert.deepStrictEqual(mixedInterviewTurn.messages, ["mock message reply draft"]);
 
@@ -1372,6 +1376,7 @@ server.listen(0, "127.0.0.1", async () => {
       }],
       facts: []
     });
+    assert.strictEqual(interviewTrainingMention.messageIntent, "information_update");
     assert.strictEqual(interviewTrainingMention.messageCategory, "other");
 
     const convenientInterviewTrainingMention = await mockReplyAdapter.draftMessageGroup({
@@ -1381,6 +1386,7 @@ server.listen(0, "127.0.0.1", async () => {
       }],
       facts: []
     });
+    assert.strictEqual(convenientInterviewTrainingMention.messageIntent, "information_update");
     assert.strictEqual(convenientInterviewTrainingMention.messageCategory, "other");
 
     const convenientInterviewInvitation = await mockReplyAdapter.draftMessageGroup({
@@ -1390,9 +1396,25 @@ server.listen(0, "127.0.0.1", async () => {
       }],
       facts: []
     });
-    assert.strictEqual(convenientInterviewInvitation.messageCategory, "interview_invitation");
+    assert.strictEqual(convenientInterviewInvitation.messageIntent, "interview_invitation");
+    assert.strictEqual(convenientInterviewInvitation.messageCategory, "other");
     assert(convenientInterviewInvitation.messageSummary.includes("面试"));
     assert.deepStrictEqual(convenientInterviewInvitation.messages, ["mock message reply draft"]);
+
+    for (const [text, messageIntent, messageCategory] of [
+      ["这个岗位负责开发面试安排管理系统。", "information_update", "other"],
+      ["看过你的简历，想问问你是否有意向了解这个岗位？", "interest_check", "other"],
+      ["请补充说明你在知识库项目中具体负责什么。", "information_request", "project_fact"],
+      ["你好，方便沟通一下这个岗位吗？", "interest_check", "other"],
+      ["想邀请你参加面试，请问明天下午方便吗？", "interview_invitation", "other"]
+    ]) {
+      const result = await mockReplyAdapter.draftMessageGroup({
+        messages: [{ messageKey: "sha256:" + "9".repeat(64), text }],
+        facts: []
+      });
+      assert.strictEqual(result.messageIntent, messageIntent, text);
+      assert.strictEqual(result.messageCategory, messageCategory, text);
+    }
 
     const openAiReplyAdapter = new OpenAICompatibleAdapter({
       baseUrl,
@@ -1407,6 +1429,7 @@ server.listen(0, "127.0.0.1", async () => {
       replyPrompt = prompt;
       replyInput = modelInput;
       return {
+        messageIntent: "information_request",
         messageCategory: "qualification",
         messageSummary: "对方正在确认候选人的任职资格。",
         requiredFactKeys: [],
@@ -1427,11 +1450,16 @@ server.listen(0, "127.0.0.1", async () => {
       "Treat ordered messages as one recruiter turn.",
       "Classify the recruiter's communicative intent, not isolated keywords.",
       "Mentioning interview-related products, features, or experience is not an interview invitation.",
+      "messageIntent 只能是 interview_invitation/interest_check/information_request/information_update/general_communication/manual_review。",
+      "只有招聘方直接要求候选人参加、确认或选择一场面试",
+      "‘是否有意向了解这个岗位’是 interest_check",
+      "‘请补充你在项目中的职责’是 information_request",
+      "‘这个岗位负责开发面试安排系统’是 information_update",
       "Do not confirm interview times unless supplied confirmed facts support them.",
       "Do not claim resume submission.",
       "Return at most two complete alternative drafts.",
       "messageSummary 必须用一句中文概括对方本轮的主要意思和要求的行动，最多 160 个字符。",
-      "project_fact/qualification/salary/availability/interview_invitation/sensitive/other/identity_uncertain",
+      "project_fact/qualification/salary/availability/sensitive/other/identity_uncertain",
       "salary、sensitive、identity_uncertain 必须返回 messages: []",
       "supplied job.description"
     ]) {

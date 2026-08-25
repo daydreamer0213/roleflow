@@ -5,10 +5,17 @@ const MESSAGE_CATEGORIES = new Set([
   "qualification",
   "salary",
   "availability",
-  "interview_invitation",
   "sensitive",
   "other",
   "identity_uncertain"
+]);
+const MESSAGE_INTENTS = new Set([
+  "interview_invitation",
+  "interest_check",
+  "information_request",
+  "information_update",
+  "general_communication",
+  "manual_review"
 ]);
 const MANUAL_ONLY_CATEGORIES = new Set([
   "salary",
@@ -57,9 +64,12 @@ function validateMessageReply(value, context = {}) {
     throw contractError("MESSAGE_REPLY_FACT_UNVERIFIED", "cannot draft while a required fact is missing or expired");
   }
   const safeStage = safeReplyStage(normalized);
-  const messages = normalized.messageCategory === "interview_invitation"
-    ? [SAFE_INTERVIEW_DRAFT]
-    : normalized.messages;
+  const messages = MANUAL_ONLY_CATEGORIES.has(normalized.messageCategory)
+    || normalized.messageIntent === "manual_review"
+    ? []
+    : normalized.messageIntent === "interview_invitation"
+      ? [SAFE_INTERVIEW_DRAFT]
+      : normalized.messages;
   return {
     ...normalized,
     messages,
@@ -73,6 +83,10 @@ function validateMessageReply(value, context = {}) {
 function normalizeReply(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw contractError("MESSAGE_REPLY_INVALID", "message reply must be an object");
+  }
+  const messageIntent = String(value.messageIntent || "").trim();
+  if (!MESSAGE_INTENTS.has(messageIntent)) {
+    throw contractError("MESSAGE_REPLY_INTENT_INVALID", "message intent is invalid");
   }
   const messageCategory = String(value.messageCategory || "").trim();
   if (!MESSAGE_CATEGORIES.has(messageCategory)) {
@@ -111,6 +125,7 @@ function normalizeReply(value) {
     throw contractError("MESSAGE_REPLY_INVALID", "missingFact must contain key and question");
   }
   return {
+    messageIntent,
     messageCategory,
     messageSummary,
     requiredFactKeys,
@@ -169,12 +184,15 @@ function assertDraftLimit(messages, limit) {
 }
 
 function assertManualOnlyHasNoDraft(normalized) {
-  if (!MANUAL_ONLY_CATEGORIES.has(normalized.messageCategory) || !normalized.messages.length) return;
+  const manualOnly = MANUAL_ONLY_CATEGORIES.has(normalized.messageCategory)
+    || normalized.messageIntent === "manual_review";
+  if (!manualOnly || !normalized.messages.length) return;
   throw contractError("MESSAGE_REPLY_MANUAL_ONLY", "this message category requires manual handling");
 }
 
 function safeReplyStage(normalized) {
-  if (normalized.messageCategory === "interview_invitation") return "interview_invited";
+  if (normalized.messageIntent === "interview_invitation") return "interview_invited";
+  if (normalized.messageIntent === "manual_review") return "needs_user_action";
   return normalized.messages.length ? "reply_ready" : "needs_user_action";
 }
 
@@ -234,6 +252,7 @@ function contractError(code, message) {
 
 module.exports = {
   MESSAGE_CATEGORIES,
+  MESSAGE_INTENTS,
   MANUAL_ONLY_CATEGORIES,
   MAX_DRAFTS,
   validateMessageReply
