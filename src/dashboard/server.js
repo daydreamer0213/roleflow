@@ -496,6 +496,10 @@ function createDashboardServer({
   browserFactory = createDashboardBrowser,
   browserSupervisor = null,
   workspaceReconciler = null,
+  workspaceLoginSchedule = setTimeout,
+  workspaceLoginCancel = clearTimeout,
+  workspaceLoginNow = Date.now,
+  workspaceLoginRandom = Math.random,
   communicationBrowserRebinder = inspectAndBindCommunicationBrowser,
   planRescore = rescorePlanObservations,
   assetReader = fs.readFileSync,
@@ -533,7 +537,10 @@ function createDashboardServer({
     return pending;
   };
   const inspectWorkflowResumeBrowserReadiness = (authority) =>
-    runBrowserRead(() => resolvedWorkflowResumeBrowserReadinessProbe(authority));
+    runBrowserRead(async () => {
+      await ensureManagedWorkspaceReady("workflow_resume");
+      return resolvedWorkflowResumeBrowserReadinessProbe(authority);
+    });
   const resolveSerializedAcquisitionContext = (input) =>
     runBrowserRead(() => acquisitionContextResolver(input));
   const resolveSerializedInheritedPreview = (input) =>
@@ -693,13 +700,92 @@ function createDashboardServer({
     browser: browserSupervisor?.getSnapshot?.() || null,
     workspace: workspaceRuntime
   });
-  const reconcileWorkspace = async (input) => {
+  let activeWorkspaceReconciliation = null;
+  let workspaceLoginTimer = null;
+  let workspaceLoginStartedAt = null;
+  let workspaceClosing = false;
+  const stopWorkspaceLoginMonitor = () => {
+    if (workspaceLoginTimer !== null) workspaceLoginCancel(workspaceLoginTimer);
+    workspaceLoginTimer = null;
+    workspaceLoginStartedAt = null;
+  };
+  const updateWorkspaceLoginMonitor = (workspace) => {
+    if (workspaceClosing || workspace?.status !== "login_required") {
+      stopWorkspaceLoginMonitor();
+      return;
+    }
+    const now = workspaceLoginNow();
+    if (workspaceLoginStartedAt === null) workspaceLoginStartedAt = now;
+    if (now - workspaceLoginStartedAt >= 30 * 60 * 1000) {
+      workspaceLoginStartedAt = null;
+      return;
+    }
+    if (workspaceLoginTimer !== null) return;
+    const random = Math.max(0, Math.min(0.999999, Number(workspaceLoginRandom()) || 0));
+    const delayMs = 10000 + Math.floor(random * 5001);
+    const callback = async () => {
+      workspaceLoginTimer = null;
+      try {
+        await reconcileWorkspace({ startupGuidance: false, reason: "login_monitor" });
+      } catch (error) {
+        stopWorkspaceLoginMonitor();
+        logger.warn("workspace_login_monitor_failed", {
+          errorCode: String(error?.code || "WORKSPACE_RECONCILIATION_FAILED")
+        });
+      }
+    };
+    workspaceLoginTimer = workspaceLoginSchedule(callback, delayMs);
+    workspaceLoginTimer?.unref?.();
+  };
+  const reconcileWorkspace = (input) => {
     if (!workspaceReconciler) {
       throw appError("BROWSER_RUNTIME_UNMANAGED", "当前浏览器工作区不能由工作台整理。", { statusCode: 409 });
     }
-    const workspace = await workspaceReconciler(input);
-    workspaceRuntime = publicWorkspaceRuntimeSnapshot(workspace);
-    return workspace;
+    if (activeWorkspaceReconciliation) return activeWorkspaceReconciliation;
+    const pending = Promise.resolve()
+      .then(() => workspaceReconciler(input))
+      .then((workspace) => {
+        workspaceRuntime = publicWorkspaceRuntimeSnapshot(workspace);
+        updateWorkspaceLoginMonitor(workspace);
+        return workspace;
+      });
+    activeWorkspaceReconciliation = pending;
+    const clear = () => {
+      if (activeWorkspaceReconciliation === pending) activeWorkspaceReconciliation = null;
+    };
+    pending.then(clear, clear);
+    return pending;
+  };
+  const ensureManagedWorkspaceReady = async (reason) => {
+    if (browserSupervisor?.getSnapshot && !browserSupervisor.getSnapshot()?.ready && browserSupervisor?.ensure) {
+      const address = dashboardServer.address();
+      if (!address || typeof address === "string") {
+        throw appError("DASHBOARD_RUNTIME_ADDRESS_UNAVAILABLE", "RoleFlow 工作台地址尚未就绪。", { statusCode: 503 });
+      }
+      try {
+        await browserSupervisor.ensure({
+          dashboardUrl: `http://127.0.0.1:${address.port}/`,
+          reason
+        });
+      } catch (cause) {
+        throw appError(
+          "BROWSER_RUNTIME_NOT_READY",
+          "专用 Edge 暂时无法恢复；本地资料仍可查看，需要浏览器的操作请稍后重试。",
+          { statusCode: 409, cause }
+        );
+      }
+    }
+    assertBrowserRuntimeReady();
+    if (!workspaceReconciler) return null;
+    const workspace = await reconcileWorkspace({ startupGuidance: false, reason });
+    if (workspace?.status === "ready") return workspace;
+    const publicWorkspace = publicWorkspaceRuntimeSnapshot(workspace);
+    const code = workspace?.status === "login_required"
+      ? "BOSS_LOGIN_REQUIRED"
+      : workspace?.status === "risk_control"
+        ? "BOSS_RISK_CONTROL"
+        : "BOSS_WORKSPACE_NOT_READY";
+    throw appError(code, publicWorkspace.message, { statusCode: 409 });
   };
   const dashboardServer = http.createServer(async (req, res) => {
     const requestId = logger.requestId();
@@ -900,7 +986,9 @@ function createDashboardServer({
       if (req.method === "POST" && url.pathname === "/api/feedback") return handlePost(req, res, (body, type) => handleRecommendationFeedbackApi(db, body, type), { logger, requestId, action: "recommendation_feedback" });
       if (req.method === "POST" && url.pathname === "/api/communication") return handleCommunication(req, res, { db, modelConfig: getRuntimeModel("deep_analysis"), modelReady: modelReady("deep_analysis"), logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/progress") return handleProgress(req, res, db, messageDiscovery);
-      if (req.method === "POST" && url.pathname === "/api/message-discovery") return handleMessageDiscovery(req, res, messageDiscovery, { assertBrowserRuntimeReady });
+      if (req.method === "POST" && url.pathname === "/api/message-discovery") return handleMessageDiscovery(req, res, messageDiscovery, {
+        ensureBrowserWorkspaceReady: () => ensureManagedWorkspaceReady("message_discovery_start")
+      });
       if (req.method === "POST" && url.pathname === "/api/message-discovery-unresolved") return handleInboundOpportunityResolution(req, res, db);
       if (req.method === "POST" && url.pathname === "/api/analyze-job") return handleJobAnalysisRetry(req, res, { db, root, modelConfig: getRuntimeModel("batch_screening"), modelReady: modelReady("batch_screening"), logger, requestId, analysisRetryRunnerFactory });
       if (req.method === "POST" && url.pathname === "/api/analyze-jobs") return handleJobAnalysisRetry(req, res, { db, root, modelConfig: getRuntimeModel("batch_screening"), modelReady: modelReady("batch_screening"), logger, requestId, bulk: true, analysisRetryRunnerFactory });
@@ -934,7 +1022,7 @@ function createDashboardServer({
       if (req.method === "POST" && url.pathname === "/api/plan/recommend") return handlePlanRecommend(req, res, { db, modelConfig: getRuntimeModel("deep_analysis"), modelReady: modelReady("deep_analysis"), logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/plan") return handlePlanSave(req, res, db, { root, logger, requestId, rescore: planRescore });
       if (req.method === "POST" && url.pathname === "/api/workflow-run") {
-        assertBrowserRuntimeReady();
+        await ensureManagedWorkspaceReady("workflow_start");
         const batchModelState = getRuntimeModelState("batch_screening");
         const backupRuntime = batchModelState.settings?.batchBackup?.enabled
           ? getRuntimeBatchBackup()
@@ -943,7 +1031,7 @@ function createDashboardServer({
       }
       if (req.method === "POST" && url.pathname === "/api/workflow-run/resume") return handleWorkflowRunResume(req, res, { db, root, dataRoot, dbPath, scanRuns, batchModelReady: modelReady("batch_screening"), logger, requestId, spawnProcess, browserReadinessProbe: inspectWorkflowResumeBrowserReadiness, resolveNewWorkflowBrowser: resolveDashboardWorkflowBrowser });
       if (req.method === "POST" && url.pathname === "/api/scan") {
-        assertBrowserRuntimeReady();
+        await ensureManagedWorkspaceReady("scan_start");
         return handlePlanScan(req, res, { db, root, dataRoot, dbPath, scanRuns, modelReady: modelReady("batch_screening"), logger, requestId, spawnProcess, resolveNewWorkflowBrowser: resolveDashboardWorkflowBrowser });
       }
       sendText(res, 404, "Not found");
@@ -954,6 +1042,8 @@ function createDashboardServer({
   });
   const closeHttpServer = dashboardServer.close.bind(dashboardServer);
   dashboardServer.close = (callback) => {
+    workspaceClosing = true;
+    stopWorkspaceLoginMonitor();
     const cleanups = [
       Promise.resolve().then(() => messageDiscovery.close()),
       Promise.resolve().then(() => browserSupervisor?.close?.())
@@ -3182,13 +3272,13 @@ function handleRecommendationFeedbackApi(db, rawBody, contentType = "application
   }
 }
 
-async function handleMessageDiscovery(req, res, controller, { assertBrowserRuntimeReady = () => {} } = {}) {
+async function handleMessageDiscovery(req, res, controller, { ensureBrowserWorkspaceReady = async () => {} } = {}) {
   try {
     const params = parseBody(await readBody(req), req.headers["content-type"] || "");
     const action = String(params.action || "").trim();
     let result;
     if (action === "start") {
-      assertBrowserRuntimeReady();
+      await ensureBrowserWorkspaceReady();
       result = controller.start(params.profileId);
     }
     else if (action === "stop") result = controller.stop(params.profileId);

@@ -86,7 +86,10 @@ function Wait-DashboardRuntimeStatus {
         -Uri "http://127.0.0.1:$DashboardPort/api/runtime-status" `
         -TimeoutSec 3
       $LastError = ""
-      if ($Runtime.browser.ready -eq $true -or $Runtime.browser.status -notin @("unknown", "starting")) {
+      $WorkspaceStatus = [string]$Runtime.workspace.status
+      $WorkspaceSettled = $WorkspaceStatus -notin @("", "unchecked", "converging", "not_ready")
+      if (($Runtime.browser.ready -eq $true -and $WorkspaceSettled) -or
+          ($Runtime.browser.ready -ne $true -and $Runtime.browser.status -notin @("unknown", "starting"))) {
         return $Runtime
       }
     } catch {
@@ -104,10 +107,10 @@ function Confirm-DashboardBrowserRuntime {
     [int]$DashboardPort,
     [switch]$AllowRecovery
   )
-  if ($BrowserMode -ne "portable" -or $NoBrowser) { return }
+  if ($BrowserMode -ne "portable" -or $NoBrowser) { return $null }
 
   $Runtime = Wait-DashboardRuntimeStatus -DashboardPort $DashboardPort
-  if ($Runtime.browser.ready -eq $true) { return }
+  if ($Runtime.browser.ready -eq $true) { return $Runtime }
 
   if (-not $AllowRecovery) {
     throw "DASHBOARD_BROWSER_START_FAILED: $([string]$Runtime.browser.message)"
@@ -124,7 +127,6 @@ function Confirm-DashboardBrowserRuntime {
       -ContentType "application/json" `
       -Body "{}" `
       -TimeoutSec 45
-    if ($Recovered.browser.ready -eq $true) { return }
   } catch {
     $RecoveryError = $_.Exception.Message
   }
@@ -132,7 +134,7 @@ function Confirm-DashboardBrowserRuntime {
   # Workspace preparation may fail after Edge has already recovered. In that case
   # startup still succeeds and the Dashboard can explain the remaining action.
   $Runtime = Wait-DashboardRuntimeStatus -DashboardPort $DashboardPort
-  if ($Runtime.browser.ready -eq $true) { return }
+  if ($Runtime.browser.ready -eq $true) { return $Runtime }
   $Detail = if ($RecoveryError) { $RecoveryError } else { [string]$Runtime.browser.message }
   throw "DASHBOARD_BROWSER_RECOVERY_FAILED: $Detail"
 }
@@ -171,7 +173,7 @@ if (-not (Test-Dashboard -DashboardPort $Port -ExpectedBrowserAuthority $Browser
   throw "Dashboard failed to start on http://127.0.0.1:$Port. Check whether the port is occupied."
 }
 
-Confirm-DashboardBrowserRuntime `
+$RuntimeStatus = Confirm-DashboardBrowserRuntime `
   -DashboardPort $Port `
   -AllowRecovery:$DashboardWasRunning
 
@@ -182,4 +184,10 @@ if ($BrowserMode -eq "edge") {
 } else {
   Write-Host "浏览器：RoleFlow 专用 Edge（推荐）"
 }
-Write-Host "未登录时请先在 BOSS 标签页登录；设置好搜索条件后切回工作台。"
+if ([string]$RuntimeStatus.workspace.status -eq "login_required") {
+  Write-Host "工作区状态：需要登录 BOSS；登录后 RoleFlow 会在后台自动补齐页面。"
+} elseif ($null -ne $RuntimeStatus -and [string]$RuntimeStatus.workspace.status -ne "ready") {
+  Write-Host "工作区状态：$([string]$RuntimeStatus.workspace.message)"
+} else {
+  Write-Host "工作区状态：已就绪。"
+}

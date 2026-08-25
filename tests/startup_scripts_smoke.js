@@ -265,7 +265,9 @@ async function testExistingDashboardRetriesTransientRuntimeStatus() {
   const env = fixtureEnv({
     ROLEFLOW_STARTUP_RECORD: recordPath,
     ROLEFLOW_STARTUP_RUNTIME_FAILURES: "1",
-    ROLEFLOW_STARTUP_RUNTIME_BLOCK_MS: "3500"
+    ROLEFLOW_STARTUP_RUNTIME_BLOCK_MS: "3500",
+    ROLEFLOW_STARTUP_WORKSPACE_STATUSES: "unchecked,login_required",
+    ROLEFLOW_STARTUP_RECORD_RUNTIME: "1"
   });
   const first = runPowerShellUnicode([
     "-File", path.join(projectRoot, "scripts", "start-workspace.ps1"),
@@ -290,6 +292,12 @@ async function testExistingDashboardRetriesTransientRuntimeStatus() {
   assert.strictEqual(second.status, 0, combinedOutput(second));
   assert.strictEqual(readJsonLines(recordPath).filter((item) => item.command === "dashboard").length, 1,
     "a transient runtime-status failure must not start a second Dashboard");
+  assert.strictEqual(
+    readJsonLines(recordPath).filter((item) => item.command === "runtime-status").length,
+    2,
+    "launcher must wait until the workspace leaves unchecked"
+  );
+  assert.match(combinedOutput(second), /工作区状态：需要登录 BOSS/);
 
   await stopRegisteredProcess(dashboard.pid);
   await waitForPortClosed(dashboardPort);
@@ -1173,6 +1181,7 @@ const profilePath = profileIndex >= 0 ? args[profileIndex + 1] : "";
 let browserReady = process.env.ROLEFLOW_STARTUP_BROWSER_STATUS !== "stopped";
 let runtimeFailuresRemaining = Number(process.env.ROLEFLOW_STARTUP_RUNTIME_FAILURES || 0);
 const runtimeFailureBlockMs = Number(process.env.ROLEFLOW_STARTUP_RUNTIME_BLOCK_MS || 0);
+const workspaceStatuses = String(process.env.ROLEFLOW_STARTUP_WORKSPACE_STATUSES || "ready").split(",").filter(Boolean);
 if (!["edge", "portable"].includes(browserMode)) {
   throw new Error("WORKFLOW_BROWSER_MODE_INVALID");
 }
@@ -1196,12 +1205,16 @@ const server = http.createServer((req, res) => {
       const blockedUntil = Date.now() + runtimeFailureBlockMs;
       while (Date.now() < blockedUntil) {}
     }
+    const workspaceStatus = workspaceStatuses.length > 1 ? workspaceStatuses.shift() : workspaceStatuses[0];
+    if (record && process.env.ROLEFLOW_STARTUP_RECORD_RUNTIME === "1") {
+      fs.appendFileSync(record, JSON.stringify({ pid: process.pid, command: "runtime-status", workspaceStatus }) + "\n");
+    }
     res.end(JSON.stringify({
       application: { status: "ready", ready: true },
       browser: browserMode === "portable"
         ? { status: browserReady ? "ready" : "stopped", ready: browserReady, message: browserReady ? "ready" : "stopped", action: browserReady ? "none" : "recover" }
         : null,
-      workspace: { status: "unchecked", ready: false, message: "unchecked" }
+      workspace: { status: workspaceStatus, ready: workspaceStatus === "ready", message: workspaceStatus }
     }));
     return;
   }

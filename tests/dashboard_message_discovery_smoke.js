@@ -1129,7 +1129,7 @@ async function browserRuntimeGateSmoke(database, projectRoot, databasePath, scop
           sessionId: ""
         };
       },
-      async ensure() { ensureCalls += 1; throw new Error("discovery must not recover Edge"); },
+      async ensure() { ensureCalls += 1; throw new Error("fixture recovery failed"); },
       close() {}
     },
     messageDiscoveryDependencies: {
@@ -1159,7 +1159,7 @@ async function browserRuntimeGateSmoke(database, projectRoot, databasePath, scop
       0,
       "browser gate must stop before message lease acquisition"
     );
-    assert.strictEqual(ensureCalls, 0, "message discovery must never recover Edge automatically");
+    assert.strictEqual(ensureCalls, 1, "message discovery must try the managed Edge recovery once before stopping");
   } finally {
     await new Promise((resolve) => runtimeServer.close(resolve));
   }

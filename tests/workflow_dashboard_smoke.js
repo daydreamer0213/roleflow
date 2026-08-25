@@ -1924,6 +1924,7 @@ async function testPortableDashboardBinding({ database, acquisitionContextResolv
   const saved = seedProfile(database);
   const portableSpawns = [];
   const readinessInputs = [];
+  const workspaceCalls = [];
   let previewResolutionCount = 0;
   let browserRuntime = {
     status: "ready",
@@ -1952,11 +1953,19 @@ async function testPortableDashboardBinding({ database, acquisitionContextResolv
     forceMock: true,
     logger,
     browserSupervisor,
+    workspaceReconciler: async (input) => {
+      workspaceCalls.push({ ...input });
+      return { status: "ready", bossTabId: "portable-search", communicationTabId: "portable-chat" };
+    },
     acquisitionContextResolver,
     inheritedPreviewResolver: trackedPreviewResolver,
     browserReadinessProbe: async (authority) => {
       readinessInputs.push(authority);
       return { status: "ready", ready: true, message: "portable fixture ready", checkedAt: "2099-01-01T00:00:00.000Z" };
+    },
+    workflowResumeBrowserReadinessProbe: async (authority) => {
+      readinessInputs.push(authority);
+      return { status: "ready", ready: true, message: "portable resume fixture ready", checkedAt: "2099-01-01T00:00:00.000Z" };
     },
     spawnProcess(_file, args) {
       const child = new EventEmitter();
@@ -1999,6 +2008,7 @@ async function testPortableDashboardBinding({ database, acquisitionContextResolv
     };
     const started = await postForm(portableBaseUrl, "/api/workflow-run", { planId: saved.planId, action: "start" });
     assert.strictEqual(started.status, 303, started.body);
+    assert.deepStrictEqual(workspaceCalls, [{ startupGuidance: false, reason: "workflow_start" }]);
     const workflow = listWorkflowRuns(database, { planId: saved.planId })[0];
     assert.deepStrictEqual(
       { browserMode: workflow.planner.browserMode, cdpPort: workflow.planner.cdpPort },
@@ -2008,6 +2018,20 @@ async function testPortableDashboardBinding({ database, acquisitionContextResolv
       portableSpawns[0].args.slice(portableSpawns[0].args.indexOf("--browser"), portableSpawns[0].args.indexOf("--browser") + 4),
       ["--browser", "portable", "--cdp-port", "9222"]
     );
+
+    portableSpawns[0].child.emit("close", 1, null);
+    assert.strictEqual(getWorkflowRun(database, workflow.id).status, "interrupted");
+    const resumed = await postForm(portableBaseUrl, "/api/workflow-run/resume", {
+      workflowRunId: workflow.id,
+      browserMode: "portable",
+      cdpPort: 9222
+    });
+    assert.strictEqual(resumed.status, 303, resumed.body);
+    assert.deepStrictEqual(workspaceCalls, [
+      { startupGuidance: false, reason: "workflow_start" },
+      { startupGuidance: false, reason: "workflow_resume" }
+    ]);
+    assert.strictEqual(portableSpawns.length, 2);
   } finally {
     for (const spawned of portableSpawns) spawned.child.emit("close", 0, null);
     await new Promise((resolve) => portableServer.close(resolve));

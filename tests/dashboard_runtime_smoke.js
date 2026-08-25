@@ -221,31 +221,28 @@ function quietLogger() {
       assert.strictEqual(response.status, 200, `${pathname} must remain available without Edge`);
     }
 
-    for (const pathname of ["/api/scan", "/api/workflow-run"]) {
-      const blocked = await postJson(base, pathname, {});
-      assert.strictEqual(blocked.status, 409, `${pathname} must stop while the managed browser is unavailable`);
-      assert.strictEqual(blocked.body.errorCode, "BROWSER_RUNTIME_NOT_READY");
-    }
-    const blockedDiscovery = await postJson(base, "/api/message-discovery", {
-      action: "start",
-      profileId: 1
-    });
-    assert.strictEqual(blockedDiscovery.status, 409);
-    assert.strictEqual(blockedDiscovery.body.errorCode, "BROWSER_RUNTIME_NOT_READY");
-    assert.strictEqual(
-      db.prepare("SELECT COUNT(*) AS count FROM site_scan_leases WHERE site = 'boss'").get().count,
-      0,
-      "browser gate must stop message discovery before lease acquisition"
-    );
+    const recoveredOperation = await postRaw(base, "/api/scan", {});
+    assert.notStrictEqual(recoveredOperation.status, 409, "a browser-dependent action must recover managed Edge before normal validation");
     assert.strictEqual(spawnCalls, 0);
-    assert.deepStrictEqual(supervisor.calls, [], "operation failures must never recover Edge automatically");
+    assert.deepStrictEqual(supervisor.calls, [{
+      dashboardUrl: `${base}/`,
+      reason: "scan_start"
+    }]);
+    assert.deepStrictEqual(reconcileCalls, [{ startupGuidance: false, reason: "scan_start" }]);
+
+    workspaceResponses.unshift({ status: "ready", bossTabId: "boss-search", communicationTabId: "boss-chat" });
+    supervisor.setSnapshot(snapshot("unavailable", {
+      message: "RoleFlow 专用 Edge 暂时无法使用。",
+      action: "install_edge",
+      failureCount: 1
+    }));
 
     const blockedReconcile = await postJson(base, "/api/runtime/workspace/reconcile", {
       startupGuidance: true
     });
     assert.strictEqual(blockedReconcile.status, 409);
     assert.strictEqual(blockedReconcile.body.errorCode, "BROWSER_RUNTIME_NOT_READY");
-    assert.deepStrictEqual(reconcileCalls, []);
+    assert.deepStrictEqual(reconcileCalls, [{ startupGuidance: false, reason: "scan_start" }]);
 
     supervisor.setSnapshot(snapshot("ready"));
     const reconciled = await postJson(base, "/api/runtime/workspace/reconcile", {
@@ -261,10 +258,10 @@ function quietLogger() {
     const readyRuntime = await getJson(base, "/api/runtime-status");
     assert.strictEqual(readyRuntime.body.workspace.status, "ready");
     assert.strictEqual(readyRuntime.body.workspace.ready, true);
-    assert.deepStrictEqual(reconcileCalls, [{
-      startupGuidance: false,
-      reason: "user_reconcile"
-    }]);
+    assert.deepStrictEqual(reconcileCalls, [
+      { startupGuidance: false, reason: "scan_start" },
+      { startupGuidance: false, reason: "user_reconcile" }
+    ]);
 
     supervisor.setSnapshot(snapshot("unavailable", {
       message: "RoleFlow 专用 Edge 暂时无法使用。",
@@ -283,11 +280,12 @@ function quietLogger() {
       }
     });
     assert.doesNotMatch(JSON.stringify(recovered.body), /boss-login|dashboard/);
-    assert.deepStrictEqual(supervisor.calls, [{
-      dashboardUrl: `${base}/`,
-      reason: "user_recovery"
-    }]);
+    assert.deepStrictEqual(supervisor.calls, [
+      { dashboardUrl: `${base}/`, reason: "scan_start" },
+      { dashboardUrl: `${base}/`, reason: "user_recovery" }
+    ]);
     assert.deepStrictEqual(reconcileCalls, [
+      { startupGuidance: false, reason: "scan_start" },
       { startupGuidance: false, reason: "user_reconcile" },
       { startupGuidance: false, reason: "user_recovery" }
     ]);
@@ -330,6 +328,11 @@ function quietLogger() {
   }
   assert.strictEqual(supervisor.closed, 1, "Dashboard shutdown must close its browser supervisor");
 
+  await serializedWorkspaceReconciliationSmoke();
+  await workspaceLoginMonitorSmoke();
+  await workspaceLoginMonitorDeadlineSmoke();
+  await browserDependentWorkspaceGateSmoke();
+
   console.log("dashboard_runtime_smoke ok");
 })().catch((error) => {
   console.error(error.stack || error.message);
@@ -359,6 +362,235 @@ async function postJson(base, pathname, body, extraHeaders = {}) {
   return { status: response.status, body: await response.json() };
 }
 
+async function postRaw(base, pathname, body) {
+  const response = await fetch(`${base}${pathname}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify(body)
+  });
+  return { status: response.status, body: await response.text() };
+}
+
 function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+async function serializedWorkspaceReconciliationSmoke() {
+  const serializedDbPath = path.join(smokeRoot, `serialized-${process.pid}-${Date.now()}.sqlite`);
+  const serializedDb = openDb(serializedDbPath);
+  const supervisor = fakeSupervisor();
+  supervisor.setSnapshot(snapshot("ready"));
+  let releaseReconciliation;
+  let signalEntered;
+  const entered = new Promise((resolve) => { signalEntered = resolve; });
+  const blocked = new Promise((resolve) => { releaseReconciliation = resolve; });
+  const calls = [];
+  const server = createDashboardServer({
+    db: serializedDb,
+    dbPath: serializedDbPath,
+    root,
+    dataRoot: smokeRoot,
+    forceMock: true,
+    logger: quietLogger(),
+    browserAuthority: {
+      browserMode: "portable",
+      cdpPort: 9222,
+      profilePath: "C:\\Users\\Example\\AppData\\Local\\RoleFlow\\BrowserProfile"
+    },
+    browserSupervisor: supervisor,
+    workspaceReconciler: async (input) => {
+      calls.push({ ...input });
+      signalEntered();
+      await blocked;
+      return { status: "ready", bossTabId: "private-search", communicationTabId: "private-chat" };
+    }
+  });
+  const base = await listen(server);
+  try {
+    const first = postJson(base, "/api/runtime/workspace/reconcile", {});
+    await entered;
+    const second = postJson(base, "/api/runtime/workspace/reconcile", {});
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.strictEqual(calls.length, 1, "concurrent workspace requests must share one reconciliation");
+    releaseReconciliation();
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    assert.deepStrictEqual(firstResult.body.workspace, secondResult.body.workspace);
+    assert.strictEqual(firstResult.body.workspace.status, "ready");
+  } finally {
+    releaseReconciliation?.();
+    await close(server);
+    serializedDb.close();
+    fs.rmSync(serializedDbPath, { force: true });
+  }
+}
+
+async function workspaceLoginMonitorSmoke() {
+  const monitorDbPath = path.join(smokeRoot, `login-monitor-${process.pid}-${Date.now()}.sqlite`);
+  const monitorDb = openDb(monitorDbPath);
+  const supervisor = fakeSupervisor();
+  supervisor.setSnapshot(snapshot("ready"));
+  const scheduled = [];
+  const cancelled = [];
+  const calls = [];
+  const responses = [
+    { status: "login_required", bossTabId: "private-login" },
+    { status: "ready", bossTabId: "private-search", communicationTabId: "private-chat" }
+  ];
+  const server = createDashboardServer({
+    db: monitorDb,
+    dbPath: monitorDbPath,
+    root,
+    dataRoot: smokeRoot,
+    forceMock: true,
+    logger: quietLogger(),
+    browserAuthority: {
+      browserMode: "portable",
+      cdpPort: 9222,
+      profilePath: "C:\\Users\\Example\\AppData\\Local\\RoleFlow\\BrowserProfile"
+    },
+    browserSupervisor: supervisor,
+    workspaceReconciler: async (input) => {
+      calls.push({ ...input });
+      return responses.shift();
+    },
+    workspaceLoginSchedule: (callback, delayMs) => {
+      const handle = { callback, delayMs };
+      scheduled.push(handle);
+      return handle;
+    },
+    workspaceLoginCancel: (handle) => { cancelled.push(handle); },
+    workspaceLoginNow: () => 1000,
+    workspaceLoginRandom: () => 0.5
+  });
+  const base = await listen(server);
+  try {
+    const login = await server.reconcileWorkspace({
+      startupGuidance: true,
+      reason: "initial_startup"
+    });
+    assert.strictEqual(login.status, "login_required");
+    assert.strictEqual(scheduled.length, 1);
+    assert.strictEqual(scheduled[0].delayMs, 12500);
+    const monitorPass = scheduled.shift();
+    await monitorPass.callback();
+    assert.deepStrictEqual(calls, [
+      { startupGuidance: true, reason: "initial_startup" },
+      { startupGuidance: false, reason: "login_monitor" }
+    ]);
+    const runtime = await getJson(base, "/api/runtime-status");
+    assert.strictEqual(runtime.body.workspace.status, "ready");
+    assert.deepStrictEqual(scheduled, []);
+    assert.deepStrictEqual(cancelled, []);
+  } finally {
+    await close(server);
+    monitorDb.close();
+    fs.rmSync(monitorDbPath, { force: true });
+  }
+}
+
+async function workspaceLoginMonitorDeadlineSmoke() {
+  const deadlineDbPath = path.join(smokeRoot, `login-deadline-${process.pid}-${Date.now()}.sqlite`);
+  const deadlineDb = openDb(deadlineDbPath);
+  const supervisor = fakeSupervisor();
+  supervisor.setSnapshot(snapshot("ready"));
+  const scheduled = [];
+  const cancelled = [];
+  let now = 0;
+  const server = createDashboardServer({
+    db: deadlineDb,
+    dbPath: deadlineDbPath,
+    root,
+    dataRoot: smokeRoot,
+    forceMock: true,
+    logger: quietLogger(),
+    browserAuthority: {
+      browserMode: "portable",
+      cdpPort: 9222,
+      profilePath: "C:\\Users\\Example\\AppData\\Local\\RoleFlow\\BrowserProfile"
+    },
+    browserSupervisor: supervisor,
+    workspaceReconciler: async () => ({ status: "login_required", bossTabId: "private-login" }),
+    workspaceLoginSchedule: (callback, delayMs) => {
+      const handle = { callback, delayMs };
+      scheduled.push(handle);
+      return handle;
+    },
+    workspaceLoginCancel: (handle) => { cancelled.push(handle); },
+    workspaceLoginNow: () => now,
+    workspaceLoginRandom: () => 0
+  });
+  await listen(server);
+  try {
+    await server.reconcileWorkspace({ startupGuidance: true, reason: "initial_startup" });
+    assert.strictEqual(scheduled.length, 1);
+    const lastAutomaticPass = scheduled.shift();
+    now = 30 * 60 * 1000;
+    await lastAutomaticPass.callback();
+    assert.deepStrictEqual(scheduled, [], "the bounded login monitor must stop at 30 minutes");
+
+    now += 1;
+    await server.reconcileWorkspace({ startupGuidance: false, reason: "user_reconcile" });
+    assert.strictEqual(scheduled.length, 1, "a later explicit reconciliation may start a fresh bounded monitor");
+  } finally {
+    const pending = scheduled[0];
+    await close(server);
+    if (pending) assert.deepStrictEqual(cancelled, [pending]);
+    deadlineDb.close();
+    fs.rmSync(deadlineDbPath, { force: true });
+  }
+}
+
+async function browserDependentWorkspaceGateSmoke() {
+  const gateDbPath = path.join(smokeRoot, `workspace-gate-${process.pid}-${Date.now()}.sqlite`);
+  const gateDb = openDb(gateDbPath);
+  const supervisor = fakeSupervisor();
+  supervisor.setSnapshot(snapshot("ready"));
+  const calls = [];
+  let spawnCalls = 0;
+  const responses = [
+    { status: "ready", bossTabId: "private-search", communicationTabId: "private-chat" },
+    { status: "ready", bossTabId: "private-search", communicationTabId: "private-chat" },
+    { status: "ready", bossTabId: "private-search", communicationTabId: "private-chat" },
+    { status: "login_required", bossTabId: "private-login" }
+  ];
+  const server = createDashboardServer({
+    db: gateDb,
+    dbPath: gateDbPath,
+    root,
+    dataRoot: smokeRoot,
+    forceMock: true,
+    logger: quietLogger(),
+    browserAuthority: {
+      browserMode: "portable",
+      cdpPort: 9222,
+      profilePath: "C:\\Users\\Example\\AppData\\Local\\RoleFlow\\BrowserProfile"
+    },
+    browserSupervisor: supervisor,
+    workspaceReconciler: async (input) => {
+      calls.push({ ...input });
+      return responses.shift();
+    },
+    spawnProcess: () => { spawnCalls += 1; }
+  });
+  const base = await listen(server);
+  try {
+    const afterSelfHeal = await postRaw(base, "/api/scan", {});
+    assert.notStrictEqual(afterSelfHeal.status, 409, "a ready reconciled workspace must reach normal scan validation");
+    assert.deepStrictEqual(calls, [{ startupGuidance: false, reason: "scan_start" }]);
+
+    await postRaw(base, "/api/workflow-run", {});
+    assert.deepStrictEqual(calls.at(-1), { startupGuidance: false, reason: "workflow_start" });
+
+    await postRaw(base, "/api/message-discovery", { action: "start", profileId: 1 });
+    assert.deepStrictEqual(calls.at(-1), { startupGuidance: false, reason: "message_discovery_start" });
+
+    const loginBlocked = await postRaw(base, "/api/scan", {});
+    assert.strictEqual(loginBlocked.status, 409);
+    assert.match(loginBlocked.body, /BOSS_LOGIN_REQUIRED/);
+    assert.strictEqual(spawnCalls, 0);
+  } finally {
+    await close(server);
+    gateDb.close();
+    fs.rmSync(gateDbPath, { force: true });
+  }
 }

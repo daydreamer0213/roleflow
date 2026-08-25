@@ -219,12 +219,31 @@ async function prepareWorkspaceTabs({
   inspectReadiness,
   requireFixedBossTabs = false,
   bootstrapDedicatedTabs = false,
-  allowStartupGuidance = false
+  allowStartupGuidance = false,
+  stabilityIntervalMs = 250,
+  stabilityTimeoutMs = 5000,
+  sleepFn = wait,
+  nowFn = Date.now
 }) {
   if (!browser || typeof inspectReadiness !== "function") {
     throw new TypeError("prepareWorkspaceTabs requires browser and inspectReadiness()");
   }
-  const tabs = await browser.listTabs();
+  let tabs;
+  try {
+    tabs = bootstrapDedicatedTabs
+      ? await listStableWorkspaceTabs(browser, {
+        intervalMs: stabilityIntervalMs,
+        timeoutMs: stabilityTimeoutMs,
+        sleepFn,
+        nowFn
+      })
+      : await browser.listTabs();
+  } catch (error) {
+    if (bootstrapDedicatedTabs && error?.isWorkspaceError) {
+      return ambiguousWorkspaceResult(error.observedTabs || [], dashboardUrl, error);
+    }
+    throw error;
+  }
   if (!bootstrapDedicatedTabs) {
     const fixedTabs = requireFixedBossTabs ? assertBossOperatorTabs(tabs) : null;
     const guidanceTab = fixedTabs?.searchTab || selectBossTab(tabs);
@@ -389,6 +408,52 @@ async function prepareWorkspaceTabs({
     }
     throw error;
   }
+}
+
+async function listStableWorkspaceTabs(browser, {
+  intervalMs,
+  timeoutMs,
+  sleepFn,
+  nowFn
+}) {
+  const startedAt = nowFn();
+  let previous = "";
+  while (true) {
+    const tabs = await browser.listTabs();
+    const current = workspaceTabsFingerprint(tabs);
+    if (current === previous) return tabs;
+    if (nowFn() - startedAt >= timeoutMs) {
+      throw workspaceError(
+        "WORKSPACE_TABS_UNSTABLE",
+        "RoleFlow 专用 Edge（推荐）仍在恢复标签页，请稍后重试。",
+        { observedTabs: tabs }
+      );
+    }
+    previous = current;
+    await sleepFn(intervalMs);
+  }
+}
+
+function workspaceTabsFingerprint(tabs) {
+  return JSON.stringify((tabs || []).map((tab) => ({
+    id: tab.id,
+    windowId: tab.windowId,
+    active: tab.active === true,
+    url: stableWorkspaceUrl(tab.url)
+  })).sort((left, right) => `${typeof left.id}:${left.id}`.localeCompare(`${typeof right.id}:${right.id}`)));
+}
+
+function stableWorkspaceUrl(value) {
+  try {
+    const url = new URL(String(value || ""));
+    return `${url.protocol}//${url.host}${url.pathname}`;
+  } catch {
+    return String(value || "");
+  }
+}
+
+function wait(delayMs) {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
 function assertDedicatedTopology(tabs, dashboardUrl) {

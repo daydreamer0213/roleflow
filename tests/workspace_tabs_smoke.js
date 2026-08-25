@@ -1,11 +1,15 @@
 const assert = require("node:assert");
 const {
-  prepareWorkspaceTabs,
+  prepareWorkspaceTabs: prepareWorkspaceTabsRaw,
   assertBossOperatorTabs,
   inspectBossOperatorTabs,
   assertBossRuntimeTabBindings
 } = require("../src/core/workspace_tabs");
 const { prepareWorkspaceTabsCommand } = require("../src/cli");
+
+function prepareWorkspaceTabs(options) {
+  return prepareWorkspaceTabsRaw({ sleepFn: async () => {}, ...options });
+}
 
 function fakeBrowser(initialTabs, createdTab = null) {
   const state = {
@@ -279,6 +283,84 @@ function dedicatedBrowser(initialTabs, createdTabs = []) {
     url: "http://127.0.0.1:8787/",
     windowId: 42
   };
+
+  const restoringWorkspace = dedicatedBrowser([
+    { ...dashboard, active: true },
+    { id: "edge-restoring", url: "edge://newtab/", windowId: 42, active: false }
+  ], [
+    { id: "CDP-stable-search", windowId: 42, active: false },
+    { id: "CDP-stable-chat", windowId: 42, active: false }
+  ]);
+  const restoringSnapshots = [
+    [
+      { ...dashboard, active: true },
+      { id: "edge-restoring", url: "edge://newtab/", windowId: 42, active: false }
+    ],
+    [{ ...dashboard, active: true }],
+    [{ ...dashboard, active: true }]
+  ];
+  const listRestoringWorkspace = restoringWorkspace.listTabs.bind(restoringWorkspace);
+  restoringWorkspace.listTabs = async (options) => {
+    const next = restoringSnapshots.shift();
+    if (next) restoringWorkspace.state.tabs = next.map((tab) => ({ ...tab }));
+    return listRestoringWorkspace(options);
+  };
+  const stabilityWaits = [];
+  const restoringResult = await prepareWorkspaceTabs({
+    browser: restoringWorkspace,
+    dashboardUrl: dashboard.url,
+    bootstrapDedicatedTabs: true,
+    allowStartupGuidance: false,
+    stabilityIntervalMs: 250,
+    stabilityTimeoutMs: 5000,
+    sleepFn: async (delayMs) => { stabilityWaits.push(delayMs); },
+    inspectReadiness: async () => ({ status: "ready" })
+  });
+  assert.strictEqual(restoringResult.status, "ready");
+  assert.deepStrictEqual(stabilityWaits, [250, 250]);
+  assert.deepStrictEqual(restoringWorkspace.state.createCalls, [
+    { openerTabId: dashboard.id, url: "https://www.zhipin.com/web/geek/jobs" },
+    { openerTabId: "CDP-stable-search", url: "https://www.zhipin.com/web/geek/chat" }
+  ]);
+  assert.deepStrictEqual(restoringWorkspace.state.frontCalls, []);
+
+  const unstableWorkspace = dedicatedBrowser([
+    { ...dashboard, active: true },
+    { id: "edge-restoring-a", url: "edge://newtab/", windowId: 42, active: false }
+  ], [{ id: "must-not-create-while-unstable", windowId: 42, active: false }]);
+  const unstableSnapshots = [
+    [
+      { ...dashboard, active: true },
+      { id: "edge-restoring-a", url: "edge://newtab/", windowId: 42, active: false }
+    ],
+    [
+      { ...dashboard, active: true },
+      { id: "edge-restoring-b", url: "edge://newtab/", windowId: 42, active: false }
+    ]
+  ];
+  const listUnstableWorkspace = unstableWorkspace.listTabs.bind(unstableWorkspace);
+  unstableWorkspace.listTabs = async (options) => {
+    const next = unstableSnapshots.shift();
+    if (next) unstableWorkspace.state.tabs = next.map((tab) => ({ ...tab }));
+    return listUnstableWorkspace(options);
+  };
+  const unstableTimes = [0, 0, 5000];
+  const unstableResult = await prepareWorkspaceTabs({
+    browser: unstableWorkspace,
+    dashboardUrl: dashboard.url,
+    bootstrapDedicatedTabs: true,
+    allowStartupGuidance: false,
+    stabilityIntervalMs: 250,
+    stabilityTimeoutMs: 5000,
+    sleepFn: async () => {},
+    nowFn: () => unstableTimes.shift() ?? 5000,
+    inspectReadiness: async () => ({ status: "ready" })
+  });
+  assert.strictEqual(unstableResult.status, "ambiguous");
+  assert.strictEqual(unstableResult.errorCode, "WORKSPACE_TABS_UNSTABLE");
+  assert.deepStrictEqual(unstableWorkspace.state.createCalls, []);
+  assert.deepStrictEqual(unstableWorkspace.state.closeCalls, []);
+  assert.deepStrictEqual(unstableWorkspace.state.frontCalls, []);
 
   const dashboardOnlyLoginQuiet = dedicatedBrowser([
     { ...dashboard, active: true }
@@ -732,9 +814,10 @@ function dedicatedBrowser(initialTabs, createdTabs = []) {
     }
   ]);
   const listTransientCleanup = transientCleanup.listTabs.bind(transientCleanup);
+  let transientCleanupFailureIssued = false;
   transientCleanup.listTabs = async () => {
-    if (transientCleanup.state.listCalls === 5) {
-      transientCleanup.state.listCalls += 1;
+    if (transientCleanup.state.closeCalls.length > 0 && !transientCleanupFailureIssued) {
+      transientCleanupFailureIssued = true;
       const error = new Error("fixture closed target is still disappearing");
       error.code = "BROWSER_DISCONNECTED";
       throw error;
