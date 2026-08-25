@@ -36,7 +36,10 @@ const {
   createMessageDiscoveryController,
   createMessageDiscoveryDetailSafety
 } = require("../src/dashboard/message_discovery_controller");
-const { messageDiscoveryReasonText } = require("../src/dashboard/message_discovery_view");
+const {
+  messageDiscoveryReasonText,
+  messageIntentLabel
+} = require("../src/dashboard/message_discovery_view");
 const { installDashboardSignalHandlers, persistBossRiskControl } = require("../src/cli");
 const { communicationRuntimeBlock } = require("../src/core/communication_runtime");
 
@@ -365,6 +368,7 @@ async function main() {
     "stage"
   ]);
   assert(!Object.hasOwn(status.results[0], "messageSummary"));
+  assert(!Object.hasOwn(status.results[0], "messageIntent"));
   assert(!JSON.stringify(status).includes("PRIVATE_MESSAGE_SUMMARY"));
   assertNoPrivateData(status);
   await waitForLeaseRelease();
@@ -415,15 +419,17 @@ async function main() {
   const understoodPage = await request(base, `/messages?profileId=${fixture.profileId}`);
   assert(understoodPage.body.includes("AI 应用开发工程师"));
   for (const expected of [
-    "建议",
+    "结论",
+    "需要你补充信息",
+    "正式面试邀约",
+    "这份机会",
     "可以了解，但要先确认关键问题",
-    "对方说了什么",
     "对方正在确认候选人的任职资格。",
-    "岗位概况",
+    "岗位主要做什么",
     "把企业知识转成可追溯的智能问答能力",
-    "公司及业务",
+    "公司做什么",
     "JD 显示该岗位服务于企业知识管理。",
-    "匹配情况",
+    "匹配度",
     "中",
     "薪资",
     "15-25K·13薪",
@@ -433,6 +439,33 @@ async function main() {
     "您好，感谢邀请，请问面试时间和形式如何安排？",
     "JD 暂未说明公司的具体业务。"
   ]) assert(understoodPage.body.includes(expected), `missing user decision content: ${expected}`);
+  assertHeadingsInOrder(understoodPage.body, [
+    "<h3>结论</h3>",
+    "<h3>这份机会</h3>",
+    "<h3>岗位主要做什么</h3>",
+    "<h3>公司做什么</h3>",
+    "<h3>匹配度</h3>",
+    "<h3>薪资</h3>",
+    "<h3>下一步</h3>"
+  ]);
+  for (const rawValue of ["interview_invitation", "information_request", "manual_review"]) {
+    assert(!understoodPage.body.includes(rawValue), `raw intent must stay out of markup: ${rawValue}`);
+  }
+  assert.deepStrictEqual([
+    "interview_invitation",
+    "interest_check",
+    "information_request",
+    "information_update",
+    "general_communication",
+    "manual_review"
+  ].map(messageIntentLabel), [
+    "正式面试邀约",
+    "询问是否有意向",
+    "需要你补充信息",
+    "对方补充了信息",
+    "普通沟通",
+    "需要人工判断"
+  ]);
   for (const removed of [
     "这个岗位是做什么的",
     "公司资料不足，当前结论只针对这份岗位机会",
@@ -445,17 +478,6 @@ async function main() {
   ]) {
     assert(!understoodPage.body.includes(removed), `message result must not render analysis/internal label: ${removed}`);
   }
-  const sectionPositions = [
-    "<h3>建议</h3>",
-    "<h3>对方说了什么</h3>",
-    "<h3>岗位概况</h3>",
-    "<h3>公司及业务</h3>",
-    "<h3>匹配情况</h3>",
-    "<h3>薪资</h3>",
-    "<h3>下一步</h3>"
-  ].map((heading) => understoodPage.body.indexOf(heading));
-  assert(sectionPositions.every((position) => position >= 0));
-  assert.deepStrictEqual([...sectionPositions].sort((a, b) => a - b), sectionPositions);
   assert(understoodPage.body.includes("缺少事实，暂不生成草稿"));
   assert.strictEqual((understoodPage.body.match(/name="action" value="reply_confirmed_sent"/g) || []).length, 2);
   assert.strictEqual((understoodPage.body.match(/<textarea/g) || []).length, 3);
@@ -524,12 +546,14 @@ async function main() {
     fixture,
     drafts: ["待手动发送草稿"],
     stage: "interview_invited",
-    messageCategory: "interview_invitation",
+    messageIntent: "interview_invitation",
+    messageCategory: "other",
     messageSummary: "PRIMARY_RESULT_SUMMARY",
     additionalResults: [{
       cardId: fixture.card.id + 1000,
       jobId: fixture.jobId + 1000,
       stage: "needs_user_action",
+      messageIntent: "information_request",
       messageCategory: "salary",
       messageSummary: "SECONDARY_RESULT_SUMMARY",
       missingFactKey: "",
@@ -1354,6 +1378,7 @@ function completedRun({
   drafts,
   callModel = false,
   stage = "reply_ready",
+  messageIntent = "information_request",
   messageCategory = "qualification",
   messageSummary = "对方正在确认候选人的任职资格。",
   additionalResults = []
@@ -1393,6 +1418,7 @@ function completedRun({
         cardId: fixture.card.id,
         jobId: fixture.jobId,
         stage,
+        messageIntent,
         messageCategory,
         messageSummary,
         missingFactKey: "",
@@ -1419,6 +1445,7 @@ function multiResultCompletedRun(fixture) {
         cardId: fixture.card.id,
         jobId: fixture.jobId,
         stage: "reply_ready",
+        messageIntent: "information_request",
         messageCategory: "qualification",
         missingFactKey: "",
         messages: ["运行额度草稿一", "岗位一草稿二", "岗位一草稿三"]
@@ -1426,6 +1453,7 @@ function multiResultCompletedRun(fixture) {
         cardId: fixture.card.id + 1,
         jobId: fixture.jobId + 1,
         stage: "reply_ready",
+        messageIntent: "information_request",
         messageCategory: "qualification",
         missingFactKey: "",
         messages: ["运行额度草稿二", "岗位二草稿二", "岗位二草稿三"]
@@ -1459,6 +1487,7 @@ function jobUnderstandingCompletedRun(fixture) {
         cardId: fixture.card.id,
         jobId: fixture.jobId,
         stage: "reply_ready",
+        messageIntent: "information_request",
         messageCategory: "qualification",
         messageSummary: "对方正在确认候选人的任职资格。",
         missingFactKey: "",
@@ -1473,8 +1502,9 @@ function jobUnderstandingCompletedRun(fixture) {
         cardId: fixture.card.id + 1,
         jobId: fixture.jobId + 1,
         stage: "interview_invited",
-        messageCategory: "interview_invitation",
-        messageSummary: "对方邀请候选人参加面试。",
+        messageIntent: "interview_invitation",
+        messageCategory: "other",
+        messageSummary: "对方正式邀请候选人参加面试。",
         missingFactKey: "",
         manualActionReason: "",
         contextSource: "message_discovery_detail",
@@ -1485,6 +1515,7 @@ function jobUnderstandingCompletedRun(fixture) {
         cardId: fixture.card.id + 2,
         jobId: fixture.jobId + 2,
         stage: "contact_started",
+        messageIntent: "information_request",
         messageCategory: "missing_fact",
         messageSummary: "对方需要补充关键信息。",
         missingFactKey: "availability",
@@ -1514,6 +1545,7 @@ function closeRaceRun(fixture) {
       cardId: fixture.card.id,
       jobId: fixture.jobId,
       stage: "reply_ready",
+      messageIntent: "information_request",
       messageCategory: "qualification",
       missingFactKey: "",
       messages: ["关闭后不得回写"]
@@ -1532,6 +1564,7 @@ function closeRaceRun(fixture) {
           cardId: fixture.card.id,
           jobId: fixture.jobId,
           stage: "reply_ready",
+          messageIntent: "information_request",
           messageCategory: "qualification",
           missingFactKey: "",
           messages: ["关闭前应主动清空"]
@@ -1676,6 +1709,15 @@ function assertNoDraftMessagesInJson(value) {
   const text = typeof value === "string" ? value : JSON.stringify(value);
   assert(!text.includes('"messages"'), "message discovery JSON must use an explicit safe-field whitelist");
   assert(!text.includes(PRIVATE_DRAFT), "message discovery JSON must not expose draft text");
+}
+
+function assertHeadingsInOrder(markup, headings) {
+  let previous = -1;
+  for (const heading of headings) {
+    const index = markup.indexOf(heading);
+    assert(index > previous, `${heading} must appear after the preceding decision section`);
+    previous = index;
+  }
 }
 
 function requestKey(sequence) {

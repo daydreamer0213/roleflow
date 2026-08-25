@@ -20,6 +20,14 @@ const {
 
 const DEFAULT_CLEANUP_MS = 30 * 60 * 1000;
 const ALLOWED_RUN_STATUSES = new Set(["running", "completed", "needs_user_action", "stopped"]);
+const MESSAGE_INTENTS = new Set([
+  "interview_invitation",
+  "interest_check",
+  "information_request",
+  "information_update",
+  "general_communication",
+  "manual_review"
+]);
 
 function createMessageDiscoveryController(deps = {}) {
   const {
@@ -356,6 +364,7 @@ function createMessageDiscoveryController(deps = {}) {
         cardId: Math.max(0, Number(item?.cardId) || 0),
         jobId: Math.max(0, Number(item?.jobId) || 0),
         stage: String(item?.stage || "").slice(0, 80),
+        messageIntent: MESSAGE_INTENTS.has(item?.messageIntent) ? item.messageIntent : "manual_review",
         messageCategory: String(item?.messageCategory || "").slice(0, 80),
         messageSummary: safeInlineText(item?.messageSummary, 160),
         missingFactKey: String(item?.missingFactKey || "").slice(0, 80),

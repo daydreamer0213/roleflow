@@ -60,16 +60,22 @@ function renderMessageDiscoveryPage({ db, searchParams, controller, helpers }) {
       const id = `message-draft-${resultIndex}-${messageIndex}`;
       return `<div class="message-draft"><label for="${id}">草稿 ${messageIndex + 1}</label><textarea id="${id}" readonly>${escapeHtml(message)}</textarea><button type="button" data-copy-draft="${id}">复制到本机剪贴板</button></div>`;
     }).join("");
+    const source = result.contextSource === "local_cache"
+      ? "本地已有岗位资料"
+      : result.contextSource === "message_discovery_detail"
+        ? "本次后台只读岗位详情"
+        : "岗位资料来源待确认";
     const decisionCard = `<div class="message-job-understanding">
-      <h3>建议</h3>
+      <h3>结论</h3>
+      <p class="line"><strong>${escapeHtml(messageIntentLabel(result.messageIntent))}</strong>${result.messageSummary ? ` · ${escapeHtml(result.messageSummary)}` : ""}</p>
+      <h3>这份机会</h3>
       <p class="line"><strong>${escapeHtml(job.opportunityVerdict || "信息不足，暂时无法判断")}</strong>${job.opportunitySummary ? ` · ${escapeHtml(job.opportunitySummary)}` : ""}</p>
-      <h3>对方说了什么</h3>
-      <p class="line">${escapeHtml(result.messageSummary || "这条消息需要人工确认")}</p>
-      <h3>岗位概况</h3>
+      <p class="line">资料来源：${escapeHtml(source)}</p>
+      <h3>岗位主要做什么</h3>
       <p class="line">${escapeHtml(job.roleSummary || "岗位职责分析尚未完成。")}</p>
-      <h3>公司及业务</h3>
+      <h3>公司做什么</h3>
       <p class="line">${escapeHtml(job.companyBusiness || "JD 暂未说明公司的具体业务。")}</p>
-      <h3>匹配情况</h3>
+      <h3>匹配度</h3>
       <p class="line"><strong>${escapeHtml(job.fitLabel || "待确认")}</strong>${job.fitSummary ? ` · ${escapeHtml(job.fitSummary)}` : ""}</p>
       <h3>薪资</h3>
       <p class="line">${escapeHtml(job.salary || "薪资未说明")}</p>
@@ -80,12 +86,7 @@ function renderMessageDiscoveryPage({ db, searchParams, controller, helpers }) {
     const sentForm = drafts
       ? `<form method="post" action="/api/progress"><input type="hidden" name="cardId" value="${result.cardId}"><input type="hidden" name="idempotencyKey" value="${escapeAttr(newProgressRequestKey())}"><input type="hidden" name="action" value="reply_confirmed_sent"><button>已手动发送</button></form>`
       : "";
-    const source = result.contextSource === "local_cache"
-      ? "本地已有岗位资料"
-      : result.contextSource === "message_discovery_detail"
-        ? "本次后台只读岗位详情"
-        : "岗位资料来源待确认";
-    return `<section class="panel message-result"><h2>${escapeHtml(job.title || "岗位处理结果")}</h2><p class="line">${escapeHtml(job.company || "公司待确认")} · 阶段：${escapeHtml(progressStageLabel(result.stage))} · 消息：${escapeHtml(messageCategoryLabel(result.messageCategory))}</p><p class="line">岗位资料来源：${escapeHtml(source)}</p>${decisionCard}<h3>下一步</h3>${draftSection}${sentForm}</section>`;
+    return `<section class="panel message-result"><h2>${escapeHtml(job.title || "岗位处理结果")}</h2><p class="line">${escapeHtml(job.company || "公司待确认")} · 阶段：${escapeHtml(progressStageLabel(result.stage))}</p>${decisionCard}<h3>下一步</h3>${draftSection}${sentForm}</section>`;
   }).join("");
   const controls = `<section class="message-controls" aria-label="消息发现操作">
     <form data-discovery-form method="post" action="/api/message-discovery"><input type="hidden" name="action" value="start"><input type="hidden" name="profileId" value="${profileId}"><button data-page-primary="true"${status.status === "running" ? " disabled" : ""}>开始只读发现</button></form>
@@ -144,25 +145,23 @@ function exactIdentityCandidates(db, profileId, item) {
     .map((row) => ({ id: Number(row.id), title: row.title, company: row.company || "" }));
 }
 
-function messageCategoryLabel(value) {
+function messageIntentLabel(value) {
   return {
-    project_fact: "项目经历确认",
-    qualification: "任职资格确认",
-    salary: "薪资沟通",
-    availability: "到岗时间确认",
-    interview_invitation: "面试邀请",
-    interview: "面试邀请",
-    sensitive: "敏感信息",
-    identity_uncertain: "岗位身份待核对",
-    missing_fact: "信息待补",
-    other: "其他沟通"
-  }[String(value || "")] || "待确认";
+    interview_invitation: "正式面试邀约",
+    interest_check: "询问是否有意向",
+    information_request: "需要你补充信息",
+    information_update: "对方补充了信息",
+    general_communication: "普通沟通",
+    manual_review: "需要人工判断"
+  }[String(value || "")] || "需要人工判断";
 }
 
 function messageDiscoveryManualActionText(result) {
   if (result?.missingFactKey) return "缺少事实，暂不生成草稿。请先人工确认后再回复。";
+  if (result?.messageIntent === "manual_review") {
+    return result?.manualActionReason || "当前消息需要人工判断，暂不生成草稿。";
+  }
   const category = String(result?.messageCategory || "");
-  if (category.includes("interview")) return "面试安排需人工处理，请核对时间、形式和地点后再回复。";
   if (category === "salary") return "薪资沟通需人工处理，请确认你的口径后再回复。";
   if (category === "sensitive") return "消息涉及敏感信息，需要人工判断后再回复。";
   if (category === "identity_uncertain") return "岗位或会话身份仍需人工核对，暂不生成草稿。";
@@ -227,5 +226,6 @@ function messageDiscoveryRecoveryMessages() {
 
 module.exports = {
   renderMessageDiscoveryPage,
-  messageDiscoveryReasonText
+  messageDiscoveryReasonText,
+  messageIntentLabel
 };
