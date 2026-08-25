@@ -141,6 +141,43 @@ function runGuardedExpression(expression, { innerText, unread = true, snapshotRe
     assert.strictEqual(browser.calls.filter(([name]) => name === forbidden).length, 0);
   }
 
+  const structuredMessages = [
+    { direction: "friend", messageId: "123456789012350", text: "岗位竞争情况", contentKind: "platform_notice" },
+    { direction: "friend", messageId: "123456789012351", text: "请问你的英语和粤语水平如何？", contentKind: "text" },
+    { direction: "friend", messageId: "123456789012352", text: "附件简历请求", contentKind: "resume_request" }
+  ];
+  const structuredBrowser = fakeBrowser({
+    snapshots: [
+      snapshot({ messages: structuredMessages }),
+      guardedSuccess,
+      snapshot({ messages: structuredMessages })
+    ]
+  });
+  const structuredReader = createBossMessageReader({ browser: structuredBrowser, sleepFn: async () => {} });
+  const structuredQueue = await structuredReader.scanUnread();
+  const structuredSelected = await structuredReader.openQueuedConversation(structuredQueue.queue[0]);
+  assert.deepStrictEqual(
+    structuredSelected.messages.map((item) => item.contentKind),
+    ["platform_notice", "text", "resume_request"],
+    "the reader must retain the two verified structured message kinds"
+  );
+
+  const unverifiedKindBrowser = fakeBrowser({
+    snapshots: [snapshot({
+      messages: [{
+        direction: "friend",
+        messageId: "123456789012353",
+        text: "位置确认",
+        contentKind: "location_confirmation"
+      }]
+    })]
+  });
+  await assert.rejects(
+    () => createBossMessageReader({ browser: unverifiedKindBrowser }).scanUnread(),
+    (error) => error.code === "BOSS_MESSAGE_STRUCTURE_CHANGED",
+    "unverified structured kinds must not widen the reader contract"
+  );
+
   const targetBrowser = fakeBrowser({
     snapshots: [
       snapshot(),

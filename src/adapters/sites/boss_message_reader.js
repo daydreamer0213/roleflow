@@ -87,7 +87,15 @@ function normalizeBrowserSnapshot(value) {
     requireSnapshotField(message.direction, (entry) => ["friend", "myself", "system"].includes(entry));
     requireSnapshotField(message.messageId, (entry) => /^\d{15}$/.test(entry));
     requireSnapshotField(message.text, (entry) => typeof entry === "string");
-    requireSnapshotField(message.contentKind, (entry) => ["text", "image", "voice", "attachment", "unknown"].includes(entry));
+    requireSnapshotField(message.contentKind, (entry) => [
+      "text",
+      "image",
+      "voice",
+      "attachment",
+      "resume_request",
+      "platform_notice",
+      "unknown"
+    ].includes(entry));
     return { direction: message.direction, messageId: message.messageId, text: normalizedText(message.text), contentKind: message.contentKind };
   });
   for (const field of ["headerText", "positionName", "companyName", "salary", "city"]) {
