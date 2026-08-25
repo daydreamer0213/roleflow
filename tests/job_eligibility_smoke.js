@@ -18,6 +18,7 @@ function evaluate(job, candidateProfile = graduated2024, targetJobTypes = fullTi
 for (const [label, job] of [
   ["标题明确实习", { title: "RAG 开发实习生" }],
   ["JD 明确实习周期", { description: "岗位职责：开发 AI 应用。实习周期 4-6 个月，每周到岗 5 天。" }],
+  ["网页兼容字形的实习周期", { description: "参与 AI 应用开发；实习周期为 4-6 个⽉，月休四天。" }],
   ["JD 明确实习时长", { description: "参与大模型应用研发，实习时长不少于 4 个月。" }],
   ["JD 明确实习生岗位", { description: "这是面向研发方向的实习生岗位，负责 RAG 应用开发。" }],
   ["JD 只接受实习生", { description: "负责知识库数据处理，本岗位只接受实习生。" }]
