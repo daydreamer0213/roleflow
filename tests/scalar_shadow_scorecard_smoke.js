@@ -1,5 +1,11 @@
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const { deriveMatrixDecision } = require("../src/core/four_tier_decision");
+const {
+  buildScalarShadowReport,
+  main: compareScalarShadow
+} = require("../scripts/compare-scalar-shadow");
 const {
   buildScalarShadowScorecard
 } = require("../scripts/lib/scalar_shadow_scorecard");
@@ -121,5 +127,99 @@ const foundationGap = buildScalarShadowScorecard({
 assert.strictEqual(foundationGap.rawTier, "primary");
 assert.strictEqual(foundationGap.candidateTier, "caution");
 assert(foundationGap.guardrails.some((item) => item.code === "confirmed_foundation_gap"));
+
+const insufficientReport = buildScalarShadowReport({
+  cases: [
+    { id: "strong", input: strongInput() },
+    { id: "matrix-scalar-difference", input: continuousDifferenceInput },
+    {
+      id: "hard-boundary",
+      input: {
+        ...strongInput(),
+        boundaries: [{ verified: true, blocked: true, reason: "verified boundary" }]
+      }
+    },
+    { id: "technical-contract-failure", technicalBucket: "contract_failure" }
+  ]
+});
+assert.strictEqual(insufficientReport.evaluation, "matrix-vs-scalar-shadow");
+assert.strictEqual(insufficientReport.productionInfluence, "none");
+assert.strictEqual(insufficientReport.rawTotal, 4);
+assert.strictEqual(insufficientReport.qualityEligibleCaseCount, 3);
+assert.strictEqual(insufficientReport.changedTierCount, 2);
+assert.strictEqual(insufficientReport.hardBoundaryEscapeCount, 0);
+assert.strictEqual(insufficientReport.correctness.status, "insufficient_labels");
+assert.strictEqual(insufficientReport.stability.status, "insufficient_repeats");
+assert(!Object.hasOwn(insufficientReport, "winner"));
+assert(!Object.hasOwn(insufficientReport, "recommendedRoute"));
+
+const evidenceReport = buildScalarShadowReport({
+  cases: [
+    {
+      id: "repeat-strong",
+      repeatGroup: "same-job",
+      input: strongInput(),
+      humanLabel: { status: "confirmed", expectedTier: "primary" }
+    },
+    {
+      id: "repeat-transferable",
+      repeatGroup: "same-job",
+      input: continuousDifferenceInput,
+      humanLabel: { status: "confirmed", expectedTier: "primary" }
+    }
+  ]
+});
+assert.strictEqual(evidenceReport.correctness.status, "available");
+assert.deepStrictEqual(evidenceReport.correctness.matrix, { matches: 2, rate: 1 });
+assert.deepStrictEqual(evidenceReport.correctness.scalar, { matches: 1, rate: 0.5 });
+assert.strictEqual(evidenceReport.stability.status, "available");
+assert.strictEqual(evidenceReport.stability.repeatGroupCount, 1);
+assert.strictEqual(evidenceReport.stability.matrix.variableGroupCount, 0);
+assert.strictEqual(evidenceReport.stability.scalar.variableGroupCount, 1);
+assert.strictEqual(evidenceReport.stability.groups[0].scalarScoreRange, 0.5);
+
+const tempRoot = fs.mkdtempSync(path.join("D:\\DevData", "RoleFlow-scalar-shadow-test-"));
+try {
+  const inputPath = path.join(tempRoot, "fixture.json");
+  const firstOutputPath = path.join(tempRoot, "report-one.json");
+  const secondOutputPath = path.join(tempRoot, "report-two.json");
+  fs.writeFileSync(inputPath, `${JSON.stringify({ cases: [
+    { id: "strong", input: strongInput() },
+    { id: "difference", input: continuousDifferenceInput }
+  ] }, null, 2)}\n`, "utf8");
+  compareScalarShadow(["--input", inputPath, "--output", firstOutputPath]);
+  compareScalarShadow(["--input", inputPath, "--output", secondOutputPath]);
+  assert.strictEqual(
+    fs.readFileSync(firstOutputPath, "utf8"),
+    fs.readFileSync(secondOutputPath, "utf8"),
+    "same fixture and commit must produce byte-identical scalar reports"
+  );
+  const cliReport = JSON.parse(fs.readFileSync(firstOutputPath, "utf8"));
+  assert.match(cliReport.inputFixtureSha256, /^[a-f0-9]{64}$/);
+  assert.match(cliReport.evaluatedGitCommit, /^[a-f0-9]{40}$/);
+  assert.strictEqual(cliReport.productionInfluence, "none");
+
+  assert.throws(
+    () => compareScalarShadow(["--input", inputPath, "--output", inputPath]),
+    /different|same file|same path/i
+  );
+  assert.throws(
+    () => compareScalarShadow(["--input", inputPath, "--labels", inputPath, "--output", firstOutputPath]),
+    /different|same file|same path/i
+  );
+  assert.throws(
+    () => buildScalarShadowReport({ cases: [
+      { id: "duplicate", input: strongInput() },
+      { id: "duplicate", input: strongInput() }
+    ] }),
+    /duplicate/i
+  );
+  assert.throws(
+    () => buildScalarShadowReport({ cases: [{ id: "missing-input" }] }),
+    /input/i
+  );
+} finally {
+  fs.rmSync(tempRoot, { recursive: true, force: true });
+}
 
 console.log("scalar_shadow_scorecard_smoke ok");

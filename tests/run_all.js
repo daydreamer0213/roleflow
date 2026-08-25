@@ -85,6 +85,7 @@ const tests = [
   "search_plan_modes_smoke.js",
   "semantic_pipeline_smoke.js",
   "shadow_scorecard_smoke.js",
+  "scalar_shadow_scorecard_smoke.js",
   "four_tier_pipeline_smoke.js",
   "outcome_analytics_smoke.js",
   "four_tier_product_surface_smoke.js",
