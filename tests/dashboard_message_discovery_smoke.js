@@ -435,10 +435,17 @@ async function main() {
     "15-25K·13薪",
     "薪资未说明",
     "下一步",
+    "需要在 BOSS 人工处理附件简历请求",
+    "请在 BOSS 消息卡片中人工选择“同意”或“拒绝”。",
     "推荐回复",
     "您好，感谢邀请，请问面试时间和形式如何安排？",
     "JD 暂未说明公司的具体业务。"
   ]) assert(understoodPage.body.includes(expected), `missing user decision content: ${expected}`);
+  assert(
+    understoodPage.body.indexOf("<h4>需要在 BOSS 人工处理附件简历请求</h4>")
+      < understoodPage.body.indexOf("<h4>推荐回复</h4>"),
+    "manual BOSS action must appear before the local reply drafts"
+  );
   assertHeadingsInOrder(understoodPage.body, [
     "<h3>结论</h3>",
     "<h3>这份机会</h3>",
@@ -483,6 +490,14 @@ async function main() {
   assert.strictEqual((understoodPage.body.match(/<textarea/g) || []).length, 3);
   assert(!understoodPage.body.includes("PRIVATE_RAW_ANALYSIS"));
   assert(!understoodPage.body.includes("PRIVATE_NAVIGATION_URL"));
+  for (const unsafeActionValue of [
+    "resume_request",
+    "location_confirmation",
+    "ATTACKER ACTION TITLE",
+    "ATTACKER ACTION INSTRUCTION"
+  ]) {
+    assert(!understoodPage.body.includes(unsafeActionValue), `${unsafeActionValue} must not enter message result markup`);
+  }
   assertNoPrivateData(understoodPage.body);
   await waitForLeaseRelease();
 
@@ -1495,6 +1510,15 @@ function jobUnderstandingCompletedRun(fixture) {
         contextSource: "local_cache",
         contextComplete: true,
         job,
+        manualActions: [{
+          kind: "resume_request",
+          title: "ATTACKER ACTION TITLE",
+          instruction: "ATTACKER ACTION INSTRUCTION"
+        }, {
+          kind: "location_confirmation",
+          title: "ATTACKER LOCATION TITLE",
+          instruction: "ATTACKER LOCATION INSTRUCTION"
+        }],
         messages: ["岗位草稿甲", "岗位草稿乙"],
         analysis: "PRIVATE_RAW_ANALYSIS",
         navigationUrl: "PRIVATE_NAVIGATION_URL"

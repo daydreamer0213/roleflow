@@ -369,6 +369,7 @@ function createMessageDiscoveryController(deps = {}) {
         messageSummary: safeInlineText(item?.messageSummary, 160),
         missingFactKey: String(item?.missingFactKey || "").slice(0, 80),
         manualActionReason: safeText(item?.manualActionReason, 240),
+        manualActions: sanitizeManualActions(item?.manualActions),
         contextSource: ["local_cache", "message_discovery_detail"].includes(item?.contextSource)
           ? item.contextSource
           : "",
@@ -377,6 +378,16 @@ function createMessageDiscoveryController(deps = {}) {
         messages
       };
     });
+  }
+
+  function sanitizeManualActions(value) {
+    return Array.isArray(value) && value.some((item) => item?.kind === "resume_request")
+      ? [{
+        kind: "resume_request",
+        title: "需要在 BOSS 人工处理附件简历请求",
+        instruction: "请在 BOSS 消息卡片中人工选择“同意”或“拒绝”。"
+      }]
+      : [];
   }
 
   function publicRun(run) {

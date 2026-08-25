@@ -56,6 +56,7 @@ function renderMessageDiscoveryPage({ db, searchParams, controller, helpers }) {
   const phaseNotice = messageDiscoveryPhaseText(status);
   const resultSections = status.results.map((result, resultIndex) => {
     const job = result.job || {};
+    const manualActions = (result.manualActions || []).filter((item) => item?.kind === "resume_request");
     const drafts = (result.messages || []).map((message, messageIndex) => {
       const id = `message-draft-${resultIndex}-${messageIndex}`;
       return `<div class="message-draft"><label for="${id}">草稿 ${messageIndex + 1}</label><textarea id="${id}" readonly>${escapeHtml(message)}</textarea><button type="button" data-copy-draft="${id}">复制到本机剪贴板</button></div>`;
@@ -80,13 +81,14 @@ function renderMessageDiscoveryPage({ db, searchParams, controller, helpers }) {
       <h3>薪资</h3>
       <p class="line">${escapeHtml(job.salary || "薪资未说明")}</p>
     </div>`;
-    const draftSection = drafts
-      ? `<h4>推荐回复</h4>${drafts}`
-      : `<p class="risk-text">${escapeHtml(messageDiscoveryManualActionText(result))}</p>`;
+    const manualSection = manualActions.map((action) => `<div class="message-manual-action"><h4>${escapeHtml(action.title)}</h4><p class="risk-text">${escapeHtml(action.instruction)}</p></div>`).join("");
+    const replySection = drafts ? `<h4>推荐回复</h4>${drafts}` : "";
+    const nextSection = `${manualSection}${replySection}`
+      || `<p class="risk-text">${escapeHtml(messageDiscoveryManualActionText(result))}</p>`;
     const sentForm = drafts
       ? `<form method="post" action="/api/progress"><input type="hidden" name="cardId" value="${result.cardId}"><input type="hidden" name="idempotencyKey" value="${escapeAttr(newProgressRequestKey())}"><input type="hidden" name="action" value="reply_confirmed_sent"><button>已手动发送</button></form>`
       : "";
-    return `<section class="panel message-result"><h2>${escapeHtml(job.title || "岗位处理结果")}</h2><p class="line">${escapeHtml(job.company || "公司待确认")} · 阶段：${escapeHtml(progressStageLabel(result.stage))}</p>${decisionCard}<h3>下一步</h3>${draftSection}${sentForm}</section>`;
+    return `<section class="panel message-result"><h2>${escapeHtml(job.title || "岗位处理结果")}</h2><p class="line">${escapeHtml(job.company || "公司待确认")} · 阶段：${escapeHtml(progressStageLabel(result.stage))}</p>${decisionCard}<h3>下一步</h3>${nextSection}${sentForm}</section>`;
   }).join("");
   const controls = `<section class="message-controls" aria-label="消息发现操作">
     <form data-discovery-form method="post" action="/api/message-discovery"><input type="hidden" name="action" value="start"><input type="hidden" name="profileId" value="${profileId}"><button data-page-primary="true"${status.status === "running" ? " disabled" : ""}>开始只读发现</button></form>
