@@ -2096,6 +2096,23 @@ async function testPerJobWorkflowProgressPanel(baseUrl, database, saved) {
       : null,
     task.id
   ));
+  const retryBatchId = createBatch(database, "boss", "analysis-retry", "resolved workflow failure", {
+    profileId: saved.profileId,
+    searchPlanId: saved.planId
+  });
+  upsertJob(database, {
+    ...job("workflow-progress-6"),
+    sourceId: "workflow-progress-6",
+    title: "Workflow Progress Job 6",
+    company: "Workflow Progress Company 6",
+    description: "Complete local workflow progress JD. ".repeat(8),
+    analysis: {
+      semanticStatus: "complete",
+      decisionStatus: "decided",
+      decisionSource: "model",
+      recommendation: "apply"
+    }
+  }, retryBatchId);
 
   const page = await getText(baseUrl, `/workflow?runId=${encodeURIComponent(fixture.workflowId)}`);
   assert.strictEqual(page.status, 200);
@@ -2113,6 +2130,17 @@ async function testPerJobWorkflowProgressPanel(baseUrl, database, saved) {
     assert(page.body.includes(`Workflow Progress Company ${position}`));
   }
   assert.match(page.body, /详情待补/);
+  for (const label of ["本轮直接完成", "失败后已解决", "当前未解决"]) {
+    assert(page.body.includes(label), `workflow progress must show ${label}`);
+  }
+  assert.match(page.body, /data-analysis-direct-succeeded[^>]*>1</);
+  assert.match(page.body, /data-analysis-resolved-after-failure[^>]*>1</);
+  assert.match(page.body, /data-analysis-unresolved-failed[^>]*>0</);
+  assert.match(page.body, /data-analysis-historical-failed[^>]*>1</);
+  assert.match(
+    page.body,
+    new RegExp(`data-analysis-task-id="${tasks[5].id}"[\\s\\S]*?首次失败，后续已解决[\\s\\S]*?</article>`)
+  );
   const response = await getJson(baseUrl, `/api/workflow-status?runId=${encodeURIComponent(fixture.workflowId)}`);
   const serialized = JSON.stringify(response.body);
   assert(!serialized.includes("Workflow Progress Job"));
@@ -2154,6 +2182,10 @@ async function assertWorkflowLocalProgressClient() {
   const analysisMeter = element();
   const communicationMeter = element();
   const taskStatus = element("分析中");
+  const directSucceeded = element("0");
+  const resolvedAfterFailure = element("0");
+  const unresolvedFailed = element("0");
+  const historicalFailed = element("0");
   const taskRow = element();
   taskRow.setAttribute("aria-current", "step");
   taskRow.querySelector = (selector) => selector === "[data-analysis-task-status]" ? taskStatus : null;
@@ -2174,7 +2206,11 @@ async function assertWorkflowLocalProgressClient() {
     ['[data-track-meter="communication"]', communicationMeter],
     ['[data-current-activity]', currentActivity],
     ['[data-workflow-error]', errorNode],
-    ['[data-analysis-task-id="11"]', taskRow]
+    ['[data-analysis-task-id="11"]', taskRow],
+    ['[data-analysis-direct-succeeded]', directSucceeded],
+    ['[data-analysis-resolved-after-failure]', resolvedAfterFailure],
+    ['[data-analysis-unresolved-failed]', unresolvedFailed],
+    ['[data-analysis-historical-failed]', historicalFailed]
   ]);
   const page = {
     dataset: {
@@ -2192,7 +2228,7 @@ async function assertWorkflowLocalProgressClient() {
       return [];
     }
   };
-  const snapshot = ({ phaseKey = "analysis", taskStatusValue = "succeeded" } = {}) => ({
+  const snapshot = ({ phaseKey = "analysis", taskStatusValue = "failed", resolved = true } = {}) => ({
     workflow: {
       status: phaseKey === "review" ? "review_required" : "analyzing",
       controlState: "none",
@@ -2228,7 +2264,8 @@ async function assertWorkflowLocalProgressClient() {
       analysis: {
         total: 6, terminal: 3, pending: 2, running: 0, retryPending: 1,
         succeeded: 2, skipped: 0, failed: 1, stopped: 0, detailRequired: 0,
-        tasks: [{ id: 11, position: 1, status: taskStatusValue, lastErrorCode: null }]
+        historicalFailed: 1, resolvedAfterFailure: 1, unresolvedFailed: 0,
+        tasks: [{ id: 11, position: 1, status: taskStatusValue, lastErrorCode: null, resolvedAfterFailure: resolved }]
       }
     },
     controls: { canPause: true, canResume: false, canStop: true, stopConsumesRunSlot: true },
@@ -2280,7 +2317,11 @@ async function assertWorkflowLocalProgressClient() {
   assert.strictEqual(scanFraction.textContent, "2 / 5");
   assert.strictEqual(jdFraction.textContent, "4 / 7");
   assert.strictEqual(analysisFraction.textContent, "3 / 6");
-  assert.strictEqual(taskStatus.textContent, "已完成");
+  assert.strictEqual(taskStatus.textContent, "首次失败，后续已解决");
+  assert.strictEqual(directSucceeded.textContent, "2");
+  assert.strictEqual(resolvedAfterFailure.textContent, "1");
+  assert.strictEqual(unresolvedFailed.textContent, "0");
+  assert.strictEqual(historicalFailed.textContent, "1");
   assert.strictEqual(taskRow.hasAttribute("aria-current"), false);
   assert.strictEqual(reloads, 0);
   assert.strictEqual(fetches, 1);

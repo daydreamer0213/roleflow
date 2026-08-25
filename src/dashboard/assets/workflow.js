@@ -101,6 +101,7 @@
 
   const analysisStatusText = (task = {}) => {
     if (task.lastErrorCode === "DETAIL_REQUIRED") return "详情待补";
+    if (task.status === "failed" && task.resolvedAfterFailure) return "首次失败，后续已解决";
     return ({ pending: "等待分析", running: "分析中", retry_pending: "等待重试", succeeded: "已完成", skipped: "已按本地规则处理", failed: "分析失败", stopped: "已停止" })[String(task.status || "")] || "状态待确认";
   };
 
@@ -138,11 +139,14 @@
     const scanTargets = snapshot.progress.scanTargets || {};
     const details = snapshot.progress.details || {};
     const detailRequired = number(analysis.detailRequired);
-    const analyzed = number(analysis.succeeded) + Math.max(0, number(analysis.skipped) - detailRequired);
+    const historicalFailed = Object.prototype.hasOwnProperty.call(analysis, "historicalFailed") ? number(analysis.historicalFailed) : number(analysis.failed);
+    const resolvedAfterFailure = number(analysis.resolvedAfterFailure);
+    const unresolvedFailed = Object.prototype.hasOwnProperty.call(analysis, "unresolvedFailed") ? number(analysis.unresolvedFailed) : Math.max(0, historicalFailed - resolvedAfterFailure);
+    const analyzed = number(analysis.succeeded) + resolvedAfterFailure + Math.max(0, number(analysis.skipped) - detailRequired);
     const remaining = number(analysis.pending) + number(analysis.running) + number(analysis.retryPending);
     setText("[data-stage-label]", "第 " + number(snapshot.progress.stageIndex) + " 阶段 / 共 " + number(snapshot.progress.stageCount) + " 阶段");
     setText("[data-stage-name]", snapshot.progress.stage || "");
-    for (const [selector, value] of [["[data-scan-target-total]", scanTargets.total], ["[data-scan-target-completed]", scanTargets.completed], ["[data-scan-target-pending]", scanTargets.pending], ["[data-detail-collected]", details.collected], ["[data-analysis-total]", analysis.total], ["[data-analysis-succeeded]", analysis.succeeded], ["[data-analysis-running]", analysis.running], ["[data-analysis-retry-pending]", analysis.retryPending], ["[data-analysis-detail-required]", detailRequired], ["[data-detail-read]", details.read], ["[data-detail-pending]", details.pending], ["[data-analysis-failed]", analysis.failed], ["[data-analysis-remaining]", remaining], ["[data-stop-collected]", details.collected], ["[data-stop-analyzed]", analyzed], ["[data-stop-failed]", analysis.failed], ["[data-stop-unfinished]", remaining]]) setText(selector, number(value));
+    for (const [selector, value] of [["[data-scan-target-total]", scanTargets.total], ["[data-scan-target-completed]", scanTargets.completed], ["[data-scan-target-pending]", scanTargets.pending], ["[data-detail-collected]", details.collected], ["[data-analysis-total]", analysis.total], ["[data-analysis-succeeded]", analysis.succeeded], ["[data-analysis-direct-succeeded]", analysis.succeeded], ["[data-analysis-historical-failed]", historicalFailed], ["[data-analysis-resolved-after-failure]", resolvedAfterFailure], ["[data-analysis-unresolved-failed]", unresolvedFailed], ["[data-analysis-running]", analysis.running], ["[data-analysis-retry-pending]", analysis.retryPending], ["[data-analysis-detail-required]", detailRequired], ["[data-detail-read]", details.read], ["[data-detail-pending]", details.pending], ["[data-analysis-failed]", historicalFailed], ["[data-analysis-remaining]", remaining], ["[data-stop-collected]", details.collected], ["[data-stop-analyzed]", analyzed], ["[data-stop-failed]", unresolvedFailed], ["[data-stop-unfinished]", remaining]]) setText(selector, number(value));
     setText("[data-analysis-timeouts]", "当前恢复周期最终超时 " + number(analysis.circuitTimeoutJobs) + " / " + number(analysis.timeoutPauseThreshold || 10) + " · 本轮累计超时 " + number(analysis.lifetimeTimeoutJobs));
     setText("[data-eta]", etaText(snapshot.progress.eta));
     setText("[data-recent-activity]", snapshot.recentActivity.length ? snapshot.recentActivity.map(activityText).join("；") : "还没有新的分析活动。");

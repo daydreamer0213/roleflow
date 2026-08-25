@@ -90,7 +90,13 @@ function progressView(snapshot, progressJobs = []) {
   const tracks = source.tracks || {};
   const skipped = number(analysis.skipped);
   const detailRequired = number(analysis.detailRequired);
-  const analyzed = number(analysis.succeeded) + Math.max(0, skipped - detailRequired);
+  const directSucceeded = number(analysis.succeeded);
+  const historicalFailed = number(analysis.historicalFailed ?? analysis.failed);
+  const resolvedAfterFailure = number(analysis.resolvedAfterFailure);
+  const unresolvedFailed = Object.hasOwn(analysis, "unresolvedFailed")
+    ? number(analysis.unresolvedFailed)
+    : Math.max(0, historicalFailed - resolvedAfterFailure);
+  const analyzed = directSucceeded + resolvedAfterFailure + Math.max(0, skipped - detailRequired);
   return {
     visible: true, revision: number(snapshot?.workflow?.progressRevision), status: String(snapshot?.workflow?.status || ""),
     controlState: String(snapshot?.workflow?.controlState || ""), stage: String(source.stage || ""),
@@ -107,8 +113,9 @@ function progressView(snapshot, progressJobs = []) {
       notRequired: number(details.notRequired), growing: Boolean(details.growing)
     },
     analysis: {
-      total: number(analysis.total), succeeded: number(analysis.succeeded), running: number(analysis.running), retryPending: number(analysis.retryPending),
-      detailRequired, failed: number(analysis.failed), remaining: number(analysis.pending) + number(analysis.running) + number(analysis.retryPending),
+      total: number(analysis.total), succeeded: directSucceeded, directSucceeded, running: number(analysis.running), retryPending: number(analysis.retryPending),
+      detailRequired, failed: historicalFailed, historicalFailed, resolvedAfterFailure, unresolvedFailed,
+      remaining: number(analysis.pending) + number(analysis.running) + number(analysis.retryPending),
       stopped: number(analysis.stopped), collected: number(details.collected), detailsRead: number(details.read), detailsPending: number(details.pending),
       terminal: number(analysis.terminal),
       circuitTimeoutJobs: number(analysis.circuitTimeoutJobs), timeoutPauseThreshold: number(analysis.timeoutPauseThreshold || 10), lifetimeTimeoutJobs: number(analysis.lifetimeTimeoutJobs)
@@ -120,7 +127,7 @@ function progressView(snapshot, progressJobs = []) {
     tracks: {
       scan: progressTrack(tracks.scan, "扫描岗位", `已处理 ${number(scanTargets.processed)} 个目标；成功 ${number(scanTargets.completed)}、部分 ${number(scanTargets.partial)}、失败 ${number(scanTargets.failed)}`),
       jd: progressTrack(tracks.jd, "完整 JD", `已读取 ${number(details.read)} 个需要完整 JD 的岗位；待补 ${number(details.pending)}；无需详情 ${number(details.notRequired)}${details.growing ? "；数量仍随扫描增长" : ""}`),
-      analysis: progressTrack(tracks.analysis, "分析岗位", `已完成 ${number(analysis.terminal)} 个；成功 ${number(analysis.succeeded)}、跳过 ${number(analysis.skipped)}、失败 ${number(analysis.failed)}、停止 ${number(analysis.stopped)}`),
+      analysis: progressTrack(tracks.analysis, "分析岗位", `已完成 ${number(analysis.terminal)} 个；本轮直接完成 ${directSucceeded}、失败后已解决 ${resolvedAfterFailure}、当前未解决 ${unresolvedFailed}、本地规则处理 ${Math.max(0, skipped - detailRequired)}、停止 ${number(analysis.stopped)}；历史失败 ${historicalFailed}`),
       communication: progressTrack(tracks.communication, "沟通岗位", `已到达终态 ${number(communication.terminal)} 个；成功 ${number(communication.succeeded)}、待人工确认 ${number(communication.ambiguous)}、停止 ${number(communication.stopped)}`)
     },
     currentActivityLabel: scanActivityLabel(source.scan, source.phaseKey),
@@ -130,6 +137,8 @@ function progressView(snapshot, progressJobs = []) {
       status: String(job.status || ""),
       statusLabel: job.lastErrorCode === "DETAIL_REQUIRED"
         ? "详情待补"
+        : job.status === "failed" && job.resolvedAfterFailure
+          ? "首次失败，后续已解决"
         : ANALYSIS_STATUS_LABELS[String(job.status || "")] || "状态待确认",
       title: String(job.title || ""),
       company: String(job.company || "")
