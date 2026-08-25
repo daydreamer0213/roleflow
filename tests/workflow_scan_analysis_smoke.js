@@ -11,7 +11,7 @@ const {
   getWorkflowRun,
   listReportJobs
 } = require("../src/core/storage");
-const { createJobAnalysisRunner, runWorkflowAnalysisPhase, compactAnalysis } = require("../src/core/job_analysis");
+const { createJobAnalysisRunner, runWorkflowAnalysisPhase, compactAnalysis, applyRuleGuard } = require("../src/core/job_analysis");
 const { initializeWorkflowJobTasks, listWorkflowJobTasks } = require("../src/core/workflow_analysis_tasks");
 const { finalizeWorkflowControl } = require("../src/core/workflow_control");
 
@@ -19,6 +19,7 @@ const { finalizeWorkflowControl } = require("../src/core/workflow_control");
   try {
     await crashPreservesIncrementalResultsSmoke();
     compactAnalysisRequiresVerifiedCompleteJdSmoke();
+    eligibilityRuleGuardSmoke();
     await incompleteJdsNeverEnterWorkflowModelQueueSmoke();
     await callerCannotSpoofPersistedIncompleteJdSmoke();
     await detailUnverifiedJobsNeverEnterWorkflowModelQueueSmoke();
@@ -69,6 +70,59 @@ function compactAnalysisRequiresVerifiedCompleteJdSmoke() {
     ruleMatch: {}
   });
   assert.strictEqual(databaseShapedTags.semanticStatus, "partial");
+}
+
+function eligibilityRuleGuardSmoke() {
+  const ideal = {
+    semanticStatus: "complete",
+    decisionSource: "model",
+    recommendation: "primary",
+    roleAlignment: "aligned",
+    requirementMatches: [
+      {
+        state: "matched",
+        foundation: true,
+        indispensable: true,
+        jdEvidence: "JD：熟练使用 Python",
+        resumeEvidence: "简历：Python 项目"
+      },
+      {
+        state: "matched",
+        central: true,
+        indispensable: true,
+        jdEvidence: "JD：具备 RAG 项目经验",
+        resumeEvidence: "简历：RAG 项目"
+      }
+    ],
+    responsibilityMatches: [],
+    jobQuality: { level: "normal", concerns: [] },
+    hardBlockers: [],
+    hiddenRisks: [],
+    fitReasons: ["技能高度匹配"],
+    evidence: { jd: ["Python、RAG"], resume: ["Python、RAG 项目"] }
+  };
+
+  const blocked = applyRuleGuard(ideal, {
+    qualityTags: ["cohort_mismatch"],
+    risks: ["岗位要求 2026/2027 届，候选人毕业年份不符合"],
+    eligibilityStatus: "blocked",
+    employmentType: "full_time"
+  });
+  assert.strictEqual(blocked.recommendation, "not_recommended");
+  assert.strictEqual(blocked.decisionSource, "hard_boundary");
+  assert.match(blocked.fitReasons[0], /2026\/2027 届/);
+
+  const reviewJob = {
+    qualityTags: ["eligibility_review"],
+    risks: ["岗位有明确届别要求，候选人毕业年份待确认"],
+    eligibilityStatus: "review",
+    employmentType: "full_time"
+  };
+  const review = applyRuleGuard(ideal, reviewJob);
+  assert.strictEqual(review.recommendation, "caution");
+  assert.strictEqual(review.decisionSource, "eligibility_review_guard");
+  assert.match(review.fitReasons[0], /资格待确认/);
+  assert(reviewJob.qualityTags.includes("eligibility_review"));
 }
 
 async function crashPreservesIncrementalResultsSmoke() {

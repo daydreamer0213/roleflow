@@ -423,6 +423,9 @@ async function assertCommunicationClient() {
   assert.match(builder.body, new RegExp(`name="jobIds" value="${fixture.backupId}"`));
   assert.doesNotMatch(builder.body, new RegExp(`name="jobIds" value="${fixture.backupId}" checked`));
   assert.doesNotMatch(builder.body, new RegExp(`value="${fixture.notRecommendedId}"`));
+  assert.doesNotMatch(builder.body, new RegExp(`value="${fixture.internshipId}"`));
+  assert.doesNotMatch(builder.body, new RegExp(`value="${fixture.cohortMismatchId}"`));
+  assert.doesNotMatch(builder.body, new RegExp(`value="${fixture.eligibilityReviewId}"`));
   assert.doesNotMatch(builder.body, new RegExp(`value="${fixture.appliedId}"`));
   assert.doesNotMatch(builder.body, new RegExp(`value="${fixture.skippedId}"`));
   assert.match(builder.body, /<output[^>]*id="selected-count"/);
@@ -515,10 +518,16 @@ async function assertCommunicationClient() {
   assert.match(plan.body, new RegExp(`/communication/new\\?planId=${fixture.planId}`));
   assert.match(queue.body, /批量沟通清单/);
   assert.match(queue.body, /薪资与目标贴合/);
+  const eligibilityQueue = await getText(baseUrl, `/queue?planId=${fixture.planId}&pool=primary`);
+  assert.match(eligibilityQueue.body, /资格条件待确认/);
+  assert.doesNotMatch(eligibilityQueue.body, />eligibility_review</);
   assert.match(plan.body, /批量沟通清单/);
   assert.doesNotMatch(plan.body, />Resume</);
 
   await expectApiError(baseUrl, "/api/communication-batch", { planId: fixture.planId, jobIds: fixture.notRecommendedId, browserMode: "edge", title: "forged" }, "COMMUNICATION_JOB_INELIGIBLE");
+  await expectApiError(baseUrl, "/api/communication-batch", { planId: fixture.planId, jobIds: fixture.internshipId, browserMode: "edge" }, "COMMUNICATION_JOB_INELIGIBLE");
+  await expectApiError(baseUrl, "/api/communication-batch", { planId: fixture.planId, jobIds: fixture.cohortMismatchId, browserMode: "edge" }, "COMMUNICATION_JOB_INELIGIBLE");
+  await expectApiError(baseUrl, "/api/communication-batch", { planId: fixture.planId, jobIds: fixture.eligibilityReviewId, browserMode: "edge" }, "COMMUNICATION_JOB_INELIGIBLE");
   await expectApiError(baseUrl, "/api/communication-batch", { planId: fixture.planId, jobIds: fixture.appliedId, browserMode: "edge", company: "forged" }, "COMMUNICATION_JOB_INELIGIBLE");
   await expectApiError(baseUrl, "/api/communication-batch", { planId: fixture.planId, jobIds: fixture.skippedId, browserMode: "edge", company: "forged" }, "COMMUNICATION_JOB_INELIGIBLE");
   await expectApiError(baseUrl, "/api/communication-batch", { planId: fixture.planId, browserMode: "edge" }, "COMMUNICATION_JOB_INELIGIBLE");
@@ -1126,6 +1135,9 @@ function seed(database) {
   const talkId = upsertJob(database, job("talk", { title: "Talk role", analysis: completeAnalysis("apply") }), scanBatchId);
   const backupId = upsertJob(database, job("backup", { title: "Backup role", analysis: completeAnalysis("caution"), qualityTags: ["experience_overrange"] }), scanBatchId);
   const notRecommendedId = upsertJob(database, job("not-recommended", { title: "Not recommended role", level: "不建议", analysis: completeAnalysis("not_recommended"), qualityTags: ["hard_exclude"] }), scanBatchId);
+  const internshipId = upsertJob(database, job("internship", { title: "Internship role", analysis: completeAnalysis("primary"), qualityTags: ["internship_role"] }), scanBatchId);
+  const cohortMismatchId = upsertJob(database, job("cohort-mismatch", { title: "Cohort mismatch role", analysis: completeAnalysis("primary"), qualityTags: ["cohort_mismatch"] }), scanBatchId);
+  const eligibilityReviewId = upsertJob(database, job("eligibility-review", { title: "Eligibility review role", analysis: completeAnalysis("primary"), qualityTags: ["eligibility_review"] }), scanBatchId);
   const appliedId = upsertJob(database, job("applied", { title: "Applied role" }), scanBatchId);
   const safeId = upsertJob(database, job("safe", { title: "Safe role" }), scanBatchId);
   const rebindId = upsertJob(database, job("rebind", { title: "Rebind role" }), scanBatchId);
@@ -1148,7 +1160,7 @@ function seed(database) {
   }
   const otherProfileId = Number(database.prepare("INSERT INTO candidate_profiles(display_name, profile_json, created_at, updated_at) VALUES (?, ?, ?, ?)").run("Other dashboard smoke", "{}", now, now).lastInsertRowid);
   Number(database.prepare("INSERT INTO search_plans(profile_id, name, plan_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run(otherProfileId, "Other dashboard plan", "{}", now, now).lastInsertRowid);
-  return { profileId, scanBatchId, planId, smallPlanId, otherProfileId, primaryId, talkId, backupId, notRecommendedId, appliedId, skippedId, safeId, rebindId, historySucceededId, summaryDriftStartId, summaryDriftResumeId, itemDriftStartId, itemDriftResumeId };
+  return { profileId, scanBatchId, planId, smallPlanId, otherProfileId, primaryId, talkId, backupId, notRecommendedId, internshipId, cohortMismatchId, eligibilityReviewId, appliedId, skippedId, safeId, rebindId, historySucceededId, summaryDriftStartId, summaryDriftResumeId, itemDriftStartId, itemDriftResumeId };
 }
 
 function reviewWorkflow(database, { id, planId, localDay, planner = {} }) {

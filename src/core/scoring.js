@@ -1,4 +1,5 @@
 const { evaluatePlatformBoundaries } = require("./platform_runtime_policy");
+const { evaluateJobEligibility } = require("./job_eligibility");
 
 function salaryRangeK(salary) {
   const text = String(salary || "");
@@ -40,11 +41,15 @@ function scoreJob(job, configs) {
   const targetCities = profile.location?.target_cities || [];
   const targetDirections = configs.targetPolicy?.directions || configs.candidateProfile?.candidate?.targetTitles || profile.candidate?.target_roles || [];
   const targetJobTypes = configs.targetPolicy?.jobTypes || ["全职"];
+  const enforceJobTypes = configs.targetPolicy?.enforceJobTypes !== false;
+  const eligibility = evaluateJobEligibility(job, {
+    candidateProfile: configs.candidateProfile,
+    targetJobTypes: enforceJobTypes ? targetJobTypes : unique([...targetJobTypes, "实习"])
+  });
   const salary = salaryRangeK(job.salary);
   const days = activeDays(job.bossActiveText);
   const workSchedule = parseWorkSchedule(`${(job.tags || []).join(" ")} ${job.description || ""}`);
   const role = classifyJobRole(job);
-  const acceptsInternship = targetJobTypes.some((item) => /实习/.test(String(item)));
   let score = 0;
   const matches = [];
   const risks = [];
@@ -52,6 +57,8 @@ function scoreJob(job, configs) {
   const platformBoundary = evaluatePlatformBoundaries(job, configs.platformPolicy);
   qualityTags.push(...platformBoundary.qualityTags);
   risks.push(...platformBoundary.risks);
+  qualityTags.push(...eligibility.qualityTags);
+  risks.push(...eligibility.risks);
 
   for (const item of scoring.positive_keywords || []) {
     if (new RegExp(escapeRegExp(item.word), "i").test(text)) {
@@ -68,11 +75,8 @@ function scoreJob(job, configs) {
     }
   }
 
-  const enforceJobTypes = configs.targetPolicy?.enforceJobTypes !== false;
-  if (role.kind === "internship" && enforceJobTypes && !acceptsInternship) {
+  if (eligibility.status === "blocked") {
     score -= 100;
-    qualityTags.push("internship_role");
-    risks.push("实习岗位不在当前社招目标内");
   }
 
   if ((scoring.exclude_words || []).some((word) => text.includes(word))) {
@@ -188,7 +192,7 @@ function scoreJob(job, configs) {
     && salary.max !== null
     && salary.max <= Number(scoring.salary?.experience_flex_max_k || 18)
     && score >= 6
-    && !(role.kind === "internship" && enforceJobTypes && !acceptsInternship)
+    && eligibility.status !== "blocked"
     && (!job.detailRequired || job.detailRead);
   if (!String(job.experience || "").trim()) {
     qualityTags.push("experience_unverified");
@@ -250,8 +254,7 @@ function scoreJob(job, configs) {
   }
   if (score < 0) qualityTags.push("low_value_risk");
 
-  const roleBlocked = role.kind === "internship" && enforceJobTypes && !acceptsInternship;
-  const level = roleBlocked
+  const level = eligibility.status === "blocked"
     ? "不建议"
     : canStretch ? "可冲" : score >= 12 ? "优先" : score >= 6 ? "可投" : "谨慎";
 
@@ -267,6 +270,10 @@ function scoreJob(job, configs) {
     bossActiveDays: days,
     roleKind: role.kind,
     roleEvidence: role.evidence,
+    eligibilityStatus: eligibility.status,
+    employmentType: eligibility.employmentType,
+    eligibilityReasonCode: eligibility.reasonCode,
+    eligibilityEvidence: eligibility.evidence,
     workSchedule: workSchedule.kind,
     workScheduleEvidence: workSchedule.evidence
   };
@@ -326,6 +333,8 @@ function decisionState(job) {
     "inactive_boss",
     "hard_exclude",
     "internship_role",
+    "cohort_mismatch",
+    "student_status_mismatch",
     "salary_out_of_range",
     "platform_district_mismatch",
     "platform_salary_mismatch",

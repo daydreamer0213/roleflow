@@ -17,6 +17,12 @@ const BATCH_STATUSES = new Set(["confirmed", "running", "paused", "stopping", "c
 const ITEM_STATUSES = new Set(["pending", "opening", "verified", "click_dispatched", "succeeded", "already_communicated", "job_unavailable", "target_mismatch", "action_unavailable", "platform_rejected", "transport_failed", "ambiguous", "stopped"]);
 const TERMINAL_ITEM_STATUSES = new Set(["succeeded", "already_communicated", "job_unavailable", "target_mismatch", "action_unavailable", "platform_rejected", "transport_failed", "ambiguous", "stopped"]);
 const ALLOWED_BUCKETS = new Set(["primary", "apply", "caution"]);
+const COMMUNICATION_ELIGIBILITY_BLOCKERS = new Set([
+  "internship_role",
+  "cohort_mismatch",
+  "student_status_mismatch",
+  "eligibility_review"
+]);
 const TERMINAL_BATCH_STATUSES = new Set(["completed", "stopped", "interrupted", "failed"]);
 const BATCH_TRANSITIONS = new Map([
   ["confirmed", new Set(["running", "stopped"])],
@@ -539,6 +545,7 @@ function isCommunicationJobEligible(db, job) {
   if (!job || !ALLOWED_BUCKETS.has(job.decisionBucket) || !isBossJobUrl(job.url) || hasUserApplicationStatus(job)) {
     return false;
   }
+  if ((job.qualityTags || []).some((tag) => COMMUNICATION_ELIGIBILITY_BLOCKERS.has(tag))) return false;
   return !db.prepare(`SELECT 1 FROM communication_batch_items
     WHERE job_id = ?
       AND (click_count > 0 OR status IN ('click_dispatched', 'platform_rejected', 'transport_failed', 'ambiguous', 'succeeded', 'already_communicated'))

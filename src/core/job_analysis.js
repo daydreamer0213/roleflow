@@ -393,7 +393,9 @@ function compactAnalysis(configs, parts) {
     decisionSource: "model",
     error: "",
     errorCode: "",
-    realRoleType: understanding.realRoleType || "unknown",
+    realRoleType: job.employmentType && job.employmentType !== "unknown"
+      ? job.employmentType
+      : understanding.realRoleType || "",
     industryContext: understanding.industryContext || "未明确",
     selectedTrackId: decision.selectedTrackId || "",
     selectedTrackLabel: decision.selectedTrackLabel || "",
@@ -518,7 +520,14 @@ function applyRuleGuard(analysis, job) {
   // 一、本地已确认的基础边界不依赖模型语义，可直接排除。
   if (gate === "blocked") {
     const semanticStatus = analysis.semanticStatus === "complete" ? "complete" : "blocked";
-    return addGuard(analysis, "not_recommended", "no_fit", "已确认的基础条件不满足。", semanticStatus, "hard_boundary");
+    return addGuard(
+      analysis,
+      "not_recommended",
+      "no_fit",
+      hardBoundaryReason(job, qualityTags),
+      semanticStatus,
+      "hard_boundary"
+    );
   }
 
   // 二、技术失败和证据未完成不伪装成四档建议。模型 hardBlocker 与岗位风险
@@ -576,6 +585,16 @@ function applyRuleGuard(analysis, job) {
   };
 
   // 五、已有产品安全信号只能向下封顶，不能反向提升。
+  if (qualityTags.has("eligibility_review") && guarded.recommendation !== "not_recommended") {
+    guarded = addGuard(
+      guarded,
+      capRecommendationTier(guarded.recommendation, "caution"),
+      guarded.fitLevel,
+      "资格待确认：岗位存在届别或在校条件，需要确认后再决定。",
+      guarded.semanticStatus,
+      "eligibility_review_guard"
+    );
+  }
   if (qualityTags.has("experience_stretch") || qualityTags.has("experience_overrange") || qualityTags.has("experience_salary_overlap")) {
     guarded = capGuard(
       guarded,
@@ -628,6 +647,21 @@ function applyRuleGuard(analysis, job) {
   }
 
   return guarded;
+}
+
+function hardBoundaryReason(job, qualityTags) {
+  const risks = Array.isArray(job?.risks) ? job.risks.filter(Boolean) : [];
+  const selectors = [
+    ["cohort_mismatch", /届|毕业年份/],
+    ["student_status_mismatch", /在校|已毕业/],
+    ["internship_role", /实习/]
+  ];
+  for (const [tag, pattern] of selectors) {
+    if (!qualityTags.has(tag)) continue;
+    const risk = risks.find((item) => pattern.test(String(item)));
+    if (risk) return risk;
+  }
+  return "已确认的基础条件不满足。";
 }
 
 function effectiveSemanticMatchingMode(configs = {}) {

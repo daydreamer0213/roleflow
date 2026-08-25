@@ -2462,13 +2462,17 @@ function resolveCityScopes(args, planRecord, configs) {
 
 function ruleGateAnalysis(job, gate) {
   const blocked = gate === "blocked";
+  const eligibilityBlocked = blocked && job.eligibilityStatus === "blocked";
+  const eligibilityReason = eligibilityBlocked
+    ? (job.risks || []).find((item) => /实习|届|毕业|在校/.test(String(item))) || "岗位资格条件与候选人事实不符。"
+    : "";
   return {
     provider: "rule-gate",
     model: "",
     semanticStatus: blocked ? "blocked" : "refresh",
     decisionSource: blocked ? "hard_boundary" : "source_refresh",
     error: "",
-    realRoleType: "",
+    realRoleType: job.employmentType && job.employmentType !== "unknown" ? job.employmentType : "",
     businessScenario: "",
     recommendation: blocked ? "not_recommended" : null,
     decisionStatus: blocked ? "decided" : "needs_retry",
@@ -2478,14 +2482,21 @@ function ruleGateAnalysis(job, gate) {
     recommendedResumeVersion: "",
     recommendedResumeVersionName: "",
     primaryProjects: [],
-    fitReasons: [blocked ? "基础条件不满足，未进入模型匹配。" : "招聘方活跃状态未确认，等待刷新后再进入投递队列。"],
+    fitReasons: [blocked
+      ? eligibilityReason || "基础条件不满足，未进入模型匹配。"
+      : "招聘方活跃状态未确认，等待刷新后再进入投递队列。"],
     hardBlockers: [],
     softGaps: [],
     questionsToVerify: job.risks || [],
     missingPoints: [],
     blockingGaps: [],
     riskQuestions: job.risks || [],
-    evidence: { jd: [], resume: [] },
+    evidence: eligibilityBlocked
+      ? {
+        jd: job.eligibilityEvidence?.job || [],
+        resume: job.eligibilityEvidence?.candidate || []
+      }
+      : { jd: [], resume: [] },
     greetingAngle: "",
     greeting: ""
   };
@@ -2913,5 +2924,6 @@ module.exports = {
   runWithBoundBossScanBrowser,
   persistBossRiskControl,
   executeTrackedScanRun,
-  resolveCityScopes
+  resolveCityScopes,
+  ruleGateAnalysis
 };

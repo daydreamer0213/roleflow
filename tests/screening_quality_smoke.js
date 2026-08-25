@@ -25,6 +25,7 @@ const {
 } = require("../src/core/platform_runtime_policy");
 const { scoreJob, decisionState, activeDays } = require("../src/core/scoring");
 const { applyRuleGuard } = require("../src/core/job_analysis");
+const { ruleGateAnalysis } = require("../src/cli");
 const { extractJobMetadata } = require("../src/core/job_metadata");
 const { normalizeSearchPlan, normalizeBossActiveDays } = require("../src/core/profile_schema");
 const {
@@ -527,6 +528,43 @@ assert.strictEqual(decisionState(knowledgeTrainer), "ready");
 const internshipRole = scoreJob(job({ title: "大模型应用开发实习生", bossActiveText: "今日活跃" }), configs);
 assert(internshipRole.qualityTags.includes("internship_role"));
 assert.strictEqual(decisionState(internshipRole), "blocked");
+const eligibilityConfigs = {
+  ...configs,
+  targetPolicy: { jobTypes: ["全职"] },
+  candidateProfile: {
+    ...configs.candidateProfile,
+    education: [{ school: "测试大学", endDate: "2024-06", status: "已毕业" }]
+  }
+};
+const postJdInternship = scoreJob(job({
+  title: "AI 应用开发工程师",
+  description: "负责 Python、RAG 与 Agent 应用开发。实习周期 4-6 个月，每周到岗 5 天。"
+}), eligibilityConfigs);
+assert.strictEqual(postJdInternship.eligibilityStatus, "blocked");
+assert.strictEqual(postJdInternship.employmentType, "internship");
+assert(postJdInternship.qualityTags.includes("internship_role"));
+assert.strictEqual(decisionState(postJdInternship), "blocked");
+
+const postJdCohortMismatch = scoreJob(job({
+  title: "AI 应用开发工程师",
+  description: "负责 Python、RAG 与 Agent 应用开发。任职要求：26/27届毕业生，熟悉 Python。"
+}), eligibilityConfigs);
+assert.strictEqual(postJdCohortMismatch.eligibilityStatus, "blocked");
+assert(postJdCohortMismatch.qualityTags.includes("cohort_mismatch"));
+assert.strictEqual(decisionState(postJdCohortMismatch), "blocked");
+const cohortRuleGate = ruleGateAnalysis(postJdCohortMismatch, "blocked");
+assert.strictEqual(cohortRuleGate.recommendation, "not_recommended");
+assert.match(cohortRuleGate.fitReasons[0], /毕业年份不符合/);
+assert(cohortRuleGate.evidence.jd.some((item) => /26\/27届/.test(item)));
+assert(cohortRuleGate.evidence.resume.some((item) => /2024/.test(item)));
+
+const internshipExperiencePreference = scoreJob(job({
+  title: "AI 应用开发工程师",
+  description: "这是全职岗位，负责 Python 与 RAG 应用开发；有互联网实习经验优先。"
+}), eligibilityConfigs);
+assert.strictEqual(internshipExperiencePreference.eligibilityStatus, "eligible");
+assert(!internshipExperiencePreference.qualityTags.includes("internship_role"));
+assert.strictEqual(decisionState(internshipExperiencePreference), "ready");
 const algorithmRole = scoreJob(job({ title: "RAG 算法工程师", bossActiveText: "今日活跃" }), configs);
 assert(!algorithmRole.qualityTags.includes("algorithm_role"));
 assert.strictEqual(decisionState(algorithmRole), "ready");
