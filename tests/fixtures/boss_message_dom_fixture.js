@@ -19,6 +19,12 @@ class FixtureElement {
     return this.children[selector] || null;
   }
 
+  querySelectorAll(selector) {
+    const value = this.children[selector];
+    if (!value) return [];
+    return Array.isArray(value) ? value : [value];
+  }
+
   getAttribute(name) {
     return this.attributes[name] || null;
   }
@@ -91,4 +97,69 @@ function createBossMessageDomFixture() {
   };
 }
 
-module.exports = { createBossMessageDomFixture, FixtureElement };
+function createStructuredBossMessageDomFixture({ resumeIcon = true, plainText = "请问你的英语和粤语水平如何？" } = {}) {
+  const documentLike = createBossMessageDomFixture();
+  const platformButton = new FixtureElement({
+    classes: ["card-btn", "one-btn"],
+    textContent: "查看详细分析"
+  });
+  const platformCard = new FixtureElement({
+    classes: ["message-card-wrap", "blue"],
+    textContent: "你与该职位竞争者PK情况 查看详细分析",
+    children: {
+      ".message-card-top-title": new FixtureElement({ textContent: "你与该职位竞争者PK情况" }),
+      ".card-btn": [platformButton],
+      ".card-btn.one-btn": platformButton
+    }
+  });
+  const resumeButtons = new FixtureElement({
+    classes: ["message-card-buttons"],
+    children: {
+      ".card-btn": [
+        new FixtureElement({ classes: ["card-btn"], textContent: "拒绝" }),
+        new FixtureElement({ classes: ["card-btn"], textContent: "同意" })
+      ]
+    }
+  });
+  const resumeChildren = {
+    ".message-card-top-title.message-card-top-text": new FixtureElement({
+      classes: ["message-card-top-title", "message-card-top-text"],
+      textContent: "我想要一份您的附件简历，您是否同意"
+    }),
+    ".message-card-buttons": resumeButtons
+  };
+  if (resumeIcon) {
+    resumeChildren[".dialog-icon.resume"] = new FixtureElement({ classes: ["dialog-icon", "resume"] });
+  }
+  const resumeCard = new FixtureElement({
+    classes: ["message-dialog-both", "message-card-wrap", "boss-green"],
+    textContent: "我想要一份您的附件简历，您是否同意 拒绝 同意",
+    children: resumeChildren
+  });
+  const messages = [
+    new FixtureElement({
+      classes: ["message-item", "item-friend"],
+      textContent: "你与该职位竞争者PK情况 查看详细分析",
+      attributes: { "data-mid": "123456789012350" },
+      children: { ".message-card-wrap": platformCard }
+    }),
+    new FixtureElement({
+      classes: ["message-item", "item-friend"],
+      textContent: plainText,
+      attributes: { "data-mid": "123456789012351" }
+    }),
+    new FixtureElement({
+      classes: ["message-item", "item-friend"],
+      textContent: "我想要一份您的附件简历，您是否同意 拒绝 同意",
+      attributes: { "data-mid": "123456789012352" },
+      children: { ".message-card-wrap": resumeCard }
+    })
+  ];
+  const originalQuerySelectorAll = documentLike.querySelectorAll.bind(documentLike);
+  documentLike.querySelectorAll = (selector) => selector === ".message-item"
+    ? messages
+    : originalQuerySelectorAll(selector);
+  return documentLike;
+}
+
+module.exports = { createBossMessageDomFixture, createStructuredBossMessageDomFixture, FixtureElement };

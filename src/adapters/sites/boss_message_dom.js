@@ -59,7 +59,39 @@ function messageContentKind(item) {
   if (item.matches(".item-voice")) return "voice";
   if (item.matches(".item-image")) return "image";
   if (item.matches(".item-attachment")) return "attachment";
-  return "text";
+  const card = item.querySelector(".message-card-wrap");
+  if (!card) return "text";
+  if (isResumeRequestCard(card)) return "resume_request";
+  if (isCompetitionNoticeCard(card)) return "platform_notice";
+  return "unknown";
+}
+
+function isResumeRequestCard(card) {
+  const title = normalizedText(card.querySelector(".message-card-top-title.message-card-top-text")?.textContent);
+  const buttonRegion = card.querySelector(".message-card-buttons");
+  const actions = buttonTexts(buttonRegion);
+  return card.matches(".boss-green")
+    && Boolean(card.querySelector(".dialog-icon.resume"))
+    && /附件简历/.test(title)
+    && /是否同意/.test(title)
+    && actions.length === 2
+    && actions[0] === "拒绝"
+    && actions[1] === "同意";
+}
+
+function isCompetitionNoticeCard(card) {
+  const title = normalizedText(card.querySelector(".message-card-top-title")?.textContent);
+  const buttons = [...card.querySelectorAll(".card-btn")];
+  return card.matches(".blue")
+    && !card.querySelector(".dialog-icon.resume")
+    && /竞争/.test(title)
+    && buttons.length === 1
+    && buttons[0].matches(".one-btn")
+    && normalizedText(buttons[0].textContent) === "查看详细分析";
+}
+
+function buttonTexts(region) {
+  return region ? [...region.querySelectorAll(".card-btn")].map((button) => normalizedText(button.textContent)) : [];
 }
 
 function codedError(code, message) {
@@ -201,7 +233,12 @@ const BOSS_MESSAGE_PAGE_HELPERS_EXPRESSION = String.raw`(() => {
     }
     return hash.map((number) => number.toString(16).padStart(8, "0")).join("");
   };
-  const rowKey = (prefix, names, row, label) => { const id = String(names.map((name) => row.getAttribute(name)).find((value) => value != null && String(value).trim()) || "").trim(); return "sha256:" + sha256(canonical([prefix, id ? "id:" + id : "label:" + text(label)])); }; const recruiterKey = (row, label) => rowKey("recruiter", ["data-recruiter-id", "data-geek-id"], row, label); const conversationKey = (row, label) => rowKey("conversation", ["data-conversation-id", "data-encid"], row, label); const previewKind = (row, value) => { if (row && row.querySelector && row.querySelector(".status-read")) return "self_read"; if (row && row.querySelector && row.querySelector(".status-delivery")) return "self_delivered"; const textValue = text(value); if (/^\[送达\]/.test(textValue)) return "self_delivered"; if (/^\[已读\]/.test(textValue)) return "self_read"; if (/对方已同意|附件简历已发送|已投递成功/.test(textValue)) return "platform_notice"; if (/\[语音\]|\[图片\]|\[文件\]/.test(textValue)) return "unsupported"; return textValue ? "possible_hr_reply" : "unknown"; }; const contentKind = (item) => { if (item.matches(".item-voice")) return "voice"; if (item.matches(".item-image")) return "image"; if (item.matches(".item-attachment")) return "attachment"; return "text"; }; const signature = (row) => "sha256:" + sha256(canonical([row.rowIndex, row.recruiterLabel, row.previewText, row.unread]));
+  const rowKey = (prefix, names, row, label) => { const id = String(names.map((name) => row.getAttribute(name)).find((value) => value != null && String(value).trim()) || "").trim(); return "sha256:" + sha256(canonical([prefix, id ? "id:" + id : "label:" + text(label)])); }; const recruiterKey = (row, label) => rowKey("recruiter", ["data-recruiter-id", "data-geek-id"], row, label); const conversationKey = (row, label) => rowKey("conversation", ["data-conversation-id", "data-encid"], row, label); const previewKind = (row, value) => { if (row && row.querySelector && row.querySelector(".status-read")) return "self_read"; if (row && row.querySelector && row.querySelector(".status-delivery")) return "self_delivered"; const textValue = text(value); if (/^\[送达\]/.test(textValue)) return "self_delivered"; if (/^\[已读\]/.test(textValue)) return "self_read"; if (/对方已同意|附件简历已发送|已投递成功/.test(textValue)) return "platform_notice"; if (/\[语音\]|\[图片\]|\[文件\]/.test(textValue)) return "unsupported"; return textValue ? "possible_hr_reply" : "unknown"; };
+  const buttonTexts = (region) => region ? Array.from(region.querySelectorAll(".card-btn"), (button) => text(button.textContent)) : [];
+  const resumeRequestCard = (card) => { const title = text(card.querySelector(".message-card-top-title.message-card-top-text")?.textContent); const actions = buttonTexts(card.querySelector(".message-card-buttons")); return card.matches(".boss-green") && Boolean(card.querySelector(".dialog-icon.resume")) && /附件简历/.test(title) && /是否同意/.test(title) && actions.length === 2 && actions[0] === "拒绝" && actions[1] === "同意"; };
+  const competitionNoticeCard = (card) => { const title = text(card.querySelector(".message-card-top-title")?.textContent); const buttons = Array.from(card.querySelectorAll(".card-btn")); return card.matches(".blue") && !card.querySelector(".dialog-icon.resume") && /竞争/.test(title) && buttons.length === 1 && buttons[0].matches(".one-btn") && text(buttons[0].textContent) === "查看详细分析"; };
+  const contentKind = (item) => { if (item.matches(".item-voice")) return "voice"; if (item.matches(".item-image")) return "image"; if (item.matches(".item-attachment")) return "attachment"; const card = item.querySelector(".message-card-wrap"); if (!card) return "text"; if (resumeRequestCard(card)) return "resume_request"; if (competitionNoticeCard(card)) return "platform_notice"; return "unknown"; };
+  const signature = (row) => "sha256:" + sha256(canonical([row.rowIndex, row.recruiterLabel, row.previewText, row.unread]));
   const visible = (element) => { const rect = element.getBoundingClientRect(); const style = getComputedStyle(element); return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden"; };
   window.__bossMessageSnapshot = function() {
     const path = location.pathname;

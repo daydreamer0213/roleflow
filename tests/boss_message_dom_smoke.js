@@ -10,7 +10,11 @@ const {
   BOSS_MESSAGE_SNAPSHOT_EXPRESSION,
   BOSS_MESSAGE_SELECTED_JOB_TARGET_EXPRESSION
 } = require("../src/adapters/sites/boss_message_dom");
-const { createBossMessageDomFixture, FixtureElement } = require("./fixtures/boss_message_dom_fixture");
+const {
+  createBossMessageDomFixture,
+  createStructuredBossMessageDomFixture,
+  FixtureElement
+} = require("./fixtures/boss_message_dom_fixture");
 
 const documentLike = createBossMessageDomFixture();
 const snapshot = snapshotBossMessagePage(documentLike, "https://www.zhipin.com/web/geek/chat");
@@ -166,6 +170,33 @@ assert.deepStrictEqual(
   Array.from(browserSnapshot.rows, (row) => row.transientSignature),
   snapshot.rows.map((row) => row.transientSignature),
   "browser and Node snapshots must use the same synchronous transient signature"
+);
+
+const structuredDocument = createStructuredBossMessageDomFixture();
+const structuredSnapshot = snapshotBossMessagePage(structuredDocument, "https://www.zhipin.com/web/geek/chat");
+assert.deepStrictEqual(
+  structuredSnapshot.messages.map((item) => item.contentKind),
+  ["platform_notice", "text", "resume_request"],
+  "verified platform, plain-text, and resume-card structures must route independently"
+);
+const structuredBrowserSnapshot = runBrowserSnapshot(structuredDocument, "https://www.zhipin.com/web/geek/chat");
+assert.deepStrictEqual(
+  Array.from(structuredBrowserSnapshot.messages, (item) => item.contentKind),
+  ["platform_notice", "text", "resume_request"],
+  "browser and Node snapshots must agree on verified structured message kinds"
+);
+
+const missingIconDocument = createStructuredBossMessageDomFixture({ resumeIcon: false });
+assert.strictEqual(
+  snapshotBossMessagePage(missingIconDocument, "https://www.zhipin.com/web/geek/chat").messages[2].contentKind,
+  "unknown",
+  "a card missing the verified resume icon must never fall through to text"
+);
+const keywordTextDocument = createStructuredBossMessageDomFixture({ plainText: "我同意补充附件简历信息" });
+assert.strictEqual(
+  snapshotBossMessagePage(keywordTextDocument, "https://www.zhipin.com/web/geek/chat").messages[1].contentKind,
+  "text",
+  "plain text mentioning resume actions must remain plain text"
 );
 
 console.log("boss_message_dom_smoke ok");
