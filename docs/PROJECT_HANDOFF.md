@@ -49,7 +49,7 @@
 
 - 危险夹具扫描、`npm test`、installer `StageOnly`、`git diff --check` 和 `git status --short` 均为当前候选的必做离线门禁。
 - 本轮实现提交依次为 `34fdea0`（专用 Edge 工作区自愈）、`4961db2`（JD 后岗位资格闸门）、`995ad3e`（专用 Edge 沟通验证能力）、`e1396a1`（最小化窗口自愈与升级互斥）和 `508781d`（网页兼容字形下的实习证据识别）。
-- 已验收安装包位于 `D:\DevData\RoleFlow-installer\acceptance-508781d\output\RoleFlow-Setup-1.0.0.exe`，SHA-256 为 `4b032feabd0a8f26390dfdd1e6253a3a34b13de70f278c97aefb5f614be795fb`。合并后的 `main` 还会在 `D:` 独立重建安装包；它们都不是已发布资产。
+- 已验收安装包位于 `D:\DevData\RoleFlow-installer\acceptance-508781d\output\RoleFlow-Setup-1.0.0.exe`，SHA-256 为 `4b032feabd0a8f26390dfdd1e6253a3a34b13de70f278c97aefb5f614be795fb`。已推送 `main@26ba903` 的重建包位于 `D:\DevData\RoleFlow-installer\main-26ba903\output\RoleFlow-Setup-1.0.0.exe`，SHA-256 为 `f97d8fbf110b4745599804bd7024a757ac78def71601a03a77992fe33dba2ba6`；该包未签名，也未上传为 GitHub Release。
 - 当前版本覆盖升级第一次成功，桌面快捷方式存在，安装后的关键源码哈希与候选一致；启动后应用、浏览器和工作区均为 `ready`，同窗口自动补齐搜索页、消息页和 Dashboard。
 - 最新真实只读基线运行 `0b747bea-3332-41f0-ad3d-36fa257cc3c4`：3/3 搜索目标完成，35 个岗位入库，所需 JD 28/28，35/35 分析到达终态；其中 26 次首轮模型分析成功、7 个硬规则/详情前置项跳过、2 个模型结构错误经本地批量重试后解决。最终队列为主投 6、可投 5、慎投 13、不推荐 10、另有 1 个活跃状态待核验、待语义分析 0。
 - 真实样本中标题未写实习、日薪且 JD 使用兼容字形 `⽉` 的岗位已由规则闸门判为 `internship_role` / 不建议，未进入确认清单。当前数据库中沟通批次和沟通项均为 0；本轮未出现 `BROWSER_TIMEOUT`、风险控制或页面丢失。

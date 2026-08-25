@@ -32,6 +32,7 @@
 - 独立禁入扫描检查了 3,144 个暂存条目，没有发现 profile、测试、SQLite、Key、`.env`、secrets、运行目录、报告/日志或 Edge Control bridge。
 - `git diff --check` 和最终 107 项离线回归均通过；实现提交后工作树干净。
 - 完整安装包：`D:\DevData\RoleFlow-installer\acceptance-508781d\output\RoleFlow-Setup-1.0.0.exe`，SHA-256 `4b032feabd0a8f26390dfdd1e6253a3a34b13de70f278c97aefb5f614be795fb`。当前版本覆盖升级第一次成功，桌面快捷方式、启动和三页工作区均通过。
+- 已推送 `main@26ba903` 的重建包：`D:\DevData\RoleFlow-installer\main-26ba903\output\RoleFlow-Setup-1.0.0.exe`，SHA-256 `f97d8fbf110b4745599804bd7024a757ac78def71601a03a77992fe33dba2ba6`，大小 39,892,274 字节。该产物未签名、未发布。
 - 最新真实只读运行 `0b747bea-3332-41f0-ad3d-36fa257cc3c4` 已停在 `review_required`：3/3 搜索目标、35 个岗位、28/28 份所需 JD、待语义分析 0；隐藏实习样本被硬拦截，沟通批次为 0，未出现浏览器超时或风险控制。
 
 ## 下一项开发顺序
