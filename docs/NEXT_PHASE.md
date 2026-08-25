@@ -1,6 +1,6 @@
 # RoleFlow 下一阶段主控索引
 
-> 更新于 2026-08-24。当前工作对象是尚未发布的 stable dedicated Edge source candidate，不是已发布 v1.0.0 的补丁说明。
+> 更新于 2026-08-25。当前工作对象是尚未发布的 stable dedicated Edge source candidate，不是已发布 v1.0.0 的补丁说明。
 
 ## 当前结论
 
@@ -11,21 +11,24 @@
 - 用户启动工作区时可以有一次前台引导，之后所有产品工作都保持后台。
 - 迁移显式、只复制并保留源；普通/静默卸载保留 profile，删除需要独立确认。
 - 启动测试不再创建假的 `msedge.exe`；Edge Control 不进入普通安装包。
+- 工作区会主动补齐专用 Edge 和固定 BOSS 页面；除启动引导外不抢占前台。
+- 完整 JD 后增加岗位资格闸门，明确不符合实习/届别/在校要求的岗位不会进入推荐或沟通。
+- 专用 Edge 已具备受限网络结果验证能力；能力或观察准备失败发生在点击账本之前。
 
 ## 当前门禁
 
 状态：**已通过**。
 
-2026-08-24 在 HEAD `f384896227948926f9e3af515804ce8df9e04ab3` 加 Task 8 fix round 2 工作树上运行 `node tests/run_all.js`，退出码为 0，101/101 项通过，原始末行为 `All 101 offline checks passed.`。这不是尚未产生的修正提交 SHA，也不代表已经完成真实 Edge、BOSS、安装或卸载验收。
+2026-08-25 在实现提交 `995ad3e4a6e1493513e5edde9d88ecc2396429c1` 上运行 `npm test`，退出码为 0，107/107 项通过，原始末行为 `All 107 offline checks passed.`。这不代表已经完成真实 Edge、BOSS、安装或卸载验收。
 
-## Task 8 已完成记录
+## 本轮已完成记录
 
-- Installer `StageOnly` 已在 `D:\DevData\RoleFlow-installer\offline-gate-5e2587006b1a43d0832fa3d3dd75b695\stage\1.0.0` 完成。
-- 独立禁入扫描检查了 3,145 个暂存条目，没有发现 profile、测试、SQLite、Key、`.env`、secrets、运行目录、报告/日志或 Edge Control bridge。
-- `git diff --check` 已通过；提交前 `git status --short` 只包含获批的 Task 8 文档、用户文案和既有测试夹具迁移。
-- Task 8 candidate commit 已生成：`e5916ce56eb4d0f88fbbcdf1a1fa8494f68d5da2`。
-
-`e5916ce56eb4d0f88fbbcdf1a1fa8494f68d5da2` 只是进入本轮修正文案前的 Task 8 candidate commit，不是最终 candidate source SHA。Task 9 将在所有修正提交完成后，从干净工作树的实际 HEAD 读取并记录真实 candidate source SHA。
+- `34fdea0`：专用 Edge、固定页和登录等待的单飞自愈。
+- `4961db2`：完整 JD 后的岗位资格判断与沟通清单拦截。
+- `995ad3e`：专用 Edge 原生沟通网络观察、点击前能力预检和安全顺序收敛。
+- Installer `StageOnly` 已在 `D:\DevData\RoleFlow-installer\candidate-995ad3e4a6e1\stage\1.0.0` 完成。
+- 独立禁入扫描检查了 3,144 个暂存条目，没有发现 profile、测试、SQLite、Key、`.env`、secrets、运行目录、报告/日志或 Edge Control bridge。
+- `git diff --check` 和最终 107 项离线回归均通过；实现提交后工作树干净。
 
 ## 本阶段不做
 
@@ -41,5 +44,8 @@
 
 - 真实浏览器检查保持串行、低频、后台和失败即停。
 - 任何外部写仅限用户确认的不可变批次；不自动重试歧义结果。
+- 旧中断批次不恢复、不重放。真实沟通验收必须使用新建的单岗位不可变批次，并针对该条外部写取得明确授权。
+- 筛选质量验收前建立新的空 operational baseline，保留画像、简历、搜索方案和模型设置；旧岗位历史只作恢复证据。
+- 正式安装包版本号、安装、签名、推送、合并和发布仍分别等待用户决策或授权；StageOnly 目录不是可发布安装包。
 - 不以减少 JD 覆盖、召回或推荐质量换取速度。
 - Edge Control 仍只属于显式高级路径，不进入普通交付包。
