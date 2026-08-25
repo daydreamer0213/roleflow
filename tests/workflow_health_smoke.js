@@ -14,6 +14,7 @@ const {
   confirmMatchingCard,
   createBatch,
   upsertJob,
+  insertWorkflowJobTaskRow,
   markCandidateJob,
   recordCandidateJobEvent,
   listCandidateJobEvents,
@@ -21,6 +22,7 @@ const {
   getWorkflowHealthSnapshot
 } = require("../src/core/storage");
 const { matchingCardFromProfile } = require("../src/core/matching_card");
+const { getWorkflowProgressSnapshot } = require("../src/core/workflow_progress");
 
 const now = "2026-08-03T08:00:00.000Z";
 const snapshot = {
@@ -374,8 +376,132 @@ try {
   const selectedWorkflowIds = new Set(boundedSnapshot.workflowRuns.map((run) => run.id));
   assert(boundedSnapshot.linkIssues.every((issue) => selectedWorkflowIds.has(issue.workflowId)));
 
+  resolvedFailureHealthRegression(db, saved);
+
   console.log("workflow_health_smoke ok");
 } finally {
   try { db?.close(); } catch {}
   fs.rmSync(root, { recursive: true, force: true });
+}
+
+function resolvedFailureHealthRegression(database, saved) {
+  const originalBatchId = createBatch(database, "boss", "health-resolved-failure", "health resolved failure", {
+    profileId: saved.profileId,
+    searchPlanId: saved.planId
+  });
+  const sourceId = "health-resolved-failure-job";
+  const originalJob = {
+    source: "boss",
+    sourceId,
+    keyword: "Product Operations",
+    title: "Resolved analysis failure",
+    company: "Test Company",
+    location: "Guangzhou",
+    salary: "8-12K",
+    experience: "1-3 years",
+    education: "Bachelor",
+    url: `https://example.test/job/${sourceId}`,
+    description: "Complete job description and requirements. ".repeat(20),
+    tags: [],
+    matches: [],
+    risks: [],
+    qualityTags: [],
+    analysis: { semanticStatus: "failed", recommendation: "caution" }
+  };
+  const jobId = upsertJob(database, originalJob, originalBatchId);
+  const observationId = Number(database.prepare(`
+    SELECT id FROM job_observations WHERE batch_id = ? AND job_id = ?
+  `).get(originalBatchId, jobId).id);
+  const workflow = createWorkflowRun(database, {
+    id: "health-resolved-failure-workflow",
+    profileId: saved.profileId,
+    planId: saved.planId,
+    localDay: "2026-08-05",
+    sequence: 1,
+    targetSuccessCount: 1,
+    successfulCount: 0,
+    inventoryCount: 1,
+    candidateGap: 0,
+    scanNeeded: false,
+    keywords: [],
+    budget: {},
+    planner: {},
+    metrics: {},
+    modelConfigRevision: "health-resolved-failure-revision",
+    createdAt: "2026-08-05T00:00:00.000Z"
+  });
+  insertWorkflowJobTaskRow(database, {
+    workflowRunId: workflow.id,
+    batchId: originalBatchId,
+    jobId,
+    observationId,
+    position: 1,
+    status: "failed",
+    recoveryGeneration: 0,
+    modelConfigRevision: "health-resolved-failure-revision",
+    now: "2026-08-05T00:00:01.000Z"
+  });
+  const taskId = Number(database.prepare(`
+    SELECT id FROM workflow_job_tasks WHERE workflow_run_id = ? AND job_id = ?
+  `).get(workflow.id, jobId).id);
+  database.prepare(`
+    INSERT INTO job_analysis_attempts(
+      workflow_run_id, task_id, job_id, recovery_generation, attempt_in_generation,
+      total_attempt_number, profile_kind, model_config_revision, provider, model,
+      thinking_mode, reasoning_effort, backup_used, status, error_code, error_stage,
+      retryable, model_call_count, prompt_tokens, completion_tokens, total_tokens,
+      started_at, finished_at, latency_ms, created_at, updated_at
+    ) VALUES (?, ?, ?, 0, 1, 1, 'batch_screening', ?, 'mock', 'offline',
+      'disabled', 'high', 0, 'failed', 'MODEL_CALL_FAILED', 'model_call',
+      1, 1, 0, 0, 0, ?, ?, 1000, ?, ?)
+  `).run(
+    workflow.id,
+    taskId,
+    jobId,
+    "health-resolved-failure-revision",
+    "2026-08-05T00:00:01.000Z",
+    "2026-08-05T00:00:02.000Z",
+    "2026-08-05T00:00:01.000Z",
+    "2026-08-05T00:00:02.000Z"
+  );
+
+  const retryBatchId = createBatch(database, "boss", "analysis-retry", "health retry success", {
+    profileId: saved.profileId,
+    searchPlanId: saved.planId
+  });
+  upsertJob(database, {
+    ...originalJob,
+    analysis: {
+      semanticStatus: "complete",
+      decisionStatus: "decided",
+      decisionSource: "model",
+      recommendation: "apply"
+    }
+  }, retryBatchId);
+
+  const progress = getWorkflowProgressSnapshot(database, { workflowRunId: workflow.id });
+  assert.strictEqual(progress.progress.analysis.historicalFailed, 1);
+  assert.strictEqual(progress.progress.analysis.resolvedAfterFailure, 1);
+  assert.strictEqual(progress.progress.analysis.unresolvedFailed, 0);
+  const failedAttempt = database.prepare(`
+    SELECT status, error_code FROM job_analysis_attempts WHERE task_id = ?
+  `).get(taskId);
+  assert.strictEqual(failedAttempt.status, "failed");
+  assert.strictEqual(failedAttempt.error_code, "MODEL_CALL_FAILED");
+
+  const snapshot = getWorkflowHealthSnapshot(database, {
+    profileId: saved.profileId,
+    planId: saved.planId,
+    now,
+    jobLimit: 9999,
+    workflowLimit: 499,
+    eventLimit: 199
+  });
+  const report = buildWorkflowHealthReport(snapshot, { now });
+  assert.strictEqual(
+    report.issues.some((issue) => issue.entityId === String(jobId)
+      && issue.code === HEALTH_ISSUE_CODES.ANALYSIS_INCOMPLETE),
+    false,
+    "a preserved historical failure must not make the latest successful analysis incomplete"
+  );
 }
