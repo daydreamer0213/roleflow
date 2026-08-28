@@ -18,7 +18,9 @@ const {
   getSiteRuntimeState,
   setSiteRuntimeState,
   clearSiteRuntimeState,
-  listSiteAccessEvents
+  listSiteAccessEvents,
+  recordMessageReplyDrafts,
+  closeMessageReplyDrafts
 } = require("../src/core/storage");
 const {
   ensureProgressCard,
@@ -70,6 +72,7 @@ main().catch((error) => {
 });
 
 async function main() {
+  durableDraftRecoverySmoke();
   await controllerBrowserAuthoritySmoke();
   await detailSafetyCompositionSmoke();
   await dashboardSignalShutdownSmoke();
@@ -1733,6 +1736,52 @@ function assertNoDraftMessagesInJson(value) {
   const text = typeof value === "string" ? value : JSON.stringify(value);
   assert(!text.includes('"messages"'), "message discovery JSON must use an explicit safe-field whitelist");
   assert(!text.includes(PRIVATE_DRAFT), "message discovery JSON must not expose draft text");
+}
+
+function durableDraftRecoverySmoke() {
+  const durableDb = openDb(":memory:");
+  try {
+    const now = "2026-08-28T03:00:00.000Z";
+    const profileId = Number(durableDb.prepare(`INSERT INTO candidate_profiles(
+      display_name, profile_json, source_hash, created_at, updated_at
+    ) VALUES ('Durable candidate', '{}', NULL, ?, ?)`).run(now, now).lastInsertRowid);
+    const planId = Number(durableDb.prepare(`INSERT INTO search_plans(
+      profile_id, name, plan_json, profile_version_id, is_active, created_at, updated_at
+    ) VALUES (?, 'Durable plan', '{}', NULL, 1, ?, ?)`).run(profileId, now, now).lastInsertRowid);
+    const jobId = Number(durableDb.prepare(`INSERT INTO jobs(
+      source, source_id, title, company, salary, first_seen_at, last_seen_at
+    ) VALUES ('boss', 'durable-job', '持久化岗位', '持久化公司', '20-30K', ?, ?)`)
+      .run(now, now).lastInsertRowid);
+    const cardId = Number(durableDb.prepare(`INSERT INTO candidate_progress_cards(
+      profile_id, plan_id, job_id, source, stage, next_action, last_event_at, created_at, updated_at
+    ) VALUES (?, ?, ?, 'boss', 'reply_ready', 'Review draft before manual send', ?, ?, ?)`)
+      .run(profileId, planId, jobId, now, now, now).lastInsertRowid);
+    const draft = recordMessageReplyDrafts(durableDb, {
+      profileId,
+      cardId,
+      jobId,
+      messageGroupKey: `sha256:${"d".repeat(64)}`,
+      questionSummary: "对方正在确认候选人的任职资格。",
+      messageIntent: "information_request",
+      messageCategory: "qualification",
+      messages: [PRIVATE_DRAFT],
+      createdAt: now
+    })[0];
+    const controller = createMessageDiscoveryController({ db: durableDb });
+    const pageState = controller.pageState(profileId);
+    assert.strictEqual(pageState.status, "completed");
+    assert.strictEqual(pageState.results[0].drafts[0].id, draft.id);
+    assert.strictEqual(pageState.results[0].drafts[0].text, PRIVATE_DRAFT);
+    assert.strictEqual(pageState.results[0].job.title, "持久化岗位");
+    const publicStatus = controller.status(profileId);
+    assert(!JSON.stringify(publicStatus).includes(PRIVATE_DRAFT), "durable draft text must stay out of public status JSON");
+    assert(!Object.hasOwn(publicStatus.results[0], "drafts"));
+    controller.clearDraftForCard(profileId, cardId);
+    assert.strictEqual(controller.pageState(profileId).results.length, 0);
+    assert.strictEqual(closeMessageReplyDrafts(durableDb, { profileId, cardId, closedAt: now }), 0, "clearDraftForCard must already close durable rows");
+  } finally {
+    durableDb.close();
+  }
 }
 
 function assertHeadingsInOrder(markup, headings) {

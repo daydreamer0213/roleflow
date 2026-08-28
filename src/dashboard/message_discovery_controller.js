@@ -3,7 +3,7 @@ const { createBossMessageReader } = require("../adapters/sites/boss_message_read
 const { createBossMessageDetailReader } = require("../adapters/sites/boss_message_detail_reader");
 const { BossSiteAdapter } = require("../adapters/sites/boss");
 const { createMessageDiscoveryJobContextResolver } = require("../application/message_discovery/job_context");
-const { runBossMessageDiscovery } = require("../core/message_discovery");
+const { runBossMessageDiscovery, projectMessageDecisionCard } = require("../core/message_discovery");
 const { createMessageReplyAnalyzer } = require("../core/message_reply_analyzer");
 const {
   listUnresolvedMessageDiscoveryItems
@@ -15,7 +15,9 @@ const {
   getSitePacingState,
   setSitePacingState,
   setSiteRuntimeState,
-  recordSiteAccessEvent
+  recordSiteAccessEvent,
+  listOpenMessageReplyDrafts,
+  closeMessageReplyDrafts
 } = require("../core/storage");
 
 const DEFAULT_CLEANUP_MS = 30 * 60 * 1000;
@@ -257,11 +259,21 @@ function createMessageDiscoveryController(deps = {}) {
     const profileId = messageDiscoveryProfileId(profileIdValue);
     clearExpiredRun(profileId);
     const run = runs.get(profileId);
-    if (!run) throw messageDiscoveryError("MESSAGE_DISCOVERY_NOT_FOUND", "message discovery run was not found", 404);
+    if (!run) {
+      const openDrafts = listOpenMessageReplyDrafts(db, { profileId, limit: 500 });
+      if (!openDrafts.length) throw messageDiscoveryError("MESSAGE_DISCOVERY_NOT_FOUND", "message discovery run was not found", 404);
+      for (const cardId of new Set(openDrafts.map((draft) => draft.cardId))) {
+        closeMessageReplyDrafts(db, { profileId, cardId, closedAt: nowDate().toISOString() });
+      }
+      return { statusCode: 200, body: { ...emptyStatus(profileId), status: "dismissed" } };
+    }
     if (run.status === "running") {
       throw messageDiscoveryError("MESSAGE_DISCOVERY_RUNNING", "stop message discovery before dismissing drafts", 409);
     }
     clearRunTimer(run);
+    for (const cardId of new Set(run.results.map((item) => Number(item.cardId)).filter((id) => id > 0))) {
+      closeMessageReplyDrafts(db, { profileId, cardId, closedAt: nowDate().toISOString() });
+    }
     run.results = [];
     run.status = run.unresolved > 0 ? "needs_user_action" : "dismissed";
     if (run.unresolved === 0) run.reasonCode = "";
@@ -275,7 +287,7 @@ function createMessageDiscoveryController(deps = {}) {
     const profileId = messageDiscoveryProfileId(profileIdValue);
     clearExpiredRun(profileId);
     const run = runs.get(profileId);
-    return run ? publicRun(run) : durableStatus(profileId);
+    return run ? publicRun(run) : publicDurableStatus(profileId);
   }
 
   function pageState(profileIdValue) {
@@ -288,13 +300,16 @@ function createMessageDiscoveryController(deps = {}) {
   function clearDraftForCard(profileIdValue, cardIdValue) {
     const profileId = Number(profileIdValue);
     const cardId = Number(cardIdValue);
+    if (Number.isSafeInteger(profileId) && profileId > 0 && Number.isSafeInteger(cardId) && cardId > 0) {
+      closeMessageReplyDrafts(db, { profileId, cardId, closedAt: nowDate().toISOString() });
+    }
     const run = runs.get(profileId);
     if (!run) return;
     const result = run.results.find((item) => Number(item.cardId) === cardId);
     if (!result) return;
     run.clearedCardIds.add(cardId);
     run.results = run.results.map((item) => Number(item.cardId) === cardId
-      ? { ...item, messages: [] }
+      ? { ...item, drafts: [], messages: [] }
       : item);
   }
 
@@ -340,7 +355,7 @@ function createMessageDiscoveryController(deps = {}) {
     if (statusValue.waitUntil !== undefined) run.waitUntil = safeTimestamp(statusValue.waitUntil);
     run.results = sanitizeResults(Array.isArray(statusValue.results) ? statusValue.results : [])
       .map((item) => run.clearedCardIds.has(Number(item.cardId))
-        ? { ...item, messages: [] }
+        ? { ...item, drafts: [], messages: [] }
         : item);
     run.updatedAt = at.toISOString();
     if (run.status === "running") {
@@ -360,6 +375,13 @@ function createMessageDiscoveryController(deps = {}) {
       const messages = Array.isArray(item?.messages)
         ? item.messages.slice(0, 2).map((message) => safeText(message, 4000)).filter(Boolean)
         : [];
+      const drafts = Array.isArray(item?.drafts)
+        ? item.drafts.slice(0, 2).map((draft) => ({
+          id: Math.max(0, Number(draft?.id) || 0),
+          text: safeText(draft?.text, 4000),
+          revision: Math.max(0, Number(draft?.revision) || 0)
+        })).filter((draft) => draft.id > 0 && draft.text)
+        : [];
       return {
         cardId: Math.max(0, Number(item?.cardId) || 0),
         jobId: Math.max(0, Number(item?.jobId) || 0),
@@ -375,6 +397,7 @@ function createMessageDiscoveryController(deps = {}) {
           : "",
         contextComplete: item?.contextComplete === true,
         job: sanitizeJobUnderstanding(item?.job),
+        drafts,
         messages
       };
     });
@@ -448,13 +471,75 @@ function createMessageDiscoveryController(deps = {}) {
   }
 
   function durableStatus(profileId) {
+    const drafts = listOpenMessageReplyDrafts(db, { profileId, limit: 500 });
     const unresolved = listUnresolvedMessageDiscoveryItems(db, { profileId });
-    if (unresolved.length === 0) return emptyStatus(profileId);
+    if (!drafts.length && unresolved.length === 0) return emptyStatus(profileId);
+    const byCard = new Map();
+    for (const draft of drafts) {
+      const values = byCard.get(draft.cardId) || [];
+      values.push(draft);
+      byCard.set(draft.cardId, values);
+    }
+    const results = [...byCard.entries()].map(([cardId, cardDrafts]) => durableDraftResult(profileId, cardId, cardDrafts));
     return {
       ...emptyStatus(profileId),
-      status: "needs_user_action",
+      status: unresolved.length ? "needs_user_action" : "completed",
       unresolved: unresolved.length,
-      reasonCode: safeCode(unresolved[0].reasonCode)
+      reasonCode: safeCode(unresolved[0]?.reasonCode),
+      processed: results.length,
+      results
+    };
+  }
+
+  function publicDurableStatus(profileId) {
+    const value = durableStatus(profileId);
+    return {
+      ...value,
+      results: sanitizeResults(value.results).map((item) => ({
+        cardId: item.cardId,
+        jobId: item.jobId,
+        stage: item.stage,
+        messageCategory: item.messageCategory,
+        missingFactKey: item.missingFactKey
+      }))
+    };
+  }
+
+  function durableDraftResult(profileId, cardId, drafts) {
+    const row = db.prepare(`SELECT c.id AS card_id, c.job_id, c.stage,
+      j.title, j.company, j.salary, j.description, j.analysis_json
+      FROM candidate_progress_cards c
+      JOIN jobs j ON j.id = c.job_id
+      WHERE c.id = ? AND c.profile_id = ?`).get(cardId, profileId);
+    if (!row) throw messageDiscoveryError("MESSAGE_DISCOVERY_CONTEXT_INVALID", "durable draft context is missing", 500);
+    const first = drafts[0];
+    const safeDrafts = drafts.sort((left, right) => left.draftIndex - right.draftIndex).slice(0, 2).map((draft) => ({
+      id: draft.id,
+      text: draft.currentText,
+      revision: draft.revision
+    }));
+    const job = projectMessageDecisionCard({
+      title: row.title,
+      company: row.company,
+      salary: row.salary,
+      description: row.description,
+      analysis: parseObject(row.analysis_json)
+    });
+    return {
+      cardId: Number(row.card_id),
+      jobId: Number(row.job_id),
+      stage: String(row.stage || "reply_ready"),
+      messageIntent: MESSAGE_INTENTS.has(first.messageIntent) ? first.messageIntent : "manual_review",
+      messageCategory: String(first.messageCategory || "other"),
+      messageSummary: safeInlineText(first.questionSummary, 160),
+      missingFactKey: "",
+      manualActionReason: "",
+      manualActions: [],
+      contextSource: "local_cache",
+      contextComplete: Boolean(row.description),
+      job,
+      drafts: safeDrafts,
+      messages: safeDrafts.map((draft) => draft.text)
     };
   }
 
@@ -625,6 +710,15 @@ function safeText(value, limit) {
 
 function safeInlineText(value, limit) {
   return safeText(value, limit * 2).replace(/\s+/g, " ").trim().slice(0, limit);
+}
+
+function parseObject(value) {
+  try {
+    const parsed = JSON.parse(String(value || "{}"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
 }
 
 function safePhase(value) {

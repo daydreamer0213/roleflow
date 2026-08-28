@@ -2,7 +2,14 @@ const assert = require("node:assert");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { openDb, createBatch, upsertJob } = require("../src/core/storage");
+const {
+  openDb,
+  createBatch,
+  upsertJob,
+  recordMessageReplyDrafts,
+  completeMessageReplyDraft,
+  getMessageReplyDraft
+} = require("../src/core/storage");
 const {
   ensureProgressCard,
   listMessageDiscoveryCandidates,
@@ -217,13 +224,33 @@ async function uniqueCandidateAndPrivacySmoke() {
     }
   });
   const selected = selectedConversation({ title: fixture.title });
+  const previousDraft = recordMessageReplyDrafts(db, {
+    profileId: fixture.profileId,
+    cardId: fixture.card.id,
+    jobId: fixture.jobId,
+    messageGroupKey: safeDigest(["prior-learning-memory", fixture.profileId]),
+    questionSummary: "对方询问候选人的沟通意向。",
+    messageIntent: "interest_check",
+    messageCategory: "other",
+    messages: ["旧模型原稿"],
+    createdAt: NOW
+  })[0];
+  completeMessageReplyDraft(db, {
+    profileId: fixture.profileId,
+    draftId: previousDraft.id,
+    finalText: "这是用户改过并完成的回答。",
+    changedText: "这是用户改过并完成的回答",
+    completionKind: "sent",
+    extractedFacts: [],
+    completedAt: NOW
+  });
   const logs = [];
   let modelCalls = 0;
   const summary = await runBossMessageDiscovery({
     db,
     profileId: fixture.profileId,
     reader: fakeReader([selected]),
-    classifyMessageGroup: async ({ profile, card, job, messages }) => {
+    classifyMessageGroup: async ({ profile, card, job, messages, answerMemories }) => {
       modelCalls += 1;
       assert.deepStrictEqual(profile.candidate, {
         city: "Guangzhou",
@@ -238,6 +265,7 @@ async function uniqueCandidateAndPrivacySmoke() {
       assert.strictEqual(card.profileId, fixture.profileId);
       assert.strictEqual(job.title, "Java Engineer");
       assert.deepStrictEqual(messages.map((item) => item.text), [PRIVATE_BODY]);
+      assert.deepStrictEqual(answerMemories.map((memory) => memory.finalText), ["这是用户改过并完成的回答。"]);
       const result = classification({
         messageCategory: "qualification",
         stage: "reply_ready",
@@ -254,6 +282,21 @@ async function uniqueCandidateAndPrivacySmoke() {
   assert.strictEqual(summary.status, "completed");
   assert.strictEqual(summary.processed, 1);
   assert.deepStrictEqual(summary.results[0].messages, [PRIVATE_DRAFT]);
+  assert.strictEqual(summary.results[0].drafts.length, 1);
+  assert.strictEqual(summary.results[0].drafts[0].text, PRIVATE_DRAFT);
+  const durableDraft = getMessageReplyDraft(db, {
+    profileId: fixture.profileId,
+    draftId: summary.results[0].drafts[0].id
+  });
+  assert.strictEqual(durableDraft.currentText, PRIVATE_DRAFT);
+  assert.strictEqual(durableDraft.questionSummary, "对方正在确认候选人的任职资格。");
+  assert.strictEqual(durableDraft.messageIntent, "information_request");
+  assert.strictEqual(durableDraft.messageCategory, "qualification");
+  const learningStorageText = JSON.stringify([
+    ...db.prepare("SELECT * FROM message_reply_drafts WHERE profile_id = ?").all(fixture.profileId),
+    ...db.prepare("SELECT * FROM candidate_answer_memories WHERE profile_id = ?").all(fixture.profileId)
+  ]);
+  assert(!learningStorageText.includes(PRIVATE_BODY), "raw HR message text must remain ephemeral");
   assert.strictEqual(summary.results[0].stage, "reply_ready");
   assert.deepStrictEqual(summary.results[0].job, {
     title: "Java Engineer",

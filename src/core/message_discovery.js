@@ -2,7 +2,12 @@ const {
   listMessageDiscoveryCandidates,
   recordDiscoveredMessageGroupClassification
 } = require("./candidate_progress");
-const { getCandidateProfile, listCandidateFacts } = require("./storage");
+const {
+  getCandidateProfile,
+  listCandidateFacts,
+  listCandidateAnswerMemories,
+  recordMessageReplyDrafts
+} = require("./storage");
 const { safeDigest, messageKey } = require("../adapters/sites/boss_message_dom");
 const { MANUAL_ONLY_CATEGORIES } = require("./message_reply_contract");
 const {
@@ -64,6 +69,12 @@ async function runBossMessageDiscovery({
   }
   const profile = messageReplyProfile(storedProfile.profile);
   const facts = listCandidateFacts(db, profileId);
+  const answerMemories = listCandidateAnswerMemories(db, {
+    profileId,
+    activeOnly: true,
+    source: "user_edited_reply",
+    limit: 100
+  });
   let retained = unresolvedSummary(db, profileId);
   let scan;
   try {
@@ -230,6 +241,7 @@ async function runBossMessageDiscovery({
           job: resolved.job,
           messages: incoming.messages,
           facts,
+          answerMemories,
           contextSource: resolved.contextSource || resolved.job.contextSource || ""
         })
         : resumeRequestClassification();
@@ -271,6 +283,17 @@ async function runBossMessageDiscovery({
       progressUpdate: classification.progressUpdate,
       occurredAt: now()
     });
+    const drafts = recordMessageReplyDrafts(db, {
+      profileId,
+      cardId: card.id,
+      jobId: card.jobId,
+      messageGroupKey: incoming.messageGroupKey,
+      questionSummary: classification.messageSummary,
+      messageIntent: classification.messageIntent,
+      messageCategory: classification.messageCategory,
+      messages: safeDraftMessages(classification),
+      createdAt: now()
+    });
     commitBaseline(db, profileId, target, now());
     clearUnresolvedMessageDiscoveryItem(db, {
       profileId,
@@ -284,7 +307,8 @@ async function runBossMessageDiscovery({
       card,
       classification,
       resolved.job,
-      resolved.contextSource || resolved.job.contextSource || ""
+      resolved.contextSource || resolved.job.contextSource || "",
+      drafts
     ));
     emitStatus(
       safeStatus("running", { queued: queue.length, processed, results, unresolved: retained.count, reasonCode: retained.reasonCode }),
@@ -529,13 +553,14 @@ function clearMessageSources(messages) {
   }
 }
 
-function safeResult(card, result, resolvedJob, contextSource) {
+function safeResult(card, result, resolvedJob, contextSource, drafts = []) {
   const missingFactKey = String(result.missingFact?.key || "").trim().slice(0, 80);
-  const messages = MANUAL_ONLY_CATEGORIES.has(result.messageCategory) || missingFactKey
-    ? []
-    : Array.isArray(result.messages)
-      ? result.messages.slice(0, 2).map((item) => String(item))
-      : [];
+  const safeDrafts = Array.isArray(drafts) ? drafts.slice(0, 2).map((draft) => ({
+    id: Number(draft.id),
+    text: String(draft.currentText || ""),
+    revision: Number(draft.revision || 0)
+  })).filter((draft) => draft.id > 0 && draft.text) : [];
+  const messages = safeDrafts.map((draft) => draft.text);
   return {
     cardId: card.id,
     jobId: card.jobId,
@@ -549,8 +574,17 @@ function safeResult(card, result, resolvedJob, contextSource) {
     contextSource: ["local_cache", "message_discovery_detail"].includes(contextSource) ? contextSource : "",
     contextComplete: hasCompleteJobContext(resolvedJob),
     job: projectMessageDecisionCard(resolvedJob),
+    drafts: safeDrafts,
     messages
   };
+}
+
+function safeDraftMessages(result = {}) {
+  const missingFactKey = String(result.missingFact?.key || "").trim();
+  if (MANUAL_ONLY_CATEGORIES.has(result.messageCategory) || missingFactKey) return [];
+  return Array.isArray(result.messages)
+    ? result.messages.slice(0, 2).map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
 }
 
 function safeManualActions(value) {
@@ -699,6 +733,7 @@ function safeStatus(status, value = {}) {
     results: Array.isArray(value.results)
       ? value.results.map((item) => ({
         ...item,
+        drafts: Array.isArray(item.drafts) ? item.drafts.map((draft) => ({ ...draft })) : [],
         messages: Array.isArray(item.messages) ? [...item.messages] : []
       }))
       : []
