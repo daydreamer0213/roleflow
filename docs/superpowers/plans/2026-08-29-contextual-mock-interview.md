@@ -148,21 +148,21 @@ git commit -m "feat: persist mock interview sessions"
 - Service methods: `startSession`, `answerTurn`, `finishSession`, `retryTurn`, `getSession`, `listSessions`, `dashboard`.
 - Adapter methods: `generateMockInterviewStep`, `reviewMockInterview`, `reviewMockInterviewRetry`.
 
-- [ ] **Step 1: Write the failing service test**
+- [x] **Step 1: Write the failing service test**
 
 Use real SQLite and a scripted adapter. Prove the initial prompt contains the frozen job/resume, the second call contains the literal previous answer, the service does not advance when the model step is invalid, the final report references only existing turns, a model failure preserves prior answers, and no candidate fact/memory row is inserted.
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 Run: `node tests/mock_interview_service_smoke.js`
 
 Expected: fail because the service does not exist.
 
-- [ ] **Step 3: Implement service and adapters**
+- [x] **Step 3: Implement service and adapters**
 
 Use one model call per answer to review it and select the next question; after the final answer use one separate report call. The Mock adapter must generate deterministic role-specific questions and a follow-up that visibly depends on the previous answer.
 
-- [ ] **Step 4: Run focused tests**
+- [x] **Step 4: Run focused tests**
 
 ```powershell
 node tests/mock_interview_service_smoke.js
@@ -171,7 +171,7 @@ node tests/profile_quality_smoke.js
 node tests/resume_optimization_service_smoke.js
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/application/mock_interview/index.js src/adapters/models/openai_compatible.js src/adapters/models/mock.js tests/mock_interview_service_smoke.js tests/model_adapter_smoke.js tests/run_all.js

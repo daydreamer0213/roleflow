@@ -202,6 +202,50 @@ server.listen(0, "127.0.0.1", async () => {
     assert.strictEqual(mockResumeDraft.suggestions[0].originalText, "参与知识库开发");
     assert.deepStrictEqual(mockResumeDraft.suggestions[0].evidenceIds, ["R1"]);
 
+    const interviewAdapter = new OpenAICompatibleAdapter({
+      baseUrl: "https://example.invalid",
+      apiKey: "test-key",
+      model: "interview-contract-test"
+    });
+    const interviewPrompts = {};
+    interviewAdapter.chatJson = async (prompt, input, { kind }) => {
+      interviewPrompts[kind] = { prompt, input };
+      return { kind };
+    };
+    const interviewInput = {
+      context: { job: { title: "AI 应用工程师" }, resume: { text: "参与知识库开发" } },
+      settings: { type: "mixed", difficulty: "standard", plannedQuestions: 3 },
+      turns: []
+    };
+    assert.deepStrictEqual(await interviewAdapter.generateMockInterviewStep(interviewInput), { kind: "generateMockInterviewStep" });
+    assert.deepStrictEqual(await interviewAdapter.reviewMockInterview(interviewInput), { kind: "reviewMockInterview" });
+    assert.deepStrictEqual(await interviewAdapter.reviewMockInterviewRetry({ turn: { turnNumber: 1 } }), { kind: "reviewMockInterviewRetry" });
+    assert.strictEqual(interviewPrompts.generateMockInterviewStep.input, interviewInput);
+    for (const phrase of ["上一题题号", "plannedQuestions", "录用概率", "只输出 JSON"]) {
+      assert(interviewPrompts.generateMockInterviewStep.prompt.includes(phrase), `interview step prompt must include ${phrase}`);
+    }
+    for (const phrase of ["具体题号", "offerProbability", "不能成为候选人事实"]) {
+      assert(interviewPrompts.reviewMockInterview.prompt.includes(phrase), `interview report prompt must include ${phrase}`);
+    }
+    assert(interviewPrompts.reviewMockInterviewRetry.prompt.includes("originalAnswer"));
+    assert(interviewPrompts.reviewMockInterviewRetry.prompt.includes("retryAnswer"));
+
+    const mockInterview = new MockModelAdapter();
+    const mockFirstStep = await mockInterview.generateMockInterviewStep(interviewInput);
+    assert.strictEqual(mockFirstStep.answerReview, null);
+    assert(mockFirstStep.nextQuestion.text.includes("AI 应用工程师"));
+    const literalAnswer = "我参与知识库开发并负责接口联调";
+    const mockFollowUp = await mockInterview.generateMockInterviewStep({
+      ...interviewInput,
+      turns: [{ turnNumber: 1, question: mockFirstStep.nextQuestion.text, answer: literalAnswer }]
+    });
+    assert.strictEqual(mockFollowUp.nextQuestion.basedOnTurnNumber, 1);
+    assert(mockFollowUp.nextQuestion.text.includes(literalAnswer));
+    assert.strictEqual((await mockInterview.reviewMockInterview({ turns: [{ turnNumber: 1 }] })).retryRecommendations[0].turnNumber, 1);
+    assert.strictEqual((await mockInterview.reviewMockInterviewRetry({
+      turn: { turnNumber: 1, originalAnswer: "短回答", retryAnswer: "这是一个更完整的重答" }
+    })).turnNumber, 1);
+
     process.env.OPENAI_API_KEY = "must-not-be-used-for-runtime-profile";
     const noEnvironmentFallback = new OpenAICompatibleAdapter({
       baseUrl,

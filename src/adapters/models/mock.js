@@ -273,6 +273,69 @@ class MockModelAdapter {
       }]
     };
   }
+
+  async generateMockInterviewStep({ context = {}, settings = {}, turns = [] } = {}) {
+    const job = context.job || {};
+    const history = Array.isArray(turns) ? turns : [];
+    if (!history.length) {
+      return {
+        answerReview: null,
+        nextQuestion: {
+          text: `请结合你的真实经历，介绍你为什么适合${job.company ? `${job.company}的` : ""}${job.title || "这个岗位"}。`,
+          focus: "intro",
+          basedOnTurnNumber: null
+        },
+        complete: false
+      };
+    }
+    const last = history[history.length - 1];
+    const answer = String(last.answer || "").trim();
+    const answerExcerpt = clip(answer.replace(/\s+/g, " "), 36);
+    const complete = history.length >= Number(settings.plannedQuestions || 6);
+    const focusOrder = ["motivation", "project", "technical", "behavioral", "pressure", "questions"];
+    const focus = focusOrder[(history.length - 1) % focusOrder.length];
+    return {
+      answerReview: {
+        conclusion: answer.length >= 30 ? "回答已经覆盖核心信息，可以继续补充个人行动和结果。" : "回答较短，需要补充具体背景、个人行动和结果。",
+        strengths: answer ? ["回答与当前问题直接相关"] : [],
+        improvements: answer.length >= 30 ? ["进一步明确个人贡献边界"] : ["补充一个真实具体例子"],
+        turnNumbers: [Number(last.turnNumber)]
+      },
+      nextQuestion: complete ? null : {
+        text: `你刚才提到“${answerExcerpt}”，请结合${job.title || "目标岗位"}继续说明你的个人行动和取舍。`,
+        focus,
+        basedOnTurnNumber: Number(last.turnNumber)
+      },
+      complete
+    };
+  }
+
+  async reviewMockInterview({ turns = [] } = {}) {
+    const history = Array.isArray(turns) ? turns : [];
+    const target = history[Math.min(1, Math.max(0, history.length - 1))] || history[0];
+    const turnNumber = Number(target?.turnNumber || 1);
+    return {
+      conclusion: "本轮回答与岗位方向基本相关，下一轮重点把个人行动和结果说得更具体。",
+      strengths: ["能够直接回答问题", "表达保持在已有经历范围内"],
+      improvements: ["补充个人贡献边界", "用背景、行动、结果组织项目回答"],
+      followUpRisks: [{ turnNumber, reason: "回答中的个人行动仍可能被继续追问" }],
+      retryRecommendations: [{ turnNumber, reason: "优先重练这题并补充具体行动与结果" }],
+      answerStructures: [{ turnNumber, outline: ["说明背景", "说明个人行动", "说明结果和复盘"] }]
+    };
+  }
+
+  async reviewMockInterviewRetry({ turn = {} } = {}) {
+    const retryAnswer = String(turn.retryAnswer || "").trim();
+    const originalAnswer = String(turn.originalAnswer || "").trim();
+    const improved = retryAnswer.length > originalAnswer.length;
+    return {
+      turnNumber: Number(turn.turnNumber),
+      conclusion: improved ? "重答补充了更多可复盘信息。" : "重答已经保存，但还需要补充更具体的个人行动。",
+      improved,
+      strengths: improved ? ["比原回答更完整"] : ["保持了回答主题一致"],
+      remainingImprovements: ["继续明确个人行动和可验证结果"]
+    };
+  }
 }
 
 function requiredCommunicationFact(message) {
