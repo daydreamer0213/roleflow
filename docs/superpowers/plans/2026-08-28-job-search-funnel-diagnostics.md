@@ -93,7 +93,7 @@ git commit -m "docs: calibrate funnel observation inputs"
 - Create: `tests/job_search_funnel_smoke.js`
 - Modify: `tests/run_all.js`
 
-- [ ] **Step 1: Write the failing pure-rule tests**
+- [x] **Step 1: Write the failing pure-rule tests**
 
 Create `tests/job_search_funnel_smoke.js` and register it after `candidate_progress_storage_smoke.js`. Start with assertions equivalent to:
 
@@ -123,7 +123,7 @@ Also cover:
 - waiting and unknown records are never treated as failures;
 - system notices and courtesy-only messages do not become effective conversations.
 
-- [ ] **Step 2: Run the test and confirm the expected failure**
+- [x] **Step 2: Run the test and confirm the expected failure**
 
 ```powershell
 node tests/job_search_funnel_smoke.js
@@ -131,7 +131,7 @@ node tests/job_search_funnel_smoke.js
 
 Expected: failure because `src/core/funnel_maturity.js` does not exist.
 
-- [ ] **Step 3: Implement the pure contract**
+- [x] **Step 3: Implement the pure contract**
 
 Export these exact symbols from `src/core/funnel_maturity.js`:
 
@@ -161,7 +161,7 @@ waitingReason, unknownFields
 
 Never infer a missing platform field as false. Use `null` for unknown values and expose the source that supports every positive state.
 
-- [ ] **Step 4: Run the pure-rule test**
+- [x] **Step 4: Run the pure-rule test**
 
 ```powershell
 node tests/job_search_funnel_smoke.js
@@ -169,7 +169,7 @@ node tests/job_search_funnel_smoke.js
 
 Expected: `job_search_funnel_smoke: ok`.
 
-- [ ] **Step 5: Commit the deterministic rules**
+- [x] **Step 5: Commit the deterministic rules**
 
 ```powershell
 git add src/core/funnel_maturity.js tests/job_search_funnel_smoke.js tests/run_all.js
