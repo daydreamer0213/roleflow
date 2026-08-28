@@ -11,11 +11,11 @@
 ## Global Constraints
 
 - [ ] Count only a user-confirmed application or an actual communication event. Scanned, viewed, analyzed, recommended, or merely discovered jobs must never enter the funnel.
-- [ ] Treat 50 as the stored default `formalSampleTarget`, not a hard-coded batch size. Validate a configurable range of 20–500 and keep every aggregation independent of the default.
+- [ ] Store 30, 50, and 70 as the default preliminary, comparable, and formal policy thresholds. Require configurable values to be strictly increasing and keep every aggregation independent of the defaults.
 - [ ] Mature each entry no earlier than 48 hours after its actual start. If that deadline falls on Saturday or Sunday in China time, move it to Monday at the same local time.
 - [ ] Start “已读不回” from the first safe observation of the latest read state, not from application time. A later read observation begins a new 48-hour wait for that message state.
 - [ ] Show positive events immediately, but keep immature and unknown entries out of failure denominators and formal cohort formation.
-- [ ] When enough unassigned entries are mature, freeze all currently mature entries into one cohort; never truncate the cohort to the first 50.
+- [ ] When enough unassigned entries are mature, freeze all currently mature entries into one cohort; never truncate the cohort to the policy threshold.
 - [ ] Keep cohort membership and contact-time dimensions immutable. Late outcome events may update the cohort's current funnel totals without moving the entry to another cohort.
 - [ ] Store only safe identifiers, digests, categories, and timestamps. Do not persist raw HR message text, recruiter labels, screenshots, or reply text in the funnel tables/events.
 - [ ] Preserve event provenance: `platform_observation`, `user_record`, `time_inference`, or `unknown`. A user correction wins the current projection but does not erase prior observations.
@@ -110,9 +110,10 @@ assert.equal(
   feedbackMaturesAt("2026-08-28T02:00:00.000Z"),
   "2026-08-31T02:00:00.000Z"
 );
-assert.equal(diagnosisStrength(19, 50), "facts");
-assert.equal(diagnosisStrength(20, 50), "preliminary");
-assert.equal(diagnosisStrength(50, 50), "formal");
+assert.equal(diagnosisStrength(29), "facts");
+assert.equal(diagnosisStrength(30), "preliminary");
+assert.equal(diagnosisStrength(50), "comparable");
+assert.equal(diagnosisStrength(70), "formal");
 ```
 
 Also cover:
@@ -136,16 +137,16 @@ Expected: failure because `src/core/funnel_maturity.js` does not exist.
 Export these exact symbols from `src/core/funnel_maturity.js`:
 
 ```js
-const DEFAULT_FORMAL_SAMPLE_TARGET = 50;
-const MIN_FORMAL_SAMPLE_TARGET = 20;
-const MAX_FORMAL_SAMPLE_TARGET = 500;
+const DEFAULT_PRELIMINARY_SAMPLE_TARGET = 30;
+const DEFAULT_COMPARABLE_SAMPLE_TARGET = 50;
+const DEFAULT_FORMAL_SAMPLE_TARGET = 70;
 
-normalizeFormalSampleTarget(value)
+normalizeFunnelSamplePolicy(value)
 feedbackMaturesAt(startedAt)
 readNoReplyMaturesAt(readObservedAt)
-diagnosisStrength(matureCount, formalSampleTarget)
+diagnosisStrength(matureCount, samplePolicy)
 projectFunnelEntry(entry, events, { now })
-buildFunnelSnapshot(entries, eventsByEntry, { now, formalSampleTarget })
+buildFunnelSnapshot(entries, eventsByEntry, { now, samplePolicy })
 ```
 
 Use a fixed China-time offset (`UTC+08:00`) with built-in `Date`; no date library is needed. `feedbackMaturesAt` must add 48 elapsed hours first and then move a China-local Saturday/Sunday deadline to Monday at the same local clock time.
@@ -191,21 +192,21 @@ git commit -m "feat: define funnel maturity rules"
 - Modify only for intentional facade exports: `tests/job_store_contract_smoke.js`
 - Modify only for intentional facade exports: `tests/workflow_store_contract_smoke.js`
 
-- [ ] **Step 1: Extend the failing storage fixtures**
+- [x] **Step 1: Extend the failing storage fixtures**
 
 In `tests/job_search_funnel_smoke.js`, build an in-memory repository database and assert:
 
-- default policy is 50, while 20 and 500 are accepted and 19/501 are rejected;
+- default policy is 30/50/70, custom thresholds must strictly increase, and every value stays within 10–500;
 - one `(profile_id, job_id)` creates at most one entry even when application and communication events both exist;
 - entry dimensions remain unchanged after the active résumé, plan, job analysis, or greeting changes;
 - an inbound-only progress card does not create an entry;
-- 49 mature entries do not freeze a 50-target cohort;
-- the next refresh with 63 unassigned mature entries creates one 63-entry cohort;
+- 69 mature entries do not freeze a 70-target cohort;
+- the next refresh with 83 unassigned mature entries creates one 83-entry cohort;
 - immature entries stay unassigned for a later cohort;
 - late events update a frozen cohort's projection without changing its membership;
 - the same job can belong to a different candidate profile without colliding.
 
-- [ ] **Step 2: Run the storage test and confirm the expected failure**
+- [x] **Step 2: Run the storage test and confirm the expected failure**
 
 ```powershell
 node tests/job_search_funnel_smoke.js
@@ -213,19 +214,23 @@ node tests/job_search_funnel_smoke.js
 
 Expected: failure because migration 18 and `src/storage/funnel_store.js` do not exist.
 
-- [ ] **Step 3: Add schema migration 18**
+- [x] **Step 3: Add schema migration 18**
 
 Add `JOB_SEARCH_FUNNEL_SCHEMA` and migration `job_search_funnel_v1` to `src/core/storage.js`:
 
 ```text
 candidate_funnel_policies
   profile_id PRIMARY KEY
-  formal_sample_target CHECK 20..500
+  preliminary_sample_target
+  comparable_sample_target
+  formal_sample_target
   updated_at
 
 candidate_funnel_cohorts
   id PRIMARY KEY
   profile_id
+  preliminary_sample_target
+  comparable_sample_target
   formal_sample_target
   sample_count
   started_at
@@ -256,13 +261,13 @@ Use foreign keys to candidate profile, job, progress card, search plan, resume v
 
 `direction_key`, `decision_bucket`, and `greeting_key` are contact-time snapshots. `greeting_key` is a SHA-256 digest of the normalized greeting and may be empty when the actual greeting version is unknown. Never store the greeting text in the funnel table.
 
-- [ ] **Step 4: Implement the focused store**
+- [x] **Step 4: Implement the focused store**
 
 Export these exact functions from `src/storage/funnel_store.js`:
 
 ```js
 getFunnelPolicy(db, { profileId })
-saveFunnelPolicy(db, { profileId, formalSampleTarget, updatedAt })
+saveFunnelPolicy(db, { profileId, preliminarySampleTarget, comparableSampleTarget, formalSampleTarget, updatedAt })
 ensureFunnelEntry(db, input)
 getFunnelEntry(db, { profileId, jobId })
 listFunnelEntries(db, { profileId, cohortId, unassignedOnly })
@@ -283,15 +288,15 @@ listFunnelProgressEvents(db, { profileId, entryIds })
 
 On a duplicate job, return the original entry without rewriting any snapshot. Never guess a résumé/greeting version that cannot be supported by stored history.
 
-`freezeReadyFunnelCohort` runs in one immediate transaction. When the unassigned mature count reaches the saved target, create one cohort and attach every currently mature unassigned entry. Repeated calls at the same state are idempotent.
+`freezeReadyFunnelCohort` runs in one immediate transaction. When the unassigned mature count reaches the saved formal target, create one cohort and attach every currently mature unassigned entry. Repeated calls at the same state are idempotent.
 
-- [ ] **Step 5: Re-export only the required store surface**
+- [x] **Step 5: Re-export only the required store surface**
 
 Re-export the funnel store functions through `src/core/storage.js`. Update exact facade-count tests only for real new exports; do not weaken them to “at least N”.
 
 Update `tests/storage_migration_smoke.js` to assert schema version 18, migration name, tables, checks, indexes, and foreign keys.
 
-- [ ] **Step 6: Run the storage checks**
+- [x] **Step 6: Run the storage checks**
 
 ```powershell
 node tests/job_search_funnel_smoke.js
@@ -304,7 +309,7 @@ node tests/workflow_store_contract_smoke.js
 
 Expected: all print their `ok` message and exit 0.
 
-- [ ] **Step 7: Commit the storage slice**
+- [x] **Step 7: Commit the storage slice**
 
 ```powershell
 git add src/core/storage.js src/storage/funnel_store.js tests/job_search_funnel_smoke.js tests/storage_migration_smoke.js tests/scan_store_contract_smoke.js tests/communication_store_contract_smoke.js tests/job_store_contract_smoke.js tests/workflow_store_contract_smoke.js
@@ -465,9 +470,10 @@ git commit -m "feat: observe safe funnel outcomes"
 
 Create deterministic cohorts for these cases:
 
-- 19 mature entries: facts and progress only, no cause claim;
-- 35 mature entries with target 50: one preliminary bottleneck and one check item;
-- 63 mature entries with target 50: formal funnel, all 63 included;
+- 29 mature entries: facts and progress only, no cause claim;
+- 35 mature entries: one preliminary observation and one check item;
+- 55 mature entries: a comparable stage diagnosis, but not a formal conclusion;
+- 83 mature entries with formal target 70: formal funnel, all 83 included;
 - many started entries but fewer than target mature: no formal cohort;
 - high contact/low read: recommend checking recruiter activity, job choice, timing, or greeting—not résumé rewrite;
 - high read/low reply: check job fit and opening expression;
@@ -498,7 +504,7 @@ The service exposes:
 ```js
 refresh({ profileId })
 getDashboard({ profileId })
-savePolicy({ profileId, formalSampleTarget })
+savePolicy({ profileId, preliminarySampleTarget, comparableSampleTarget, formalSampleTarget })
 ```
 
 `refresh` freezes a cohort only when ready, then returns the same dashboard shape as `getDashboard`. Reads must remain deterministic and work without a model.
@@ -553,9 +559,9 @@ Assert that `GET /funnel?planId=<id>`:
 
 - resolves the profile from the owned plan and rejects cross-profile/missing context;
 - refreshes only local cohort state and performs no browser/model action;
-- shows `成熟样本 / 建议样本量`, `等待 48 小时`, and `结论强度` first;
+- shows `成熟样本 / 下一道门槛`, `等待 48 小时`, and `结论强度` first;
 - shows the latest cohort headline, one priority check, stage counts/denominators, waiting, unknown, and data-source notes;
-- uses “事实/初步观察/正式诊断” wording for the three strengths;
+- uses “样本不足/初步观察/阶段诊断/正式诊断” wording for the four displayed states created by the three thresholds;
 - does not show a formal cause or version comparison below its evidence threshold;
 - includes a plan-scoped “求职体检” navigation link on `/plan`, `/queue`, `/messages`, and `/funnel`;
 - contains no raw HR text, reply drafts, or hidden automatic-action form;
@@ -637,7 +643,7 @@ git commit -m "feat: add job search health check"
 Inspect the diff and prove:
 
 - no scan/analyze-only job enters the sample;
-- 50 is not embedded in SQL, page conditions, or wording except as the central default constant and policy default;
+- 30, 50, and 70 are not embedded in SQL, page conditions, or wording except as central defaults and stored policy defaults;
 - each entry has its own 48-hour/weekend deadline;
 - frozen cohorts take all mature unassigned entries;
 - unknown and waiting states are not failures;

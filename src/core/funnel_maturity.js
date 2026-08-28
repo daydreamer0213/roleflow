@@ -1,6 +1,8 @@
-const DEFAULT_FORMAL_SAMPLE_TARGET = 50;
-const MIN_FORMAL_SAMPLE_TARGET = 20;
-const MAX_FORMAL_SAMPLE_TARGET = 500;
+const DEFAULT_PRELIMINARY_SAMPLE_TARGET = 30;
+const DEFAULT_COMPARABLE_SAMPLE_TARGET = 50;
+const DEFAULT_FORMAL_SAMPLE_TARGET = 70;
+const MIN_SAMPLE_TARGET = 10;
+const MAX_SAMPLE_TARGET = 500;
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 const CHINA_OFFSET_MS = 8 * HOUR_MS;
@@ -22,12 +24,18 @@ const EFFECTIVE_MESSAGE_INTENTS = new Set([
   "interview_invitation"
 ]);
 
-function normalizeFormalSampleTarget(value = DEFAULT_FORMAL_SAMPLE_TARGET) {
-  const target = value === "" || value == null ? DEFAULT_FORMAL_SAMPLE_TARGET : Number(value);
-  if (!Number.isInteger(target) || target < MIN_FORMAL_SAMPLE_TARGET || target > MAX_FORMAL_SAMPLE_TARGET) {
-    throw new Error(`formal sample target must be between ${MIN_FORMAL_SAMPLE_TARGET} and ${MAX_FORMAL_SAMPLE_TARGET}`);
+function normalizeFunnelSamplePolicy(value = {}) {
+  const input = value && typeof value === "object" ? value : {};
+  const policy = {
+    preliminarySampleTarget: sampleTarget(input.preliminarySampleTarget, DEFAULT_PRELIMINARY_SAMPLE_TARGET),
+    comparableSampleTarget: sampleTarget(input.comparableSampleTarget, DEFAULT_COMPARABLE_SAMPLE_TARGET),
+    formalSampleTarget: sampleTarget(input.formalSampleTarget, DEFAULT_FORMAL_SAMPLE_TARGET)
+  };
+  if (!(policy.preliminarySampleTarget < policy.comparableSampleTarget
+    && policy.comparableSampleTarget < policy.formalSampleTarget)) {
+    throw new Error("funnel sample targets must strictly increase");
   }
-  return target;
+  return policy;
 }
 
 function feedbackMaturesAt(startedAt) {
@@ -41,12 +49,14 @@ function readNoReplyMaturesAt(readObservedAt) {
   return feedbackMaturesAt(readObservedAt);
 }
 
-function diagnosisStrength(matureCount, formalSampleTarget = DEFAULT_FORMAL_SAMPLE_TARGET) {
+function diagnosisStrength(matureCount, samplePolicy = {}) {
   const count = Number(matureCount);
   if (!Number.isInteger(count) || count < 0) throw new Error("mature count must be a non-negative integer");
-  const target = normalizeFormalSampleTarget(formalSampleTarget);
-  if (count < MIN_FORMAL_SAMPLE_TARGET) return "facts";
-  return count < target ? "preliminary" : "formal";
+  const policy = normalizeFunnelSamplePolicy(samplePolicy);
+  if (count < policy.preliminarySampleTarget) return "facts";
+  if (count < policy.comparableSampleTarget) return "preliminary";
+  if (count < policy.formalSampleTarget) return "comparable";
+  return "formal";
 }
 
 function projectFunnelEntry(entry = {}, rawEvents = [], { now = new Date().toISOString() } = {}) {
@@ -131,9 +141,9 @@ function projectFunnelEntry(entry = {}, rawEvents = [], { now = new Date().toISO
 
 function buildFunnelSnapshot(entries = [], eventsByEntry = new Map(), {
   now = new Date().toISOString(),
-  formalSampleTarget = DEFAULT_FORMAL_SAMPLE_TARGET
+  samplePolicy = {}
 } = {}) {
-  const target = normalizeFormalSampleTarget(formalSampleTarget);
+  const policy = normalizeFunnelSamplePolicy(samplePolicy);
   const projections = entries.map((entry) => projectFunnelEntry(
     entry,
     eventsForEntry(eventsByEntry, entry),
@@ -155,8 +165,8 @@ function buildFunnelSnapshot(entries = [], eventsByEntry = new Map(), {
     mature: matureEntries.length,
     waiting,
     unknown: matureEntries.filter((item) => item.waitingReason === "status_unknown").length,
-    formalSampleTarget: target,
-    strength: diagnosisStrength(matureEntries.length, target),
+    policy,
+    strength: diagnosisStrength(matureEntries.length, policy),
     stages,
     entries: projections
   };
@@ -230,11 +240,21 @@ function timestamp(value, name) {
   return parsed;
 }
 
+function sampleTarget(value, fallback) {
+  const target = value === "" || value == null ? fallback : Number(value);
+  if (!Number.isInteger(target) || target < MIN_SAMPLE_TARGET || target > MAX_SAMPLE_TARGET) {
+    throw new Error(`funnel sample targets must be between ${MIN_SAMPLE_TARGET} and ${MAX_SAMPLE_TARGET}`);
+  }
+  return target;
+}
+
 module.exports = {
+  DEFAULT_PRELIMINARY_SAMPLE_TARGET,
+  DEFAULT_COMPARABLE_SAMPLE_TARGET,
   DEFAULT_FORMAL_SAMPLE_TARGET,
-  MIN_FORMAL_SAMPLE_TARGET,
-  MAX_FORMAL_SAMPLE_TARGET,
-  normalizeFormalSampleTarget,
+  MIN_SAMPLE_TARGET,
+  MAX_SAMPLE_TARGET,
+  normalizeFunnelSamplePolicy,
   feedbackMaturesAt,
   readNoReplyMaturesAt,
   diagnosisStrength,
