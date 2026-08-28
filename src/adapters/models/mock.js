@@ -253,6 +253,26 @@ class MockModelAdapter {
       : `您好，我在${project}中做过与${role}相关的工作，和这个岗位的核心职责比较贴近，希望进一步沟通。`;
     return { kind, jobId: jobUnderstanding.jobId || "", messages: [message], missingFact: null, evidence: { jd: jobEvidence, resume: resumeEvidence }, tone: "自然、稳健、不夸大" };
   }
+
+  async generateResumeOptimization({ evidenceCatalog = [] } = {}) {
+    const resumeEvidence = evidenceCatalog.find((item) => item?.kind === "resume"
+      && String(item.text || "").length >= 6
+      && !/已隐藏|已遮盖/.test(String(item.text || ""))
+      && !/^(个人总结|项目经历|工作经历|技能|教育经历)$/.test(String(item.text || "").trim()));
+    if (!resumeEvidence) throw new Error("Mock 定向简历需要至少一条可编辑的简历证据");
+    const originalText = String(resumeEvidence.text).trim();
+    return {
+      headline: "把与目标岗位直接相关的经历放到更清楚的位置",
+      suggestions: [{
+        id: "S1",
+        operation: "replace",
+        originalText,
+        proposedText: `相关经历：${originalText}`,
+        reason: "只调整表达层级，不增加候选人事实",
+        evidenceIds: [resumeEvidence.id]
+      }]
+    };
+  }
 }
 
 function requiredCommunicationFact(message) {

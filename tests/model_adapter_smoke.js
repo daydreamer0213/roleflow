@@ -171,6 +171,37 @@ server.listen(0, "127.0.0.1", async () => {
       etaSampleMinimum: 3,
       etaSampleLimit: 10
     });
+    const resumeAdapter = new OpenAICompatibleAdapter({
+      baseUrl: "https://example.invalid",
+      apiKey: "test-key",
+      model: "resume-contract-test"
+    });
+    let resumePrompt = "";
+    let resumeInput = null;
+    resumeAdapter.chatJson = async (prompt, input, { kind }) => {
+      resumePrompt = prompt;
+      resumeInput = input;
+      assert.strictEqual(kind, "generateResumeOptimization");
+      return { headline: "fixture", suggestions: [] };
+    };
+    const resumeFixtureInput = {
+      sourceResume: { text: "参与知识库开发" },
+      evidenceCatalog: [{ id: "R1", kind: "resume", text: "参与知识库开发" }]
+    };
+    assert.deepStrictEqual(
+      await resumeAdapter.generateResumeOptimization(resumeFixtureInput),
+      { headline: "fixture", suggestions: [] }
+    );
+    assert.strictEqual(resumeInput, resumeFixtureInput);
+    for (const phrase of ["最多 12 条", "originalText", "evidenceIds", "不得编造数字", "不得改成主导", "只输出 JSON"]) {
+      assert(resumePrompt.includes(phrase), `resume optimization prompt must include ${phrase}`);
+    }
+    const mockResumeDraft = await new MockModelAdapter().generateResumeOptimization({
+      evidenceCatalog: [{ id: "R1", kind: "resume", text: "参与知识库开发" }]
+    });
+    assert.strictEqual(mockResumeDraft.suggestions[0].originalText, "参与知识库开发");
+    assert.deepStrictEqual(mockResumeDraft.suggestions[0].evidenceIds, ["R1"]);
+
     process.env.OPENAI_API_KEY = "must-not-be-used-for-runtime-profile";
     const noEnvironmentFallback = new OpenAICompatibleAdapter({
       baseUrl,

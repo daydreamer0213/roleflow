@@ -171,21 +171,21 @@ git commit -m "feat: persist resume optimization drafts"
 - Produces service methods `createDraft`, `getDraft`, `listDrafts`, `saveDraft`, `activateDraft`, and `dashboard`.
 - Adds adapter method `generateResumeOptimization(input)` using the existing `deep_analysis` model configuration.
 
-- [ ] **Step 1: Write a failing real-SQLite service test**
+- [x] **Step 1: Write a failing real-SQLite service test**
 
 The test must create two profiles, one source resume, owned/unowned jobs, current facts and answer memories. It must prove only owned complete jobs are accepted, the adapter receives the exact selected version/JD/evidence catalog, malformed model output creates no draft, and successful output is normalized before persistence.
 
-- [ ] **Step 2: Run the test and verify RED**
+- [x] **Step 2: Run the test and verify RED**
 
 Run: `node tests/resume_optimization_service_smoke.js`
 
 Expected: fail because the application service does not exist.
 
-- [ ] **Step 3: Implement the service and adapters**
+- [x] **Step 3: Implement the service and adapters**
 
 The OpenAI-compatible prompt requests one headline plus at most twelve exact text operations with evidence IDs and no fabricated metrics. The Mock adapter returns deterministic, source-anchored edits. The service performs all ownership and contract checks; the adapter never writes storage.
 
-- [ ] **Step 4: Run focused service/model tests**
+- [x] **Step 4: Run focused service/model tests**
 
 ```powershell
 node tests/resume_optimization_service_smoke.js
@@ -196,7 +196,7 @@ node tests/message_learning_store_smoke.js
 
 Expected: all pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/application/resume_optimization/index.js src/adapters/models/openai_compatible.js src/adapters/models/mock.js tests/resume_optimization_service_smoke.js tests/model_adapter_smoke.js tests/run_all.js
