@@ -1,0 +1,158 @@
+const INTERVIEW_TYPES = new Set(["general", "technical", "behavioral", "mixed"]);
+const INTERVIEW_DIFFICULTIES = new Set(["warmup", "standard", "challenging"]);
+
+function cleanText(value, maxLength, label, { required = true } = {}) {
+  const text = String(value ?? "").trim();
+  if (required && !text) throw new Error(`${label}不能为空`);
+  if (text.length > maxLength) throw new Error(`${label}过长`);
+  return text;
+}
+
+function boundedTextArray(value, label, { maxItems = 6, itemLength = 1_000 } = {}) {
+  if (!Array.isArray(value) || value.length > maxItems) throw new Error(`${label}格式无效`);
+  return value.map((item) => cleanText(item, itemLength, label));
+}
+
+function normalizeInterviewSettings(input = {}) {
+  const type = cleanText(input.type || "mixed", 30, "面试类型");
+  if (!INTERVIEW_TYPES.has(type)) throw new Error(`不支持的面试类型：${type}`);
+  const difficulty = cleanText(input.difficulty || "standard", 30, "面试难度");
+  if (!INTERVIEW_DIFFICULTIES.has(difficulty)) throw new Error(`不支持的面试难度：${difficulty}`);
+  const plannedQuestions = Number(input.plannedQuestions ?? 6);
+  if (!Number.isInteger(plannedQuestions) || plannedQuestions < 3 || plannedQuestions > 12) {
+    throw new Error("计划题数必须为 3-12");
+  }
+  return { type, difficulty, plannedQuestions };
+}
+
+function turnNumberSet(turns) {
+  return new Set((Array.isArray(turns) ? turns : []).map((turn) => Number(turn.turnNumber))
+    .filter((value) => Number.isInteger(value) && value > 0));
+}
+
+function normalizeTurnNumbers(value, validTurns, label) {
+  if (!Array.isArray(value) || value.length > 12) throw new Error(`${label}题号格式无效`);
+  const numbers = [...new Set(value.map(Number))];
+  for (const turnNumber of numbers) {
+    if (!Number.isInteger(turnNumber) || !validTurns.has(turnNumber)) {
+      throw new Error(`${label}引用了不存在的题号：${turnNumber}`);
+    }
+  }
+  return numbers;
+}
+
+function normalizeAnswerReview(value, validTurns) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("回答复盘格式无效");
+  return {
+    conclusion: cleanText(value.conclusion, 2_000, "回答结论"),
+    strengths: boundedTextArray(value.strengths, "回答优点"),
+    improvements: boundedTextArray(value.improvements, "回答改进点"),
+    turnNumbers: normalizeTurnNumbers(value.turnNumbers, validTurns, "回答复盘")
+  };
+}
+
+function normalizeQuestion(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("下一题格式无效");
+  const basedOn = value.basedOnTurnNumber;
+  return {
+    text: cleanText(value.text, 4_000, "问题"),
+    focus: cleanText(value.focus, 120, "问题重点"),
+    basedOnTurnNumber: basedOn === null || basedOn === undefined || basedOn === ""
+      ? null
+      : Number(basedOn)
+  };
+}
+
+function validateInterviewStep(raw, context = {}) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("面试步骤格式无效");
+  const turns = Array.isArray(context.turns) ? context.turns : [];
+  if (turns.length === 0 && raw.answerReview != null) throw new Error("首题不能包含回答复盘");
+  const validTurns = turnNumberSet(turns);
+  const complete = raw.complete === true;
+  const answerReview = raw.answerReview == null ? null : normalizeAnswerReview(raw.answerReview, validTurns);
+  const nextQuestion = raw.nextQuestion == null ? null : normalizeQuestion(raw.nextQuestion);
+
+  if (turns.length > 0 && !answerReview) throw new Error("回答后必须先生成复盘");
+  if (complete && nextQuestion) throw new Error("面试结束时不能同时生成下一题");
+  if (!complete && !nextQuestion) throw new Error("未结束时必须生成下一题");
+
+  if (nextQuestion) {
+    if (turns.length === 0 && nextQuestion.basedOnTurnNumber !== null) {
+      throw new Error("首题不能引用上一题");
+    }
+    if (turns.length > 0) {
+      const previousTurnNumber = Number(turns[turns.length - 1].turnNumber);
+      if (nextQuestion.basedOnTurnNumber !== previousTurnNumber) {
+        throw new Error("追问必须引用上一题回答");
+      }
+    }
+  }
+
+  return { answerReview, nextQuestion, complete };
+}
+
+function rejectProbabilityFields(value) {
+  if (!value || typeof value !== "object") return;
+  for (const [key, child] of Object.entries(value)) {
+    if (/offer.*probab|probab.*offer|录用.*概率/i.test(key)) throw new Error("复盘不能包含录用概率");
+    rejectProbabilityFields(child);
+  }
+}
+
+function normalizeTurnReasonItems(value, validTurns, label) {
+  if (!Array.isArray(value) || value.length > 12) throw new Error(`${label}格式无效`);
+  return value.map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error(`${label}格式无效`);
+    const turnNumber = Number(item.turnNumber);
+    if (!Number.isInteger(turnNumber) || !validTurns.has(turnNumber)) {
+      throw new Error(`${label}引用了不存在的题号：${turnNumber}`);
+    }
+    return { turnNumber, reason: cleanText(item.reason, 1_000, `${label}理由`) };
+  });
+}
+
+function validateInterviewReport(raw, context = {}) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("面试复盘格式无效");
+  rejectProbabilityFields(raw);
+  const validTurns = turnNumberSet(context.turns);
+  const answerStructures = Array.isArray(raw.answerStructures) ? raw.answerStructures.map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("回答结构格式无效");
+    const turnNumber = Number(item.turnNumber);
+    if (!Number.isInteger(turnNumber) || !validTurns.has(turnNumber)) {
+      throw new Error(`回答结构引用了不存在的题号：${turnNumber}`);
+    }
+    return { turnNumber, outline: boundedTextArray(item.outline, "回答结构", { maxItems: 8, itemLength: 500 }) };
+  }) : (() => { throw new Error("回答结构格式无效"); })();
+  if (answerStructures.length > 12) throw new Error("回答结构过多");
+  return {
+    conclusion: cleanText(raw.conclusion, 3_000, "复盘结论"),
+    strengths: boundedTextArray(raw.strengths, "最强项", { maxItems: 3 }),
+    improvements: boundedTextArray(raw.improvements, "改进项", { maxItems: 3 }),
+    followUpRisks: normalizeTurnReasonItems(raw.followUpRisks, validTurns, "追问风险"),
+    retryRecommendations: normalizeTurnReasonItems(raw.retryRecommendations, validTurns, "重练建议"),
+    answerStructures
+  };
+}
+
+function validateRetryReview(raw, context = {}) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("重答复盘格式无效");
+  rejectProbabilityFields(raw);
+  const expectedTurnNumber = Number(context.turnNumber);
+  const turnNumber = Number(raw.turnNumber);
+  if (!Number.isInteger(turnNumber) || turnNumber !== expectedTurnNumber) throw new Error("重答复盘题号不匹配");
+  if (typeof raw.improved !== "boolean") throw new Error("重答改进结果格式无效");
+  return {
+    turnNumber,
+    conclusion: cleanText(raw.conclusion, 2_000, "重答结论"),
+    improved: raw.improved,
+    strengths: boundedTextArray(raw.strengths, "重答优点"),
+    remainingImprovements: boundedTextArray(raw.remainingImprovements, "剩余改进点")
+  };
+}
+
+module.exports = {
+  normalizeInterviewSettings,
+  validateInterviewStep,
+  validateInterviewReport,
+  validateRetryReview
+};

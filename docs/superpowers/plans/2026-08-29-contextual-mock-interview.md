@@ -60,27 +60,27 @@ git commit -m "docs: plan contextual mock interview"
 - Produces: `normalizeInterviewSettings`, `validateInterviewStep`, `validateInterviewReport`, and `validateRetryReview`.
 - Interview step shape: `{answerReview, nextQuestion, complete}`; report references turn numbers rather than free-floating quotes.
 
-- [ ] **Step 1: Write a failing contract test**
+- [x] **Step 1: Write a failing contract test**
 
 Prove that invalid type/difficulty/length is rejected, a first step cannot contain an answer review, a follow-up without the previous turn reference is rejected, a completed step cannot also contain a next question, report turn references must exist, and “offer probability” fields are rejected.
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 Run: `node tests/mock_interview_contract_smoke.js`
 
 Expected: fail because the core module does not exist.
 
-- [ ] **Step 3: Implement the smallest validator**
+- [x] **Step 3: Implement the smallest validator**
 
 Allow `general`, `technical`, `behavioral`, and `mixed`; `warmup`, `standard`, and `challenging`; 3–12 planned questions. Bound all arrays and text. Preserve qualitative dimensions instead of manufacturing a scalar readiness score.
 
-- [ ] **Step 4: Run the contract test**
+- [x] **Step 4: Run the contract test**
 
 Run: `node tests/mock_interview_contract_smoke.js`
 
 Expected: pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/core/mock_interview.js tests/mock_interview_contract_smoke.js tests/run_all.js
