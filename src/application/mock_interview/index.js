@@ -69,9 +69,12 @@ function createMockInterviewService({ db, adapter = null } = {}) {
     const session = ownedActiveSession(profileId, sessionId);
     const turn = session.turns.find((item) => item.turnNumber === turnNumber);
     if (!turn) throw serviceError("MOCK_INTERVIEW_TURN_NOT_FOUND", "当前面试题不存在");
+    if (turn.answerText) {
+      if (turn.answerText === answerText) return session;
+      throw serviceError("MOCK_INTERVIEW_TURN_ALREADY_ANSWERED", "当前问题已经回答");
+    }
     const last = session.turns[session.turns.length - 1];
     if (last?.turnNumber !== turnNumber) throw serviceError("MOCK_INTERVIEW_TURN_NOT_CURRENT", "只能回答当前问题");
-    if (turn.answerText && turn.answerText !== answerText) throw serviceError("MOCK_INTERVIEW_TURN_ALREADY_ANSWERED", "当前问题已经回答");
     const turns = session.turns.map((item) => ({
       turnNumber: item.turnNumber,
       question: item.questionText,

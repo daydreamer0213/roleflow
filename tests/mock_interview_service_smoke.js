@@ -125,6 +125,13 @@ const db = storage.openDb(":memory:");
     const secondStepCall = calls.filter((call) => call.kind === "step")[1];
     assert.strictEqual(secondStepCall.input.turns.at(-1).answer, firstAnswer);
     assert(secondStepCall.input.context.job.description.includes("检索评估"));
+    const stepCallsBeforeReplay = calls.filter((call) => call.kind === "step").length;
+    const replayedFirst = await service.answerTurn({
+      profileId: owner.profileId, sessionId: session.id, turnNumber: 1, answerText: firstAnswer
+    });
+    assert.strictEqual(replayedFirst.turns.length, 2, "identical answer replay must be idempotent");
+    assert.strictEqual(calls.filter((call) => call.kind === "step").length, stepCallsBeforeReplay,
+      "identical answer replay must not call the model again");
 
     invalidStep = true;
     await assert.rejects(() => service.answerTurn({

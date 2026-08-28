@@ -73,6 +73,12 @@ function validateInterviewStep(raw, context = {}) {
   const nextQuestion = raw.nextQuestion == null ? null : normalizeQuestion(raw.nextQuestion);
 
   if (turns.length > 0 && !answerReview) throw new Error("回答后必须先生成复盘");
+  if (turns.length > 0) {
+    const latestTurnNumber = Number(turns[turns.length - 1].turnNumber);
+    if (!answerReview.turnNumbers.includes(latestTurnNumber)) {
+      throw new Error("回答复盘必须引用刚回答的上一题");
+    }
+  }
   if (complete && nextQuestion) throw new Error("面试结束时不能同时生成下一题");
   if (!complete && !nextQuestion) throw new Error("未结束时必须生成下一题");
 

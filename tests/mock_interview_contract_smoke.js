@@ -48,6 +48,12 @@ const followUp = validateInterviewStep({
 assert.deepStrictEqual(followUp.answerReview.turnNumbers, [1]);
 
 assert.throws(() => validateInterviewStep({
+  answerReview: { conclusion: "引用错题", strengths: [], improvements: [], turnNumbers: [1] },
+  nextQuestion: { text: "继续追问第二题。", focus: "project", basedOnTurnNumber: 2 },
+  complete: false
+}, { turns: [{ turnNumber: 1, answer: "第一题" }, { turnNumber: 2, answer: "第二题" }] }), /刚回答|上一题.*复盘/);
+
+assert.throws(() => validateInterviewStep({
   answerReview: { conclusion: "完成", strengths: [], improvements: [], turnNumbers: [1] },
   nextQuestion: { text: "多余问题", focus: "extra", basedOnTurnNumber: 1 },
   complete: true
