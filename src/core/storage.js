@@ -932,11 +932,10 @@ CREATE INDEX IF NOT EXISTS idx_resume_optimizations_profile
   ON resume_optimizations(profile_id, status, updated_at DESC, id DESC);
 `;
 
-const MOCK_INTERVIEW_SCHEMA = `
+const MOCK_INTERVIEW_V1_SCHEMA = `
 CREATE TABLE IF NOT EXISTS mock_interview_sessions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   profile_id INTEGER NOT NULL,
-  plan_id INTEGER NOT NULL,
   job_id INTEGER NOT NULL,
   resume_version_id INTEGER NOT NULL,
   context_hash TEXT NOT NULL,
@@ -949,7 +948,6 @@ CREATE TABLE IF NOT EXISTS mock_interview_sessions (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   FOREIGN KEY(profile_id) REFERENCES candidate_profiles(id),
-  FOREIGN KEY(plan_id) REFERENCES search_plans(id),
   FOREIGN KEY(job_id) REFERENCES jobs(id),
   FOREIGN KEY(resume_version_id) REFERENCES candidate_resume_versions(id)
 );
@@ -963,7 +961,6 @@ CREATE TABLE IF NOT EXISTS mock_interview_turns (
   question_text TEXT NOT NULL,
   question_focus TEXT NOT NULL,
   based_on_turn_number INTEGER,
-  answer_evidence TEXT NOT NULL DEFAULT '',
   answer_text TEXT NOT NULL DEFAULT '',
   answer_review_json TEXT,
   answered_at TEXT,
@@ -1179,10 +1176,51 @@ const MIGRATIONS = [
     version: 20,
     name: "mock_interview_v1",
     apply(db) {
-      db.exec(MOCK_INTERVIEW_SCHEMA);
+      db.exec(MOCK_INTERVIEW_V1_SCHEMA);
+    }
+  },
+  {
+    version: 21,
+    name: "mock_interview_plan_binding_v2",
+    apply(db) {
+      migrateMockInterviewPlanBinding(db);
     }
   }
 ];
+
+function migrateMockInterviewPlanBinding(db) {
+  db.exec(MOCK_INTERVIEW_V1_SCHEMA);
+  const sessionColumns = new Set(db.prepare("PRAGMA table_info(mock_interview_sessions)")
+    .all().map((column) => column.name));
+  if (!sessionColumns.has("plan_id")) {
+    db.exec("ALTER TABLE mock_interview_sessions ADD COLUMN plan_id INTEGER REFERENCES search_plans(id)");
+  }
+  db.exec(`UPDATE mock_interview_sessions AS session
+    SET plan_id = (
+      SELECT MIN(batch.search_plan_id)
+      FROM job_observations AS observation
+      JOIN batches AS batch ON batch.id = observation.batch_id
+      WHERE observation.job_id = session.job_id
+        AND batch.profile_id = session.profile_id
+        AND batch.search_plan_id IS NOT NULL
+    )
+    WHERE session.plan_id IS NULL
+      AND 1 = (
+        SELECT COUNT(DISTINCT batch.search_plan_id)
+        FROM job_observations AS observation
+        JOIN batches AS batch ON batch.id = observation.batch_id
+        WHERE observation.job_id = session.job_id
+          AND batch.profile_id = session.profile_id
+          AND batch.search_plan_id IS NOT NULL
+      )`);
+  const turnColumns = new Set(db.prepare("PRAGMA table_info(mock_interview_turns)")
+    .all().map((column) => column.name));
+  if (!turnColumns.has("answer_evidence")) {
+    db.exec("ALTER TABLE mock_interview_turns ADD COLUMN answer_evidence TEXT NOT NULL DEFAULT ''");
+  }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_mock_interview_sessions_plan
+    ON mock_interview_sessions(profile_id, plan_id, status, updated_at DESC, id DESC)`);
+}
 
 function backfillCandidateFactRevisions(db) {
   db.exec(`INSERT INTO candidate_fact_revisions(

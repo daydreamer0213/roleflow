@@ -190,8 +190,15 @@ const db = storage.openDb(":memory:");
     assert.strictEqual(loaded.turns.filter((turn) => turn.answerText).length, 3);
 
     failReport = false;
-    const completed = await service.finishSession({ profileId: owner.profileId, planId: owner.planId, sessionId: session.id });
+    const reportCallsBeforeConcurrentFinish = calls.filter((call) => call.kind === "report").length;
+    const [completed, concurrentReplay] = await Promise.all([
+      service.finishSession({ profileId: owner.profileId, planId: owner.planId, sessionId: session.id }),
+      service.finishSession({ profileId: owner.profileId, planId: owner.planId, sessionId: session.id })
+    ]);
     assert.strictEqual(completed.status, "completed");
+    assert.strictEqual(concurrentReplay.id, completed.id);
+    assert.strictEqual(calls.filter((call) => call.kind === "report").length, reportCallsBeforeConcurrentFinish + 1,
+      "concurrent finish replay must share one model call");
     assert.strictEqual(completed.report.retryRecommendations[0].turnNumber, 2);
     const reportCallsBeforeReplay = calls.filter((call) => call.kind === "report").length;
     assert.strictEqual((await service.finishSession({ profileId: owner.profileId, planId: owner.planId, sessionId: session.id })).id, session.id);

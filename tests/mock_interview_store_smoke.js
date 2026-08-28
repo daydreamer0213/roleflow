@@ -162,6 +162,33 @@ try {
     answerText: "我负责接口联调。",
     answerReview: { conclusion: "清楚", strengths: ["边界明确"], improvements: [], turnNumbers: [2] }
   });
+  assert.throws(() => storage.completeMockInterviewSession(db, {
+    profileId: owner.profileId, planId: owner.planId, sessionId: session.id,
+    report: { conclusion: "提前结束" }
+  }), /计划题数/);
+  storage.appendMockInterviewQuestion(db, {
+    profileId: owner.profileId, planId: owner.planId, sessionId: session.id,
+    question: {
+      text: "你提到“接口”，请说明怎样验证联调结果？",
+      focus: "technical",
+      basedOnTurnNumber: 2,
+      answerEvidence: "接口"
+    }
+  });
+  storage.answerMockInterviewTurn(db, {
+    profileId: owner.profileId, planId: owner.planId, sessionId: session.id, turnNumber: 3,
+    answerText: "我会覆盖正常、异常和超时场景。",
+    answerReview: { conclusion: "完整", strengths: ["有边界"], improvements: [], turnNumbers: [3] }
+  });
+  assert.throws(() => storage.appendMockInterviewQuestion(db, {
+    profileId: owner.profileId, planId: owner.planId, sessionId: session.id,
+    question: {
+      text: "你提到“超时”，再说明一个场景。",
+      focus: "technical",
+      basedOnTurnNumber: 3,
+      answerEvidence: "超时"
+    }
+  }), /计划题数/);
 
   const report = {
     conclusion: "项目相关性较好。", strengths: ["直接"], improvements: ["补充结果"],
@@ -205,7 +232,7 @@ try {
   const loaded = storage.getMockInterviewSession(db, {
     profileId: owner.profileId, planId: owner.planId, sessionId: session.id
   });
-  assert.strictEqual(loaded.turns.length, 2);
+  assert.strictEqual(loaded.turns.length, 3);
   assert.strictEqual(loaded.turns[1].retries.length, 1);
 
   console.log("mock_interview_store_smoke ok");

@@ -3,7 +3,15 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { DatabaseSync } = require("node:sqlite");
-const { openDb, SCHEMA_VERSION, getSearchPlan, saveSearchPlan } = require("../src/core/storage");
+const {
+  openDb,
+  SCHEMA_VERSION,
+  getSearchPlan,
+  saveSearchPlan,
+  saveProfileAnalysis,
+  createBatch,
+  upsertJob
+} = require("../src/core/storage");
 const MATCHING_CARD_VERSION = 5;
 const DURABLE_WORKFLOW_VERSION = 6;
 const CANDIDATE_PROGRESS_VERSION = 7;
@@ -20,6 +28,7 @@ const MESSAGE_REPLY_LEARNING_VERSION = 17;
 const JOB_SEARCH_FUNNEL_VERSION = 18;
 const RESUME_OPTIMIZATION_VERSION = 19;
 const MOCK_INTERVIEW_VERSION = 20;
+const MOCK_INTERVIEW_PLAN_BINDING_VERSION = 21;
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-migration-"));
 let db;
@@ -51,10 +60,11 @@ try {
       { version: MESSAGE_REPLY_LEARNING_VERSION, name: "message_reply_learning_v1", backup_path: null },
       { version: JOB_SEARCH_FUNNEL_VERSION, name: "job_search_funnel_v1", backup_path: null },
       { version: RESUME_OPTIMIZATION_VERSION, name: "resume_optimization_v1", backup_path: null },
-      { version: MOCK_INTERVIEW_VERSION, name: "mock_interview_v1", backup_path: null }
+      { version: MOCK_INTERVIEW_VERSION, name: "mock_interview_v1", backup_path: null },
+      { version: MOCK_INTERVIEW_PLAN_BINDING_VERSION, name: "mock_interview_plan_binding_v2", backup_path: null }
     ]
   );
-  assert.strictEqual(freshMigrations[freshMigrations.length - 1].name, "mock_interview_v1");
+  assert.strictEqual(freshMigrations[freshMigrations.length - 1].name, "mock_interview_plan_binding_v2");
   assert.strictEqual(freshMigrations[freshMigrations.length - 1].version, SCHEMA_VERSION);
   assert(db.prepare("PRAGMA table_info(communication_batches)").all()
     .some((column) => column.name === "runtime_json"));
@@ -170,7 +180,7 @@ try {
   assert(SCHEMA_VERSION >= 3);
   assert.strictEqual(SHARED_BOSS_PACING_VERSION, 16);
   assert.strictEqual(MESSAGE_REPLY_LEARNING_VERSION, 17);
-  assert.strictEqual(SCHEMA_VERSION, MOCK_INTERVIEW_VERSION);
+  assert.strictEqual(SCHEMA_VERSION, MOCK_INTERVIEW_PLAN_BINDING_VERSION);
   assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
   const planNow = "2026-08-16T00:00:00.000Z";
   const planProfileId = Number(db.prepare(`INSERT INTO candidate_profiles(
@@ -223,12 +233,12 @@ try {
     DROP TABLE mock_interview_retries;
     DROP TABLE mock_interview_turns;
     DROP TABLE mock_interview_sessions;
-    DELETE FROM schema_migrations WHERE version = ${MOCK_INTERVIEW_VERSION};
+    DELETE FROM schema_migrations WHERE version IN (${MOCK_INTERVIEW_VERSION}, ${MOCK_INTERVIEW_PLAN_BINDING_VERSION});
     PRAGMA user_version = ${RESUME_OPTIMIZATION_VERSION};
   `);
   db.close();
   db = openDb(mockInterviewV19Path);
-  assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, MOCK_INTERVIEW_VERSION);
+  assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, MOCK_INTERVIEW_PLAN_BINDING_VERSION);
   assert.strictEqual(
     db.prepare("SELECT display_name FROM candidate_profiles WHERE id = ?").get(preservedProfileId).display_name,
     "Mock interview v19 migration",
@@ -238,6 +248,127 @@ try {
     .some((column) => column.name === "plan_id"));
   assert(db.prepare("PRAGMA table_info(mock_interview_turns)").all()
     .some((column) => column.name === "answer_evidence"));
+  assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
+  db.close();
+
+  const mockInterviewV20Path = path.join(root, "mock-interview", "v20.sqlite");
+  db = openDb(mockInterviewV20Path);
+  const v20Owner = saveProfileAnalysis(db, {
+    profile: { candidate: { name: "v20 候选人", city: "广州", targetTitles: ["AI 应用工程师"] } },
+    document: {
+      originalFileName: "v20-resume.txt", format: "text", contentHash: "mock-interview-v20-resume",
+      text: "参与企业知识库开发", diagnostics: {}
+    },
+    searchPlan: {
+      name: "v20 唯一方案", cities: ["广州"], directions: ["AI 应用工程师"],
+      keywords: [{ word: "知识库", priority: "A" }]
+    }
+  });
+  const uniqueBatch = createBatch(db, "boss", "知识库", "mock interview v20 unique", {
+    profileId: v20Owner.profileId, searchPlanId: v20Owner.planId
+  });
+  const v20Job = (sourceId, title) => ({
+    source: "boss", sourceId, keyword: "知识库", title, company: "迁移示例公司", location: "广州",
+    salary: "15-25K", experience: "1-3年", education: "本科", bossActiveText: "今日活跃",
+    bossActiveDays: 0, url: `https://www.zhipin.com/job_detail/${sourceId}.html`, tags: ["Node.js"],
+    description: "负责企业知识库开发、检索评估和接口交付，岗位信息完整。",
+    score: 18, level: "可投", matches: ["Node.js"], risks: [], qualityTags: [],
+    analysis: { provider: "mock", model: "offline", semanticStatus: "complete", recommendation: "apply" }
+  });
+  const uniqueJobId = upsertJob(db, v20Job("mock-interview-v20-unique", "唯一归属岗位"), uniqueBatch);
+  const ambiguousJobId = upsertJob(db, v20Job("mock-interview-v20-ambiguous", "多方案岗位"), uniqueBatch);
+  const secondPlanId = Number(db.prepare(`INSERT INTO search_plans(
+    profile_id, name, plan_json, profile_version_id, is_active, created_at, updated_at
+  ) VALUES (?, 'v20 第二方案', '{}', NULL, 1, ?, ?)`)
+    .run(v20Owner.profileId, mockInterviewMigrationNow, mockInterviewMigrationNow).lastInsertRowid);
+  const ambiguousBatch = createBatch(db, "boss", "知识库", "mock interview v20 ambiguous", {
+    profileId: v20Owner.profileId, searchPlanId: secondPlanId
+  });
+  upsertJob(db, v20Job("mock-interview-v20-ambiguous", "多方案岗位"), ambiguousBatch);
+  db.exec(`
+    DROP TABLE mock_interview_retries;
+    DROP TABLE mock_interview_turns;
+    DROP TABLE mock_interview_sessions;
+    CREATE TABLE mock_interview_sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      profile_id INTEGER NOT NULL,
+      job_id INTEGER NOT NULL,
+      resume_version_id INTEGER NOT NULL,
+      context_hash TEXT NOT NULL,
+      context_json TEXT NOT NULL,
+      settings_json TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('active', 'completed')),
+      report_json TEXT,
+      model_identity_json TEXT NOT NULL DEFAULT '{}',
+      completed_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE mock_interview_turns (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id INTEGER NOT NULL,
+      turn_number INTEGER NOT NULL CHECK(turn_number > 0),
+      question_text TEXT NOT NULL,
+      question_focus TEXT NOT NULL,
+      based_on_turn_number INTEGER,
+      answer_text TEXT NOT NULL DEFAULT '',
+      answer_review_json TEXT,
+      answered_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(session_id, turn_number)
+    );
+    CREATE TABLE mock_interview_retries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id INTEGER NOT NULL,
+      turn_id INTEGER NOT NULL,
+      retry_index INTEGER NOT NULL CHECK(retry_index > 0),
+      answer_text TEXT NOT NULL,
+      review_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE(session_id, turn_id, retry_index)
+    );
+    DELETE FROM schema_migrations WHERE version = ${MOCK_INTERVIEW_PLAN_BINDING_VERSION};
+    PRAGMA user_version = ${MOCK_INTERVIEW_VERSION};
+  `);
+  const oldContext = JSON.stringify({ job: { title: "旧 v20 会话" }, resume: { text: "旧简历" } });
+  const oldSettings = JSON.stringify({ type: "mixed", difficulty: "standard", plannedQuestions: 3 });
+  const insertOldSession = db.prepare(`INSERT INTO mock_interview_sessions(
+    profile_id, job_id, resume_version_id, context_hash, context_json, settings_json,
+    status, report_json, model_identity_json, completed_at, created_at, updated_at
+  ) VALUES (?, ?, ?, 'old-v20-hash', ?, ?, 'active', NULL, '{}', NULL, ?, ?)`);
+  const uniqueSessionId = Number(insertOldSession.run(
+    v20Owner.profileId, uniqueJobId, v20Owner.resumeVersionId, oldContext, oldSettings,
+    mockInterviewMigrationNow, mockInterviewMigrationNow
+  ).lastInsertRowid);
+  const ambiguousSessionId = Number(insertOldSession.run(
+    v20Owner.profileId, ambiguousJobId, v20Owner.resumeVersionId, oldContext, oldSettings,
+    mockInterviewMigrationNow, mockInterviewMigrationNow
+  ).lastInsertRowid);
+  db.prepare(`INSERT INTO mock_interview_turns(
+    session_id, turn_number, question_text, question_focus, based_on_turn_number,
+    answer_text, answer_review_json, answered_at, created_at, updated_at
+  ) VALUES (?, 1, '旧问题', 'intro', NULL, '旧回答', '{}', ?, ?, ?)`)
+    .run(uniqueSessionId, mockInterviewMigrationNow, mockInterviewMigrationNow, mockInterviewMigrationNow);
+  db.close();
+
+  db = openDb(mockInterviewV20Path);
+  assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, MOCK_INTERVIEW_PLAN_BINDING_VERSION);
+  assert.strictEqual(
+    db.prepare("SELECT plan_id FROM mock_interview_sessions WHERE id = ?").get(uniqueSessionId).plan_id,
+    v20Owner.planId,
+    "a v20 session may be rebound only when one plan is provable"
+  );
+  assert.strictEqual(
+    db.prepare("SELECT plan_id FROM mock_interview_sessions WHERE id = ?").get(ambiguousSessionId).plan_id,
+    null,
+    "an ambiguous v20 session must not guess a plan"
+  );
+  assert.strictEqual(
+    db.prepare("SELECT answer_evidence FROM mock_interview_turns WHERE session_id = ?").get(uniqueSessionId).answer_evidence,
+    "",
+    "legacy turns must be preserved without inventing answer evidence"
+  );
   assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
   db.close();
 
@@ -398,7 +529,8 @@ try {
       { version: MESSAGE_REPLY_LEARNING_VERSION, name: "message_reply_learning_v1" },
       { version: JOB_SEARCH_FUNNEL_VERSION, name: "job_search_funnel_v1" },
       { version: RESUME_OPTIMIZATION_VERSION, name: "resume_optimization_v1" },
-      { version: MOCK_INTERVIEW_VERSION, name: "mock_interview_v1" }
+      { version: MOCK_INTERVIEW_VERSION, name: "mock_interview_v1" },
+      { version: MOCK_INTERVIEW_PLAN_BINDING_VERSION, name: "mock_interview_plan_binding_v2" }
     ]
   );
   assert.strictEqual(db.prepare("SELECT source FROM keyword_sources WHERE keyword = 'v1-preserved'").get().source, "migration-smoke");

@@ -22,6 +22,7 @@ const {
 
 function createMockInterviewService({ db, adapter = null } = {}) {
   if (!db) throw new Error("mock interview service requires db");
+  const finishFlights = new Map();
 
   return Object.freeze({
     startSession,
@@ -112,20 +113,31 @@ function createMockInterviewService({ db, adapter = null } = {}) {
     if (!session) throw serviceError("MOCK_INTERVIEW_NOT_FOUND", "面试会话不存在");
     if (session.status === "completed" && session.report) return session;
     if (session.status !== "active") throw serviceError("MOCK_INTERVIEW_COMPLETED", "面试已经结束");
-    requireAdapterMethod("reviewMockInterview");
-    if (!session.turns.length || session.turns.some((turn) => !turn.answerText)) {
-      throw serviceError("MOCK_INTERVIEW_INCOMPLETE", "请先完成当前问题");
-    }
-    if (session.turns.length < Number(session.settings.plannedQuestions || 0)) {
-      throw serviceError("MOCK_INTERVIEW_INCOMPLETE", "当前训练还没有达到计划题数");
-    }
-    const rawReport = await adapter.reviewMockInterview({
-      context: session.context,
-      settings: session.settings,
-      turns: modelTurns(session.turns)
+    const flightKey = `${profileId}:${planId}:${sessionId}`;
+    if (finishFlights.has(flightKey)) return finishFlights.get(flightKey);
+    const operation = (async () => {
+      requireAdapterMethod("reviewMockInterview");
+      if (!session.turns.length || session.turns.some((turn) => !turn.answerText)) {
+        throw serviceError("MOCK_INTERVIEW_INCOMPLETE", "请先完成当前问题");
+      }
+      if (session.turns.length < Number(session.settings.plannedQuestions || 0)) {
+        throw serviceError("MOCK_INTERVIEW_INCOMPLETE", "当前训练还没有达到计划题数");
+      }
+      const rawReport = await adapter.reviewMockInterview({
+        context: session.context,
+        settings: session.settings,
+        turns: modelTurns(session.turns)
+      });
+      const report = validateInterviewReport(rawReport, { turns: session.turns });
+      return completeMockInterviewSession(db, { profileId, planId, sessionId, report });
     });
-    const report = validateInterviewReport(rawReport, { turns: session.turns });
-    return completeMockInterviewSession(db, { profileId, planId, sessionId, report });
+    const result = operation();
+    finishFlights.set(flightKey, result);
+    try {
+      return await result;
+    } finally {
+      if (finishFlights.get(flightKey) === result) finishFlights.delete(flightKey);
+    }
   }
 
   async function retryTurn(input = {}) {

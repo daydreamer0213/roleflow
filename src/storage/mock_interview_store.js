@@ -163,6 +163,11 @@ function insertQuestionRow(db, sessionId, question, now = nowIso()) {
     WHERE session_id = ? ORDER BY turn_number DESC, id DESC LIMIT 1`).get(sessionId);
   if (previous && !String(previous.answer_text || "").trim()) throw new Error("请先回答当前问题");
   const turnNumber = previous ? Number(previous.turn_number) + 1 : 1;
+  const session = db.prepare("SELECT settings_json FROM mock_interview_sessions WHERE id = ?").get(sessionId);
+  const plannedQuestions = Number(parseJson(session?.settings_json, {})?.plannedQuestions);
+  if (!Number.isInteger(plannedQuestions) || turnNumber > plannedQuestions) {
+    throw new Error("问题数量不能超过本轮计划题数");
+  }
   const expectedBasedOn = previous ? Number(previous.turn_number) : null;
   if (question.basedOnTurnNumber !== expectedBasedOn) throw new Error("下一题必须承接上一题");
   if (previous && (!question.answerEvidence
@@ -239,14 +244,17 @@ function completeMockInterviewSession(db, input = {}) {
     const row = ownedSessionRow(db, profileId, planId, sessionId);
     if (!row) throw storageError("MOCK_INTERVIEW_NOT_FOUND", "面试会话不存在");
     if (row.status === "completed") {
-      if (row.report_json === reportJson) return sessionRow(db, row);
-      throw storageError("MOCK_INTERVIEW_COMPLETED", "面试已经结束");
+      return sessionRow(db, row);
     }
     const counts = db.prepare(`SELECT count(*) AS total,
       sum(CASE WHEN trim(answer_text) = '' THEN 1 ELSE 0 END) AS unanswered
       FROM mock_interview_turns WHERE session_id = ?`).get(sessionId);
     if (!Number(counts.total)) throw new Error("面试还没有题目");
     if (Number(counts.unanswered)) throw new Error("请先回答当前问题");
+    const plannedQuestions = Number(parseJson(row.settings_json, {})?.plannedQuestions);
+    if (!Number.isInteger(plannedQuestions) || Number(counts.total) !== plannedQuestions) {
+      throw new Error("已回答题数必须等于本轮计划题数");
+    }
     const now = nowIso();
     db.prepare(`UPDATE mock_interview_sessions SET status = 'completed', report_json = ?,
       completed_at = ?, updated_at = ? WHERE id = ? AND profile_id = ? AND status = 'active'`)
