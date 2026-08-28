@@ -101,11 +101,11 @@ git commit -m "feat: define contextual interview contract"
 - Migration 20 creates `mock_interview_sessions`, `mock_interview_turns`, and `mock_interview_retries`.
 - Produces: `createMockInterviewSession`, `getMockInterviewSession`, `listMockInterviewSessions`, `appendMockInterviewQuestion`, `answerMockInterviewTurn`, `completeMockInterviewSession`, `recordMockInterviewRetry`.
 
-- [ ] **Step 1: Write failing store tests**
+- [x] **Step 1: Write failing store tests**
 
 Prove profile ownership, frozen context hash, monotonic turn ordering, one answer per question, completed-session immutability except retry records, failed report rollback, and retry linkage to an owned answered turn.
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 ```powershell
 node tests/mock_interview_store_smoke.js
@@ -114,11 +114,11 @@ node tests/storage_migration_smoke.js
 
 Expected: fail for missing migration/store.
 
-- [ ] **Step 3: Add migration 20 and store**
+- [x] **Step 3: Add migration 20 and store**
 
 Store the frozen local context JSON with the session because jobs may refresh later. Never log it. Keep append/update operations in `BEGIN IMMEDIATE` transactions and make identical answer retries idempotent.
 
-- [ ] **Step 4: Run storage gates**
+- [x] **Step 4: Run storage gates**
 
 ```powershell
 node tests/mock_interview_store_smoke.js
@@ -127,7 +127,7 @@ node tests/candidate_store_contract_smoke.js
 node tests/message_learning_store_smoke.js
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/storage/mock_interview_store.js src/core/storage.js tests/mock_interview_store_smoke.js tests/storage_migration_smoke.js tests/candidate_store_contract_smoke.js tests/run_all.js

@@ -19,6 +19,7 @@ const SHARED_BOSS_PACING_VERSION = 16;
 const MESSAGE_REPLY_LEARNING_VERSION = 17;
 const JOB_SEARCH_FUNNEL_VERSION = 18;
 const RESUME_OPTIMIZATION_VERSION = 19;
+const MOCK_INTERVIEW_VERSION = 20;
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-migration-"));
 let db;
@@ -49,10 +50,11 @@ try {
       { version: SHARED_BOSS_PACING_VERSION, name: "shared_boss_pacing_v1", backup_path: null },
       { version: MESSAGE_REPLY_LEARNING_VERSION, name: "message_reply_learning_v1", backup_path: null },
       { version: JOB_SEARCH_FUNNEL_VERSION, name: "job_search_funnel_v1", backup_path: null },
-      { version: RESUME_OPTIMIZATION_VERSION, name: "resume_optimization_v1", backup_path: null }
+      { version: RESUME_OPTIMIZATION_VERSION, name: "resume_optimization_v1", backup_path: null },
+      { version: MOCK_INTERVIEW_VERSION, name: "mock_interview_v1", backup_path: null }
     ]
   );
-  assert.strictEqual(freshMigrations[freshMigrations.length - 1].name, "resume_optimization_v1");
+  assert.strictEqual(freshMigrations[freshMigrations.length - 1].name, "mock_interview_v1");
   assert.strictEqual(freshMigrations[freshMigrations.length - 1].version, SCHEMA_VERSION);
   assert(db.prepare("PRAGMA table_info(communication_batches)").all()
     .some((column) => column.name === "runtime_json"));
@@ -127,6 +129,13 @@ try {
     1,
     "resume_optimizations must exist after stage-three migration"
   );
+  for (const table of ["mock_interview_sessions", "mock_interview_turns", "mock_interview_retries"]) {
+    assert.strictEqual(
+      db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name = ?").get(table).n,
+      1,
+      `${table} must exist after stage-four migration`
+    );
+  }
   assert.strictEqual(
     db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='index' AND name='idx_candidate_funnel_entries_pool'").get().n,
     1
@@ -157,7 +166,7 @@ try {
   assert(SCHEMA_VERSION >= 3);
   assert.strictEqual(SHARED_BOSS_PACING_VERSION, 16);
   assert.strictEqual(MESSAGE_REPLY_LEARNING_VERSION, 17);
-  assert.strictEqual(SCHEMA_VERSION, RESUME_OPTIMIZATION_VERSION);
+  assert.strictEqual(SCHEMA_VERSION, MOCK_INTERVIEW_VERSION);
   assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
   const planNow = "2026-08-16T00:00:00.000Z";
   const planProfileId = Number(db.prepare(`INSERT INTO candidate_profiles(
@@ -355,7 +364,8 @@ try {
       { version: SHARED_BOSS_PACING_VERSION, name: "shared_boss_pacing_v1" },
       { version: MESSAGE_REPLY_LEARNING_VERSION, name: "message_reply_learning_v1" },
       { version: JOB_SEARCH_FUNNEL_VERSION, name: "job_search_funnel_v1" },
-      { version: RESUME_OPTIMIZATION_VERSION, name: "resume_optimization_v1" }
+      { version: RESUME_OPTIMIZATION_VERSION, name: "resume_optimization_v1" },
+      { version: MOCK_INTERVIEW_VERSION, name: "mock_interview_v1" }
     ]
   );
   assert.strictEqual(db.prepare("SELECT source FROM keyword_sources WHERE keyword = 'v1-preserved'").get().source, "migration-smoke");

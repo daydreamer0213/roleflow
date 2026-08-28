@@ -83,6 +83,7 @@ const tests = [
   "resume_optimization_service_smoke.js",
   "dashboard_resume_optimization_smoke.js",
   "mock_interview_contract_smoke.js",
+  "mock_interview_store_smoke.js",
   "analyzer_initialization_smoke.js",
   "model_settings_smoke.js",
   "cli_model_settings_root_smoke.js",

@@ -8,6 +8,7 @@ const scanStore = require("../storage/scan_store");
 const messageLearningStore = require("../storage/message_learning_store");
 const funnelStore = require("../storage/funnel_store");
 const resumeOptimizationStore = require("../storage/resume_optimization_store");
+const mockInterviewStore = require("../storage/mock_interview_store");
 const {
   recordMessageReplyDrafts,
   getMessageReplyDraft,
@@ -931,6 +932,62 @@ CREATE INDEX IF NOT EXISTS idx_resume_optimizations_profile
   ON resume_optimizations(profile_id, status, updated_at DESC, id DESC);
 `;
 
+const MOCK_INTERVIEW_SCHEMA = `
+CREATE TABLE IF NOT EXISTS mock_interview_sessions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  profile_id INTEGER NOT NULL,
+  job_id INTEGER NOT NULL,
+  resume_version_id INTEGER NOT NULL,
+  context_hash TEXT NOT NULL,
+  context_json TEXT NOT NULL,
+  settings_json TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('active', 'completed')),
+  report_json TEXT,
+  model_identity_json TEXT NOT NULL DEFAULT '{}',
+  completed_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY(profile_id) REFERENCES candidate_profiles(id),
+  FOREIGN KEY(job_id) REFERENCES jobs(id),
+  FOREIGN KEY(resume_version_id) REFERENCES candidate_resume_versions(id)
+);
+CREATE INDEX IF NOT EXISTS idx_mock_interview_sessions_profile
+  ON mock_interview_sessions(profile_id, status, updated_at DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS mock_interview_turns (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id INTEGER NOT NULL,
+  turn_number INTEGER NOT NULL CHECK(turn_number > 0),
+  question_text TEXT NOT NULL,
+  question_focus TEXT NOT NULL,
+  based_on_turn_number INTEGER,
+  answer_text TEXT NOT NULL DEFAULT '',
+  answer_review_json TEXT,
+  answered_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(session_id, turn_number),
+  FOREIGN KEY(session_id) REFERENCES mock_interview_sessions(id)
+);
+CREATE INDEX IF NOT EXISTS idx_mock_interview_turns_session
+  ON mock_interview_turns(session_id, turn_number, id);
+
+CREATE TABLE IF NOT EXISTS mock_interview_retries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id INTEGER NOT NULL,
+  turn_id INTEGER NOT NULL,
+  retry_index INTEGER NOT NULL CHECK(retry_index > 0),
+  answer_text TEXT NOT NULL,
+  review_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(session_id, turn_id, retry_index),
+  FOREIGN KEY(session_id) REFERENCES mock_interview_sessions(id),
+  FOREIGN KEY(turn_id) REFERENCES mock_interview_turns(id)
+);
+CREATE INDEX IF NOT EXISTS idx_mock_interview_retries_turn
+  ON mock_interview_retries(session_id, turn_id, retry_index, id);
+`;
+
 const MIGRATIONS = [
   {
     version: 1,
@@ -1113,6 +1170,13 @@ const MIGRATIONS = [
     name: "resume_optimization_v1",
     apply(db) {
       db.exec(RESUME_OPTIMIZATION_SCHEMA);
+    }
+  },
+  {
+    version: 20,
+    name: "mock_interview_v1",
+    apply(db) {
+      db.exec(MOCK_INTERVIEW_SCHEMA);
     }
   }
 ];
@@ -1763,6 +1827,13 @@ module.exports = {
   listResumeOptimizations: resumeOptimizationStore.listResumeOptimizations,
   saveResumeOptimizationDraft: resumeOptimizationStore.saveResumeOptimizationDraft,
   activateResumeOptimization: resumeOptimizationStore.activateResumeOptimization,
+  createMockInterviewSession: mockInterviewStore.createMockInterviewSession,
+  getMockInterviewSession: mockInterviewStore.getMockInterviewSession,
+  listMockInterviewSessions: mockInterviewStore.listMockInterviewSessions,
+  appendMockInterviewQuestion: mockInterviewStore.appendMockInterviewQuestion,
+  answerMockInterviewTurn: mockInterviewStore.answerMockInterviewTurn,
+  completeMockInterviewSession: mockInterviewStore.completeMockInterviewSession,
+  recordMockInterviewRetry: mockInterviewStore.recordMockInterviewRetry,
   workflowJobTaskRow,
   jobAnalysisAttemptRow,
   countWorkflowJobTasks,
