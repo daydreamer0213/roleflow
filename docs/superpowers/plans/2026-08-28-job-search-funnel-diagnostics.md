@@ -10,18 +10,18 @@
 
 ## Global Constraints
 
-- [ ] Count only a user-confirmed application or an actual communication event. Scanned, viewed, analyzed, recommended, or merely discovered jobs must never enter the funnel.
-- [ ] Store 30, 50, and 70 as the default preliminary, comparable, and formal policy thresholds. Require configurable values to be strictly increasing and keep every aggregation independent of the defaults.
-- [ ] Mature each entry no earlier than 48 hours after its actual start. If that deadline falls on Saturday or Sunday in China time, move it to Monday at the same local time.
-- [ ] Start “已读不回” from the first safe observation of the latest read state, not from application time. A later read observation begins a new 48-hour wait for that message state.
-- [ ] Show positive events immediately, but keep immature and unknown entries out of failure denominators and formal cohort formation.
-- [ ] When enough unassigned entries are mature, freeze all currently mature entries into one cohort; never truncate the cohort to the policy threshold.
-- [ ] Keep cohort membership and contact-time dimensions immutable. Late outcome events may update the cohort's current funnel totals without moving the entry to another cohort.
-- [ ] Store only safe identifiers, digests, categories, and timestamps. Do not persist raw HR message text, recruiter labels, screenshots, or reply text in the funnel tables/events.
-- [ ] Preserve event provenance: `platform_observation`, `user_record`, `time_inference`, or `unknown`. A user correction wins the current projection but does not erase prior observations.
-- [ ] Reuse SQLite, the current progress event log, and existing UI shell. Do not add an analytics service, ORM, chart framework, background queue, or model dependency.
-- [ ] Keep all BOSS access read-only. Do not fill, paste, send, agree/refuse a résumé request, apply, or foreground a BOSS tab.
-- [ ] Keep the old queue outcome statistics intact. Stage two gets a separate `/funnel` page labeled “求职体检”.
+- [x] Count only a user-confirmed application or an actual communication event. Scanned, viewed, analyzed, recommended, or merely discovered jobs must never enter the funnel.
+- [x] Store 30, 50, and 70 as the default preliminary, comparable, and formal policy thresholds. Require configurable values to be strictly increasing and keep every aggregation independent of the defaults.
+- [x] Mature each entry no earlier than 48 hours after its actual start. If that deadline falls on Saturday or Sunday in China time, move it to Monday at the same local time.
+- [x] Start “已读不回” from the first safe observation of the latest read state, not from application time. A later read observation begins a new 48-hour wait for that message state.
+- [x] Show positive events immediately, but keep immature and unknown entries out of failure denominators and formal cohort formation.
+- [x] When enough unassigned entries are mature, freeze all currently mature entries into one cohort; never truncate the cohort to the policy threshold.
+- [x] Keep cohort membership and contact-time dimensions immutable. Late outcome events may update the cohort's current funnel totals without moving the entry to another cohort.
+- [x] Store only safe identifiers, digests, categories, and timestamps. Do not persist raw HR message text, recruiter labels, screenshots, or reply text in the funnel tables/events.
+- [x] Preserve event provenance: `platform_observation`, `user_record`, `time_inference`, or `unknown`. A user correction wins the current projection but does not erase prior observations.
+- [x] Reuse SQLite, the current progress event log, and existing UI shell. Do not add an analytics service, ORM, chart framework, background queue, or model dependency.
+- [x] Keep all BOSS access read-only. Do not fill, paste, send, agree/refuse a résumé request, apply, or foreground a BOSS tab.
+- [x] Keep the old queue outcome statistics intact. Stage two gets a separate `/funnel` page labeled “求职体检”.
 
 ---
 
@@ -638,7 +638,7 @@ git commit -m "feat: add job search health check"
 - Modify: `docs/superpowers/plans/2026-08-28-job-search-funnel-diagnostics.md`
 - Modify only if implementation changes the approved contract: `docs/superpowers/specs/2026-08-28-job-search-funnel-diagnostics-design.md`
 
-- [ ] **Step 1: Review the implementation against all design boundaries**
+- [x] **Step 1: Review the implementation against all design boundaries**
 
 Inspect the diff and prove:
 
@@ -651,7 +651,7 @@ Inspect the diff and prove:
 - no BOSS write path, foregrounding, independent refresh, model requirement, or new dependency exists;
 - old queue analytics and stage-one message learning still work.
 
-- [ ] **Step 2: Run focused checks**
+- [x] **Step 2: Run focused checks**
 
 ```powershell
 node tests/job_search_funnel_smoke.js
@@ -666,7 +666,7 @@ node tests/dashboard_message_discovery_smoke.js
 
 Expected: every check prints `ok` and exits 0.
 
-- [ ] **Step 3: Run the complete offline gate**
+- [x] **Step 3: Run the complete offline gate**
 
 ```powershell
 npm test
@@ -674,7 +674,7 @@ npm test
 
 Expected: every check in the fresh `tests/run_all.js` registry passes. Record the actual total from this run; do not reuse the old 111-check phase-one result.
 
-- [ ] **Step 4: Update handoff and route documents**
+- [x] **Step 4: Update handoff and route documents**
 
 Document:
 
@@ -689,7 +689,7 @@ Document:
 
 Do not reopen the frozen scalar-score decision or list it as upcoming work.
 
-- [ ] **Step 5: Run final repository hygiene checks**
+- [x] **Step 5: Run final repository hygiene checks**
 
 ```powershell
 rg -n "[T]ODO|[T]BD|待[补]充|以后再[定]|p[l]aceholder" docs/superpowers/plans/2026-08-28-job-search-funnel-diagnostics.md docs/NEXT_PHASE.md docs/PROJECT_HANDOFF.md
@@ -699,14 +699,14 @@ git status --short --branch
 
 Expected: no unfinished markers, no whitespace errors, and only intentional final documentation changes.
 
-- [ ] **Step 6: Commit final documentation**
+- [x] **Step 6: Commit final documentation**
 
 ```powershell
 git add docs/NEXT_PHASE.md docs/PROJECT_HANDOFF.md docs/superpowers/plans/2026-08-28-job-search-funnel-diagnostics.md docs/superpowers/specs/2026-08-28-job-search-funnel-diagnostics-design.md
 git commit -m "docs: close funnel diagnostics stage"
 ```
 
-- [ ] **Step 7: Verify the exact final SHA**
+- [x] **Step 7: Verify the exact final SHA**
 
 After the documentation commit, rerun at minimum:
 
@@ -721,3 +721,12 @@ git rev-parse HEAD
 ```
 
 If the final documentation commit changes executable code or test registration, rerun `npm test` on that exact SHA. Do not push, merge, package, change the version, or create a release without new user authorization.
+
+Closure evidence on 2026-08-29:
+
+- code review closure commit: `7510ab5`;
+- fifth independent read-only review: no remaining Critical or Important finding;
+- stable full gate: `All 116 offline checks passed.`;
+- local visual verification: 1440px and 390px widths, no horizontal overflow and no console error;
+- real BOSS access: none; the live calibration was not attempted because a background-safe browser control binding was unavailable;
+- external writes, push, merge, package, version change, and Release: none.
