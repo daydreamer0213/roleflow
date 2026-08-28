@@ -298,5 +298,6 @@ Do not claim natural conversion improvement: fixture and Mock checks prove mecha
 - All seven focused stage-three checks passed.
 - Local Edge/Playwright verification passed at 1440px and 390px: comparison layout, direct-edit confirmation, controls, responsive stacking, no horizontal overflow, and no console errors.
 - Fresh repository gate: `All 120 offline checks passed.`
+- Later cross-stage gate on stage-three plus stage-four code SHA `b813b7a9d7b2da94f32a2629613325960729fbd1`: `All 124 offline checks passed.`
 - `git diff --check` passed before this acceptance-only edit.
 - No real BOSS page, real application, external interview, or external write was used.

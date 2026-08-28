@@ -98,7 +98,7 @@ git commit -m "feat: define contextual interview contract"
 - Modify: `tests/run_all.js`
 
 **Interfaces:**
-- Migration 20 creates `mock_interview_sessions`, `mock_interview_turns`, and `mock_interview_retries`.
+- Migration 20 creates the original `mock_interview_sessions`, `mock_interview_turns`, and `mock_interview_retries`; migration 21 safely adds plan binding and answer evidence without rewriting an already-applied migration.
 - Produces: `createMockInterviewSession`, `getMockInterviewSession`, `listMockInterviewSessions`, `appendMockInterviewQuestion`, `answerMockInterviewTurn`, `completeMockInterviewSession`, `recordMockInterviewRetry`.
 
 - [x] **Step 1: Write failing store tests**
@@ -232,7 +232,7 @@ git commit -m "feat: add mock interview workspace"
 **Interfaces:**
 - Produces exact final SHA and the next evidence-dependent product entry.
 
-- [ ] **Step 1: Run focused stage-four and cross-stage checks**
+- [x] **Step 1: Run focused stage-four and cross-stage checks**
 
 ```powershell
 node tests/mock_interview_contract_smoke.js
@@ -245,15 +245,15 @@ node tests/dashboard_funnel_smoke.js
 node tests/message_learning_store_smoke.js
 ```
 
-- [ ] **Step 2: Run local desktop/mobile visual verification**
+- [x] **Step 2: Run local desktop/mobile visual verification**
 
 Use the local fixture at 1440px and 390px. Verify no horizontal overflow, question/answer focus order, readable report hierarchy, keyboard access, and no console error.
 
-- [ ] **Step 3: Request independent read-only review**
+- [x] **Step 3: Request independent read-only review**
 
 Review correctness, architecture, privacy, cross-profile ownership, model-contract boundaries, idempotence, and unnecessary complexity. Fix every Critical/Important finding with a failing regression first.
 
-- [ ] **Step 4: Run the complete gate**
+- [x] **Step 4: Run the complete gate**
 
 ```powershell
 npm test
@@ -285,3 +285,12 @@ git rev-parse HEAD
 ```
 
 Do not claim real resume conversion improvement or real interview quality without natural user/model evidence.
+
+**Verification record before documentation commit (2026-08-29):**
+
+- Verified code SHA: `b813b7a9d7b2da94f32a2629613325960729fbd1`.
+- All focused stage-four and cross-stage checks passed.
+- Local Edge verification passed at 1440px and 390px: report before transcript, three answered turns, original/retry comparison, keyboard-reachable controls, no horizontal overflow, and no console errors.
+- Final independent read-only review: Ready, with no remaining Critical, Important, or Minor.
+- Fresh complete gate: `All 124 offline checks passed.`
+- No real BOSS page, external write, real interview, push, merge, package, version change, or release was used.
