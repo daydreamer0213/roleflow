@@ -4,7 +4,7 @@ function createMessageReplyAnalyzer({ adapter, logger = null } = {}) {
   if (!adapter || typeof adapter.draftMessageGroup !== "function") {
     throw new Error("message reply analyzer requires adapter.draftMessageGroup");
   }
-  return async function analyzeMessageGroup({ profile, job, messages = [], facts = [], now } = {}) {
+  return async function analyzeMessageGroup({ profile, job, messages = [], facts = [], answerMemories = [], now } = {}) {
     const normalizedFacts = (facts || []).map((fact) => ({
       key: String(fact.key || fact.factKey || ""),
       value: fact.value !== undefined ? fact.value : fact.factValue,
@@ -13,6 +13,7 @@ function createMessageReplyAnalyzer({ adapter, logger = null } = {}) {
     }));
     const requestedSubjectKeys = deriveRequestedSubjectKeys(messages, normalizedFacts);
     const scopedFacts = normalizedFacts.filter((fact) => factMatchesRequestedScope(fact, requestedSubjectKeys));
+    const activeMemories = normalizeAnswerMemories(answerMemories);
     const input = {
       profile,
       job,
@@ -21,12 +22,14 @@ function createMessageReplyAnalyzer({ adapter, logger = null } = {}) {
         text: String(message.text || "")
       })),
       facts: scopedFacts,
+      answerMemories: activeMemories,
       requestedSubjectKeys
     };
     try {
       const result = await adapter.draftMessageGroup(input);
       return validateMessageReply(result, {
         facts: input.facts,
+        answerMemories: input.answerMemories,
         now,
         requestedSubjectKeys: input.requestedSubjectKeys
       });
@@ -37,8 +40,40 @@ function createMessageReplyAnalyzer({ adapter, logger = null } = {}) {
       throw error;
     } finally {
       for (const message of messages || []) message.text = "";
+      for (const memory of activeMemories) memory.finalAnswer = "";
     }
   };
+}
+
+function normalizeAnswerMemories(value) {
+  const memories = [];
+  let remaining = 8000;
+  for (const item of Array.isArray(value) ? value : []) {
+    if (memories.length >= 12 || remaining <= 0) break;
+    const id = Number(item?.id);
+    const source = String(item?.source || "");
+    const withdrawnAt = String(item?.withdrawnAt || "");
+    if (!Number.isSafeInteger(id) || id <= 0 || source !== "user_edited_reply" || withdrawnAt) continue;
+    const finalAnswer = String(item?.finalAnswer ?? item?.finalText ?? "").trim().slice(0, remaining);
+    if (!finalAnswer) continue;
+    remaining -= finalAnswer.length;
+    memories.push({
+      id,
+      questionSummary: String(item?.questionSummary || "").replace(/\s+/g, " ").trim().slice(0, 160),
+      messageIntent: String(item?.messageIntent || "").slice(0, 80),
+      messageCategory: String(item?.messageCategory || "").slice(0, 80),
+      finalAnswer,
+      scope: normalizeMemoryScope(item?.scope),
+      updatedAt: String(item?.updatedAt || "").slice(0, 40)
+    });
+  }
+  return memories;
+}
+
+function normalizeMemoryScope(value) {
+  const scope = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const kind = ["global", "job", "company", "experience"].includes(scope.kind) ? scope.kind : "global";
+  return { kind, key: String(scope.key || "").replace(/\s+/g, " ").trim().slice(0, 160) };
 }
 
 function deriveRequestedSubjectKeys(messages, facts) {

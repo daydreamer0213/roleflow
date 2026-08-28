@@ -393,7 +393,8 @@ MockModelAdapter.prototype.draftMessageGroup = async function draftMessageGroup(
   profile,
   job,
   messages = [],
-  facts = []
+  facts = [],
+  answerMemories = []
 } = {}) {
   const text = messages.map((message) => String(message.text || "")).join(" ");
   const descriptiveInterviewContext = /(?:线上面试|面试).{0,12}(?:能力|功能|系统|平台|管理|项目)/i.test(text);
@@ -451,21 +452,79 @@ MockModelAdapter.prototype.draftMessageGroup = async function draftMessageGroup(
     general_communication: "对方正在进行普通沟通。"
   }[messageIntent];
   const manualOnly = ["salary", "sensitive", "identity_uncertain"].includes(messageCategory);
+  const matchingMemory = (answerMemories || []).find((memory) =>
+    Number.isSafeInteger(Number(memory?.id))
+    && String(memory?.finalAnswer || "").trim()
+    && (!memory.messageCategory || memory.messageCategory === messageCategory)
+    && (!memory.messageIntent || memory.messageIntent === messageIntent));
   return {
     messageIntent,
     messageCategory,
     messageSummary,
     requiredFactKeys: required,
     usedFactKeys: required.filter((key) => factMap.has(key)),
+    usedMemoryIds: matchingMemory ? [Number(matchingMemory.id)] : [],
     responseItems: required.map((id) => ({ id, kind: "question", required: true })),
     coverage: required.map((id) => ({ responseItemId: id, covered: factMap.has(id) })),
     missingFact: missing ? { key: missing, question: "请确认到岗相关事实" } : null,
-    messages: manualOnly || missing ? [] : ["mock message reply draft"],
+    messages: manualOnly || missing ? [] : [matchingMemory?.finalAnswer || "mock message reply draft"],
     progressUpdate: {
       stage: manualOnly || missing ? "needs_user_action" : "reply_ready",
       nextAction: "ignored provider text"
     }
   };
 };
+
+MockModelAdapter.prototype.extractReplyEditFacts = async function extractReplyEditFacts({
+  changedText = "",
+  scope = { kind: "global", key: "" }
+} = {}) {
+  const text = String(changedText || "");
+  const facts = [];
+  addMockReplyFact(facts, text, "employment_status", [
+    [/已经离职|已离职/, "已离职"],
+    [/目前在职|仍在职|在职/, "在职"]
+  ]);
+  addMockReplyFact(facts, text, "availability_date", [
+    [/(下周)(?=可以?到岗|到岗)/, "下周"],
+    [/(两周后)(?=可以?到岗|到岗)/, "两周后"],
+    [/(一个月内)(?=可以?到岗|到岗)/, "一个月内"]
+  ]);
+  const city = text.match(/(?:常住|目前在|当前在)([\u4e00-\u9fff]{2,6})(?=[，,。；;]|$)/);
+  if (city) facts.push({ factKey: "current_city", factValue: city[1], evidenceText: city[0] });
+  const salary = text.match(/期望薪资\s*([0-9]+(?:\.[0-9]+)?(?:[kK]|万)?(?:\s*[-~到]\s*[0-9]+(?:\.[0-9]+)?(?:[kK]|万)?)?)/);
+  if (salary) facts.push({ factKey: "expected_salary", factValue: salary[1].replace(/\s+/g, ""), evidenceText: salary[0] });
+  addMockReplyFact(facts, text, "accepts_travel", [
+    [/(?:可以)?接受短期出差/, "接受短期出差"],
+    [/不接受出差/, "不接受出差"]
+  ]);
+  addMockReplyFact(facts, text, "accepts_relocation", [
+    [/(?:可以)?接受异地|(?:可以)?接受搬迁/, "接受"],
+    [/不接受异地|不接受搬迁/, "不接受"]
+  ]);
+  addMockReplyFact(facts, text, "accepts_overtime", [
+    [/(?:可以)?接受加班/, "接受"],
+    [/不接受加班/, "不接受"]
+  ]);
+  return {
+    scope: normalizeMockReplyScope(scope),
+    facts
+  };
+};
+
+function addMockReplyFact(facts, text, factKey, patterns) {
+  for (const [pattern, factValue] of patterns) {
+    const match = String(text || "").match(pattern);
+    if (!match) continue;
+    facts.push({ factKey, factValue, evidenceText: match[0] });
+    return;
+  }
+}
+
+function normalizeMockReplyScope(value) {
+  const scope = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const kind = ["global", "job", "company", "experience"].includes(scope.kind) ? scope.kind : "global";
+  return { kind, key: String(scope.key || "").trim().slice(0, 160) };
+}
 
 module.exports = { MockModelAdapter };

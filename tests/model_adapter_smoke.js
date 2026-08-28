@@ -1340,6 +1340,31 @@ server.listen(0, "127.0.0.1", async () => {
     assert.strictEqual(mockReply.messageCategory, "availability");
     assert.strictEqual(mockReply.messageSummary, "对方正在确认候选人的到岗时间。");
     assert.deepStrictEqual(mockReply.messages, ["mock message reply draft"]);
+    assert.deepStrictEqual(mockReply.usedMemoryIds, []);
+
+    const extractedReplyFacts = await mockReplyAdapter.extractReplyEditFacts({
+      originalText: "您好，我目前在职，一个月内可以到岗，常住广州，暂不接受出差。",
+      finalText: "您好，我已经离职，下周可以到岗，常住深圳，期望薪资25K，可以接受短期出差。",
+      changedText: "已经离职，下周可以到岗，常住深圳，期望薪资25K，可以接受短期出差",
+      messageIntent: "information_request",
+      messageCategory: "availability"
+    });
+    assert.deepStrictEqual(extractedReplyFacts.scope, { kind: "global", key: "" });
+    assert.deepStrictEqual(
+      Object.fromEntries(extractedReplyFacts.facts.map((fact) => [fact.factKey, fact.factValue])),
+      {
+        employment_status: "已离职",
+        availability_date: "下周",
+        current_city: "深圳",
+        expected_salary: "25K",
+        accepts_travel: "接受短期出差"
+      }
+    );
+    for (const fact of extractedReplyFacts.facts) {
+      assert(extractedReplyFacts.facts.length <= 5);
+      assert(extractedReplyFacts.scope);
+      assert("已经离职，下周可以到岗，常住深圳，期望薪资25K，可以接受短期出差".includes(fact.evidenceText));
+    }
 
     const interviewMention = await mockReplyAdapter.draftMessageGroup({
       messages: [{ messageKey: "sha256:" + "c".repeat(64), text: "项目提供线上面试与简历管理能力。" }],
@@ -1424,7 +1449,17 @@ server.listen(0, "127.0.0.1", async () => {
     });
     let replyPrompt = "";
     let replyInput = null;
+    let extractionPrompt = "";
+    let extractionInput = null;
     openAiReplyAdapter.chatJson = async (prompt, modelInput, { kind }) => {
+      if (kind === "extractReplyEditFacts") {
+        extractionPrompt = prompt;
+        extractionInput = modelInput;
+        return {
+          scope: { kind: "global", key: "" },
+          facts: [{ factKey: "current_city", factValue: "深圳", evidenceText: "深圳" }]
+        };
+      }
       assert.strictEqual(kind, "draftMessageGroup");
       replyPrompt = prompt;
       replyInput = modelInput;
@@ -1434,6 +1469,7 @@ server.listen(0, "127.0.0.1", async () => {
         messageSummary: "对方正在确认候选人的任职资格。",
         requiredFactKeys: [],
         usedFactKeys: [],
+        usedMemoryIds: [],
         responseItems: [],
         coverage: [],
         missingFact: null,
@@ -1461,9 +1497,31 @@ server.listen(0, "127.0.0.1", async () => {
       "messageSummary 必须用一句中文概括对方本轮的主要意思和要求的行动，最多 160 个字符。",
       "project_fact/qualification/salary/availability/sensitive/other/identity_uncertain",
       "salary、sensitive、identity_uncertain 必须返回 messages: []",
-      "supplied job.description"
+      "supplied job.description",
+      "usedMemoryIds",
+      "answerMemories"
     ]) {
       assert(replyPrompt.includes(phrase), `draftMessageGroup prompt must include ${phrase}`);
+    }
+    const openAiExtraction = await openAiReplyAdapter.extractReplyEditFacts({
+      originalText: "我在广州",
+      finalText: "我在深圳",
+      changedText: "深圳",
+      questionSummary: "对方询问当前城市。",
+      messageIntent: "information_request",
+      messageCategory: "qualification",
+      scope: { kind: "global", key: "" }
+    });
+    assert.strictEqual(openAiExtraction.facts[0].factValue, "深圳");
+    assert.strictEqual(extractionInput.changedText, "深圳");
+    assert(!Object.hasOwn(extractionInput, "profile"));
+    for (const phrase of [
+      "用户修改内容是权威输入",
+      "模型原稿不是候选人事实",
+      "evidenceText 必须逐字来自 changedText",
+      "无法归类时返回空 facts"
+    ]) {
+      assert(extractionPrompt.includes(phrase), `extractReplyEditFacts prompt must include ${phrase}`);
     }
 
     const originalFetch = global.fetch;

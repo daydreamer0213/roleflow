@@ -30,6 +30,8 @@ function validateMessageReply(value, context = {}) {
   const normalized = normalizeReply(value);
   const facts = Array.isArray(context.facts) ? context.facts : [];
   const validFacts = new Map(facts.map((fact) => [String(fact.key || ""), fact]));
+  const answerMemories = Array.isArray(context.answerMemories) ? context.answerMemories : [];
+  const validMemoryIds = new Set(answerMemories.map((memory) => Number(memory?.id)).filter((id) => Number.isSafeInteger(id) && id > 0));
   const now = String(context.now || new Date().toISOString());
   assertKnownFactKeys(normalized);
   assertCoverageComplete(normalized);
@@ -63,6 +65,11 @@ function validateMessageReply(value, context = {}) {
   if (unverified.length && normalized.messages.length) {
     throw contractError("MESSAGE_REPLY_FACT_UNVERIFIED", "cannot draft while a required fact is missing or expired");
   }
+  for (const memoryId of normalized.usedMemoryIds) {
+    if (!validMemoryIds.has(memoryId)) {
+      throw contractError("MESSAGE_REPLY_MEMORY_NOT_SUPPLIED", `used answer memory ${memoryId} is not in the supplied active memory set`);
+    }
+  }
   const safeStage = safeReplyStage(normalized);
   const messages = MANUAL_ONLY_CATEGORIES.has(normalized.messageCategory)
     || normalized.messageIntent === "manual_review"
@@ -95,6 +102,7 @@ function normalizeReply(value) {
   const messageSummary = normalizedMessageSummary(value.messageSummary);
   const requiredFactKeys = stringArray(value.requiredFactKeys, "requiredFactKeys");
   const usedFactKeys = stringArray(value.usedFactKeys, "usedFactKeys");
+  const usedMemoryIds = positiveIntegerArray(value.usedMemoryIds);
   const responseItems = arrayValue(value.responseItems, "responseItems").map((item, index) => {
     if (!item || typeof item !== "object" || Array.isArray(item)) {
       throw contractError("MESSAGE_REPLY_INVALID", "response item must be an object");
@@ -130,6 +138,7 @@ function normalizeReply(value) {
     messageSummary,
     requiredFactKeys,
     usedFactKeys,
+    usedMemoryIds,
     responseItems,
     coverage,
     missingFact,
@@ -244,6 +253,22 @@ function stringArray(value, name) {
 function arrayValue(value, name) {
   if (!Array.isArray(value)) throw contractError("MESSAGE_REPLY_INVALID", `${name} must be an array`);
   return value;
+}
+
+function positiveIntegerArray(value) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) throw contractError("MESSAGE_REPLY_INVALID", "usedMemoryIds must be an array");
+  const result = [];
+  const seen = new Set();
+  for (const item of value) {
+    const id = Number(item);
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      throw contractError("MESSAGE_REPLY_INVALID", "usedMemoryIds must contain positive integers");
+    }
+    if (!seen.has(id)) result.push(id);
+    seen.add(id);
+  }
+  return result;
 }
 
 function contractError(code, message) {

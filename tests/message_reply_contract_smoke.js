@@ -46,6 +46,33 @@ async function main() {
     nextAction: "Review draft before manual send"
   });
   assert.deepStrictEqual(validated.messages, ["complete draft"]);
+  const memoryContext = [{
+    id: 7,
+    questionSummary: "对方正在确认候选人的到岗时间。",
+    messageIntent: "information_request",
+    messageCategory: "availability",
+    finalAnswer: "我已经离职，下周可以到岗。",
+    scope: { kind: "global", key: "" },
+    source: "user_edited_reply",
+    withdrawnAt: ""
+  }];
+  assert.deepStrictEqual(
+    validateMessageReply(safeReply({ usedMemoryIds: [7] }), {
+      facts: validFacts,
+      answerMemories: memoryContext,
+      now: NOW
+    }).usedMemoryIds,
+    [7]
+  );
+  assert.throws(
+    () => validateMessageReply(safeReply({ usedMemoryIds: [8] }), {
+      facts: validFacts,
+      answerMemories: memoryContext,
+      now: NOW
+    }),
+    (error) => error.code === "MESSAGE_REPLY_MEMORY_NOT_SUPPLIED",
+    "a model must not claim an answer memory that was not supplied"
+  );
   assert.throws(
     () => validateMessageReply(safeReply({ messageIntent: "keyword_interview" }), { facts: validFacts, now: NOW }),
     (error) => error.code === "MESSAGE_REPLY_INTENT_INVALID"
@@ -430,6 +457,46 @@ async function main() {
     (error) => error.code === "MESSAGE_REPLY_FACT_NOT_SUPPLIED",
     "analyzer must not use a stable fact when the recruiter message does not establish its subject"
   );
+
+  let memoryAdapterInput;
+  const memoryAnalyzer = createMessageReplyAnalyzer({
+    adapter: {
+      async draftMessageGroup(input) {
+        memoryAdapterInput = input;
+        return {
+          messageIntent: "general_communication",
+          messageCategory: "other",
+          messageSummary: "对方正在继续沟通当前岗位。",
+          requiredFactKeys: [],
+          usedFactKeys: [],
+          usedMemoryIds: [7],
+          responseItems: [],
+          coverage: [],
+          missingFact: null,
+          messages: ["我愿意继续沟通。"]
+        };
+      }
+    }
+  });
+  const suppliedMemories = [
+    { ...memoryContext[0], finalText: memoryContext[0].finalAnswer, updatedAt: NOW },
+    { id: 8, source: "draft_adopted", finalText: "模型原稿", withdrawnAt: "", updatedAt: NOW },
+    { id: 9, source: "user_edited_reply", finalText: "已撤回答案", withdrawnAt: NOW, updatedAt: NOW }
+  ];
+  const memoryMessages = [{ messageKey: "sha256:" + "8".repeat(64), text: "还愿意继续沟通吗？" }];
+  const memoryResult = await memoryAnalyzer({
+    profile: { id: 1 },
+    job: { id: 2, title: "Java Engineer" },
+    messages: memoryMessages,
+    facts: [],
+    answerMemories: suppliedMemories,
+    now: NOW
+  });
+  assert.deepStrictEqual(memoryResult.usedMemoryIds, [7]);
+  assert.deepStrictEqual(memoryAdapterInput.answerMemories.map((memory) => memory.id), [7]);
+  assert.strictEqual(memoryAdapterInput.answerMemories[0].finalAnswer, "", "temporary memory answer text must be cleared after the model call");
+  assert.strictEqual(suppliedMemories[0].finalText, memoryContext[0].finalAnswer, "analyzer cleanup must not mutate durable memory objects");
+  assert.strictEqual(memoryMessages[0].text, "");
 
   console.log("message_reply_contract_smoke ok");
 }

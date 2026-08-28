@@ -110,6 +110,17 @@ const db = openDb(dbPath);
     });
     assert.strictEqual(isolatedReply.messageCategory, "availability");
     assert.strictEqual(isolatedReply.messages[0], "mock message reply draft");
+    assert.deepStrictEqual(isolatedReply.usedMemoryIds, []);
+    const isolatedExtraction = await new MockModelAdapter().extractReplyEditFacts({
+      originalText: "我目前在职",
+      finalText: "我已经离职",
+      changedText: "已经离职"
+    });
+    assert.deepStrictEqual(isolatedExtraction.facts, [{
+      factKey: "employment_status",
+      factValue: "已离职",
+      evidenceText: "已经离职"
+    }]);
     assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
     console.log("semantic_pipeline_smoke ok");
   } finally {
