@@ -255,5 +255,6 @@ module.exports = {
   MESSAGE_INTENTS,
   MANUAL_ONLY_CATEGORIES,
   MAX_DRAFTS,
+  isKnownFactKey,
   validateMessageReply
 };
