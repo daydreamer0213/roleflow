@@ -32,17 +32,17 @@
 - Create: `docs/superpowers/reports/2026-08-28-stage2-funnel-reuse-and-calibration.md`
 - Modify only if live evidence contradicts the approved contract: `docs/superpowers/specs/2026-08-28-job-search-funnel-diagnostics-design.md`
 
-- [ ] **Step 1: Evaluate the smallest reusable analytics surface**
+- [x] **Step 1: Evaluate the smallest reusable analytics surface**
 
 Compare the current SQLite/event approach with maintained funnel or product-analytics components. Record whether each option supports local/offline storage, immutable event provenance, configurable maturation, frozen cohorts, and deterministic fixture tests without uploading candidate data.
 
 Use the official SQLite aggregate/window-function documentation as the primary implementation reference. The expected decision is `reference_only`: use SQL grouping and JavaScript projection already available in the repository, with no new dependency. Change this only if a component demonstrably removes more code than it adds and preserves all privacy and audit requirements.
 
-- [ ] **Step 2: Read the browser-operation instructions before touching the live tab**
+- [x] **Step 2: Read the browser-operation instructions before touching the live tab**
 
 Read the complete `edge-browser-ops` skill. Resolve the current numeric fixed-tab IDs from the active browser binding. Use only `BOSS-COMMUNICATION`, keep it in the background, and do not call `Page.bringToFront`.
 
-- [ ] **Step 3: Run one minimal read-only calibration**
+- [x] **Step 3: Run one minimal read-only calibration**
 
 Without clicking a conversation or changing page state, inspect the currently visible conversation rows and confirm whether the live DOM still provides the fields already represented by `scanConversationRows()`:
 
@@ -55,7 +55,7 @@ previewDigest
 
 Capture redacted DOM evidence and a redacted screenshot only if it can be done without exposing message content. Recheck the fixed tab identity immediately after the read. If login, risk control, page loss, tab ambiguity, or a foreground change is observed, stop calibration and record the exact reason; do not work around it.
 
-- [ ] **Step 4: Write the calibration report**
+- [x] **Step 4: Write the calibration report**
 
 The report must separate:
 
@@ -67,7 +67,7 @@ The report must separate:
 
 Do not include raw message text, recruiter names, company names, job titles, URLs with identifiers, cookies, or screenshots containing personal content.
 
-- [ ] **Step 5: Verify and commit the evidence checkpoint**
+- [x] **Step 5: Verify and commit the evidence checkpoint**
 
 Run:
 
