@@ -1,5 +1,6 @@
 const assert = require("node:assert/strict");
-const { openDb, saveProfileAnalysis } = require("../src/core/storage");
+const storage = require("../src/core/storage");
+const { openDb, saveProfileAnalysis } = storage;
 const { createDashboardServer } = require("../src/dashboard/server");
 
 const logger = {
@@ -136,6 +137,7 @@ const logger = {
     assert.equal(retry.status, 303);
     assert.deepEqual(calls.retry[0], { profileId: owner.profileId, planId: owner.planId, sessionId: 51, turnNumber: 1, answerText: "我的重答" });
     assert.equal(readinessCalls, 0, "local interview workflow must not inspect browser readiness");
+    await verifyDefaultServiceConcurrency();
 
     console.log("dashboard_mock_interview_smoke ok");
   } finally {
@@ -146,6 +148,89 @@ const logger = {
   console.error(error.stack || error.message);
   process.exitCode = 1;
 });
+
+async function verifyDefaultServiceConcurrency() {
+  const db = openDb(":memory:");
+  const owner = saveProfileAnalysis(db, {
+    profile: { candidate: { name: "并发候选人", city: "广州", targetTitles: ["AI 应用工程师"] } },
+    document: {
+      originalFileName: "concurrent.txt", format: "text", contentHash: "interview-concurrent-resume",
+      text: "参与企业知识库开发", diagnostics: {}
+    },
+    searchPlan: {
+      name: "并发完成方案", cities: ["广州"], directions: ["AI 应用工程师"],
+      keywords: [{ word: "知识库", priority: "A" }]
+    }
+  });
+  const batch = storage.createBatch(db, "boss", "知识库", "interview concurrency", {
+    profileId: owner.profileId, searchPlanId: owner.planId
+  });
+  const jobId = storage.upsertJob(db, {
+    source: "boss", sourceId: "interview-dashboard-concurrent", keyword: "知识库",
+    title: "AI 应用工程师", company: "示例科技", location: "广州", salary: "15-25K",
+    experience: "1-3年", education: "本科", bossActiveText: "今日活跃", bossActiveDays: 0,
+    url: "https://www.zhipin.com/job_detail/interview-dashboard-concurrent.html", tags: ["Node.js"],
+    description: "负责企业知识库开发、检索评估和接口交付，要求具备完整项目经验。",
+    score: 18, level: "可投", matches: ["Node.js"], risks: [], qualityTags: [],
+    analysis: { provider: "mock", model: "offline", semanticStatus: "complete", recommendation: "apply" }
+  }, batch);
+  const session = storage.createMockInterviewSession(db, {
+    profileId: owner.profileId, planId: owner.planId, jobId, resumeVersionId: owner.resumeVersionId,
+    context: { job: { id: jobId, title: "AI 应用工程师" }, resume: { versionId: owner.resumeVersionId } },
+    settings: { type: "mixed", difficulty: "standard", plannedQuestions: 3 },
+    initialQuestion: { text: "第一题", focus: "intro", basedOnTurnNumber: null, answerEvidence: "" }
+  });
+  const answers = ["第一题回答", "第二题回答", "第三题回答"];
+  for (let index = 0; index < answers.length; index += 1) {
+    const turnNumber = index + 1;
+    storage.answerMockInterviewTurn(db, {
+      profileId: owner.profileId, planId: owner.planId, sessionId: session.id, turnNumber,
+      answerText: answers[index],
+      answerReview: { conclusion: "已复盘", strengths: [], improvements: [], turnNumbers: [turnNumber] },
+      nextQuestion: turnNumber < 3 ? {
+        text: `你提到“${answers[index]}”，请继续。`, focus: "project",
+        basedOnTurnNumber: turnNumber, answerEvidence: answers[index]
+      } : null
+    });
+  }
+  let reportCalls = 0;
+  const adapter = {
+    provider: "counted",
+    model: "dashboard-concurrency",
+    async reviewMockInterview() {
+      reportCalls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return {
+        conclusion: "完成", strengths: ["相关"], improvements: ["补充结果"],
+        followUpRisks: [{ turnNumber: 2, reason: "需要细节" }],
+        retryRecommendations: [{ turnNumber: 2, reason: "重新组织" }],
+        answerStructures: [{ turnNumber: 2, outline: ["背景", "行动", "结果"] }]
+      };
+    }
+  };
+  const server = createDashboardServer({
+    db,
+    forceMock: true,
+    allowOfflineMock: true,
+    logger,
+    browserAuthority: { browserMode: "edge", cdpPort: null, profilePath: "" },
+    mockInterviewAdapterResolver: () => adapter
+  });
+  const baseUrl = await listen(server);
+  const body = new URLSearchParams({ planId: String(owner.planId), sessionId: String(session.id) }).toString();
+  try {
+    const [first, second] = await Promise.all([
+      request(baseUrl, "/api/interview/finish", { method: "POST", body }),
+      request(baseUrl, "/api/interview/finish", { method: "POST", body })
+    ]);
+    assert.equal(first.status, 303);
+    assert.equal(second.status, 303);
+    assert.equal(reportCalls, 1, "parallel HTTP finishes must share one Dashboard service and one model call");
+  } finally {
+    await close(server);
+    db.close();
+  }
+}
 
 function listen(server) {
   return new Promise((resolve, reject) => {

@@ -497,6 +497,7 @@ function createDashboardServer({
   funnelAnalysisService = null,
   resumeOptimizationService = null,
   mockInterviewService = null,
+  mockInterviewAdapterResolver = null,
   acquisitionContextResolver = resolveLiveAcquisitionContext,
   inheritedPreviewResolver = resolveLiveInheritedContext,
   browserReadinessProbe = null,
@@ -719,12 +720,30 @@ function createDashboardServer({
       : null,
     funnelAnalysisService: funnelAnalysis
   });
-  const getMockInterviewService = () => mockInterviewService || createMockInterviewService({
-    db,
-    adapter: modelReady("deep_analysis")
-      ? createModelAdapter(getRuntimeModel("deep_analysis"), { logger })
-      : null
-  });
+  let cachedMockInterviewService = null;
+  let cachedMockInterviewModelKey = "";
+  const getMockInterviewService = () => {
+    if (mockInterviewService) return mockInterviewService;
+    const state = getRuntimeModelState("deep_analysis");
+    const ready = modelStateReady(state, "deep_analysis");
+    const modelKey = mockInterviewAdapterResolver
+      ? "custom-adapter"
+      : ready
+        ? createHash("sha256").update(JSON.stringify(state.modelConfig || {})).digest("hex")
+        : "unavailable";
+    if (!cachedMockInterviewService || cachedMockInterviewModelKey !== modelKey) {
+      cachedMockInterviewService = createMockInterviewService({
+        db,
+        adapter: mockInterviewAdapterResolver
+          ? mockInterviewAdapterResolver()
+          : ready
+            ? createModelAdapter(state.modelConfig, { logger })
+            : null
+      });
+      cachedMockInterviewModelKey = modelKey;
+    }
+    return cachedMockInterviewService;
+  };
   const messageDiscovery = createMessageDiscoveryController({
     db,
     root,
