@@ -79,6 +79,7 @@ function validateResumeOptimizationDraft(raw, context = {}) {
   const suggestions = raw.suggestions.map((value, index) => {
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("修改建议格式无效");
     const id = cleanText(value.id || `S${index + 1}`, 40, "建议 ID");
+    if (!/^S[1-9]\d*$/.test(id)) throw new Error(`建议 ID 格式无效：${id}`);
     if (seenIds.has(id)) throw new Error(`建议 ID 重复：${id}`);
     seenIds.add(id);
 

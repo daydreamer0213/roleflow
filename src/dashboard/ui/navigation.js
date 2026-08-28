@@ -14,6 +14,7 @@ function renderNavigation({ currentPath = "", todayPath = "", planId = "" } = {}
       navigationLink(`/communication?planId=${encodedPlanId}`, "自动沟通", currentRoute === "/communication"),
       navigationLink(currentRoute === "/messages" ? current : `/messages?planId=${encodedPlanId}`, "消息发现", currentRoute === "/messages"),
       navigationLink(`/funnel?planId=${encodedPlanId}`, "求职体检", currentRoute === "/funnel"),
+      navigationLink(`/resume-optimization?planId=${encodedPlanId}`, "定向简历", currentRoute === "/resume-optimization"),
       navigationLink("/settings", "模型设置", currentRoute === "/settings"),
       navigationLink("/diagnostics", "诊断", currentRoute === "/diagnostics")
     ];

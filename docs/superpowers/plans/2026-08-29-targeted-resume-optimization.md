@@ -218,21 +218,21 @@ git commit -m "feat: generate targeted resume drafts"
 - Routes: `GET /resume-optimization`, `POST /api/resume-optimization`, `POST /api/resume-optimization/save`, `POST /api/resume-optimization/activate`.
 - The page receives plain view data; it does not query SQLite itself.
 
-- [ ] **Step 1: Write a failing HTTP test**
+- [x] **Step 1: Write a failing HTTP test**
 
 Use a real local HTTP server with an injected service. Prove the page derives profile from `planId`, shows resume/job selectors, escapes model/user text, exposes accept/edit/ignore controls, redirects to the owned draft, and activation calls the service exactly once without a second confirmation page.
 
-- [ ] **Step 2: Run the test and verify RED**
+- [x] **Step 2: Run the test and verify RED**
 
 Run: `node tests/dashboard_resume_optimization_smoke.js`
 
 Expected: 404 or missing page module.
 
-- [ ] **Step 3: Implement routes and page**
+- [x] **Step 3: Implement routes and page**
 
 Keep the main order: conclusion, target/source identity, editable suggestions, resulting full text, version history. Copy stays local. Model-unavailable errors link to the existing model settings page. Do not add browser-runtime checks because this workflow is local.
 
-- [ ] **Step 4: Run HTTP and shell regressions**
+- [x] **Step 4: Run HTTP and shell regressions**
 
 ```powershell
 node tests/dashboard_resume_optimization_smoke.js
@@ -242,7 +242,7 @@ node tests/dashboard_funnel_smoke.js
 
 Expected: all pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/dashboard/pages/resume_optimization.js src/dashboard/ui/navigation.js src/dashboard/server.js src/dashboard/assets/roleflow.css tests/dashboard_resume_optimization_smoke.js tests/dashboard_shell_smoke.js tests/run_all.js

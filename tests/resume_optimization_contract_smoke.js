@@ -82,6 +82,15 @@ assert.throws(() => validateResumeOptimizationDraft({ suggestions: [{
   evidenceIds: ["UNKNOWN"]
 }] }, context), /证据/);
 
+assert.throws(() => validateResumeOptimizationDraft({ suggestions: [{
+  id: "S1_非法",
+  operation: "replace",
+  originalText: "参与知识库开发",
+  proposedText: "参与知识库研发",
+  reason: "非法表单标识",
+  evidenceIds: ["R2"]
+}] }, context), /建议 ID/);
+
 const validated = validateResumeOptimizationDraft({
   headline: "突出与目标岗位直接相关的项目经验",
   suggestions: [{

@@ -195,6 +195,8 @@ const { buildCommunicationViewModel } = require("./view_models/communication");
 const { renderCommunicationPage: renderCommunicationDocument } = require("./pages/communication");
 const { createFunnelAnalysisService } = require("../application/funnel_analysis");
 const { renderFunnelPage } = require("./pages/funnel");
+const { createResumeOptimizationService } = require("../application/resume_optimization");
+const { renderResumeOptimizationPage, RESUME_OPTIMIZATION_SCRIPT } = require("./pages/resume_optimization");
 
 const DASHBOARD_ASSETS = Object.freeze({
   "/assets/roleflow.css": {
@@ -491,6 +493,7 @@ function createDashboardServer({
   workflowHealth = {},
   outcomeAnalytics = {},
   funnelAnalysisService = null,
+  resumeOptimizationService = null,
   acquisitionContextResolver = resolveLiveAcquisitionContext,
   inheritedPreviewResolver = resolveLiveInheritedContext,
   browserReadinessProbe = null,
@@ -706,6 +709,13 @@ function createDashboardServer({
     },
     logger
   });
+  const getResumeOptimizationService = () => resumeOptimizationService || createResumeOptimizationService({
+    db,
+    adapter: modelReady("deep_analysis")
+      ? createModelAdapter(getRuntimeModel("deep_analysis"), { logger })
+      : null,
+    funnelAnalysisService: funnelAnalysis
+  });
   const messageDiscovery = createMessageDiscoveryController({
     db,
     root,
@@ -859,6 +869,12 @@ function createDashboardServer({
       if (req.method === "GET" && url.pathname === "/workflow") return sendHtml(res, renderWorkflowDashboardPage({ db, searchParams: url.searchParams, logger, workflowHealth: resolvedWorkflowHealth }));
       if (req.method === "GET" && url.pathname === "/queue") return sendHtml(res, renderQueuePage({ db, searchParams: url.searchParams, logger, outcomeAnalyticsReader }));
       if (req.method === "GET" && url.pathname === "/funnel") return sendHtml(res, renderFunnelDashboardPage({ db, searchParams: url.searchParams, funnelAnalysis }));
+      if (req.method === "GET" && url.pathname === "/resume-optimization") return sendHtml(res, renderResumeOptimizationDashboardPage({
+        db,
+        searchParams: url.searchParams,
+        resumeOptimization: getResumeOptimizationService(),
+        modelReady: modelReady("deep_analysis")
+      }));
       if (req.method === "GET" && url.pathname === "/messages") return sendHtml(res, renderMessageDiscoveryPage({
         db,
         searchParams: url.searchParams,
@@ -1024,6 +1040,18 @@ function createDashboardServer({
       if (req.method === "POST" && url.pathname === "/api/message-reply-draft") return handleMessageReplyDraft(req, res, replyLearning);
       if (req.method === "POST" && url.pathname === "/api/communication-profile") return handleCommunicationProfile(req, res, replyLearning);
       if (req.method === "POST" && url.pathname === "/api/progress") return handleProgress(req, res, db, messageDiscovery, replyLearning);
+      if (req.method === "POST" && url.pathname === "/api/resume-optimization") return handleResumeOptimizationCreate(req, res, {
+        db,
+        resumeOptimization: getResumeOptimizationService()
+      });
+      if (req.method === "POST" && url.pathname === "/api/resume-optimization/save") return handleResumeOptimizationSave(req, res, {
+        db,
+        resumeOptimization: getResumeOptimizationService()
+      });
+      if (req.method === "POST" && url.pathname === "/api/resume-optimization/activate") return handleResumeOptimizationActivate(req, res, {
+        db,
+        resumeOptimization: getResumeOptimizationService()
+      });
       if (req.method === "POST" && url.pathname === "/api/message-discovery") return handleMessageDiscovery(req, res, messageDiscovery, {
         ensureBrowserWorkspaceReady: () => ensureManagedWorkspaceReady("message_discovery_start")
       });
@@ -5093,6 +5121,58 @@ function renderFunnelDashboardPage({ db, searchParams, funnelAnalysis }) {
   if (!plan) return renderErrorPage("找不到这份筛选方案，请从今日任务重新进入求职体检。", "/plan");
   const dashboard = funnelAnalysis.refresh({ profileId: plan.profileId });
   return renderPage("求职体检", renderFunnelPage({ plan, dashboard }));
+}
+
+function renderResumeOptimizationDashboardPage({ db, searchParams, resumeOptimization, modelReady }) {
+  const plan = getSearchPlan(db, searchParams.get("planId"));
+  if (!plan) return renderErrorPage("找不到这份筛选方案，请从今日任务重新进入定向简历。", "/plan");
+  const draftId = Number(searchParams.get("draftId") || 0) || null;
+  const dashboard = resumeOptimization.dashboard({
+    profileId: plan.profileId,
+    planId: plan.id,
+    draftId
+  });
+  return renderPage("定向简历优化", `${renderResumeOptimizationPage({ dashboard, modelReady })}${RESUME_OPTIMIZATION_SCRIPT}`);
+}
+
+async function handleResumeOptimizationCreate(req, res, { db, resumeOptimization }) {
+  const params = parseBody(await readBody(req), req.headers["content-type"] || "");
+  const plan = requiredResumeOptimizationPlan(db, params.planId);
+  const draft = await resumeOptimization.createDraft({
+    profileId: plan.profileId,
+    planId: plan.id,
+    sourceResumeVersionId: Number(params.sourceResumeVersionId),
+    jobIds: arrayValue(params.jobIds).map(Number)
+  });
+  redirect(res, `/resume-optimization?planId=${encodeURIComponent(plan.id)}&draftId=${encodeURIComponent(draft.id)}`);
+}
+
+async function handleResumeOptimizationSave(req, res, { db, resumeOptimization }) {
+  const params = parseBody(await readBody(req), req.headers["content-type"] || "");
+  const plan = requiredResumeOptimizationPlan(db, params.planId);
+  const draftId = Number(params.draftId);
+  const draft = resumeOptimization.getDraft({ profileId: plan.profileId, draftId });
+  if (!draft) throw appError("RESUME_OPTIMIZATION_NOT_FOUND", "定向简历草稿不存在。", { statusCode: 404 });
+  const decisions = Object.fromEntries((draft.suggestions || []).map((suggestion) => [suggestion.id, {
+    decision: params[`decision_${suggestion.id}`] || suggestion.decision || "pending",
+    userText: params[`userText_${suggestion.id}`] || ""
+  }]));
+  resumeOptimization.saveDraft({ profileId: plan.profileId, draftId, decisions });
+  redirect(res, `/resume-optimization?planId=${encodeURIComponent(plan.id)}&draftId=${encodeURIComponent(draftId)}`);
+}
+
+async function handleResumeOptimizationActivate(req, res, { db, resumeOptimization }) {
+  const params = parseBody(await readBody(req), req.headers["content-type"] || "");
+  const plan = requiredResumeOptimizationPlan(db, params.planId);
+  const draftId = Number(params.draftId);
+  resumeOptimization.activateDraft({ profileId: plan.profileId, draftId });
+  redirect(res, `/resume-optimization?planId=${encodeURIComponent(plan.id)}&draftId=${encodeURIComponent(draftId)}`);
+}
+
+function requiredResumeOptimizationPlan(db, planId) {
+  const plan = getSearchPlan(db, Number(planId));
+  if (!plan) throw appError("RESUME_OPTIMIZATION_PLAN_NOT_FOUND", "筛选方案不存在。", { statusCode: 404 });
+  return plan;
 }
 
 function renderCompactQueuePage({ db, plan, searchParams, outcomeAnalyticsPanel = "" }) {
