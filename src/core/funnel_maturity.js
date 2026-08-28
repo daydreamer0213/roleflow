@@ -13,9 +13,7 @@ const REPLY_EVENT_TYPES = new Set([
   "message_group_classified",
   "resume_requested",
   "interview_invited",
-  "interview_scheduled",
-  "rejected",
-  "opportunity_closed"
+  "interview_scheduled"
 ]);
 const EFFECTIVE_MESSAGE_INTENTS = new Set([
   "interest_check",
@@ -67,67 +65,84 @@ function projectFunnelEntry(entry = {}, rawEvents = [], { now = new Date().toISO
     : feedbackMaturesAt(startedAt);
   const events = [...(Array.isArray(rawEvents) ? rawEvents : [])]
     .filter((item) => item && Number.isFinite(Date.parse(item.occurredAt)))
+    .filter((item) => timestamp(item.occurredAt, "event.occurredAt") >= timestamp(startedAt, "entry.startedAt"))
     .sort(compareEvents);
+  const mature = nowMs >= timestamp(matureAt, "entry.matureAt");
   const latestOutbound = lastEvent(events, (item) => [
     "outbound_read_observed",
     "outbound_delivered_observed"
   ].includes(item.type));
-  const latestRead = lastEvent(events, (item) => item.type === "outbound_read_observed");
+  const latestRead = latestOutbound?.type === "outbound_read_observed" ? latestOutbound : null;
+  const anyRead = lastEvent(events, (item) => item.type === "outbound_read_observed");
   const latestReply = lastEvent(events, (item) => REPLY_EVENT_TYPES.has(item.type));
   const latestEffective = lastEvent(events, isEffectiveEvent);
+  const latestClassifiedReply = lastEvent(events, (item) => [
+    "incoming_message_classified",
+    "message_group_classified"
+  ].includes(item.type));
   const latestResume = lastEvent(events, (item) => item.type === "resume_requested");
-  const latestInterviewInvite = lastEvent(events, isInterviewInvite);
-  const latestInterviewConfirmed = lastEvent(events, (item) => item.type === "interview_scheduled");
-  const latestRejected = lastEvent(events, (item) => item.type === "rejected");
-  const latestClosed = lastEvent(events, (item) => ["closed", "opportunity_closed"].includes(item.type));
+  const current = authoritativeCurrentState(events);
+  const terminalCurrent = Boolean(
+    current.rejected?.value === true || current.closed?.value === true
+  );
+  const terminalWithoutReply = Boolean(
+    terminalCurrent && !latestReply
+  );
 
-  const read = latestOutbound
-    ? observedState(latestOutbound.type === "outbound_read_observed", latestOutbound)
-    : unknownState();
+  const read = anyRead
+    ? observedState(true, anyRead)
+    : latestReply
+      ? inferredPositiveState(latestReply)
+      : mature && latestOutbound?.type === "outbound_delivered_observed"
+        ? observedState(false, latestOutbound)
+        : unknownState();
+  const readDeadline = latestRead ? readNoReplyMaturesAt(latestRead.occurredAt) : null;
+  const replyAfterLatestRead = Boolean(latestRead && latestReply
+    && timestamp(latestReply.occurredAt, "event.occurredAt")
+      >= timestamp(latestRead.occurredAt, "event.occurredAt"));
+  const readNoReplyMature = Boolean(
+    latestRead
+    && !terminalCurrent
+    && !replyAfterLatestRead
+    && nowMs >= timestamp(readDeadline, "readNoReplyMaturesAt")
+  );
+  const replyWindowWaiting = Boolean(
+    mature
+    && latestRead
+    && !terminalCurrent
+    && !replyAfterLatestRead
+    && nowMs < timestamp(readDeadline, "readNoReplyMaturesAt")
+  );
   const replied = latestReply
     ? observedState(true, latestReply)
-    : latestOutbound
-      ? observedState(false, latestOutbound)
-      : unknownState();
+    : readNoReplyMature
+      ? inferredNegativeState(readDeadline)
+      : mature && latestOutbound?.type === "outbound_delivered_observed"
+        ? inferredNegativeState(matureAt)
+        : unknownState();
   const effectiveConversation = latestEffective
     ? observedState(true, latestEffective)
     : replied.value === false
       ? observedState(false, latestOutbound)
-      : unknownState();
-
-  const readDeadline = latestRead ? readNoReplyMaturesAt(latestRead.occurredAt) : null;
-  const repliedAfterRead = latestRead && latestReply
-    ? timestamp(latestReply.occurredAt, "event.occurredAt") > timestamp(latestRead.occurredAt, "event.occurredAt")
-    : false;
-  const terminalAfterRead = latestRead && (latestRejected || latestClosed)
-    ? Math.max(
-      latestRejected ? timestamp(latestRejected.occurredAt, "event.occurredAt") : 0,
-      latestClosed ? timestamp(latestClosed.occurredAt, "event.occurredAt") : 0
-    ) >= timestamp(latestRead.occurredAt, "event.occurredAt")
-    : false;
-  const mature = nowMs >= timestamp(matureAt, "entry.matureAt");
+      : mature && replied.value === true && latestClassifiedReply && latestReply
+        && timestamp(latestClassifiedReply.occurredAt, "event.occurredAt")
+          >= timestamp(latestReply.occurredAt, "event.occurredAt")
+        ? inferredNegativeState(matureAt)
+        : unknownState();
   const resumeRequested = latestResume
     ? presenceState(latestResume)
-    : mature && effectiveConversation.value !== null
+    : mature && effectiveConversation.value === true
       ? inferredNegativeState(matureAt)
       : unknownState();
-  const interviewInvited = latestInterviewInvite
-    ? presenceState(latestInterviewInvite)
-    : mature && (effectiveConversation.value !== null || resumeRequested.value === true)
+  const interviewInvited = current.interviewInvited
+    || (mature && effectiveConversation.value === true
       ? inferredNegativeState(matureAt)
-      : unknownState();
-  const interviewConfirmed = latestInterviewConfirmed
-    ? presenceState(latestInterviewConfirmed)
-    : mature && interviewInvited.value !== null
+      : unknownState());
+  const interviewConfirmed = current.interviewConfirmed
+    || (mature && interviewInvited.value === true
       ? inferredNegativeState(matureAt)
-      : unknownState();
-  const readNoReplyMature = Boolean(
-    latestRead
-    && !repliedAfterRead
-    && !terminalAfterRead
-    && nowMs >= timestamp(readDeadline, "readNoReplyMaturesAt")
-  );
-  const unknownFields = [
+      : unknownState());
+  const unknownFields = terminalWithoutReply ? [] : [
     ["read", read],
     ["replied", replied],
     ["effectiveConversation", effectiveConversation]
@@ -144,12 +159,21 @@ function projectFunnelEntry(entry = {}, rawEvents = [], { now = new Date().toISO
     resumeRequested,
     interviewInvited,
     interviewConfirmed,
-    rejected: presenceState(latestRejected),
-    closed: presenceState(latestClosed),
+    rejected: current.rejected || unknownState(),
+    closed: current.closed || unknownState(),
     mature,
     readNoReplyMature,
+    replyWindowWaiting,
+    terminalCurrent,
+    terminalWithoutReply,
     readNoReplyMaturesAt: readDeadline,
-    waitingReason: !mature ? "feedback_window" : unknownFields.length === 3 ? "status_unknown" : "",
+    waitingReason: !mature
+      ? "feedback_window"
+      : replyWindowWaiting
+        ? "reply_window"
+        : unknownFields.length
+          ? "status_unknown"
+          : "",
     unknownFields
   };
 }
@@ -165,36 +189,65 @@ function buildFunnelSnapshot(entries = [], eventsByEntry = new Map(), {
     { now }
   ));
   const matureEntries = projections.filter((item) => item.mature);
-  const waiting = projections.length - matureEntries.length;
+  const feedbackWaiting = projections.length - matureEntries.length;
+  const replyWaiting = matureEntries.filter((item) => item.replyWindowWaiting).length;
+  const waiting = feedbackWaiting + replyWaiting;
   const stages = {
     started: { numerator: projections.length, denominator: projections.length, unknown: 0, waiting: 0 },
-    read: summarizeStage(matureEntries, "read", waiting),
-    replied: summarizeStage(matureEntries, "replied", waiting),
-    effectiveConversation: summarizeStage(matureEntries, "effectiveConversation", waiting),
-    resumeRequested: summarizeStage(matureEntries, "resumeRequested", waiting),
-    interviewInvited: summarizeStage(matureEntries, "interviewInvited", waiting),
-    interviewConfirmed: summarizeStage(matureEntries, "interviewConfirmed", waiting)
+    read: summarizeStage(
+      matureEntries,
+      "read",
+      feedbackWaiting,
+      (item) => !item.terminalWithoutReply || item.read.value === true
+    ),
+    replied: summarizeStage(
+      matureEntries,
+      "replied",
+      feedbackWaiting,
+      (item) => item.read.value === true && !item.terminalWithoutReply,
+      (item) => item.replyWindowWaiting
+    ),
+    effectiveConversation: summarizeStage(matureEntries, "effectiveConversation", feedbackWaiting, (item) => item.replied.value === true),
+    resumeRequested: summarizeStage(matureEntries, "resumeRequested", feedbackWaiting, (item) => item.effectiveConversation.value === true),
+    interviewInvited: summarizeStage(matureEntries, "interviewInvited", feedbackWaiting, (item) => item.effectiveConversation.value === true),
+    interviewConfirmed: summarizeStage(matureEntries, "interviewConfirmed", feedbackWaiting, (item) => item.interviewInvited.value === true)
   };
   return {
     started: projections.length,
     mature: matureEntries.length,
     waiting,
-    unknown: matureEntries.filter((item) => item.waitingReason === "status_unknown").length,
+    unknown: matureEntries.filter((item) => item.unknownFields.length > 0).length,
     policy,
     strength: diagnosisStrength(matureEntries.length, policy),
     stages,
+    immediatePositive: positiveCounts(projections),
+    earlyPositive: positiveCounts(projections.filter((item) => !item.mature)),
     entries: projections
   };
 }
 
-function summarizeStage(projections, key, waiting) {
-  const known = projections.filter((item) => item[key].value !== null);
+function summarizeStage(projections, key, waiting, eligible = () => true, stageWaiting = () => false) {
+  const eligibleRows = projections.filter(eligible);
+  const waitingRows = eligibleRows.filter(stageWaiting);
+  const settledRows = eligibleRows.filter((item) => !stageWaiting(item));
+  const known = settledRows.filter((item) => item[key].value !== null);
   return {
     numerator: known.filter((item) => item[key].value === true).length,
     denominator: known.length,
-    unknown: projections.length - known.length,
-    waiting
+    unknown: settledRows.length - known.length,
+    waiting: waiting + waitingRows.length
   };
+}
+
+function positiveCounts(projections) {
+  return Object.fromEntries([
+    "read",
+    "replied",
+    "effectiveConversation",
+    "resumeRequested",
+    "interviewInvited",
+    "interviewConfirmed"
+  ].map((key) => [key, projections.filter((item) => item[key].value === true).length]));
 }
 
 function eventsForEntry(eventsByEntry, entry) {
@@ -212,6 +265,61 @@ function isInterviewInvite(event) {
   return event.type === "interview_invited"
     || (["incoming_message_classified", "message_group_classified"].includes(event.type)
       && event.metadata?.messageIntent === "interview_invitation");
+}
+
+function authoritativeCurrentState(events) {
+  const terminalEvent = lastEvent(events, (item) => [
+    "rejected",
+    "closed",
+    "opportunity_closed"
+  ].includes(item.type) || (isUserAuthority(item) && [
+    "opportunity_reopened",
+    "manual_correction"
+  ].includes(item.type)));
+  const interviewEvent = lastEvent(events, (item) => isInterviewInvite(item)
+    || item.type === "interview_scheduled"
+    || (isUserAuthority(item) && item.type === "manual_correction"));
+  return {
+    ...terminalState(terminalEvent),
+    ...interviewState(interviewEvent)
+  };
+}
+
+function terminalState(event) {
+  if (!event) return { rejected: null, closed: null };
+  const stage = event.type === "manual_correction" ? String(event.metadata?.toStage || "") : "";
+  if (event.type === "rejected" || stage === "rejected") {
+    return { rejected: observedState(true, event), closed: observedState(false, event) };
+  }
+  if (["closed", "opportunity_closed"].includes(event.type) || stage === "closed") {
+    return { rejected: observedState(false, event), closed: observedState(true, event) };
+  }
+  return { rejected: observedState(false, event), closed: observedState(false, event) };
+}
+
+function interviewState(event) {
+  if (!event) return { interviewInvited: null, interviewConfirmed: null };
+  const stage = event.type === "manual_correction" ? String(event.metadata?.toStage || "") : "";
+  if (event.type === "interview_scheduled" || stage === "interview_scheduled") {
+    return {
+      interviewInvited: observedState(true, event),
+      interviewConfirmed: observedState(true, event)
+    };
+  }
+  if (isInterviewInvite(event) || stage === "interview_invited") {
+    return {
+      interviewInvited: observedState(true, event),
+      interviewConfirmed: observedState(false, event)
+    };
+  }
+  return {
+    interviewInvited: observedState(false, event),
+    interviewConfirmed: observedState(false, event)
+  };
+}
+
+function isUserAuthority(event) {
+  return event?.actor === "user" || event?.metadata?.source === "user_record";
 }
 
 function lastEvent(events, predicate) {
@@ -244,6 +352,10 @@ function unknownState() {
 
 function inferredNegativeState(occurredAt) {
   return { value: false, source: "time_inference", occurredAt };
+}
+
+function inferredPositiveState(event) {
+  return { value: true, source: "time_inference", occurredAt: event.occurredAt };
 }
 
 function eventSource(event) {

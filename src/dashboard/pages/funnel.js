@@ -1,5 +1,10 @@
 const { escapeHtml, escapeAttr } = require("../http/response");
 const { renderDashboardFrame } = require("../ui/shell");
+const {
+  DEFAULT_PRELIMINARY_SAMPLE_TARGET,
+  DEFAULT_COMPARABLE_SAMPLE_TARGET,
+  DEFAULT_FORMAL_SAMPLE_TARGET
+} = require("../../core/funnel_maturity");
 
 const STAGES = Object.freeze([
   ["started", "发起求职动作"],
@@ -25,9 +30,14 @@ function renderFunnelPage({ plan = {}, dashboard = {} } = {}) {
   const policy = dashboard.policy || {};
   const latest = dashboard.latestCohort || null;
   const currentPool = dashboard.currentPool || {};
-  const diagnosticSample = latest ? Number(latest.sampleCount || 0) : Number(currentPool.mature || 0);
-  const strength = String(latest?.strength || currentPool.strength || "facts");
-  const unknown = Number(latest?.unknown ?? currentPool.unknown ?? 0);
+  const analysisSource = String(dashboard.analysisSource || (latest ? "latest_cohort" : "current_pool"));
+  const currentIsActive = analysisSource === "current_pool";
+  const activePolicy = currentIsActive ? policy : cohortPolicy(latest, policy);
+  const diagnosticSample = currentIsActive
+    ? Number(currentPool.mature || 0)
+    : Number(latest?.sampleCount || 0);
+  const strength = String((currentIsActive ? currentPool.strength : latest?.strength) || "facts");
+  const unknown = Number((currentIsActive ? currentPool.unknown : latest?.unknown) || 0);
   const waiting = Number(currentPool.waiting || 0);
   const started = Number(currentPool.started || 0);
 
@@ -45,10 +55,21 @@ function renderFunnelPage({ plan = {}, dashboard = {} } = {}) {
         <div class="heading-meta"><span>${escapeHtml(plan.name || "当前筛选方案")}</span><span class="status ${strengthTone(strength)}">${escapeHtml(STRENGTH_LABELS[strength] || STRENGTH_LABELS.facts)}</span></div>
       </section>
       ${renderConclusion(dashboard, strength)}
-      ${renderThresholdRuler(policy, diagnosticSample, strength)}
-      ${renderSampleMetrics({ diagnosticSample, started, waiting, unknown, latest })}
+      ${renderThresholdRuler(activePolicy, diagnosticSample, strength)}
+      ${renderSampleMetrics({
+        diagnosticSample,
+        currentMature: Number(currentPool.mature || 0),
+        started,
+        waiting,
+        unknown,
+        analysisSource,
+        latest
+      })}
+      ${renderRollingPoolStatus(currentPool, policy, analysisSource)}
+      ${renderEarlyPositive(currentPool.earlyPositive || {})}
       ${started || latest ? renderFunnelStages(dashboard.funnel || {}) : renderEmptyState()}
-      ${renderComparisons(dashboard.comparisons || {}, policy)}
+      ${renderComparisons(dashboard.comparisons || {}, policy, strength)}
+      ${renderPreviousCohort(latest, analysisSource, policy)}
       ${renderEvidenceNotes(dashboard.evidenceNotes || [])}
     </main><p class="footer-note">本页只读取本地记录并更新本地样本批次，不访问 BOSS、不填写、不粘贴、不发送，也不自动调整岗位筛选或材料。</p>`
   });
@@ -62,9 +83,9 @@ function renderConclusion(dashboard, strength) {
 }
 
 function renderThresholdRuler(policy, mature, strength) {
-  const preliminary = positiveNumber(policy.preliminarySampleTarget, 30);
-  const comparable = positiveNumber(policy.comparableSampleTarget, 50);
-  const formal = positiveNumber(policy.formalSampleTarget, 70);
+  const preliminary = positiveNumber(policy.preliminarySampleTarget, DEFAULT_PRELIMINARY_SAMPLE_TARGET);
+  const comparable = positiveNumber(policy.comparableSampleTarget, DEFAULT_COMPARABLE_SAMPLE_TARGET);
+  const formal = positiveNumber(policy.formalSampleTarget, DEFAULT_FORMAL_SAMPLE_TARGET);
   const capped = Math.max(0, Math.min(100, (mature / formal) * 100));
   return `<section class="card pad funnel-evidence" aria-labelledby="evidence-strength-title">
     <div class="funnel-section-head"><div><p class="section-label">证据强度</p><h2 id="evidence-strength-title">当前 ${mature} 个成熟样本</h2></div><p class="muted">${escapeHtml(distanceToNext(mature, strength, { preliminary, comparable, formal }))}</p></div>
@@ -79,18 +100,41 @@ function renderThresholdRuler(policy, mature, strength) {
   </section>`;
 }
 
-function renderSampleMetrics({ diagnosticSample, started, waiting, unknown, latest }) {
+function renderSampleMetrics({ diagnosticSample, currentMature, started, waiting, unknown, analysisSource, latest }) {
+  const frozenActive = analysisSource === "latest_cohort" && latest;
   return `<section class="metric-grid funnel-metrics" aria-label="求职样本状态">
-    <div class="metric"><span class="metric-label">当前诊断样本</span><strong class="metric-value">${diagnosticSample}</strong><span class="metric-note">${latest ? `已冻结第 ${Number(latest.id || 0)} 批` : "滚动样本池"}</span></div>
-    <div class="metric"><span class="metric-label">${latest ? "下一批已进入" : "当前池已进入"}</span><strong class="metric-value">${started}</strong><span class="metric-note">含成熟与等待反馈</span></div>
-    <div class="metric"><span class="metric-label">等待 48 小时</span><strong class="metric-value">${waiting}</strong><span class="metric-note">暂不计入诊断</span></div>
+    <div class="metric"><span class="metric-label">当前诊断样本</span><strong class="metric-value">${diagnosticSample}</strong><span class="metric-note">${frozenActive ? "最新冻结批次" : "当前滚动样本池"}</span></div>
+    <div class="metric"><span class="metric-label">${frozenActive ? "下一批已成熟" : "当前池已进入"}</span><strong class="metric-value">${frozenActive ? currentMature : started}</strong><span class="metric-note">${frozenActive ? `共进入 ${started} 个` : "含成熟与等待反馈"}</span></div>
+    <div class="metric"><span class="metric-label">等待 48 小时</span><strong class="metric-value">${waiting}</strong><span class="metric-note">暂不作为失败</span></div>
     <div class="metric"><span class="metric-label">状态未知</span><strong class="metric-value">${unknown}</strong><span class="metric-note">不当作失败</span></div>
   </section>`;
 }
 
+function renderRollingPoolStatus(currentPool, policy, analysisSource) {
+  if (analysisSource !== "latest_cohort") return "";
+  const mature = Math.max(0, Number(currentPool.mature || 0));
+  const waiting = Math.max(0, Number(currentPool.waiting || 0));
+  const preliminary = positiveNumber(policy.preliminarySampleTarget, DEFAULT_PRELIMINARY_SAMPLE_TARGET);
+  const remaining = Math.max(0, preliminary - mature);
+  return `<section class="card pad funnel-rolling" aria-labelledby="funnel-rolling-title"><p class="section-label">下一批滚动样本</p><h2 id="funnel-rolling-title">已有 ${mature} 个成熟样本</h2><p>距离新的初步观察还差 ${remaining} 个；另有 ${waiting} 个仍在 48 小时反馈窗口内。达到当前设置的 ${preliminary} 个后，页面会切换到新一批结论。</p></section>`;
+}
+
+function renderEarlyPositive(counts) {
+  const replied = Math.max(0, Number(counts.replied || 0));
+  const resume = Math.max(0, Number(counts.resumeRequested || 0));
+  const interview = Math.max(0, Number(counts.interviewInvited || 0));
+  if (!replied && !resume && !interview) return "";
+  const parts = [
+    replied ? `${replied} 个已收到回复` : "",
+    resume ? `${resume} 个已索要简历` : "",
+    interview ? `${interview} 个已发出面试邀请` : ""
+  ].filter(Boolean);
+  return `<aside class="card pad funnel-early-positive"><strong>48 小时等待期内已有积极结果：</strong><span>${escapeHtml(parts.join("，"))}。这些结果立即显示，但样本仍要等窗口结束后才进入诊断分母。</span></aside>`;
+}
+
 function renderFunnelStages(funnel) {
   const rows = STAGES.map(([key, label]) => renderStage(label, funnel[key] || {})).join("");
-  return `<section class="card pad funnel-stages" aria-labelledby="funnel-stages-title"><div class="funnel-section-head"><div><p class="section-label">成熟样本漏斗</p><h2 id="funnel-stages-title">反馈走到了哪一步</h2></div><p class="muted">分母只使用这一环节已有明确状态的成熟样本。</p></div><div class="funnel-stage-list">${rows}</div></section>`;
+  return `<section class="card pad funnel-stages" aria-labelledby="funnel-stages-title"><div class="funnel-section-head"><div><p class="section-label">成熟样本漏斗</p><h2 id="funnel-stages-title">反馈走到了哪一步</h2></div><p class="muted">分母只使用已到达上一环节、且本环节状态明确的成熟样本；等待单列。</p></div><div class="funnel-stage-list">${rows}</div></section>`;
 }
 
 function renderStage(label, value) {
@@ -107,21 +151,57 @@ function renderEmptyState() {
   return `<section class="card pad funnel-empty" aria-labelledby="funnel-empty-title"><p class="section-label">开始积累</p><h2 id="funnel-empty-title">还没有可统计的求职动作</h2><p>确认已投、已验证发起沟通或确认已发送回复后，RoleFlow 才把岗位放进滚动样本池；仅收藏、稍后处理或查看岗位不会计数。</p></section>`;
 }
 
-function renderComparisons(comparisons, policy) {
+function renderComparisons(comparisons, policy, strength) {
+  if (!["comparable", "formal"].includes(strength)) return "";
   const sections = [
-    ["direction", "岗位方向", (item) => item.key],
-    ["decisionBucket", "推荐档位", (item) => decisionLabel(item.key)],
-    ["resumeVersion", "简历版本", (_item, index) => `简历版本 ${index + 1}`],
-    ["greeting", "招呼语版本", (_item, index) => `招呼语版本 ${index + 1}`]
+    ["direction", "岗位方向", (item) => item.label || item.key],
+    ["decisionBucket", "推荐档位", (item) => item.label || decisionLabel(item.key)],
+    ["resumeVersion", "简历版本", (item, index) => item.label || `简历版本 ${index + 1}`],
+    ["greeting", "招呼语版本", (item, index) => item.label || `招呼语版本 ${index + 1}`]
   ].map(([key, label, labelFor]) => renderComparisonGroup(label, comparisons[key] || [], labelFor)).filter(Boolean);
   if (!sections.length) return "";
-  const minimum = Math.max(10, Math.floor(positiveNumber(policy.preliminarySampleTarget, 30) / 2));
+  const minimum = Math.max(10, Math.floor(positiveNumber(policy.preliminarySampleTarget, DEFAULT_PRELIMINARY_SAMPLE_TARGET) / 2));
   return `<section class="card pad funnel-comparisons" aria-labelledby="funnel-comparisons-title"><div class="funnel-section-head"><div><p class="section-label">分组观察</p><h2 id="funnel-comparisons-title">哪些方向或材料值得优先检查</h2></div><p class="muted">每组至少 ${minimum} 个成熟样本才显示；差异用于排查，不代表因果。</p></div><div class="funnel-comparison-groups">${sections.join("")}</div></section>`;
 }
 
 function renderComparisonGroup(title, items, labelFor) {
   if (!items.length) return "";
-  return `<section class="funnel-comparison-group" aria-label="${escapeAttr(title)}"><h3>${escapeHtml(title)}</h3><div class="funnel-comparison-grid">${items.map((item, index) => `<article><div class="funnel-comparison-title"><strong>${escapeHtml(labelFor(item, index) || `分组 ${index + 1}`)}</strong><span>${Number(item.sampleCount || 0)} 个成熟样本</span></div><dl><div><dt>已读</dt><dd>${metricText(item.read)}</dd></div><div><dt>回复</dt><dd>${metricText(item.replied)}</dd></div><div><dt>有效沟通</dt><dd>${metricText(item.effectiveConversation)}</dd></div><div><dt>面试邀请</dt><dd>${metricText(item.interviewInvited)}</dd></div></dl></article>`).join("")}</div></section>`;
+  return `<section class="funnel-comparison-group" aria-label="${escapeAttr(title)}"><h3>${escapeHtml(title)}</h3><div class="funnel-comparison-grid">${items.map((item, index) => `<article><div class="funnel-comparison-title"><strong>${escapeHtml(labelFor(item, index) || `分组 ${index + 1}`)}</strong><span>${Number(item.sampleCount || 0)} 个成熟样本</span></div><dl>${renderMetricRows(item)}</dl></article>`).join("")}</div></section>`;
+}
+
+function renderMetricRows(item) {
+  return [
+    ["read", "已读"],
+    ["replied", "回复"],
+    ["effectiveConversation", "有效沟通"],
+    ["interviewInvited", "面试邀请"]
+  ].filter(([key]) => item[key] && Number(item[key].denominator || 0) > 0)
+    .map(([key, label]) => `<div><dt>${label}</dt><dd>${metricText(item[key])}</dd></div>`)
+    .join("");
+}
+
+function renderPreviousCohort(latest, analysisSource, policy) {
+  if (!latest || analysisSource !== "current_pool") return "";
+  const strength = String(latest.strength || "formal");
+  const preliminary = positiveNumber(policy.preliminarySampleTarget, DEFAULT_PRELIMINARY_SAMPLE_TARGET);
+  return `<section class="card pad funnel-previous" aria-labelledby="funnel-previous-title"><div><p class="section-label">上一批冻结结论 · ${escapeHtml(STRENGTH_LABELS[strength] || STRENGTH_LABELS.formal)}</p><h2 id="funnel-previous-title">${escapeHtml(latest.headline || "上一批结果已保留。")}</h2></div><p><strong>${Math.max(0, Number(latest.sampleCount || 0))}</strong> 个成熟样本；新一批达到当前设置的 ${preliminary} 个后已切换为当前诊断，上一批不会覆盖新反馈。</p></section>`;
+}
+
+function cohortPolicy(cohort, fallback) {
+  return {
+    preliminarySampleTarget: positiveNumber(
+      cohort?.preliminarySampleTarget,
+      positiveNumber(fallback.preliminarySampleTarget, DEFAULT_PRELIMINARY_SAMPLE_TARGET)
+    ),
+    comparableSampleTarget: positiveNumber(
+      cohort?.comparableSampleTarget,
+      positiveNumber(fallback.comparableSampleTarget, DEFAULT_COMPARABLE_SAMPLE_TARGET)
+    ),
+    formalSampleTarget: positiveNumber(
+      cohort?.formalSampleTarget,
+      positiveNumber(fallback.formalSampleTarget, DEFAULT_FORMAL_SAMPLE_TARGET)
+    )
+  };
 }
 
 function renderEvidenceNotes(notes) {

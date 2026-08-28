@@ -51,9 +51,8 @@ const logger = {
     for (const label of ["发起求职动作", "招聘方已读", "招聘方回复", "有效沟通", "索要简历", "发出面试邀请", "确认面试或后续"]) {
       assert.match(response.body, new RegExp(label), `funnel stage is visible: ${label}`);
     }
-    assert.match(response.body, /AI &lt;应用&gt;/, "user-owned comparison labels are escaped");
-    assert.doesNotMatch(response.body, /AI <应用>/);
-    assert.match(response.body, /Java 后端/);
+    assert.doesNotMatch(response.body, /AI &lt;应用&gt;|Java 后端/,
+      "preliminary observations must not render comparison groups");
     assert.doesNotMatch(response.body, /sha256:|resume:77/, "internal material identifiers never reach the page");
     assert.doesNotMatch(response.body, /证明|导致|准确率/);
     assert.doesNotMatch(response.body, /<form|method="post"|自动投递|自动发送/, "the checkup is read-only and local");
@@ -85,6 +84,104 @@ const logger = {
   assert.match(empty, /还没有可统计的求职动作/);
   assert.match(empty, /确认已投、已验证发起沟通或确认已发送回复/);
 
+  const comparableDashboard = dashboardFixture();
+  comparableDashboard.currentPool = {
+    ...comparableDashboard.currentPool,
+    mature: 55,
+    strength: "comparable",
+    nextTarget: 70
+  };
+  comparableDashboard.comparisons.resumeVersion[0].label = "后端定向简历";
+  comparableDashboard.comparisons.greeting[0].label = "招呼语版本 a1b2c3d4";
+  const comparable = renderFunnelPage({
+    plan: { id: 9, name: "可比较方案", profileId: 5 },
+    dashboard: comparableDashboard
+  });
+  assert.match(comparable, /AI &lt;应用&gt;/, "comparable user-owned labels are escaped");
+  assert.doesNotMatch(comparable, /AI <应用>/);
+  assert.match(comparable, /Java 后端/);
+  assert.match(comparable, /后端定向简历/);
+  assert.match(comparable, /招呼语版本 a1b2c3d4/);
+  assert.doesNotMatch(comparable, /sha256:|resume:77/);
+
+  const rollingDashboard = {
+    ...comparableDashboard,
+    latestCohort: {
+      id: 3,
+      sampleCount: 83,
+      strength: "formal",
+      headline: "正式诊断：上一批主要卡在已读到回复。"
+    }
+  };
+  const rolling = renderFunnelPage({
+    plan: { id: 9, name: "滚动方案", profileId: 5 },
+    dashboard: rollingDashboard
+  });
+  assert.match(rolling, /当前 55 个成熟样本/);
+  assert.match(rolling, /上一批冻结结论/);
+  assert.match(rolling, /<strong>83<\/strong> 个成熟样本/);
+  assert.match(rolling, /上一批主要卡在已读到回复/);
+
+  const historicalPolicyDashboard = {
+    ...dashboardFixture(),
+    analysisSource: "latest_cohort",
+    policy: { preliminarySampleTarget: 40, comparableSampleTarget: 60, formalSampleTarget: 80 },
+    currentPool: {
+      started: 22,
+      mature: 20,
+      waiting: 2,
+      unknown: 1,
+      strength: "facts",
+      nextTarget: 40,
+      earlyPositive: {}
+    },
+    latestCohort: {
+      id: 4,
+      sampleCount: 83,
+      preliminarySampleTarget: 30,
+      comparableSampleTarget: 50,
+      formalSampleTarget: 70,
+      strength: "formal",
+      unknown: 0,
+      headline: "正式诊断：冻结策略保持 30/50/70。"
+    },
+    headline: "正式诊断：冻结策略保持 30/50/70。",
+    priorityCheck: "沿用上一批结论，同时积累下一批。"
+  };
+  const historicalPolicy = renderFunnelPage({
+    plan: { id: 9, name: "策略变更方案", profileId: 5 },
+    dashboard: historicalPolicyDashboard
+  });
+  assert.match(historicalPolicy, /当前 83 个成熟样本/);
+  assert.match(historicalPolicy, /70 个成熟样本 · 正式诊断/,
+    "a frozen conclusion uses its frozen thresholds");
+  assert.doesNotMatch(historicalPolicy, /80 个成熟样本 · 正式诊断/);
+  assert.match(historicalPolicy, /下一批滚动样本/);
+  assert.match(historicalPolicy, /已有 20 个成熟样本/);
+  assert.match(historicalPolicy, /距离新的初步观察还差 20 个/);
+  assert.match(historicalPolicy, /达到当前设置的 40 个后/);
+
+  const realDb = openDb(":memory:");
+  const realOwner = createOwner(realDb);
+  seedRealFunnel(realDb, realOwner);
+  const realServer = createDashboardServer({
+    db: realDb,
+    forceMock: true,
+    allowOfflineMock: true,
+    logger,
+    browserAuthority: { browserMode: "edge", cdpPort: null, profilePath: "" }
+  });
+  const realBaseUrl = await listen(realServer);
+  try {
+    const realResponse = await getText(realBaseUrl, `/funnel?planId=${realOwner.planId}`);
+    assert.equal(realResponse.status, 200);
+    assert.match(realResponse.body, /当前 1 个成熟样本/,
+      "the HTTP route renders the real funnel service and SQLite projection");
+  } finally {
+    await close(realServer);
+    realDb.close();
+  }
+
   console.log("dashboard_funnel_smoke: ok");
 })().catch((error) => {
   console.error(error.stack || error.message);
@@ -104,8 +201,17 @@ function createOwner(db) {
 
 function dashboardFixture() {
   return {
+    analysisSource: "current_pool",
     policy: { preliminarySampleTarget: 30, comparableSampleTarget: 50, formalSampleTarget: 70 },
-    currentPool: { started: 38, mature: 35, waiting: 3, unknown: 3, strength: "preliminary", nextTarget: 50 },
+    currentPool: {
+      started: 38,
+      mature: 35,
+      waiting: 3,
+      unknown: 3,
+      strength: "preliminary",
+      nextTarget: 50,
+      earlyPositive: { replied: 2, resumeRequested: 1, interviewInvited: 1 }
+    },
     latestCohort: null,
     funnel: {
       started: stage(38, 38, 0, 0),
@@ -133,6 +239,31 @@ function dashboardFixture() {
       "等待和未知状态不进入失败分母，观察关系不代表因果。"
     ]
   };
+}
+
+function seedRealFunnel(db, owner) {
+  const startedAt = "2026-08-20T02:00:00.000Z";
+  const jobId = Number(db.prepare(`INSERT INTO jobs(
+    source, source_id, title, first_seen_at, last_seen_at
+  ) VALUES ('boss', 'dashboard-real-funnel', '真实服务岗位', ?, ?)`)
+    .run(startedAt, startedAt).lastInsertRowid);
+  const cardId = Number(db.prepare(`INSERT INTO candidate_progress_cards(
+    profile_id, plan_id, job_id, source, recruiter_name, thread_key, stage,
+    next_action, scheduled_at, last_event_at, created_at, updated_at
+  ) VALUES (?, ?, ?, 'boss', '', '', 'waiting_reply', '', NULL, ?, ?, ?)`)
+    .run(owner.profileId, owner.planId, jobId, startedAt, startedAt, startedAt).lastInsertRowid);
+  db.prepare(`INSERT INTO candidate_funnel_entries(
+    profile_id, job_id, card_id, cohort_id, plan_id, source_kind,
+    started_at, mature_at, direction_key, decision_bucket,
+    resume_version_id, greeting_key, created_at, updated_at
+  ) VALUES (?, ?, ?, NULL, ?, 'applied', ?, '2026-08-22T02:00:00.000Z',
+    'AI 应用', 'apply', NULL, '', ?, ?)`)
+    .run(owner.profileId, jobId, cardId, owner.planId, startedAt, startedAt, startedAt);
+  db.prepare(`INSERT INTO candidate_progress_events(
+    card_id, idempotency_key, type, actor, summary, metadata_json, occurred_at, created_at
+  ) VALUES (?, 'dashboard-real-funnel-read', 'outbound_read_observed', 'system', '',
+    '{"source":"platform_observation"}', '2026-08-20T03:00:00.000Z', '2026-08-20T03:00:00.000Z')`)
+    .run(cardId);
 }
 
 function comparison(key, sampleCount, replies, known) {

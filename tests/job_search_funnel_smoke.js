@@ -118,6 +118,144 @@ function projectionRulesSmoke() {
   assert.equal(noticeOnly.replied.value, null);
   assert.equal(noticeOnly.effectiveConversation.value, null);
   assert.deepEqual(noticeOnly.unknownFields, ["read", "replied", "effectiveConversation"]);
+
+  const oldEntryNewRead = projectFunnelEntry(entry, [
+    event("outbound_read_observed", "2026-08-28T03:00:00.000Z", {
+      source: "platform_observation",
+      messageKey: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    })
+  ], { now: "2026-08-28T04:00:00.000Z" });
+  assert.equal(oldEntryNewRead.mature, true, "the job-level window is already mature");
+  assert.equal(oldEntryNewRead.replied.value, null, "a newly read message starts a fresh reply window");
+  assert.equal(oldEntryNewRead.readNoReplyMature, false);
+
+  const oldEntryNewReadMature = projectFunnelEntry(entry, [
+    event("outbound_read_observed", "2026-08-28T03:00:00.000Z", {
+      source: "platform_observation",
+      messageKey: "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    })
+  ], { now: "2026-08-31T03:00:00.000Z" });
+  assert.equal(oldEntryNewReadMature.replied.value, false, "read-without-reply becomes negative only after its own window");
+  assert.equal(oldEntryNewReadMature.readNoReplyMature, true);
+
+  const newerDelivered = projectFunnelEntry(entry, [
+    event("outbound_read_observed", "2026-08-25T08:00:00.000Z", {
+      source: "platform_observation",
+      messageKey: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    }),
+    event("outbound_delivered_observed", "2026-08-28T08:00:00.000Z", {
+      source: "platform_observation",
+      messageKey: "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    })
+  ], { now: "2026-08-31T09:00:00.000Z" });
+  assert.equal(newerDelivered.read.value, true, "an earlier safe read remains a reached funnel milestone");
+  assert.equal(newerDelivered.readNoReplyMature, false, "a newer delivered message clears the older read-no-reply clock");
+  assert.equal(newerDelivered.readNoReplyMaturesAt, null);
+
+  const historicalReplyThenNoReply = projectFunnelEntry(entry, [
+    event("incoming_message_classified", "2026-08-25T03:00:00.000Z", {
+      source: "platform_observation",
+      messageIntent: "information_request"
+    }),
+    event("outbound_read_observed", "2026-08-26T04:00:00.000Z", {
+      source: "platform_observation"
+    })
+  ], { now: "2026-08-28T04:00:00.000Z" });
+  assert.equal(historicalReplyThenNoReply.replied.value, true, "the cumulative funnel remembers an earlier reply");
+  assert.equal(historicalReplyThenNoReply.readNoReplyMature, true,
+    "an older HR reply does not satisfy a newer read-without-reply window");
+
+  const newUnclassifiedReply = projectFunnelEntry(entry, [
+    event("message_group_classified", "2026-08-25T03:00:00.000Z", {
+      source: "platform_observation",
+      messageIntent: "polite_acknowledgement"
+    }),
+    event("inbound_reply_observed", "2026-08-25T04:00:00.000Z", {
+      source: "platform_observation"
+    })
+  ], { now: "2026-08-28T04:00:00.000Z" });
+  assert.equal(newUnclassifiedReply.effectiveConversation.value, null,
+    "an old classification cannot mark a newer unclassified reply ineffective");
+
+  const correctedTerminal = projectFunnelEntry(entry, [
+    event("rejected", "2026-08-25T05:00:00.000Z", { source: "user_record" }),
+    event("opportunity_closed", "2026-08-25T06:00:00.000Z", { source: "user_record" }),
+    event("opportunity_reopened", "2026-08-25T07:00:00.000Z", { source: "user_record", stage: "needs_user_action" })
+  ], { now: "2026-08-28T03:00:00.000Z" });
+  assert.equal(correctedTerminal.rejected.value, false, "reopening clears the current rejected state");
+  assert.equal(correctedTerminal.closed.value, false, "reopening clears the current closed state");
+
+  const correctedInterview = projectFunnelEntry(entry, [
+    event("interview_invited", "2026-08-25T05:00:00.000Z", { source: "user_record" }),
+    event("interview_scheduled", "2026-08-25T06:00:00.000Z", { source: "user_record" }),
+    event("manual_correction", "2026-08-25T07:00:00.000Z", {
+      source: "user_record",
+      fromStage: "interview_scheduled",
+      toStage: "waiting_reply"
+    })
+  ], { now: "2026-08-28T03:00:00.000Z" });
+  assert.equal(correctedInterview.interviewInvited.value, false);
+  assert.equal(correctedInterview.interviewConfirmed.value, false, "a user stage correction overrides old interview milestones");
+
+  const invitedAgain = projectFunnelEntry(entry, [
+    event("interview_scheduled", "2026-08-25T06:00:00.000Z", { source: "user_record" }),
+    event("manual_correction", "2026-08-25T07:00:00.000Z", {
+      source: "user_record",
+      toStage: "waiting_reply"
+    }),
+    event("message_group_classified", "2026-08-25T08:00:00.000Z", {
+      source: "platform_observation",
+      messageIntent: "interview_invitation"
+    })
+  ], { now: "2026-08-28T03:00:00.000Z" });
+  assert.equal(invitedAgain.interviewInvited.value, true, "newer platform evidence can supersede an older correction");
+  assert.equal(invitedAgain.interviewConfirmed.value, false, "a new invitation does not inherit an old confirmation");
+
+  const platformRejected = projectFunnelEntry(entry, [
+    event("rejected", "2026-08-25T09:00:00.000Z", { source: "platform_observation" })
+  ], { now: "2026-08-28T03:00:00.000Z" });
+  assert.equal(platformRejected.rejected.value, true, "an explicit platform rejection is valid terminal evidence");
+  assert.equal(platformRejected.read.value, null);
+  assert.equal(platformRejected.replied.value, null,
+    "a terminal status without an HR message must not masquerade as a reply");
+
+  const userClosedAfterRead = projectFunnelEntry(entry, [
+    event("outbound_read_observed", "2026-08-25T03:00:00.000Z", { source: "platform_observation" }),
+    event("opportunity_closed", "2026-08-25T04:00:00.000Z", { source: "user_record" })
+  ], { now: "2026-08-29T03:00:00.000Z" });
+  assert.equal(userClosedAfterRead.read.value, true);
+  assert.equal(userClosedAfterRead.replied.value, null);
+  assert.equal(userClosedAfterRead.closed.value, true);
+  assert.equal(userClosedAfterRead.readNoReplyMature, false,
+    "a terminal entry leaves the reply denominator instead of becoming a no-reply failure");
+  assert.equal(userClosedAfterRead.replyWindowWaiting, false);
+
+  const sameTimestampReply = projectFunnelEntry(entry, [
+    event("outbound_read_observed", "2026-08-25T03:00:00.000Z", { source: "platform_observation" }),
+    event("inbound_reply_observed", "2026-08-25T03:00:00.000Z", { source: "platform_observation" })
+  ], { now: "2026-08-29T03:00:00.000Z" });
+  assert.equal(sameTimestampReply.replied.value, true);
+  assert.equal(sameTimestampReply.readNoReplyMature, false,
+    "a same-observation reply conservatively satisfies the read window");
+  assert.equal(sameTimestampReply.replyWindowWaiting, false);
+
+  const historicalReplyThenClosed = [
+    event("inbound_reply_observed", "2026-08-25T03:00:00.000Z", { source: "platform_observation" }),
+    event("outbound_read_observed", "2026-08-27T03:00:00.000Z", { source: "platform_observation" }),
+    event("opportunity_closed", "2026-08-27T04:00:00.000Z", { source: "user_record" })
+  ];
+  const closedBeforeDeadline = projectFunnelEntry(entry, historicalReplyThenClosed, {
+    now: "2026-08-28T04:00:00.000Z"
+  });
+  assert.equal(closedBeforeDeadline.replied.value, true, "the earlier real reply remains a reached milestone");
+  assert.equal(closedBeforeDeadline.closed.value, true);
+  assert.equal(closedBeforeDeadline.replyWindowWaiting, false,
+    "a current terminal state stops a newer read waiting clock even when an older reply exists");
+  const closedAfterDeadline = projectFunnelEntry(entry, historicalReplyThenClosed, {
+    now: "2026-08-31T03:00:00.000Z"
+  });
+  assert.equal(closedAfterDeadline.readNoReplyMature, false,
+    "a closed opportunity never becomes a later read-no-reply failure");
 }
 
 function snapshotRulesSmoke() {
@@ -151,6 +289,91 @@ function snapshotRulesSmoke() {
     unknown: 0,
     waiting: 1
   });
+}
+
+function conditionalFunnelSmoke() {
+  const entries = [
+    { id: 11, startedAt: "2026-08-20T00:00:00.000Z", matureAt: "2026-08-22T00:00:00.000Z" },
+    { id: 12, startedAt: "2026-08-20T00:00:00.000Z", matureAt: "2026-08-22T00:00:00.000Z" },
+    { id: 13, startedAt: "2026-08-20T00:00:00.000Z", matureAt: "2026-08-22T00:00:00.000Z" },
+    { id: 14, startedAt: "2026-08-27T00:00:00.000Z", matureAt: "2026-08-31T00:00:00.000Z" }
+  ];
+  const snapshot = buildFunnelSnapshot(entries, new Map([
+    [11, [event("outbound_delivered_observed", "2026-08-20T02:00:00.000Z")]],
+    [12, [
+      event("outbound_read_observed", "2026-08-20T02:00:00.000Z"),
+      event("message_group_classified", "2026-08-20T03:00:00.000Z", { messageIntent: "information_request" })
+    ]],
+    [13, [event("outbound_read_observed", "2026-08-20T02:00:00.000Z")]],
+    [14, [event("message_group_classified", "2026-08-27T03:00:00.000Z", { messageIntent: "interview_invitation" })]]
+  ]), { now: "2026-08-28T00:00:00.000Z" });
+
+  assert.deepEqual(snapshot.stages.read, { numerator: 2, denominator: 3, unknown: 0, waiting: 1 });
+  assert.deepEqual(snapshot.stages.replied, { numerator: 1, denominator: 2, unknown: 0, waiting: 1 }, "reply conversion only uses reached read stages");
+  assert.deepEqual(snapshot.stages.effectiveConversation, { numerator: 1, denominator: 1, unknown: 0, waiting: 1 });
+  assert.deepEqual(snapshot.immediatePositive, {
+    read: 3,
+    replied: 2,
+    effectiveConversation: 2,
+    resumeRequested: 0,
+    interviewInvited: 1,
+    interviewConfirmed: 0
+  }, "positive outcomes stay visible before the entry matures");
+  assert.deepEqual(snapshot.earlyPositive, {
+    read: 1,
+    replied: 1,
+    effectiveConversation: 1,
+    resumeRequested: 0,
+    interviewInvited: 1,
+    interviewConfirmed: 0
+  }, "positive outcomes inside the 48-hour waiting window remain separately visible");
+
+  const replyWindowSnapshot = buildFunnelSnapshot(
+    Array.from({ length: 30 }, (_, index) => ({
+      id: 100 + index,
+      startedAt: "2026-08-20T00:00:00.000Z",
+      matureAt: "2026-08-22T00:00:00.000Z"
+    })),
+    new Map(Array.from({ length: 30 }, (_, index) => [100 + index, [
+      event("outbound_read_observed", index < 10
+        ? "2026-08-20T02:00:00.000Z"
+        : "2026-08-28T03:00:00.000Z")
+    ]])),
+    { now: "2026-08-28T04:00:00.000Z" }
+  );
+  assert.equal(replyWindowSnapshot.mature, 30);
+  assert.equal(replyWindowSnapshot.waiting, 20, "a fresh read starts a stage-level 48-hour wait");
+  assert.equal(replyWindowSnapshot.unknown, 20);
+  assert.deepEqual(replyWindowSnapshot.stages.replied, {
+    numerator: 0,
+    denominator: 10,
+    unknown: 0,
+    waiting: 20
+  });
+
+  const terminalSnapshot = buildFunnelSnapshot([
+    { id: 200, startedAt: "2026-08-20T00:00:00.000Z", matureAt: "2026-08-22T00:00:00.000Z" }
+  ], new Map([[200, [
+    event("opportunity_closed", "2026-08-21T00:00:00.000Z", { source: "user_record" })
+  ]]]), { now: "2026-08-28T04:00:00.000Z" });
+  assert.deepEqual(terminalSnapshot.stages.read, {
+    numerator: 0,
+    denominator: 0,
+    unknown: 0,
+    waiting: 0
+  }, "a terminal-only entry is excluded from response conversion denominators");
+  assert.equal(terminalSnapshot.unknown, 0);
+
+  const readThenTerminalSnapshot = buildFunnelSnapshot([
+    { id: 201, startedAt: "2026-08-20T00:00:00.000Z", matureAt: "2026-08-22T00:00:00.000Z" }
+  ], new Map([[201, [
+    event("outbound_read_observed", "2026-08-20T03:00:00.000Z", { source: "platform_observation" }),
+    event("opportunity_closed", "2026-08-21T00:00:00.000Z", { source: "user_record" })
+  ]]]), { now: "2026-08-28T04:00:00.000Z" });
+  assert.equal(readThenTerminalSnapshot.stages.read.numerator, 1,
+    "a real read milestone remains visible after the user closes the opportunity");
+  assert.equal(readThenTerminalSnapshot.stages.replied.denominator, 0,
+    "the terminal action still leaves the reply conversion denominator");
 }
 
 function storageRulesSmoke() {
@@ -294,6 +517,19 @@ function storageRulesSmoke() {
 
     recordProgressEvent(db, {
       cardId: card.id,
+      idempotencyKey: "progress:00000000-0000-4000-8000-000000000098",
+      type: "rejected",
+      actor: "user",
+      summary: "旧记录，不属于本次求职动作",
+      metadata: { source: "user_record" },
+      occurredAt: "2026-08-24T02:00:00.000Z"
+    });
+    db.prepare(`INSERT INTO candidate_job_events(
+      profile_id, job_id, plan_id, event_type, payload_json, created_at
+    ) VALUES (?, ?, ?, 'rejected', '{}', ?)`)
+      .run(fixture.profileId, fixture.jobId, fixture.planId, "2026-08-24T03:00:00.000Z");
+    recordProgressEvent(db, {
+      cardId: card.id,
       idempotencyKey: "progress:00000000-0000-4000-8000-000000000099",
       type: "interview_invited",
       actor: "user",
@@ -323,6 +559,53 @@ function storageRulesSmoke() {
     });
     assert.notEqual(sharedJobEntry.profileId, first.profileId);
     assert.equal(sharedJobEntry.jobId, first.jobId);
+
+    const isolated = storageFixture(db, "profile-isolation", startedAt, {
+      keyword: "本用户方向",
+      greeting: "本用户招呼语"
+    });
+    const foreign = storageFixture(db, "foreign-observer", startedAt);
+    const foreignBatch = createBatch(db, "boss", "其他用户方向", "foreign observation", {
+      profileId: foreign.profileId,
+      searchPlanId: foreign.planId
+    });
+    upsertJob(db, {
+      source: "boss",
+      sourceId: "funnel-job-profile-isolation",
+      keyword: "其他用户方向",
+      title: "Foreign updated title",
+      greeting: "其他用户招呼语",
+      analysis: { recommendation: "caution" }
+    }, foreignBatch);
+    db.prepare("UPDATE job_observations SET seen_at = ? WHERE batch_id = ? AND job_id = ?")
+      .run(startedAt, foreignBatch, isolated.jobId);
+    const isolatedEntry = ensureFunnelEntry(db, {
+      profileId: isolated.profileId,
+      jobId: isolated.jobId,
+      sourceKind: "applied",
+      startedAt
+    });
+    assert.equal(isolatedEntry.directionKey, "本用户方向", "a missing plan id must still isolate observations by profile");
+    assert.equal(isolatedEntry.greetingKey, digest("本用户招呼语"));
+
+    const blindProfileId = Number(db.prepare(`INSERT INTO candidate_profiles(
+      display_name, profile_json, source_hash, created_at, updated_at
+    ) VALUES ('Blind Candidate', '{}', NULL, ?, ?)`).run(startedAt, startedAt).lastInsertRowid);
+    db.prepare(`INSERT INTO search_plans(
+      profile_id, name, plan_json, profile_version_id, is_active, created_at, updated_at
+    ) VALUES (?, 'Blind active plan', ?, NULL, 1, ?, ?)`)
+      .run(blindProfileId, JSON.stringify({ directions: ["本用户计划方向"] }), startedAt, startedAt);
+    const blindEntry = ensureFunnelEntry(db, {
+      profileId: blindProfileId,
+      jobId: isolated.jobId,
+      sourceKind: "applied",
+      startedAt
+    });
+    assert.equal(blindEntry.directionKey, "本用户计划方向",
+      "without an owned observation, only the candidate's active plan may supply direction");
+    assert.equal(blindEntry.decisionBucket, "");
+    assert.equal(blindEntry.greetingKey, "",
+      "global job fields updated by another candidate must never supply material snapshots");
   } finally {
     db.close();
   }
@@ -445,6 +728,60 @@ function enrollmentRulesSmoke() {
       profileId: rollback.profileId,
       jobId: rollback.jobId
     }), null, "application state, event, and funnel entry must roll back together");
+
+    const communicationRollback = storageFixture(db, "enroll-communication-rollback", now);
+    db.exec(`CREATE TRIGGER reject_communication_funnel BEFORE INSERT ON candidate_funnel_entries
+      BEGIN SELECT RAISE(ABORT, 'communication funnel enrollment failed'); END`);
+    assert.throws(() => recordVerifiedCommunicationStart(db, {
+      batch: {
+        id: 103,
+        profileId: communicationRollback.profileId,
+        planId: communicationRollback.planId,
+        site: "boss"
+      },
+      item: { id: 203, jobId: communicationRollback.jobId },
+      outcome: "succeeded",
+      now
+    }), /communication funnel enrollment failed/);
+    db.exec("DROP TRIGGER reject_communication_funnel");
+    assert.equal(db.prepare(`SELECT count(*) AS count FROM candidate_progress_cards
+      WHERE profile_id = ? AND job_id = ?`).get(
+      communicationRollback.profileId,
+      communicationRollback.jobId
+    ).count, 0, "communication card creation rolls back with funnel enrollment");
+    assert.equal(db.prepare(`SELECT count(*) AS count FROM candidate_progress_events events
+      JOIN candidate_progress_cards cards ON cards.id = events.card_id
+      WHERE cards.profile_id = ? AND cards.job_id = ?`).get(
+      communicationRollback.profileId,
+      communicationRollback.jobId
+    ).count, 0);
+
+    const replyRollback = storageFixture(db, "enroll-reply-rollback", now);
+    const replyRollbackCard = ensureProgressCard(db, { ...replyRollback, source: "boss", now });
+    const originalStage = replyRollbackCard.stage;
+    db.exec(`CREATE TRIGGER reject_reply_funnel BEFORE INSERT ON candidate_funnel_entries
+      BEGIN SELECT RAISE(ABORT, 'reply funnel enrollment failed'); END`);
+    assert.throws(() => recordManualProgressAction(db, {
+      cardId: replyRollbackCard.id,
+      idempotencyKey: "progress:00000000-0000-4000-8000-000000000302",
+      stage: "waiting_reply",
+      eventType: "reply_confirmed_sent",
+      summary: "用户确认已手动发送",
+      nextAction: "等待招聘方回复",
+      now
+    }), /reply funnel enrollment failed/);
+    db.exec("DROP TRIGGER reject_reply_funnel");
+    assert.equal(db.prepare("SELECT stage FROM candidate_progress_cards WHERE id = ?")
+      .get(replyRollbackCard.id).stage, originalStage, "reply stage rolls back with funnel enrollment");
+    assert.equal(db.prepare(`SELECT count(*) AS count FROM candidate_progress_events
+      WHERE card_id = ? AND idempotency_key = ?`).get(
+      replyRollbackCard.id,
+      "progress:00000000-0000-4000-8000-000000000302"
+    ).count, 0, "reply completion event rolls back with funnel enrollment");
+    assert.equal(getFunnelEntry(db, {
+      profileId: replyRollback.profileId,
+      jobId: replyRollback.jobId
+    }), null);
   } finally {
     db.close();
   }
@@ -501,6 +838,7 @@ function digest(value) {
 maturityRulesSmoke();
 projectionRulesSmoke();
 snapshotRulesSmoke();
+conditionalFunnelSmoke();
 storageRulesSmoke();
 enrollmentRulesSmoke();
 console.log("job_search_funnel_smoke: ok");

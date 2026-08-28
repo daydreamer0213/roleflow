@@ -175,7 +175,8 @@ function listFunnelProgressEvents(db, { profileId, entryIds = [] } = {}) {
   const progress = db.prepare(`SELECT entries.id AS entry_id, events.*
     FROM candidate_funnel_entries entries
     JOIN candidate_progress_events events ON events.card_id = entries.card_id
-    WHERE entries.profile_id = ? AND entries.id IN (${placeholders})`)
+    WHERE entries.profile_id = ? AND entries.id IN (${placeholders})
+      AND events.occurred_at >= entries.started_at`)
     .all(profile, ...ids).map((row) => ({
       entryId: Number(row.entry_id),
       eventId: `progress:${Number(row.id)}`,
@@ -188,7 +189,8 @@ function listFunnelProgressEvents(db, { profileId, entryIds = [] } = {}) {
     FROM candidate_funnel_entries entries
     JOIN candidate_job_events events
       ON events.profile_id = entries.profile_id AND events.job_id = entries.job_id
-    WHERE entries.profile_id = ? AND entries.id IN (${placeholders})`)
+    WHERE entries.profile_id = ? AND entries.id IN (${placeholders})
+      AND events.created_at >= entries.started_at`)
     .all(profile, ...ids).map((row) => ({
       entryId: Number(row.entry_id),
       eventId: `job:${Number(row.id)}`,
@@ -206,16 +208,17 @@ function contactContext(db, { profileId, planId, jobId, startedAt }) {
   const observation = db.prepare(`SELECT observations.keyword, observations.analysis_json, observations.greeting
     FROM job_observations observations
     JOIN batches ON batches.id = observations.batch_id
-    WHERE observations.job_id = ? AND observations.seen_at <= ?
+    WHERE observations.job_id = ? AND batches.profile_id = ? AND observations.seen_at <= ?
       AND (? IS NULL OR batches.search_plan_id = ?)
     ORDER BY observations.seen_at DESC, observations.id DESC LIMIT 1`)
-    .get(jobId, startedAt, planId, planId);
-  const job = db.prepare("SELECT keyword, analysis_json, greeting FROM jobs WHERE id = ?").get(jobId);
+    .get(jobId, profileId, startedAt, planId, planId);
   const plan = planId
     ? db.prepare("SELECT plan_json FROM search_plans WHERE id = ? AND profile_id = ?").get(planId, profileId)
-    : null;
+    : db.prepare(`SELECT plan_json FROM search_plans
+      WHERE profile_id = ? AND is_active = 1
+      ORDER BY updated_at DESC, id DESC LIMIT 1`).get(profileId);
   const planJson = parseJson(plan?.plan_json, {});
-  const source = observation || job || {};
+  const source = observation || { keyword: planJson.directions?.[0] };
   const resume = db.prepare(`SELECT id FROM candidate_resume_versions
     WHERE profile_id = ? AND is_active = 1 AND created_at <= ? AND updated_at <= ?
     ORDER BY updated_at DESC, id DESC LIMIT 1`).get(profileId, startedAt, startedAt);

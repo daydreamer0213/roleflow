@@ -41,28 +41,53 @@ function dashboard(db, { profileId, now }) {
   const latestSnapshot = latest
     ? snapshotFor(db, latest.entries, { profileId, now, policy: latestPolicy })
     : null;
-  const selectedEntries = latest ? latest.entries : currentEntries;
-  const selectedSnapshot = latestSnapshot || currentSnapshot;
-  const diagnosis = diagnose(selectedSnapshot, policy);
+  const currentAnalysis = analyze(db, currentEntries, currentSnapshot, policy, profileId);
+  const latestAnalysis = latest
+    ? analyze(db, latest.entries, latestSnapshot, latestPolicy, profileId)
+    : null;
+  const useCurrent = !latestAnalysis || currentSnapshot.strength !== "facts";
+  const selected = useCurrent ? currentAnalysis : latestAnalysis;
 
   return {
     policy,
-    currentPool: poolSummary(currentSnapshot, policy),
+    analysisSource: useCurrent ? "current_pool" : "latest_cohort",
+    currentPool: {
+      ...poolSummary(currentSnapshot, policy),
+      ...currentAnalysis
+    },
     latestCohort: latest ? {
       ...latest,
       strength: latestSnapshot.strength,
       funnel: latestSnapshot.stages,
-      unknown: latestSnapshot.unknown
+      unknown: latestSnapshot.unknown,
+      comparisons: latestAnalysis.comparisons,
+      headline: latestAnalysis.headline,
+      priorityCheck: latestAnalysis.priorityCheck,
+      immediatePositive: latestSnapshot.immediatePositive,
+      earlyPositive: latestSnapshot.earlyPositive
     } : null,
-    funnel: selectedSnapshot.stages,
-    comparisons: buildComparisons(selectedEntries, selectedSnapshot, policy),
-    headline: diagnosis.headline,
-    priorityCheck: diagnosis.priorityCheck,
+    funnel: selected.funnel,
+    comparisons: selected.comparisons,
+    headline: selected.headline,
+    priorityCheck: selected.priorityCheck,
     evidenceNotes: [
       "仅统计用户确认已投、已验证发起沟通或确认已发送回复的岗位。",
       "每个岗位至少经过 48 小时；跨周末顺延到周一。",
+      "岗位已成熟后若出现新的已读，未回复结论从这次已读重新等待 48 小时。",
       "等待和未知状态不进入失败分母，观察关系不代表因果。"
     ]
+  };
+}
+
+function analyze(db, entries, snapshot, policy, profileId) {
+  const diagnosis = diagnose(snapshot, policy);
+  return {
+    funnel: snapshot.stages,
+    comparisons: buildComparisons(db, entries, snapshot, policy, profileId),
+    headline: diagnosis.headline,
+    priorityCheck: diagnosis.priorityCheck,
+    immediatePositive: snapshot.immediatePositive,
+    earlyPositive: snapshot.earlyPositive
   };
 }
 
@@ -115,6 +140,7 @@ function diagnose(snapshot, policy) {
   }[snapshot.strength];
   const interviewConfirmed = stageRate(snapshot.stages.interviewConfirmed);
   if (snapshot.stages.interviewInvited.numerator >= 10
+    && stageEvidenceSufficient(snapshot, "interviewConfirmed")
     && interviewConfirmed !== null && interviewConfirmed < 0.5) {
     return {
       headline: `${prefix}：当前主要卡在“面试邀请到面试确认或后续结果”。`,
@@ -129,7 +155,7 @@ function diagnose(snapshot, policy) {
   ];
   for (const [stage, threshold, label, priorityCheck] of checks) {
     const rate = stageRate(snapshot.stages[stage]);
-    if (rate !== null && snapshot.stages[stage].denominator >= 10 && rate < threshold) {
+    if (rate !== null && stageEvidenceSufficient(snapshot, stage) && rate < threshold) {
       return {
         headline: `${prefix}：当前主要卡在“${label}”。`,
         priorityCheck
@@ -142,20 +168,33 @@ function diagnose(snapshot, policy) {
   };
 }
 
-function buildComparisons(entries, snapshot, policy) {
+function buildComparisons(db, entries, snapshot, policy, profileId) {
   const empty = { direction: [], decisionBucket: [], resumeVersion: [], greeting: [] };
   if (!['comparable', 'formal'].includes(snapshot.strength)) return empty;
   const projectionById = new Map(snapshot.entries.map((entry) => [entry.id, entry]));
   const minimum = Math.max(10, Math.floor(policy.preliminarySampleTarget / 2));
+  const resumeLabels = resumeLabelMap(db, profileId, entries);
   return {
     direction: compareDimension(entries, projectionById, (entry) => entry.directionKey, minimum),
-    decisionBucket: compareDimension(entries, projectionById, (entry) => entry.decisionBucket, minimum),
-    resumeVersion: compareDimension(entries, projectionById, (entry) => entry.resumeVersionId ? `resume:${entry.resumeVersionId}` : "", minimum),
-    greeting: compareDimension(entries, projectionById, (entry) => entry.greetingKey, minimum)
+    decisionBucket: compareDimension(entries, projectionById, (entry) => entry.decisionBucket, minimum, decisionLabel),
+    resumeVersion: compareDimension(
+      entries,
+      projectionById,
+      (entry) => entry.resumeVersionId ? `resume:${entry.resumeVersionId}` : "",
+      minimum,
+      (key) => resumeLabels.get(Number(key.slice("resume:".length))) || "已记录简历版本"
+    ),
+    greeting: compareDimension(
+      entries,
+      projectionById,
+      (entry) => entry.greetingKey,
+      minimum,
+      (key) => `招呼语版本 ${key.replace(/^sha256:/, "").slice(0, 8)}`
+    )
   };
 }
 
-function compareDimension(entries, projectionById, keyForEntry, minimum) {
+function compareDimension(entries, projectionById, keyForEntry, minimum, labelForKey = (key) => key) {
   const groups = new Map();
   for (const entry of entries) {
     const projection = projectionById.get(entry.id);
@@ -164,32 +203,88 @@ function compareDimension(entries, projectionById, keyForEntry, minimum) {
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(projection);
   }
-  return [...groups.entries()]
-    .filter(([, rows]) => rows.length >= minimum)
+  const eligibleGroups = [...groups.entries()].filter(([, rows]) => rows.length >= minimum);
+  if (eligibleGroups.length < 2) return [];
+  const metrics = {
+    read: supportedMetrics(
+      eligibleGroups,
+      "read",
+      (row) => !row.terminalWithoutReply || row.read.value === true,
+      minimum
+    ),
+    replied: supportedMetrics(eligibleGroups, "replied", (row) => row.read.value === true && !row.terminalWithoutReply, minimum),
+    effectiveConversation: supportedMetrics(eligibleGroups, "effectiveConversation", (row) => row.replied.value === true, minimum),
+    interviewInvited: supportedMetrics(eligibleGroups, "interviewInvited", (row) => row.effectiveConversation.value === true, minimum)
+  };
+  if (Object.values(metrics).every((items) => items.size === 0)) return [];
+  return eligibleGroups
     .map(([key, rows]) => ({
       key,
+      label: labelForKey(key),
       sampleCount: rows.length,
-      read: metric(rows, "read"),
-      replied: metric(rows, "replied"),
-      effectiveConversation: metric(rows, "effectiveConversation"),
-      interviewInvited: metric(rows, "interviewInvited")
+      read: metrics.read.get(key) || null,
+      replied: metrics.replied.get(key) || null,
+      effectiveConversation: metrics.effectiveConversation.get(key) || null,
+      interviewInvited: metrics.interviewInvited.get(key) || null
     }))
     .sort((left, right) => right.sampleCount - left.sampleCount || left.key.localeCompare(right.key));
 }
 
-function metric(rows, key) {
-  const known = rows.filter((row) => row[key].value !== null);
+function supportedMetrics(groups, key, eligible, minimum) {
+  const candidates = groups.map(([groupKey, rows]) => [groupKey, metric(rows, key, eligible)]);
+  if (candidates.filter(([, value]) => value.denominator >= minimum).length < 2) return new Map();
+  return new Map(candidates.filter(([, value]) => value.denominator >= minimum));
+}
+
+function metric(rows, key, eligible = () => true) {
+  const eligibleRows = rows.filter(eligible);
+  const known = eligibleRows.filter((row) => row[key].value !== null);
   const numerator = known.filter((row) => row[key].value === true).length;
   return {
     numerator,
     denominator: known.length,
-    unknown: rows.length - known.length,
+    unknown: eligibleRows.length - known.length,
     rate: known.length ? Number((numerator / known.length).toFixed(4)) : null
   };
 }
 
+function resumeLabelMap(db, profileId, entries) {
+  const ids = [...new Set(entries.map((entry) => Number(entry.resumeVersionId || 0)).filter(Boolean))];
+  if (!ids.length) return new Map();
+  const placeholders = ids.map(() => "?").join(",");
+  return new Map(db.prepare(`SELECT id, name, version_key FROM candidate_resume_versions
+    WHERE profile_id = ? AND id IN (${placeholders})`).all(profileId, ...ids)
+    .map((row) => [Number(row.id), String(row.name || row.version_key || "已记录简历版本")]));
+}
+
+function decisionLabel(value) {
+  return {
+    primary: "主投",
+    apply: "可投",
+    caution: "慎投",
+    not_recommended: "不推荐"
+  }[String(value || "")] || "其他已记录档位";
+}
+
 function stageRate(stage) {
   return stage.denominator ? stage.numerator / stage.denominator : null;
+}
+
+function stageEvidenceSufficient(snapshot, stage) {
+  const eligible = snapshot.entries.filter((entry) => entry.mature && stageEligible(entry, stage)).length;
+  const known = Number(snapshot.stages[stage]?.denominator || 0);
+  return known >= 10 && known * 2 >= eligible;
+}
+
+function stageEligible(entry, stage) {
+  if (stage === "read") return !entry.terminalWithoutReply || entry.read.value === true;
+  if (stage === "replied") return entry.read.value === true && !entry.terminalWithoutReply;
+  if (stage === "effectiveConversation") return entry.replied.value === true;
+  if (["resumeRequested", "interviewInvited"].includes(stage)) {
+    return entry.effectiveConversation.value === true;
+  }
+  if (stage === "interviewConfirmed") return entry.interviewInvited.value === true;
+  return false;
 }
 
 module.exports = { createFunnelAnalysisService };
