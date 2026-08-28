@@ -73,6 +73,7 @@ function saveMessageReplyDraftEdit(db, {
   const draft = requireDraft(db, profile, draftId);
   const currentText = draftText(text, { allowEmpty: true });
   const occurredAt = isoText(updatedAt, "updatedAt");
+  if (draft.closedAt) return draft;
   if (draft.currentText === currentText) return draft;
   db.prepare(`UPDATE message_reply_drafts
     SET current_text = ?, revision = revision + 1, updated_at = ?

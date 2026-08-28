@@ -260,6 +260,8 @@ async function editableDraftClientSmoke(markup, draftId) {
   const timers = new Map();
   let nextTimer = 1;
   let completeFailure = false;
+  let holdSave = false;
+  let releaseHeldSave = null;
   const document = {
     querySelector(selector) { return selector === "[data-discovery-feedback]" ? feedback : null; },
     querySelectorAll(selector) {
@@ -282,6 +284,9 @@ async function editableDraftClientSmoke(markup, draftId) {
       const body = JSON.parse(options.body);
       requests.push({ url, body });
       order.push(["fetch", body.action]);
+      if (holdSave && body.action === "save") {
+        return new Promise((resolve) => { releaseHeldSave = () => resolve(jsonResponse(200, { ok: true, draftId, revision: 2 })); });
+      }
       if (completeFailure && body.action === "complete") throw new Error("offline");
       return jsonResponse(200, body.action === "complete"
         ? { ok: true, draftId, revision: 2, changed: true, learnedFactCount: 1, extractionStatus: "succeeded" }
@@ -303,13 +308,28 @@ async function editableDraftClientSmoke(markup, draftId) {
   assert.strictEqual(requests.filter((item) => item.body.action === "save").length, 1);
   assert.strictEqual(requests.at(-1).body.text, "最后一次修改");
 
-  await copyHandlers.get("click")();
-  assert.deepStrictEqual(order.slice(-2), [["clipboard", "最后一次修改"], ["fetch", "complete"]], "copy must finish before local completion starts");
+  const raceStart = order.length;
+  holdSave = true;
+  field.value = "复制前的最后修改";
+  fieldHandlers.get("input")();
+  const heldTimer = [...timers.values()].at(-1);
+  const pendingSave = heldTimer.callback();
+  await Promise.resolve();
+  const pendingCopy = copyHandlers.get("click")();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.strictEqual(requests.filter((item) => item.body.action === "complete").length, 0, "copy completion waits for an autosave already in flight");
+  releaseHeldSave();
+  await Promise.all([pendingSave, pendingCopy]);
+  holdSave = false;
+  const raceOrder = order.slice(raceStart);
+  const clipboardIndex = raceOrder.findIndex((item) => item[0] === "clipboard" && item[1] === "复制前的最后修改");
+  const completeIndex = raceOrder.findIndex((item) => item[0] === "fetch" && item[1] === "complete");
+  assert(clipboardIndex >= 0 && completeIndex > clipboardIndex, "clipboard write must finish before local completion starts");
   assert.match(feedback.textContent, /已记住你这次修改的回答/);
 
   completeFailure = true;
   await copyHandlers.get("click")();
-  assert.deepStrictEqual(order.slice(-2), [["clipboard", "最后一次修改"], ["fetch", "complete"]]);
+  assert.deepStrictEqual(order.slice(-2), [["clipboard", "复制前的最后修改"], ["fetch", "complete"]]);
   assert.match(feedback.textContent, /已复制；这次修改暂未保存，请稍后重试/);
 
   field.value = "提交前最终文字";

@@ -115,6 +115,14 @@ try {
   assert.strictEqual(listCandidateAnswerMemories(db, { profileId: fixture.profileId, activeOnly: false }).length, 2);
   assert.strictEqual(listCandidateFactRevisions(db, { profileId: fixture.profileId }).length, 2, "duplicate completion must not duplicate fact revisions");
   assert.strictEqual(listOpenMessageReplyDrafts(db, { profileId: fixture.profileId }).some((draft) => draft.id === drafts[0].id), false, "sent completion closes the draft");
+  const staleClosedSave = saveMessageReplyDraftEdit(db, {
+    profileId: fixture.profileId,
+    draftId: drafts[0].id,
+    text: "迟到的自动保存不得覆盖已发送内容",
+    updatedAt: "2026-08-28T01:05:30.000Z"
+  });
+  assert.strictEqual(staleClosedSave.currentText, edited.currentText, "an autosave that returns after sent completion must not rewrite the closed draft");
+  assert.strictEqual(staleClosedSave.revision, edited.revision, "a closed draft must not gain a stale autosave revision");
 
   const restoredDraft = recordMessageReplyDrafts(db, {
     profileId: fixture.profileId,
