@@ -1,4 +1,5 @@
 const { immediateTransaction } = require("../storage/storage_shared");
+const { ensureFunnelEntry } = require("../storage/funnel_store");
 
 const PROGRESS_STAGES = new Set([
   "contact_started",
@@ -239,6 +240,15 @@ function recordVerifiedCommunicationStart(db, input = {}) {
         now
       });
     }
+    card = getProgressCard(db, card.id);
+    ensureFunnelEntry(db, {
+      profileId: card.profileId,
+      planId: card.planId,
+      jobId: card.jobId,
+      cardId: card.id,
+      sourceKind: "communication",
+      startedAt: persisted.event.occurredAt
+    });
     db.exec("RELEASE candidate_progress_verified");
     return card;
   } catch (error) {
@@ -514,6 +524,16 @@ function recordManualProgressAction(db, input = {}) {
       summary,
       metadata: actionMetadata
     });
+    if (eventType === "reply_confirmed_sent") {
+      ensureFunnelEntry(db, {
+        profileId: card.profileId,
+        planId: card.planId,
+        jobId: card.jobId,
+        cardId: card.id,
+        sourceKind: "reply_sent",
+        startedAt: existingEvent.occurredAt
+      });
+    }
     return card;
   }
   const closedReopen = card.stage === "closed"
@@ -550,6 +570,16 @@ function recordManualProgressAction(db, input = {}) {
         nextAction: shortText(input.nextAction, 240),
         scheduledAt,
         now
+      });
+    }
+    if (eventType === "reply_confirmed_sent") {
+      ensureFunnelEntry(db, {
+        profileId: card.profileId,
+        planId: card.planId,
+        jobId: card.jobId,
+        cardId: card.id,
+        sourceKind: "reply_sent",
+        startedAt: now
       });
     }
     return getProgressCard(db, cardId);

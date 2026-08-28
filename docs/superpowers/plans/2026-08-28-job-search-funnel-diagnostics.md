@@ -327,7 +327,7 @@ git commit -m "feat: persist rolling funnel cohorts"
 - Modify: `tests/job_search_funnel_smoke.js`
 - Modify: `tests/candidate_progress_storage_smoke.js`
 
-- [ ] **Step 1: Add failing enrollment tests**
+- [x] **Step 1: Add failing enrollment tests**
 
 Assert these exact entry points:
 
@@ -338,7 +338,7 @@ Assert these exact entry points:
 5. repeated or overlapping entry points reuse the original entry, start time, and frozen dimensions;
 6. if entry creation fails, the originating state/event and funnel entry roll back together.
 
-- [ ] **Step 2: Run and confirm the failure**
+- [x] **Step 2: Run and confirm the failure**
 
 ```powershell
 node tests/job_search_funnel_smoke.js
@@ -347,7 +347,7 @@ node tests/candidate_progress_storage_smoke.js
 
 Expected: at least the new enrollment assertions fail.
 
-- [ ] **Step 3: Hook the three existing authoritative write paths**
+- [x] **Step 3: Hook the three existing authoritative write paths**
 
 Call `ensureFunnelEntry` only inside the transactions that persist:
 
@@ -361,7 +361,7 @@ Do not introduce a general event listener or replay framework. The three direct 
 
 Wrap `markCandidateJob`'s state update, event insert, and funnel enrollment in `immediateTransaction`. Reuse the existing savepoint/transaction in candidate progress paths so partial enrollment cannot escape.
 
-- [ ] **Step 4: Run enrollment regression checks**
+- [x] **Step 4: Run enrollment regression checks**
 
 ```powershell
 node tests/job_search_funnel_smoke.js
@@ -372,7 +372,7 @@ node tests/message_learning_store_smoke.js
 
 Expected: all pass.
 
-- [ ] **Step 5: Commit the authoritative entry hooks**
+- [x] **Step 5: Commit the authoritative entry hooks**
 
 ```powershell
 git add src/storage/job_store.js src/core/candidate_progress.js tests/job_search_funnel_smoke.js tests/candidate_progress_storage_smoke.js

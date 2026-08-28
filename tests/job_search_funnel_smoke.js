@@ -1,9 +1,11 @@
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
-const { openDb, createBatch, upsertJob } = require("../src/core/storage");
+const { openDb, createBatch, upsertJob, markCandidateJob } = require("../src/core/storage");
 const {
   ensureProgressCard,
-  recordProgressEvent
+  recordProgressEvent,
+  recordVerifiedCommunicationStart,
+  recordManualProgressAction
 } = require("../src/core/candidate_progress");
 const {
   feedbackMaturesAt,
@@ -326,6 +328,128 @@ function storageRulesSmoke() {
   }
 }
 
+function enrollmentRulesSmoke() {
+  const db = openDb(":memory:");
+  try {
+    const now = "2026-08-25T02:00:00.000Z";
+    const applied = storageFixture(db, "enroll-applied", now);
+    markCandidateJob(db, {
+      profileId: applied.profileId,
+      planId: applied.planId,
+      jobId: applied.jobId,
+      status: "applied"
+    });
+    const appliedEntry = getFunnelEntry(db, {
+      profileId: applied.profileId,
+      jobId: applied.jobId
+    });
+    assert(appliedEntry, "a user-confirmed application must enter the funnel");
+    assert.equal(appliedEntry.sourceKind, "applied");
+
+    for (const status of ["review", "later", "skipped", "no_reply", "interview", "rejected", "invalid", "salary_mismatch"]) {
+      const job = addJobToFixture(db, applied, `not-entry-${status}`, now);
+      markCandidateJob(db, {
+        profileId: applied.profileId,
+        planId: applied.planId,
+        jobId: job.jobId,
+        status
+      });
+      assert.equal(getFunnelEntry(db, {
+        profileId: applied.profileId,
+        jobId: job.jobId
+      }), null, `${status} alone must not create an application/contact sample`);
+    }
+
+    const communication = storageFixture(db, "enroll-communication", now);
+    const communicationCard = recordVerifiedCommunicationStart(db, {
+      batch: {
+        id: 101,
+        profileId: communication.profileId,
+        planId: communication.planId,
+        site: "boss"
+      },
+      item: { id: 201, jobId: communication.jobId },
+      outcome: "succeeded",
+      now
+    });
+    const communicationEntry = getFunnelEntry(db, {
+      profileId: communication.profileId,
+      jobId: communication.jobId
+    });
+    assert.equal(communicationEntry.sourceKind, "communication");
+    assert.equal(communicationEntry.cardId, communicationCard.id);
+
+    markCandidateJob(db, {
+      profileId: communication.profileId,
+      planId: communication.planId,
+      jobId: communication.jobId,
+      status: "applied"
+    });
+    assert.deepEqual(getFunnelEntry(db, {
+      profileId: communication.profileId,
+      jobId: communication.jobId
+    }), communicationEntry, "overlapping proof reuses the original entry and dimensions");
+
+    const already = storageFixture(db, "enroll-already", now);
+    recordVerifiedCommunicationStart(db, {
+      batch: {
+        id: 102,
+        profileId: already.profileId,
+        planId: already.planId,
+        site: "boss"
+      },
+      item: { id: 202, jobId: already.jobId },
+      outcome: "already_communicated",
+      now
+    });
+    assert.equal(getFunnelEntry(db, {
+      profileId: already.profileId,
+      jobId: already.jobId
+    }).sourceKind, "communication");
+
+    const inbound = storageFixture(db, "enroll-inbound", now);
+    const inboundCard = ensureProgressCard(db, { ...inbound, source: "boss", now });
+    assert.equal(getFunnelEntry(db, {
+      profileId: inbound.profileId,
+      jobId: inbound.jobId
+    }), null);
+    recordManualProgressAction(db, {
+      cardId: inboundCard.id,
+      idempotencyKey: "progress:00000000-0000-4000-8000-000000000301",
+      stage: "waiting_reply",
+      eventType: "reply_confirmed_sent",
+      summary: "用户确认已手动发送",
+      nextAction: "等待招聘方回复",
+      now
+    });
+    assert.equal(getFunnelEntry(db, {
+      profileId: inbound.profileId,
+      jobId: inbound.jobId
+    }).sourceKind, "reply_sent", "an inbound opportunity enters only after the user actually replies");
+
+    const rollback = storageFixture(db, "enroll-rollback", now);
+    db.exec(`CREATE TRIGGER reject_funnel_entry BEFORE INSERT ON candidate_funnel_entries
+      BEGIN SELECT RAISE(ABORT, 'funnel enrollment failed'); END`);
+    assert.throws(() => markCandidateJob(db, {
+      profileId: rollback.profileId,
+      planId: rollback.planId,
+      jobId: rollback.jobId,
+      status: "applied"
+    }), /funnel enrollment failed/);
+    db.exec("DROP TRIGGER reject_funnel_entry");
+    assert.equal(db.prepare(`SELECT count(*) AS count FROM candidate_job_states
+      WHERE profile_id = ? AND job_id = ?`).get(rollback.profileId, rollback.jobId).count, 0);
+    assert.equal(db.prepare(`SELECT count(*) AS count FROM candidate_job_events
+      WHERE profile_id = ? AND job_id = ?`).get(rollback.profileId, rollback.jobId).count, 0);
+    assert.equal(getFunnelEntry(db, {
+      profileId: rollback.profileId,
+      jobId: rollback.jobId
+    }), null, "application state, event, and funnel entry must roll back together");
+  } finally {
+    db.close();
+  }
+}
+
 function storageFixture(db, suffix, now, observation = {}) {
   const profileId = Number(db.prepare(`INSERT INTO candidate_profiles(
     display_name, profile_json, source_hash, created_at, updated_at
@@ -378,4 +502,5 @@ maturityRulesSmoke();
 projectionRulesSmoke();
 snapshotRulesSmoke();
 storageRulesSmoke();
+enrollmentRulesSmoke();
 console.log("job_search_funnel_smoke: ok");

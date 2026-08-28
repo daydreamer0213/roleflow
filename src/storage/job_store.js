@@ -1,6 +1,7 @@
 const crypto = require("node:crypto");
 const { getSearchPlan } = require("./candidate_store");
-const { nowIso, parseJson, OUTCOME_STATUSES, storageError, optionalPositiveInteger } = require("./storage_shared");
+const { ensureFunnelEntry } = require("./funnel_store");
+const { nowIso, parseJson, OUTCOME_STATUSES, storageError, optionalPositiveInteger, immediateTransaction } = require("./storage_shared");
 const { scoreJob, decisionState } = require("../core/scoring");
 const { parseBossActivityText } = require("../core/activity_status");
 const { mergeJobMetadata } = require("../core/job_metadata");
@@ -451,13 +452,25 @@ function markCandidateJob(db, { profileId, jobId, status, note = "", reasonCode 
   if (!db.prepare("SELECT id FROM jobs WHERE id = ?").get(job)) throw new Error("job not found");
   const now = nowIso();
   const normalizedReason = NEGATIVE_FEEDBACK_STATUSES.has(status) ? normalizeFeedbackReason(reasonCode, status) : "";
-  db.prepare(`
-    INSERT INTO candidate_job_states(profile_id, job_id, plan_id, status, reason_code, note, review_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(profile_id, job_id) DO UPDATE SET plan_id=excluded.plan_id, status=excluded.status, reason_code=excluded.reason_code, note=excluded.note, review_at=excluded.review_at, updated_at=excluded.updated_at
-  `).run(profile, job, planId || null, status, normalizedReason || null, note || null, reviewAt || null, now);
-  db.prepare("INSERT INTO candidate_job_events(profile_id, job_id, plan_id, event_type, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-    .run(profile, job, planId || null, status, JSON.stringify({ note: note || "", reasonCode: normalizedReason, reviewAt: reviewAt || "" }), now);
+  const work = () => {
+    db.prepare(`
+      INSERT INTO candidate_job_states(profile_id, job_id, plan_id, status, reason_code, note, review_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(profile_id, job_id) DO UPDATE SET plan_id=excluded.plan_id, status=excluded.status, reason_code=excluded.reason_code, note=excluded.note, review_at=excluded.review_at, updated_at=excluded.updated_at
+    `).run(profile, job, planId || null, status, normalizedReason || null, note || null, reviewAt || null, now);
+    db.prepare("INSERT INTO candidate_job_events(profile_id, job_id, plan_id, event_type, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(profile, job, planId || null, status, JSON.stringify({ note: note || "", reasonCode: normalizedReason, reviewAt: reviewAt || "" }), now);
+    if (status === "applied") {
+      ensureFunnelEntry(db, {
+        profileId: profile,
+        planId,
+        jobId: job,
+        sourceKind: "applied",
+        startedAt: now
+      });
+    }
+  };
+  return db.isTransaction ? work() : immediateTransaction(db, work);
 }
 
 function addFollowUpNote(db, jobId, note, context = {}) {
