@@ -79,6 +79,7 @@ const tests = [
   "resume_parser_pdf_order_smoke.js",
   "resume_privacy_smoke.js",
   "resume_optimization_contract_smoke.js",
+  "resume_optimization_store_smoke.js",
   "analyzer_initialization_smoke.js",
   "model_settings_smoke.js",
   "cli_model_settings_root_smoke.js",

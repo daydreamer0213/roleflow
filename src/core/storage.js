@@ -7,6 +7,7 @@ const { nowIso, parseJson, OUTCOME_STATUSES, storageError, optionalInteger, opti
 const scanStore = require("../storage/scan_store");
 const messageLearningStore = require("../storage/message_learning_store");
 const funnelStore = require("../storage/funnel_store");
+const resumeOptimizationStore = require("../storage/resume_optimization_store");
 const {
   recordMessageReplyDrafts,
   getMessageReplyDraft,
@@ -899,6 +900,37 @@ CREATE INDEX IF NOT EXISTS idx_candidate_funnel_entries_cohort
   ON candidate_funnel_entries(cohort_id, started_at, id);
 `;
 
+const RESUME_OPTIMIZATION_SCHEMA = `
+CREATE TABLE IF NOT EXISTS resume_optimizations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  profile_id INTEGER NOT NULL,
+  source_resume_version_id INTEGER NOT NULL,
+  source_resume_document_id INTEGER NOT NULL,
+  source_content_hash TEXT NOT NULL,
+  source_text TEXT NOT NULL,
+  target_job_ids_json TEXT NOT NULL DEFAULT '[]',
+  context_hash TEXT NOT NULL,
+  evidence_json TEXT NOT NULL DEFAULT '[]',
+  headline TEXT NOT NULL DEFAULT '',
+  suggestions_json TEXT NOT NULL DEFAULT '[]',
+  final_text TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL CHECK(status IN ('draft', 'activated')),
+  result_resume_document_id INTEGER,
+  result_resume_version_id INTEGER,
+  model_identity_json TEXT NOT NULL DEFAULT '{}',
+  activated_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY(profile_id) REFERENCES candidate_profiles(id),
+  FOREIGN KEY(source_resume_version_id) REFERENCES candidate_resume_versions(id),
+  FOREIGN KEY(source_resume_document_id) REFERENCES resume_documents(id),
+  FOREIGN KEY(result_resume_document_id) REFERENCES resume_documents(id),
+  FOREIGN KEY(result_resume_version_id) REFERENCES candidate_resume_versions(id)
+);
+CREATE INDEX IF NOT EXISTS idx_resume_optimizations_profile
+  ON resume_optimizations(profile_id, status, updated_at DESC, id DESC);
+`;
+
 const MIGRATIONS = [
   {
     version: 1,
@@ -1074,6 +1106,13 @@ const MIGRATIONS = [
     name: "job_search_funnel_v1",
     apply(db) {
       db.exec(JOB_SEARCH_FUNNEL_SCHEMA);
+    }
+  },
+  {
+    version: 19,
+    name: "resume_optimization_v1",
+    apply(db) {
+      db.exec(RESUME_OPTIMIZATION_SCHEMA);
     }
   }
 ];
@@ -1719,6 +1758,11 @@ module.exports = {
   listFunnelCohorts: funnelStore.listFunnelCohorts,
   getFunnelCohort: funnelStore.getFunnelCohort,
   listFunnelProgressEvents: funnelStore.listFunnelProgressEvents,
+  createResumeOptimization: resumeOptimizationStore.createResumeOptimization,
+  getResumeOptimization: resumeOptimizationStore.getResumeOptimization,
+  listResumeOptimizations: resumeOptimizationStore.listResumeOptimizations,
+  saveResumeOptimizationDraft: resumeOptimizationStore.saveResumeOptimizationDraft,
+  activateResumeOptimization: resumeOptimizationStore.activateResumeOptimization,
   workflowJobTaskRow,
   jobAnalysisAttemptRow,
   countWorkflowJobTasks,

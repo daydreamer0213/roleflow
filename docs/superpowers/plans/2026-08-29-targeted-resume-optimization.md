@@ -122,11 +122,11 @@ git commit -m "feat: validate grounded resume edits"
 - Produces: `createResumeOptimization`, `getResumeOptimization`, `listResumeOptimizations`, `saveResumeOptimizationDraft`, `activateResumeOptimization`.
 - Migration 19 creates `resume_optimizations` with profile/source/job ownership, evidence and suggestion JSON, source hash, final text, result version, status, model identity, and timestamps.
 
-- [ ] **Step 1: Write failing migration and store tests**
+- [x] **Step 1: Write failing migration and store tests**
 
 Prove that another profile cannot read or update a draft, source text/hash are frozen, late save after activation is rejected, activation creates a distinct document/version, the source stays unchanged, and the same activation retried returns the same version ID.
 
-- [ ] **Step 2: Run the tests and verify RED**
+- [x] **Step 2: Run the tests and verify RED**
 
 ```powershell
 node tests/resume_optimization_store_smoke.js
@@ -135,11 +135,11 @@ node tests/storage_migration_smoke.js
 
 Expected: fail for missing schema/store API and migration 19.
 
-- [ ] **Step 3: Add migration 19 and the minimal store**
+- [x] **Step 3: Add migration 19 and the minimal store**
 
 Use `BEGIN IMMEDIATE` for activation. Insert a text resume document with a SHA-256 content hash and a version key derived from the optimization ID. Save provenance in `analysis_json`; update the draft only after both inserts succeed.
 
-- [ ] **Step 4: Run focused storage gates**
+- [x] **Step 4: Run focused storage gates**
 
 ```powershell
 node tests/resume_optimization_store_smoke.js
@@ -150,7 +150,7 @@ node tests/funnel_diagnosis_smoke.js
 
 Expected: all pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/storage/resume_optimization_store.js src/core/storage.js tests/resume_optimization_store_smoke.js tests/storage_migration_smoke.js tests/candidate_store_contract_smoke.js tests/run_all.js
