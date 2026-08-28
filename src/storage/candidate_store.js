@@ -3,6 +3,7 @@ const { nowIso, parseJson } = require("./storage_shared");
 const { normalizeMatchingCard, matchingCardRevision } = require("../core/matching_card");
 const { maskResumeContacts, maskResumeFileName, maskResumeDiagnostics } = require("../core/resume_privacy");
 const { canonicalSearchPlanV2 } = require("../core/search_plan_schema");
+const { recordCandidateFactValue } = require("./message_learning_store");
 
 function saveProfileAnalysis(db, {
   profileId = null,
@@ -507,17 +508,7 @@ function compareProfileVersions(db, profileId) {
 }
 
 function saveCandidateFact(db, { profileId, factKey, factValue, source = "user_provided" }) {
-  const profile = Number(profileId);
-  const key = String(factKey || "").trim().replace(/[^a-z0-9_.-]/gi, "_").slice(0, 80);
-  const value = String(factValue || "").trim().slice(0, 2000);
-  if (!profile || !key || !value) throw new Error("profileId, factKey and factValue are required");
-  if (!db.prepare("SELECT id FROM candidate_profiles WHERE id = ?").get(profile)) throw new Error("candidate profile not found");
-  const now = nowIso();
-  db.prepare(`INSERT INTO candidate_facts(profile_id, fact_key, fact_value, source, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?)
-    ON CONFLICT(profile_id, fact_key) DO UPDATE SET fact_value=excluded.fact_value, source=excluded.source, updated_at=excluded.updated_at`)
-    .run(profile, key, value, String(source || "user_provided"), now, now);
-  return { factKey: key, factValue: value, source: String(source || "user_provided") };
+  return recordCandidateFactValue(db, { profileId, factKey, factValue, source });
 }
 
 function listCandidateFacts(db, profileId) {

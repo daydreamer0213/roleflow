@@ -5,6 +5,20 @@ const candidateStore = require("../storage/candidate_store");
 const jobStore = require("../storage/job_store");
 const { nowIso, parseJson, OUTCOME_STATUSES, storageError, optionalInteger, optionalPositiveInteger, nullableText, validDate, immediateTransaction } = require("../storage/storage_shared");
 const scanStore = require("../storage/scan_store");
+const messageLearningStore = require("../storage/message_learning_store");
+const {
+  recordMessageReplyDrafts,
+  getMessageReplyDraft,
+  listOpenMessageReplyDrafts,
+  saveMessageReplyDraftEdit,
+  completeMessageReplyDraft,
+  listCandidateAnswerMemories,
+  reviseCandidateAnswerMemory,
+  withdrawCandidateAnswerMemory,
+  listCandidateFactRevisions,
+  deleteCandidateFact,
+  closeMessageReplyDrafts
+} = messageLearningStore;
 const workflowStore = require("../storage/workflow_store");
 const {
   createWorkflowRun,
@@ -749,6 +763,81 @@ CREATE INDEX IF NOT EXISTS idx_onboarding_runs_profile
   ON onboarding_runs(profile_id, created_at);
 `;
 
+const MESSAGE_REPLY_LEARNING_SCHEMA = `
+CREATE TABLE IF NOT EXISTS message_reply_drafts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  profile_id INTEGER NOT NULL,
+  card_id INTEGER NOT NULL,
+  job_id INTEGER NOT NULL,
+  message_group_key TEXT NOT NULL,
+  draft_index INTEGER NOT NULL CHECK(draft_index IN (0, 1)),
+  question_summary TEXT NOT NULL DEFAULT '',
+  message_intent TEXT NOT NULL DEFAULT '',
+  message_category TEXT NOT NULL DEFAULT '',
+  original_text TEXT NOT NULL,
+  current_text TEXT NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0),
+  closed_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(profile_id, message_group_key, draft_index),
+  FOREIGN KEY(profile_id) REFERENCES candidate_profiles(id),
+  FOREIGN KEY(card_id) REFERENCES candidate_progress_cards(id),
+  FOREIGN KEY(job_id) REFERENCES jobs(id)
+);
+CREATE INDEX IF NOT EXISTS idx_message_reply_drafts_open
+  ON message_reply_drafts(profile_id, closed_at, updated_at);
+CREATE INDEX IF NOT EXISTS idx_message_reply_drafts_card
+  ON message_reply_drafts(profile_id, card_id, draft_index);
+
+CREATE TABLE IF NOT EXISTS candidate_answer_memories (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  profile_id INTEGER NOT NULL,
+  draft_id INTEGER NOT NULL,
+  final_digest TEXT NOT NULL,
+  question_summary TEXT NOT NULL DEFAULT '',
+  message_intent TEXT NOT NULL DEFAULT '',
+  message_category TEXT NOT NULL DEFAULT '',
+  original_text TEXT NOT NULL,
+  final_text TEXT NOT NULL,
+  changed_text TEXT NOT NULL DEFAULT '',
+  scope_json TEXT NOT NULL DEFAULT '{"kind":"global","key":""}',
+  source TEXT NOT NULL CHECK(source IN ('draft_adopted', 'user_edited_reply')),
+  completion_kind TEXT NOT NULL CHECK(completion_kind IN ('copied', 'sent', 'profile_edit')),
+  supersedes_memory_id INTEGER,
+  withdrawn_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(draft_id, final_digest),
+  FOREIGN KEY(profile_id) REFERENCES candidate_profiles(id),
+  FOREIGN KEY(draft_id) REFERENCES message_reply_drafts(id),
+  FOREIGN KEY(supersedes_memory_id) REFERENCES candidate_answer_memories(id)
+);
+CREATE INDEX IF NOT EXISTS idx_candidate_answer_memories_active
+  ON candidate_answer_memories(profile_id, source, withdrawn_at, updated_at);
+CREATE INDEX IF NOT EXISTS idx_candidate_answer_memories_draft
+  ON candidate_answer_memories(draft_id, withdrawn_at, created_at);
+
+CREATE TABLE IF NOT EXISTS candidate_fact_revisions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  profile_id INTEGER NOT NULL,
+  fact_key TEXT NOT NULL,
+  fact_value TEXT NOT NULL DEFAULT '',
+  operation TEXT NOT NULL CHECK(operation IN ('set', 'delete')),
+  source TEXT NOT NULL,
+  answer_memory_id INTEGER,
+  evidence_text TEXT NOT NULL DEFAULT '',
+  withdrawn_at TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(profile_id) REFERENCES candidate_profiles(id),
+  FOREIGN KEY(answer_memory_id) REFERENCES candidate_answer_memories(id)
+);
+CREATE INDEX IF NOT EXISTS idx_candidate_fact_revisions_key
+  ON candidate_fact_revisions(profile_id, fact_key, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_candidate_fact_revisions_memory
+  ON candidate_fact_revisions(answer_memory_id, fact_key);
+`;
+
 const MIGRATIONS = [
   {
     version: 1,
@@ -910,8 +999,31 @@ const MIGRATIONS = [
     apply(db) {
       migrateSharedSitePacingStates(db);
     }
+  },
+  {
+    version: 17,
+    name: "message_reply_learning_v1",
+    apply(db) {
+      db.exec(MESSAGE_REPLY_LEARNING_SCHEMA);
+      backfillCandidateFactRevisions(db);
+    }
   }
 ];
+
+function backfillCandidateFactRevisions(db) {
+  db.exec(`INSERT INTO candidate_fact_revisions(
+    profile_id, fact_key, fact_value, operation, source,
+    answer_memory_id, evidence_text, withdrawn_at, created_at
+  )
+  SELECT profile_id, fact_key, fact_value, 'set', source,
+    NULL, '', NULL, updated_at
+  FROM candidate_facts
+  WHERE NOT EXISTS (
+    SELECT 1 FROM candidate_fact_revisions r
+    WHERE r.profile_id = candidate_facts.profile_id
+      AND r.fact_key = candidate_facts.fact_key
+  )`);
+}
 
 function migrateSharedSitePacingStates(db) {
   const bySite = new Map();
@@ -1519,6 +1631,17 @@ module.exports = {
   WORKFLOW_RUN_STATUSES,
   openDb,
   immediateTransaction,
+  recordMessageReplyDrafts,
+  getMessageReplyDraft,
+  listOpenMessageReplyDrafts,
+  saveMessageReplyDraftEdit,
+  completeMessageReplyDraft,
+  listCandidateAnswerMemories,
+  reviseCandidateAnswerMemory,
+  withdrawCandidateAnswerMemory,
+  listCandidateFactRevisions,
+  deleteCandidateFact,
+  closeMessageReplyDrafts,
   workflowJobTaskRow,
   jobAnalysisAttemptRow,
   countWorkflowJobTasks,
