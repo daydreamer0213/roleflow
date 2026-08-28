@@ -106,6 +106,21 @@ function projectFunnelEntry(entry = {}, rawEvents = [], { now = new Date().toISO
     ) >= timestamp(latestRead.occurredAt, "event.occurredAt")
     : false;
   const mature = nowMs >= timestamp(matureAt, "entry.matureAt");
+  const resumeRequested = latestResume
+    ? presenceState(latestResume)
+    : mature && effectiveConversation.value !== null
+      ? inferredNegativeState(matureAt)
+      : unknownState();
+  const interviewInvited = latestInterviewInvite
+    ? presenceState(latestInterviewInvite)
+    : mature && (effectiveConversation.value !== null || resumeRequested.value === true)
+      ? inferredNegativeState(matureAt)
+      : unknownState();
+  const interviewConfirmed = latestInterviewConfirmed
+    ? presenceState(latestInterviewConfirmed)
+    : mature && interviewInvited.value !== null
+      ? inferredNegativeState(matureAt)
+      : unknownState();
   const readNoReplyMature = Boolean(
     latestRead
     && !repliedAfterRead
@@ -126,9 +141,9 @@ function projectFunnelEntry(entry = {}, rawEvents = [], { now = new Date().toISO
     read,
     replied,
     effectiveConversation,
-    resumeRequested: presenceState(latestResume),
-    interviewInvited: presenceState(latestInterviewInvite),
-    interviewConfirmed: presenceState(latestInterviewConfirmed),
+    resumeRequested,
+    interviewInvited,
+    interviewConfirmed,
     rejected: presenceState(latestRejected),
     closed: presenceState(latestClosed),
     mature,
@@ -225,6 +240,10 @@ function presenceState(event) {
 
 function unknownState() {
   return { value: null, source: "unknown", occurredAt: null };
+}
+
+function inferredNegativeState(occurredAt) {
+  return { value: false, source: "time_inference", occurredAt };
 }
 
 function eventSource(event) {

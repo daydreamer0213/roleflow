@@ -466,7 +466,7 @@ git commit -m "feat: observe safe funnel outcomes"
 - Modify: `src/core/funnel_maturity.js`
 - Modify: `tests/job_search_funnel_smoke.js`
 
-- [ ] **Step 1: Write failing diagnosis fixtures**
+- [x] **Step 1: Write failing diagnosis fixtures**
 
 Create deterministic cohorts for these cases:
 
@@ -483,7 +483,7 @@ Create deterministic cohorts for these cases:
 - unknown/waiting-heavy data: state that evidence is incomplete and avoid selecting a false bottleneck;
 - two résumé/greeting versions with adequate comparable samples: keep their rates separate; insufficient versions remain descriptive only.
 
-- [ ] **Step 2: Run and confirm the failure**
+- [x] **Step 2: Run and confirm the failure**
 
 ```powershell
 node tests/job_search_funnel_smoke.js
@@ -491,7 +491,7 @@ node tests/job_search_funnel_smoke.js
 
 Expected: the new service/diagnosis assertions fail.
 
-- [ ] **Step 3: Implement the application service**
+- [x] **Step 3: Implement the application service**
 
 Export from `src/application/funnel_analysis/index.js`:
 
@@ -524,7 +524,7 @@ evidenceNotes
 
 Diagnosis wording must use “当前数据显示”“可能”“优先检查”, never “证明”“导致”“准确率”. Do not compare a dimension unless both sides have enough mature, known observations to support the stated rate.
 
-- [ ] **Step 4: Run the diagnosis test**
+- [x] **Step 4: Run the diagnosis test**
 
 ```powershell
 node tests/job_search_funnel_smoke.js
@@ -532,7 +532,7 @@ node tests/job_search_funnel_smoke.js
 
 Expected: `job_search_funnel_smoke: ok`.
 
-- [ ] **Step 5: Commit the diagnosis service**
+- [x] **Step 5: Commit the diagnosis service**
 
 ```powershell
 git add src/application/funnel_analysis/index.js src/core/funnel_maturity.js tests/job_search_funnel_smoke.js

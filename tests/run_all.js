@@ -44,6 +44,7 @@ const tests = [
   "funnel_threshold_policy_smoke.js",
   "job_search_funnel_smoke.js",
   "funnel_message_observation_smoke.js",
+  "funnel_diagnosis_smoke.js",
   "matching_card_smoke.js",
   "workflow_storage_smoke.js",
   "workflow_control_smoke.js",
