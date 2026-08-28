@@ -169,6 +169,29 @@ const db = openDb(":memory:");
     assert.strictEqual(unavailable.extractionStatus, "unavailable");
     assert.strictEqual(unavailable.learnedFactCount, 0);
 
+    const dynamicUnavailableDraft = seedDraft(db, fixture, "service-5", "您好，我目前在广州。", "other");
+    const dynamicUnavailableService = createMessageReplyLearningService({
+      db,
+      adapter: {
+        async extractReplyEditFacts() {
+          throw Object.assign(new Error("model is not configured"), {
+            code: "MESSAGE_REPLY_FACT_EXTRACTION_UNAVAILABLE"
+          });
+        }
+      },
+      logger: { warn() {} },
+      now: () => "2026-08-28T02:07:00.000Z"
+    });
+    const dynamicUnavailable = await dynamicUnavailableService.completeDraft({
+      profileId: fixture.profileId,
+      draftId: dynamicUnavailableDraft.id,
+      finalText: "您好，我目前在佛山。",
+      completionKind: "copied"
+    });
+    assert.strictEqual(dynamicUnavailable.extractionStatus, "unavailable");
+    assert(listCandidateAnswerMemories(db, { profileId: fixture.profileId, activeOnly: true, source: "user_edited_reply" })
+      .some((memory) => memory.finalText === "您好，我目前在佛山。"), "unavailable extraction must still keep the edited answer");
+
     const communicationProfile = service.listCommunicationProfile({ profileId: fixture.profileId });
     assert(communicationProfile.facts.some((fact) => fact.factKey === "employment_status"));
     assert(communicationProfile.answers.every((answer) => answer.source === "user_edited_reply"));

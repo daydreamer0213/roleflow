@@ -117,11 +117,19 @@ function createMessageReplyLearningService({
   }
 
   function withdrawMemory({ profileId, memoryId }) {
-    return withdrawCandidateAnswerMemory(db, {
-      profileId,
-      memoryId,
-      withdrawnAt: nowIso(now())
-    });
+    const memories = listCandidateAnswerMemories(db, { profileId, activeOnly: false, limit: 500 });
+    const selected = memories.find((memory) => memory.id === Number(memoryId));
+    if (!selected) throw serviceError("CANDIDATE_ANSWER_MEMORY_NOT_FOUND", "candidate answer memory was not found");
+    const withdrawnAt = nowIso(now());
+    let result = selected;
+    for (const memory of memories.filter((item) => item.draftId === selected.draftId && !item.withdrawnAt)) {
+      result = withdrawCandidateAnswerMemory(db, {
+        profileId,
+        memoryId: memory.id,
+        withdrawnAt
+      });
+    }
+    return result;
   }
 
   function saveFact({ profileId, factKey, factValue }) {
@@ -157,7 +165,11 @@ function createMessageReplyLearningService({
       logger?.warn?.("message_reply_fact_extraction_failed", {
         code: String(error?.code || "MESSAGE_REPLY_FACT_EXTRACTION_FAILED")
       });
-      return { scope: defaultScope(draft), facts: [], status: "failed" };
+      return {
+        scope: defaultScope(draft),
+        facts: [],
+        status: error?.code === "MESSAGE_REPLY_FACT_EXTRACTION_UNAVAILABLE" ? "unavailable" : "failed"
+      };
     }
   }
 

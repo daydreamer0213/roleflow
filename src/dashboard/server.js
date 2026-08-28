@@ -282,6 +282,9 @@ const { EdgeControlAdapter } = require("../adapters/browser/edge_control");
 const { CdpBrowserAdapter } = require("../adapters/browser/cdp");
 const { createMessageDiscoveryController } = require("./message_discovery_controller");
 const { renderMessageDiscoveryPage } = require("./message_discovery_view");
+const { renderCommunicationProfilePage } = require("./communication_profile_view");
+const { createMessageReplyLearningService } = require("../application/message_learning");
+const { createModelAdapter } = require("../adapters/models");
 const boss = require("../adapters/sites/boss");
 const { inspectBossBrowserReadiness, readinessAction } = require("../core/browser_readiness");
 const { inspectBossOperatorTabs } = require("../core/workspace_tabs");
@@ -492,6 +495,7 @@ function createDashboardServer({
   workflowControlGraceMs = PRODUCT_POLICY.operations.modelAnalysis.taskLeaseTtlMs,
   analysisRetryRunnerFactory = null,
   messageDiscoveryDependencies = {},
+  messageReplyLearningService = null,
   communicationAmbiguityReader = null,
   browserFactory = createDashboardBrowser,
   browserSupervisor = null,
@@ -677,6 +681,26 @@ function createDashboardServer({
     : forceMock
       ? null
       : resolveRuntimeBatchBackup({ root: dataRoot, fallbackModelConfig: modelConfig });
+  const replyLearning = messageReplyLearningService || createMessageReplyLearningService({
+    db,
+    adapter: {
+      async extractReplyEditFacts(input) {
+        if (!modelReady("deep_analysis")) {
+          throw Object.assign(new Error("reply fact extraction model is unavailable"), {
+            code: "MESSAGE_REPLY_FACT_EXTRACTION_UNAVAILABLE"
+          });
+        }
+        const adapter = createModelAdapter(getRuntimeModel("deep_analysis"), { logger });
+        if (typeof adapter.extractReplyEditFacts !== "function") {
+          throw Object.assign(new Error("reply fact extraction is unavailable"), {
+            code: "MESSAGE_REPLY_FACT_EXTRACTION_UNAVAILABLE"
+          });
+        }
+        return adapter.extractReplyEditFacts(input);
+      }
+    },
+    logger
+  });
   const messageDiscovery = createMessageDiscoveryController({
     db,
     root,
@@ -835,6 +859,12 @@ function createDashboardServer({
         controller: messageDiscovery,
         helpers: messageDiscoveryViewHelpers()
       }));
+      if (req.method === "GET" && url.pathname === "/communication-profile") return sendHtml(res, renderCommunicationProfilePage({
+        db,
+        searchParams: url.searchParams,
+        service: replyLearning,
+        helpers: messageDiscoveryViewHelpers()
+      }));
       if (req.method === "GET" && url.pathname === "/communication/new") return sendHtml(res, renderCommunicationBuilderPage({ db, searchParams: url.searchParams, browserAuthority: frozenBrowserAuthority }));
       if (req.method === "GET" && url.pathname === "/communication") return sendHtml(res, renderCommunicationCenterPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/jobs") return sendHtml(res, renderDashboard(getDashboardData(db, url.searchParams)));
@@ -985,7 +1015,9 @@ function createDashboardServer({
       if (req.method === "POST" && url.pathname === "/api/follow-up") return handlePost(req, res, (body, type) => handleFollowUpApi(db, body, type), { logger, requestId, action: "add_follow_up" });
       if (req.method === "POST" && url.pathname === "/api/feedback") return handlePost(req, res, (body, type) => handleRecommendationFeedbackApi(db, body, type), { logger, requestId, action: "recommendation_feedback" });
       if (req.method === "POST" && url.pathname === "/api/communication") return handleCommunication(req, res, { db, modelConfig: getRuntimeModel("deep_analysis"), modelReady: modelReady("deep_analysis"), logger, requestId });
-      if (req.method === "POST" && url.pathname === "/api/progress") return handleProgress(req, res, db, messageDiscovery);
+      if (req.method === "POST" && url.pathname === "/api/message-reply-draft") return handleMessageReplyDraft(req, res, replyLearning);
+      if (req.method === "POST" && url.pathname === "/api/communication-profile") return handleCommunicationProfile(req, res, replyLearning);
+      if (req.method === "POST" && url.pathname === "/api/progress") return handleProgress(req, res, db, messageDiscovery, replyLearning);
       if (req.method === "POST" && url.pathname === "/api/message-discovery") return handleMessageDiscovery(req, res, messageDiscovery, {
         ensureBrowserWorkspaceReady: () => ensureManagedWorkspaceReady("message_discovery_start")
       });
@@ -3551,7 +3583,74 @@ async function handleCommunication(req, res, { db, modelConfig, modelReady, logg
   }
 }
 
-async function handleProgress(req, res, db, messageDiscovery = null) {
+async function handleMessageReplyDraft(req, res, service) {
+  try {
+    const params = parseBody(await readBody(req), req.headers["content-type"] || "");
+    const action = String(params.action || "").trim();
+    if (action === "save") {
+      const draft = service.saveDraft({
+        profileId: params.profileId,
+        draftId: params.draftId,
+        text: params.text
+      });
+      return sendJson(res, 200, { ok: true, draftId: draft.id, revision: draft.revision });
+    }
+    if (action === "complete") {
+      const completionKind = String(params.completionKind || "").trim();
+      if (!new Set(["copied", "sent"]).has(completionKind)) {
+        throw Object.assign(new Error("completion kind is invalid"), { code: "MESSAGE_REPLY_COMPLETION_KIND_INVALID" });
+      }
+      const result = await service.completeDraft({
+        profileId: params.profileId,
+        draftId: params.draftId,
+        finalText: params.text,
+        completionKind
+      });
+      return sendJson(res, 200, { ok: true, ...result });
+    }
+    throw Object.assign(new Error("draft action is invalid"), { code: "MESSAGE_REPLY_DRAFT_ACTION_INVALID" });
+  } catch (error) {
+    return sendReplyLearningError(res, error);
+  }
+}
+
+async function handleCommunicationProfile(req, res, service) {
+  let profileId = 0;
+  try {
+    const params = parseBody(await readBody(req), req.headers["content-type"] || "");
+    profileId = Number(params.profileId);
+    const action = String(params.action || "").trim();
+    if (action === "revise_memory") {
+      await service.reviseMemory({ profileId, memoryId: params.memoryId, finalText: params.finalText });
+    } else if (action === "withdraw_memory") {
+      service.withdrawMemory({ profileId, memoryId: params.memoryId });
+    } else if (action === "save_fact") {
+      service.saveFact({ profileId, factKey: params.factKey, factValue: params.factValue });
+    } else if (action === "delete_fact") {
+      service.deleteFact({ profileId, factKey: params.factKey });
+    } else {
+      throw Object.assign(new Error("communication profile action is invalid"), {
+        code: "COMMUNICATION_PROFILE_ACTION_INVALID"
+      });
+    }
+    return redirect(res, `/communication-profile?profileId=${encodeURIComponent(profileId)}`);
+  } catch (error) {
+    return sendReplyLearningError(res, error);
+  }
+}
+
+function sendReplyLearningError(res, error) {
+  const code = String(error?.code || "MESSAGE_REPLY_LEARNING_FAILED");
+  const statusCode = code.endsWith("_NOT_FOUND") || code === "CANDIDATE_PROFILE_NOT_FOUND" ? 404
+    : error instanceof TypeError || code.endsWith("_INVALID") ? 400
+      : 500;
+  const message = statusCode === 404 ? "没有找到这条沟通资料。"
+    : statusCode === 400 ? "沟通资料请求无效。"
+      : "沟通资料暂时无法保存，请稍后重试。";
+  return sendJson(res, statusCode, { error: message, errorCode: code });
+}
+
+async function handleProgress(req, res, db, messageDiscovery = null, replyLearning = null) {
   try {
     const params = parseBody(await readBody(req), req.headers["content-type"] || "");
     const card = getProgressCardById(db, params.cardId);
@@ -3583,6 +3682,14 @@ async function handleProgress(req, res, db, messageDiscovery = null) {
       }
       const preserveInterviewStage = action === "reply_confirmed_sent"
         && ["interview_invited", "interview_scheduled"].includes(card.stage);
+      if (action === "reply_confirmed_sent" && replyLearning && params.draftId) {
+        await replyLearning.completeDraft({
+          profileId: card.profileId,
+          draftId: params.draftId,
+          finalText: params.finalText,
+          completionKind: "sent"
+        });
+      }
       if (preserveInterviewStage) {
         recordProgressEvent(db, {
           cardId: card.id,
