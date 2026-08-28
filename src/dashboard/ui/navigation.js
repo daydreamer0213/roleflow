@@ -13,6 +13,7 @@ function renderNavigation({ currentPath = "", todayPath = "", planId = "" } = {}
       navigationLink(`/communication/new?planId=${encodedPlanId}`, "批量沟通清单", currentRoute === "/communication/new"),
       navigationLink(`/communication?planId=${encodedPlanId}`, "自动沟通", currentRoute === "/communication"),
       navigationLink(currentRoute === "/messages" ? current : `/messages?planId=${encodedPlanId}`, "消息发现", currentRoute === "/messages"),
+      navigationLink(`/funnel?planId=${encodedPlanId}`, "求职体检", currentRoute === "/funnel"),
       navigationLink("/settings", "模型设置", currentRoute === "/settings"),
       navigationLink("/diagnostics", "诊断", currentRoute === "/diagnostics")
     ];

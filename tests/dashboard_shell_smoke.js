@@ -41,6 +41,7 @@ const logger = { info() {}, warn() {}, error() {}, requestId() { return "dashboa
     { currentPath: "/communication/new?planId=17", todayPath: "/plan?planId=17", label: "批量沟通清单" },
     { currentPath: "/communication?planId=17", href: "/communication?planId=17", todayPath: "/plan?planId=17", label: "自动沟通" },
     { currentPath: "/messages?planId=17", href: "/messages?planId=17", todayPath: "/plan?planId=17", label: "消息发现" },
+    { currentPath: "/funnel?planId=17", href: "/funnel?planId=17", todayPath: "/plan?planId=17", label: "求职体检" },
     { currentPath: "/settings", label: "模型设置" },
     { currentPath: "/diagnostics", label: "诊断" },
     { currentPath: "/onboarding", label: "简历" }
@@ -130,6 +131,12 @@ const logger = { info() {}, warn() {}, error() {}, requestId() { return "dashboa
     assertSharedFrame(messages.body, `/messages\?planId=${queueFixture.planId}`, "message discovery");
     assert.match(messages.body, /<h1>BOSS 消息只读发现<\/h1>/);
     assert.strictEqual((messages.body.match(/>消息发现<\/a>/g) || []).length, 1, "message discovery must have one primary navigation entry");
+
+    const funnel = await getText(baseUrl, `/funnel?planId=${queueFixture.planId}`);
+    assert.strictEqual(funnel.status, 200);
+    assertSharedFrame(funnel.body, `/funnel?planId=${queueFixture.planId}`, "job search checkup");
+    assert.match(funnel.body, /<h1 id="funnel-title">求职体检<\/h1>/);
+    assert.match(funnel.body, /还没有可统计的求职动作/);
 
     const onboarding = await getText(baseUrl, "/onboarding");
     assertSharedFrame(onboarding.body, "/onboarding", "onboarding");

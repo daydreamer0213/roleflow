@@ -193,6 +193,8 @@ const { buildWorkflowViewModel } = require("./view_models/workflow");
 const { renderWorkflowPage: renderWorkflowDocument } = require("./pages/workflow");
 const { buildCommunicationViewModel } = require("./view_models/communication");
 const { renderCommunicationPage: renderCommunicationDocument } = require("./pages/communication");
+const { createFunnelAnalysisService } = require("../application/funnel_analysis");
+const { renderFunnelPage } = require("./pages/funnel");
 
 const DASHBOARD_ASSETS = Object.freeze({
   "/assets/roleflow.css": {
@@ -488,6 +490,7 @@ function createDashboardServer({
   spawnProcess = spawn,
   workflowHealth = {},
   outcomeAnalytics = {},
+  funnelAnalysisService = null,
   acquisitionContextResolver = resolveLiveAcquisitionContext,
   inheritedPreviewResolver = resolveLiveInheritedContext,
   browserReadinessProbe = null,
@@ -566,6 +569,7 @@ function createDashboardServer({
     renderPanel: workflowHealth?.renderPanel || renderWorkflowHealthPanel
   };
   const outcomeAnalyticsReader = outcomeAnalytics?.getSnapshot || getOutcomeAnalyticsSnapshot;
+  const funnelAnalysis = funnelAnalysisService || createFunnelAnalysisService({ db });
   const recovery = recoverWorkflowRuns(db, {
     site: "boss",
     orphanTimeoutMs: PRODUCT_POLICY.operations.scanOrphanTimeoutMs
@@ -854,6 +858,7 @@ function createDashboardServer({
       if (req.method === "GET" && url.pathname === "/match-card") return sendHtml(res, renderMatchCardPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/workflow") return sendHtml(res, renderWorkflowDashboardPage({ db, searchParams: url.searchParams, logger, workflowHealth: resolvedWorkflowHealth }));
       if (req.method === "GET" && url.pathname === "/queue") return sendHtml(res, renderQueuePage({ db, searchParams: url.searchParams, logger, outcomeAnalyticsReader }));
+      if (req.method === "GET" && url.pathname === "/funnel") return sendHtml(res, renderFunnelDashboardPage({ db, searchParams: url.searchParams, funnelAnalysis }));
       if (req.method === "GET" && url.pathname === "/messages") return sendHtml(res, renderMessageDiscoveryPage({
         db,
         searchParams: url.searchParams,
@@ -5081,6 +5086,13 @@ function renderQueuePage({ db, searchParams, logger, outcomeAnalyticsReader = ge
     outcomeAnalyticsPanel = '<section class="panel outcome-analytics">统计暂不可用</section>';
   }
   return renderCompactQueuePage({ db, plan, searchParams, outcomeAnalyticsPanel });
+}
+
+function renderFunnelDashboardPage({ db, searchParams, funnelAnalysis }) {
+  const plan = getSearchPlan(db, searchParams.get("planId"));
+  if (!plan) return renderErrorPage("找不到这份筛选方案，请从今日任务重新进入求职体检。", "/plan");
+  const dashboard = funnelAnalysis.refresh({ profileId: plan.profileId });
+  return renderPage("求职体检", renderFunnelPage({ plan, dashboard }));
 }
 
 function renderCompactQueuePage({ db, plan, searchParams, outcomeAnalyticsPanel = "" }) {

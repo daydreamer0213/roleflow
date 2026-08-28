@@ -549,11 +549,11 @@ git commit -m "feat: diagnose rolling job search cohorts"
 - Create: `tests/dashboard_funnel_smoke.js`
 - Modify: `src/dashboard/server.js`
 - Modify: `src/dashboard/ui/navigation.js`
-- Modify: `src/dashboard/ui/styles.js`
+- Modify: `src/dashboard/assets/roleflow.css`
 - Modify: `tests/dashboard_shell_smoke.js`
 - Modify: `tests/run_all.js`
 
-- [ ] **Step 1: Write the failing page test**
+- [x] **Step 1: Write the failing page test**
 
 Assert that `GET /funnel?planId=<id>`:
 
@@ -567,7 +567,7 @@ Assert that `GET /funnel?planId=<id>`:
 - contains no raw HR text, reply drafts, or hidden automatic-action form;
 - renders a useful empty state before the first real application/contact.
 
-- [ ] **Step 2: Run and confirm the failure**
+- [x] **Step 2: Run and confirm the failure**
 
 ```powershell
 node tests/dashboard_funnel_smoke.js
@@ -575,7 +575,7 @@ node tests/dashboard_funnel_smoke.js
 
 Expected: failure because the page and route do not exist.
 
-- [ ] **Step 3: Implement the server-rendered page**
+- [x] **Step 3: Implement the server-rendered page**
 
 `src/dashboard/pages/funnel.js` exports:
 
@@ -596,7 +596,7 @@ Page order:
 
 Do not add a policy-editing form in the first page version. The policy is configurable through the service/store contract, while the UI displays the current saved target. Add a setting only after real use proves it is needed.
 
-- [ ] **Step 4: Wire the route and navigation**
+- [x] **Step 4: Wire the route and navigation**
 
 Construct one funnel service in the Dashboard server's existing dependency setup. Add a read-only GET route for `/funnel`; do not add an API that performs platform work.
 
@@ -608,7 +608,7 @@ navigationLink(`/funnel?planId=${encodedPlanId}`, "求职体检", currentRoute =
 
 Keep “诊断” as the technical runtime diagnostics page; “求职体检” is the candidate-facing funnel page.
 
-- [ ] **Step 5: Run dashboard regressions**
+- [x] **Step 5: Run dashboard regressions**
 
 ```powershell
 node tests/dashboard_funnel_smoke.js
@@ -620,10 +620,10 @@ node tests/dashboard_communication_profile_smoke.js
 
 Expected: all pass and the old queue statistics remain unchanged.
 
-- [ ] **Step 6: Commit the user-facing slice**
+- [x] **Step 6: Commit the user-facing slice**
 
 ```powershell
-git add src/dashboard/pages/funnel.js src/dashboard/server.js src/dashboard/ui/navigation.js src/dashboard/ui/styles.js tests/dashboard_funnel_smoke.js tests/dashboard_shell_smoke.js tests/run_all.js
+git add src/dashboard/pages/funnel.js src/dashboard/server.js src/dashboard/ui/navigation.js src/dashboard/assets/roleflow.css tests/dashboard_funnel_smoke.js tests/dashboard_shell_smoke.js tests/run_all.js
 git commit -m "feat: add job search health check"
 ```
 
