@@ -263,7 +263,7 @@ git status --short --branch
 
 Record the actual check count from this run; do not reuse the earlier 116 total.
 
-- [ ] **Step 5: Update handoff documents and commit**
+- [x] **Step 5: Update handoff documents and commit**
 
 Document user-visible behavior, implementation commits, verification, synthetic-only evidence, no real BOSS access, no external write, and remaining unverified model/natural-effect assumptions.
 
@@ -272,7 +272,7 @@ git add docs/NEXT_PHASE.md docs/PROJECT_HANDOFF.md docs/superpowers/plans/2026-0
 git commit -m "docs: close resume and interview stages"
 ```
 
-- [ ] **Step 6: Verify the exact final SHA**
+- [x] **Step 6: Verify the exact final SHA**
 
 ```powershell
 node tests/dashboard_resume_optimization_smoke.js
@@ -293,4 +293,5 @@ Do not claim real resume conversion improvement or real interview quality withou
 - Local Edge verification passed at 1440px and 390px: report before transcript, three answered turns, original/retry comparison, keyboard-reachable controls, no horizontal overflow, and no console errors.
 - Final independent read-only review: Ready, with no remaining Critical, Important, or Minor.
 - Fresh complete gate: `All 124 offline checks passed.`
+- Documentation commit `085a8689e4859374b00b9a832788a347cb974181` passed the exact-SHA resume Dashboard, interview Dashboard, v20→v21 migration, message-learning storage, diff, and clean-worktree checks.
 - No real BOSS page, external write, real interview, push, merge, package, version change, or release was used.
