@@ -283,7 +283,8 @@ class MockModelAdapter {
         nextQuestion: {
           text: `请结合你的真实经历，介绍你为什么适合${job.company ? `${job.company}的` : ""}${job.title || "这个岗位"}。`,
           focus: "intro",
-          basedOnTurnNumber: null
+          basedOnTurnNumber: null,
+          answerEvidence: ""
         },
         complete: false
       };
@@ -304,7 +305,8 @@ class MockModelAdapter {
       nextQuestion: complete ? null : {
         text: `你刚才提到“${answerExcerpt}”，请结合${job.title || "目标岗位"}继续说明你的个人行动和取舍。`,
         focus,
-        basedOnTurnNumber: Number(last.turnNumber)
+        basedOnTurnNumber: Number(last.turnNumber),
+        answerEvidence: answerExcerpt
       },
       complete
     };

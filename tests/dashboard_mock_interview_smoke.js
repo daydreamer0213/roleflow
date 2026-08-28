@@ -121,20 +121,20 @@ const logger = {
       body: new URLSearchParams({ planId: String(owner.planId), sessionId: "51", turnNumber: "1", answerText: "我的回答" }).toString()
     });
     assert.equal(answer.status, 303);
-    assert.deepEqual(calls.answer[0], { profileId: owner.profileId, sessionId: 51, turnNumber: 1, answerText: "我的回答" });
+    assert.deepEqual(calls.answer[0], { profileId: owner.profileId, planId: owner.planId, sessionId: 51, turnNumber: 1, answerText: "我的回答" });
 
     const finish = await request(baseUrl, "/api/interview/finish", {
       method: "POST", body: new URLSearchParams({ planId: String(owner.planId), sessionId: "51" }).toString()
     });
     assert.equal(finish.status, 303);
-    assert.deepEqual(calls.finish[0], { profileId: owner.profileId, sessionId: 51 });
+    assert.deepEqual(calls.finish[0], { profileId: owner.profileId, planId: owner.planId, sessionId: 51 });
 
     const retry = await request(baseUrl, "/api/interview/retry", {
       method: "POST",
       body: new URLSearchParams({ planId: String(owner.planId), sessionId: "51", turnNumber: "1", answerText: "我的重答" }).toString()
     });
     assert.equal(retry.status, 303);
-    assert.deepEqual(calls.retry[0], { profileId: owner.profileId, sessionId: 51, turnNumber: 1, answerText: "我的重答" });
+    assert.deepEqual(calls.retry[0], { profileId: owner.profileId, planId: owner.planId, sessionId: 51, turnNumber: 1, answerText: "我的重答" });
     assert.equal(readinessCalls, 0, "local interview workflow must not inspect browser readiness");
 
     console.log("dashboard_mock_interview_smoke ok");

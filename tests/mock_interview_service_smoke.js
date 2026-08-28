@@ -49,6 +49,7 @@ const db = storage.openDb(":memory:");
 
     const calls = [];
     let invalidStep = false;
+    let prematureComplete = false;
     let failReport = false;
     const adapter = {
       provider: "scripted",
@@ -64,6 +65,13 @@ const db = storage.openDb(":memory:");
           };
         }
         const last = turns[turns.length - 1];
+        if (prematureComplete) {
+          return {
+            answerReview: { conclusion: "收到", strengths: [], improvements: [], turnNumbers: [last.turnNumber] },
+            nextQuestion: null,
+            complete: true
+          };
+        }
         if (invalidStep) {
           return {
             answerReview: { conclusion: "收到", strengths: [], improvements: [], turnNumbers: [last.turnNumber] },
@@ -79,7 +87,8 @@ const db = storage.openDb(":memory:");
           nextQuestion: turns.length >= input.settings.plannedQuestions ? null : {
             text: `你刚才回答“${last.answer}”，请继续说明个人贡献。`,
             focus: "project",
-            basedOnTurnNumber: last.turnNumber
+            basedOnTurnNumber: last.turnNumber,
+            answerEvidence: last.answer
           },
           complete: turns.length >= input.settings.plannedQuestions
         };
@@ -105,6 +114,15 @@ const db = storage.openDb(":memory:");
       }
     };
     const service = createMockInterviewService({ db, adapter });
+    db.prepare("UPDATE candidate_resume_versions SET is_active = 0 WHERE id = ?").run(owner.resumeVersionId);
+    await assert.rejects(() => service.startSession({
+      profileId: owner.profileId,
+      planId: owner.planId,
+      jobId,
+      resumeVersionId: owner.resumeVersionId,
+      settings: { type: "mixed", difficulty: "standard", plannedQuestions: 3 }
+    }), /启用|简历/);
+    db.prepare("UPDATE candidate_resume_versions SET is_active = 1 WHERE id = ?").run(owner.resumeVersionId);
     const session = await service.startSession({
       profileId: owner.profileId,
       planId: owner.planId,
@@ -116,10 +134,22 @@ const db = storage.openDb(":memory:");
     assert(calls[0].input.context.job.description.includes("Node.js 企业知识库"));
     assert(calls[0].input.context.resume.text.includes("参与企业知识库开发"));
     assert.strictEqual(calls[0].input.context.job.id, jobId);
+    const now = "2026-08-29T08:00:00.000Z";
+    const otherPlanId = Number(db.prepare(`INSERT INTO search_plans(
+      profile_id, name, plan_json, profile_version_id, is_active, created_at, updated_at
+    ) VALUES (?, '同候选人其他方案', '{}', NULL, 1, ?, ?)`).run(owner.profileId, now, now).lastInsertRowid);
+    assert.strictEqual(service.getSession({
+      profileId: owner.profileId, planId: otherPlanId, sessionId: session.id
+    }), null, "same-profile plans must not share interview sessions");
+    const stepCallsBeforeWrongPlan = calls.filter((call) => call.kind === "step").length;
+    await assert.rejects(() => service.answerTurn({
+      profileId: owner.profileId, planId: otherPlanId, sessionId: session.id, turnNumber: 1, answerText: "错误方案回答"
+    }), /会话不存在/);
+    assert.strictEqual(calls.filter((call) => call.kind === "step").length, stepCallsBeforeWrongPlan);
 
     const firstAnswer = "我参与了企业知识库开发，负责接口联调。";
     const afterFirst = await service.answerTurn({
-      profileId: owner.profileId, sessionId: session.id, turnNumber: 1, answerText: firstAnswer
+      profileId: owner.profileId, planId: owner.planId, sessionId: session.id, turnNumber: 1, answerText: firstAnswer
     });
     assert.strictEqual(afterFirst.turns.length, 2);
     const secondStepCall = calls.filter((call) => call.kind === "step")[1];
@@ -127,43 +157,62 @@ const db = storage.openDb(":memory:");
     assert(secondStepCall.input.context.job.description.includes("检索评估"));
     const stepCallsBeforeReplay = calls.filter((call) => call.kind === "step").length;
     const replayedFirst = await service.answerTurn({
-      profileId: owner.profileId, sessionId: session.id, turnNumber: 1, answerText: firstAnswer
+      profileId: owner.profileId, planId: owner.planId, sessionId: session.id, turnNumber: 1, answerText: firstAnswer
     });
     assert.strictEqual(replayedFirst.turns.length, 2, "identical answer replay must be idempotent");
     assert.strictEqual(calls.filter((call) => call.kind === "step").length, stepCallsBeforeReplay,
       "identical answer replay must not call the model again");
 
+    prematureComplete = true;
+    await assert.rejects(() => service.answerTurn({
+      profileId: owner.profileId, planId: owner.planId, sessionId: session.id, turnNumber: 2, answerText: "第二题回答"
+    }), /计划题数/);
+    prematureComplete = false;
+    let loaded = service.getSession({ profileId: owner.profileId, planId: owner.planId, sessionId: session.id });
+    assert.strictEqual(loaded.turns[1].answerText, "", "early model completion must not strand an unfinished session");
+
     invalidStep = true;
     await assert.rejects(() => service.answerTurn({
-      profileId: owner.profileId, sessionId: session.id, turnNumber: 2, answerText: "第二题回答"
+      profileId: owner.profileId, planId: owner.planId, sessionId: session.id, turnNumber: 2, answerText: "第二题回答"
     }), /上一题|追问/);
-    let loaded = service.getSession({ profileId: owner.profileId, sessionId: session.id });
+    loaded = service.getSession({ profileId: owner.profileId, planId: owner.planId, sessionId: session.id });
     assert.strictEqual(loaded.turns.length, 2, "invalid model output must not advance the session");
     assert.strictEqual(loaded.turns[1].answerText, "", "invalid model output must not partially save the current answer");
     assert.strictEqual(loaded.turns[0].answerText, firstAnswer, "prior completed answers must remain saved");
 
     invalidStep = false;
-    await service.answerTurn({ profileId: owner.profileId, sessionId: session.id, turnNumber: 2, answerText: "第二题回答" });
-    await service.answerTurn({ profileId: owner.profileId, sessionId: session.id, turnNumber: 3, answerText: "第三题回答" });
+    await service.answerTurn({ profileId: owner.profileId, planId: owner.planId, sessionId: session.id, turnNumber: 2, answerText: "第二题回答" });
+    await service.answerTurn({ profileId: owner.profileId, planId: owner.planId, sessionId: session.id, turnNumber: 3, answerText: "第三题回答" });
     failReport = true;
-    await assert.rejects(() => service.finishSession({ profileId: owner.profileId, sessionId: session.id }), /forced report failure/);
-    loaded = service.getSession({ profileId: owner.profileId, sessionId: session.id });
+    await assert.rejects(() => service.finishSession({ profileId: owner.profileId, planId: owner.planId, sessionId: session.id }), /forced report failure/);
+    loaded = service.getSession({ profileId: owner.profileId, planId: owner.planId, sessionId: session.id });
     assert.strictEqual(loaded.status, "active");
     assert.strictEqual(loaded.turns.filter((turn) => turn.answerText).length, 3);
 
     failReport = false;
-    const completed = await service.finishSession({ profileId: owner.profileId, sessionId: session.id });
+    const completed = await service.finishSession({ profileId: owner.profileId, planId: owner.planId, sessionId: session.id });
     assert.strictEqual(completed.status, "completed");
     assert.strictEqual(completed.report.retryRecommendations[0].turnNumber, 2);
+    const reportCallsBeforeReplay = calls.filter((call) => call.kind === "report").length;
+    assert.strictEqual((await service.finishSession({ profileId: owner.profileId, planId: owner.planId, sessionId: session.id })).id, session.id);
+    assert.strictEqual(calls.filter((call) => call.kind === "report").length, reportCallsBeforeReplay,
+      "completed finish replay must not call the model again");
     const retried = await service.retryTurn({
-      profileId: owner.profileId, sessionId: session.id, turnNumber: 2,
+      profileId: owner.profileId, planId: owner.planId, sessionId: session.id, turnNumber: 2,
       answerText: "第二题重答：我负责接口联调并完成验收。"
     });
     assert.strictEqual(retried.review.improved, true);
+    const retryCallsBeforeReplay = calls.filter((call) => call.kind === "retry").length;
+    assert.strictEqual((await service.retryTurn({
+      profileId: owner.profileId, planId: owner.planId, sessionId: session.id, turnNumber: 2,
+      answerText: "第二题重答：我负责接口联调并完成验收。"
+    })).id, retried.id);
+    assert.strictEqual(calls.filter((call) => call.kind === "retry").length, retryCallsBeforeReplay,
+      "identical retry replay must not call the model again");
 
     assert.strictEqual(db.prepare("SELECT count(*) AS n FROM candidate_facts WHERE profile_id = ?").get(owner.profileId).n, factCount);
     assert.strictEqual(db.prepare("SELECT count(*) AS n FROM candidate_answer_memories WHERE profile_id = ?").get(owner.profileId).n, memoryCount);
-    assert.strictEqual(service.listSessions({ profileId: owner.profileId }).length, 1);
+    assert.strictEqual(service.listSessions({ profileId: owner.profileId, planId: owner.planId }).length, 1);
 
     console.log("mock_interview_service_smoke ok");
   } finally {

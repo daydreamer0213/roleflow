@@ -5241,6 +5241,7 @@ async function handleMockInterviewAnswer(req, res, { db, mockInterview }) {
   const sessionId = Number(params.sessionId);
   await mockInterview.answerTurn({
     profileId: plan.profileId,
+    planId: plan.id,
     sessionId,
     turnNumber: Number(params.turnNumber),
     answerText: params.answerText
@@ -5252,7 +5253,7 @@ async function handleMockInterviewFinish(req, res, { db, mockInterview }) {
   const params = parseBody(await readBody(req), req.headers["content-type"] || "");
   const plan = requiredMockInterviewPlan(db, params.planId);
   const sessionId = Number(params.sessionId);
-  await mockInterview.finishSession({ profileId: plan.profileId, sessionId });
+  await mockInterview.finishSession({ profileId: plan.profileId, planId: plan.id, sessionId });
   redirect(res, `/interview?planId=${encodeURIComponent(plan.id)}&sessionId=${encodeURIComponent(sessionId)}`);
 }
 
@@ -5262,6 +5263,7 @@ async function handleMockInterviewRetry(req, res, { db, mockInterview }) {
   const sessionId = Number(params.sessionId);
   await mockInterview.retryTurn({
     profileId: plan.profileId,
+    planId: plan.id,
     sessionId,
     turnNumber: Number(params.turnNumber),
     answerText: params.answerText

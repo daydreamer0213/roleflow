@@ -59,7 +59,8 @@ function normalizeQuestion(value) {
     focus: cleanText(value.focus, 120, "问题重点"),
     basedOnTurnNumber: basedOn === null || basedOn === undefined || basedOn === ""
       ? null
-      : Number(basedOn)
+      : Number(basedOn),
+    answerEvidence: cleanText(value.answerEvidence, 300, "回答片段", { required: false })
   };
 }
 
@@ -86,10 +87,19 @@ function validateInterviewStep(raw, context = {}) {
     if (turns.length === 0 && nextQuestion.basedOnTurnNumber !== null) {
       throw new Error("首题不能引用上一题");
     }
+    if (turns.length === 0 && nextQuestion.answerEvidence) {
+      throw new Error("首题不能包含上一回答片段");
+    }
     if (turns.length > 0) {
       const previousTurnNumber = Number(turns[turns.length - 1].turnNumber);
       if (nextQuestion.basedOnTurnNumber !== previousTurnNumber) {
         throw new Error("追问必须引用上一题回答");
+      }
+      const previousAnswer = String(turns[turns.length - 1].answer || "");
+      if (!nextQuestion.answerEvidence
+        || !previousAnswer.includes(nextQuestion.answerEvidence)
+        || !nextQuestion.text.includes(nextQuestion.answerEvidence)) {
+        throw new Error("追问必须用上一题回答中的真实回答片段承接");
       }
     }
   }

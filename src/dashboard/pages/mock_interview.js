@@ -28,7 +28,7 @@ function renderMockInterviewPage({ dashboard = {}, modelReady = true } = {}) {
 
 function renderStartPanel(dashboard, modelReady) {
   const plan = dashboard.plan || {};
-  const resumes = dashboard.resumes || [];
+  const resumes = (dashboard.resumes || []).filter((resume) => resume.isActive);
   const jobs = dashboard.jobs || [];
   const activeResume = resumes.find((resume) => resume.isActive) || resumes[0] || null;
   return `<section class="card pad interview-start" aria-labelledby="interview-start-title">

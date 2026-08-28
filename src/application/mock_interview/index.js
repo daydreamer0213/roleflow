@@ -8,7 +8,6 @@ const {
   createMockInterviewSession,
   getMockInterviewSession,
   listMockInterviewSessions,
-  appendMockInterviewQuestion,
   answerMockInterviewTurn,
   completeMockInterviewSession,
   recordMockInterviewRetry
@@ -41,38 +40,36 @@ function createMockInterviewService({ db, adapter = null } = {}) {
     const job = ownedCompleteJob(plan, input.jobId);
     const resume = ownedResume(profileId, input.resumeVersionId);
     const settings = normalizeInterviewSettings(input.settings);
-    const context = buildFrozenContext(profileId, job, resume);
+    const context = buildFrozenContext(profileId, plan.id, job, resume);
     const rawStep = await adapter.generateMockInterviewStep({ context, settings, turns: [] });
     const step = validateInterviewStep(rawStep, { turns: [] });
     const session = createMockInterviewSession(db, {
       profileId,
+      planId: plan.id,
       jobId: job.id,
       resumeVersionId: resume.id,
       context,
       settings,
+      initialQuestion: step.nextQuestion,
       modelIdentity: { provider: String(adapter.provider || "unknown"), model: String(adapter.model || "") }
     });
-    appendMockInterviewQuestion(db, {
-      profileId,
-      sessionId: session.id,
-      question: step.nextQuestion
-    });
-    return getSession({ profileId, sessionId: session.id });
+    return getSession({ profileId, planId: plan.id, sessionId: session.id });
   }
 
   async function answerTurn(input = {}) {
-    requireAdapterMethod("generateMockInterviewStep");
     const profileId = requiredId(input.profileId, "profileId");
+    const planId = requiredId(input.planId, "planId");
     const sessionId = requiredId(input.sessionId, "sessionId");
     const turnNumber = requiredId(input.turnNumber, "turnNumber");
     const answerText = requiredText(input.answerText, "回答", 20_000);
-    const session = ownedActiveSession(profileId, sessionId);
+    const session = ownedActiveSession(profileId, planId, sessionId);
     const turn = session.turns.find((item) => item.turnNumber === turnNumber);
     if (!turn) throw serviceError("MOCK_INTERVIEW_TURN_NOT_FOUND", "当前面试题不存在");
     if (turn.answerText) {
       if (turn.answerText === answerText) return session;
       throw serviceError("MOCK_INTERVIEW_TURN_ALREADY_ANSWERED", "当前问题已经回答");
     }
+    requireAdapterMethod("generateMockInterviewStep");
     const last = session.turns[session.turns.length - 1];
     if (last?.turnNumber !== turnNumber) throw serviceError("MOCK_INTERVIEW_TURN_NOT_CURRENT", "只能回答当前问题");
     const turns = session.turns.map((item) => ({
@@ -88,24 +85,34 @@ function createMockInterviewService({ db, adapter = null } = {}) {
       turns
     });
     const step = validateInterviewStep(rawStep, { turns });
+    const plannedQuestions = Number(session.settings.plannedQuestions);
+    if (turns.length < plannedQuestions && step.complete) {
+      throw serviceError("MOCK_INTERVIEW_STEP_TOO_EARLY", "模型在达到计划题数前结束了面试，本次回答未保存");
+    }
+    if (turns.length >= plannedQuestions && !step.complete) {
+      throw serviceError("MOCK_INTERVIEW_STEP_TOO_LATE", "模型达到计划题数后仍继续出题，本次回答未保存");
+    }
     answerMockInterviewTurn(db, {
       profileId,
+      planId,
       sessionId,
       turnNumber,
       answerText,
-      answerReview: step.answerReview
+      answerReview: step.answerReview,
+      nextQuestion: step.nextQuestion
     });
-    if (!step.complete) {
-      appendMockInterviewQuestion(db, { profileId, sessionId, question: step.nextQuestion });
-    }
-    return getSession({ profileId, sessionId });
+    return getSession({ profileId, planId, sessionId });
   }
 
   async function finishSession(input = {}) {
-    requireAdapterMethod("reviewMockInterview");
     const profileId = requiredId(input.profileId, "profileId");
+    const planId = requiredId(input.planId, "planId");
     const sessionId = requiredId(input.sessionId, "sessionId");
-    const session = ownedActiveSession(profileId, sessionId);
+    const session = getSession({ profileId, planId, sessionId });
+    if (!session) throw serviceError("MOCK_INTERVIEW_NOT_FOUND", "面试会话不存在");
+    if (session.status === "completed" && session.report) return session;
+    if (session.status !== "active") throw serviceError("MOCK_INTERVIEW_COMPLETED", "面试已经结束");
+    requireAdapterMethod("reviewMockInterview");
     if (!session.turns.length || session.turns.some((turn) => !turn.answerText)) {
       throw serviceError("MOCK_INTERVIEW_INCOMPLETE", "请先完成当前问题");
     }
@@ -118,20 +125,23 @@ function createMockInterviewService({ db, adapter = null } = {}) {
       turns: modelTurns(session.turns)
     });
     const report = validateInterviewReport(rawReport, { turns: session.turns });
-    return completeMockInterviewSession(db, { profileId, sessionId, report });
+    return completeMockInterviewSession(db, { profileId, planId, sessionId, report });
   }
 
   async function retryTurn(input = {}) {
-    requireAdapterMethod("reviewMockInterviewRetry");
     const profileId = requiredId(input.profileId, "profileId");
+    const planId = requiredId(input.planId, "planId");
     const sessionId = requiredId(input.sessionId, "sessionId");
     const turnNumber = requiredId(input.turnNumber, "turnNumber");
     const answerText = requiredText(input.answerText, "重答", 20_000);
-    const session = getSession({ profileId, sessionId });
+    const session = getSession({ profileId, planId, sessionId });
     if (!session) throw serviceError("MOCK_INTERVIEW_NOT_FOUND", "面试会话不存在");
     if (session.status !== "completed") throw serviceError("MOCK_INTERVIEW_INCOMPLETE", "面试结束后才能重练");
     const turn = session.turns.find((item) => item.turnNumber === turnNumber && item.answerText);
     if (!turn) throw serviceError("MOCK_INTERVIEW_TURN_NOT_FOUND", "已回答的面试题不存在");
+    const existingRetry = turn.retries[turn.retries.length - 1];
+    if (existingRetry?.answerText === answerText) return existingRetry;
+    requireAdapterMethod("reviewMockInterviewRetry");
     const rawReview = await adapter.reviewMockInterviewRetry({
       context: session.context,
       settings: session.settings,
@@ -145,37 +155,42 @@ function createMockInterviewService({ db, adapter = null } = {}) {
       }
     });
     const review = validateRetryReview(rawReview, { turnNumber });
-    return recordMockInterviewRetry(db, { profileId, sessionId, turnNumber, answerText, review });
+    return recordMockInterviewRetry(db, { profileId, planId, sessionId, turnNumber, answerText, review });
   }
 
-  function getSession({ profileId, sessionId } = {}) {
+  function getSession({ profileId, planId, sessionId } = {}) {
     return getMockInterviewSession(db, {
       profileId: requiredId(profileId, "profileId"),
+      planId: requiredId(planId, "planId"),
       sessionId: requiredId(sessionId, "sessionId")
     });
   }
 
-  function listSessions({ profileId, limit = 30 } = {}) {
-    return listMockInterviewSessions(db, requiredId(profileId, "profileId"), limit);
+  function listSessions({ profileId, planId, limit = 30 } = {}) {
+    return listMockInterviewSessions(db, {
+      profileId: requiredId(profileId, "profileId"),
+      planId: requiredId(planId, "planId"),
+      limit
+    });
   }
 
   function dashboard({ profileId, planId, sessionId = null } = {}) {
     const profile = requiredId(profileId, "profileId");
     const plan = ownedPlan(profile, planId);
-    const sessions = listMockInterviewSessions(db, profile, 30);
+    const sessions = listMockInterviewSessions(db, { profileId: profile, planId: plan.id, limit: 30 });
     return {
       profile: getCandidateProfile(db, profile),
       plan,
       jobs: listDecisionPool(db, { planId: plan.id }).filter(isCompleteJob),
-      resumes: listCandidateResumeVersions(db, profile),
+      resumes: listCandidateResumeVersions(db, profile).filter((resume) => resume.isActive),
       sessions,
       selectedSession: sessionId
-        ? getMockInterviewSession(db, { profileId: profile, sessionId })
+        ? getMockInterviewSession(db, { profileId: profile, planId: plan.id, sessionId })
         : sessions[0] || null
     };
   }
 
-  function buildFrozenContext(profileId, job, resume) {
+  function buildFrozenContext(profileId, planId, job, resume) {
     const profile = getCandidateProfile(db, profileId);
     const names = [profile?.displayName, profile?.profile?.candidate?.name]
       .map((value) => String(value || "").trim()).filter(Boolean);
@@ -188,7 +203,7 @@ function createMockInterviewService({ db, adapter = null } = {}) {
       source: "user_edited_reply",
       limit: 100
     }), job);
-    const priorWeaknesses = listMockInterviewSessions(db, profileId, 10)
+    const priorWeaknesses = listMockInterviewSessions(db, { profileId, planId, limit: 10 })
       .filter((session) => session.status === "completed" && session.report)
       .flatMap((session) => [
         ...(session.report.improvements || []),
@@ -234,8 +249,8 @@ function createMockInterviewService({ db, adapter = null } = {}) {
     const id = requiredId(resumeVersionId, "resumeVersionId");
     const row = db.prepare(`SELECT rv.id, rv.name, rd.original_file_name, rd.content_hash, rd.resume_text
       FROM candidate_resume_versions rv JOIN resume_documents rd ON rd.id = rv.resume_document_id
-      WHERE rv.id = ? AND rv.profile_id = ?`).get(id, profileId);
-    if (!row) throw serviceError("MOCK_INTERVIEW_RESUME_NOT_OWNED", "简历不存在或不属于当前候选人");
+      WHERE rv.id = ? AND rv.profile_id = ? AND rv.is_active = 1`).get(id, profileId);
+    if (!row) throw serviceError("MOCK_INTERVIEW_RESUME_NOT_OWNED", "启用中的简历不存在或不属于当前候选人");
     return {
       id: Number(row.id),
       name: row.name,
@@ -245,8 +260,8 @@ function createMockInterviewService({ db, adapter = null } = {}) {
     };
   }
 
-  function ownedActiveSession(profileId, sessionId) {
-    const session = getMockInterviewSession(db, { profileId, sessionId });
+  function ownedActiveSession(profileId, planId, sessionId) {
+    const session = getMockInterviewSession(db, { profileId, planId, sessionId });
     if (!session) throw serviceError("MOCK_INTERVIEW_NOT_FOUND", "面试会话不存在");
     if (session.status !== "active") throw serviceError("MOCK_INTERVIEW_COMPLETED", "面试已经结束");
     return session;

@@ -936,6 +936,7 @@ const MOCK_INTERVIEW_SCHEMA = `
 CREATE TABLE IF NOT EXISTS mock_interview_sessions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   profile_id INTEGER NOT NULL,
+  plan_id INTEGER NOT NULL,
   job_id INTEGER NOT NULL,
   resume_version_id INTEGER NOT NULL,
   context_hash TEXT NOT NULL,
@@ -948,6 +949,7 @@ CREATE TABLE IF NOT EXISTS mock_interview_sessions (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   FOREIGN KEY(profile_id) REFERENCES candidate_profiles(id),
+  FOREIGN KEY(plan_id) REFERENCES search_plans(id),
   FOREIGN KEY(job_id) REFERENCES jobs(id),
   FOREIGN KEY(resume_version_id) REFERENCES candidate_resume_versions(id)
 );
@@ -961,6 +963,7 @@ CREATE TABLE IF NOT EXISTS mock_interview_turns (
   question_text TEXT NOT NULL,
   question_focus TEXT NOT NULL,
   based_on_turn_number INTEGER,
+  answer_evidence TEXT NOT NULL DEFAULT '',
   answer_text TEXT NOT NULL DEFAULT '',
   answer_review_json TEXT,
   answered_at TEXT,

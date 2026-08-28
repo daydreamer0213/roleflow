@@ -241,6 +241,7 @@ server.listen(0, "127.0.0.1", async () => {
     });
     assert.strictEqual(mockFollowUp.nextQuestion.basedOnTurnNumber, 1);
     assert(mockFollowUp.nextQuestion.text.includes(literalAnswer));
+    assert.strictEqual(mockFollowUp.nextQuestion.answerEvidence, literalAnswer);
     assert.strictEqual((await mockInterview.reviewMockInterview({ turns: [{ turnNumber: 1 }] })).retryRecommendations[0].turnNumber, 1);
     assert.strictEqual((await mockInterview.reviewMockInterviewRetry({
       turn: { turnNumber: 1, originalAnswer: "短回答", retryAnswer: "这是一个更完整的重答" }

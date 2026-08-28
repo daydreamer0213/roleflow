@@ -136,6 +136,10 @@ try {
       `${table} must exist after stage-four migration`
     );
   }
+  assert(db.prepare("PRAGMA table_info(mock_interview_sessions)").all()
+    .some((column) => column.name === "plan_id"), "mock interview sessions must be plan-bound");
+  assert(db.prepare("PRAGMA table_info(mock_interview_turns)").all()
+    .some((column) => column.name === "answer_evidence"), "mock interview follow-ups must persist answer evidence");
   assert.strictEqual(
     db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='index' AND name='idx_candidate_funnel_entries_pool'").get().n,
     1
@@ -207,6 +211,35 @@ try {
   assert.strictEqual(Object.hasOwn(storedPlan.platform, "salaryLanes"), false);
   db.close();
   assert.strictEqual(fs.existsSync(path.join(root, "backups")), false, "new databases must not create upgrade backups");
+
+  const mockInterviewV19Path = path.join(root, "mock-interview", "v19.sqlite");
+  db = openDb(mockInterviewV19Path);
+  const mockInterviewMigrationNow = "2026-08-29T00:00:00.000Z";
+  const preservedProfileId = Number(db.prepare(`INSERT INTO candidate_profiles(
+    display_name, profile_json, source_hash, created_at, updated_at
+  ) VALUES ('Mock interview v19 migration', '{}', 'mock-interview-v19', ?, ?)`)
+    .run(mockInterviewMigrationNow, mockInterviewMigrationNow).lastInsertRowid);
+  db.exec(`
+    DROP TABLE mock_interview_retries;
+    DROP TABLE mock_interview_turns;
+    DROP TABLE mock_interview_sessions;
+    DELETE FROM schema_migrations WHERE version = ${MOCK_INTERVIEW_VERSION};
+    PRAGMA user_version = ${RESUME_OPTIMIZATION_VERSION};
+  `);
+  db.close();
+  db = openDb(mockInterviewV19Path);
+  assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, MOCK_INTERVIEW_VERSION);
+  assert.strictEqual(
+    db.prepare("SELECT display_name FROM candidate_profiles WHERE id = ?").get(preservedProfileId).display_name,
+    "Mock interview v19 migration",
+    "v19 data must survive the stage-four migration"
+  );
+  assert(db.prepare("PRAGMA table_info(mock_interview_sessions)").all()
+    .some((column) => column.name === "plan_id"));
+  assert(db.prepare("PRAGMA table_info(mock_interview_turns)").all()
+    .some((column) => column.name === "answer_evidence"));
+  assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
+  db.close();
 
   const communicationOutcomeLegacyPath = path.join(root, "communication-outcome", "v9.sqlite");
   db = openDb(communicationOutcomeLegacyPath);

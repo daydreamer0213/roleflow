@@ -42,16 +42,22 @@ assert.throws(() => validateInterviewStep({
 
 const followUp = validateInterviewStep({
   answerReview: { conclusion: "回答直接", strengths: ["有项目"], improvements: ["补充个人贡献"], turnNumbers: [1] },
-  nextQuestion: { text: "你刚提到知识库，请说说最难的技术取舍。", focus: "project", basedOnTurnNumber: 1 },
+  nextQuestion: { text: "你刚提到“知识库”，请说说最难的技术取舍。", focus: "project", basedOnTurnNumber: 1, answerEvidence: "知识库" },
   complete: false
 }, { turns: [{ turnNumber: 1, answer: "我参与了知识库项目。" }] });
 assert.deepStrictEqual(followUp.answerReview.turnNumbers, [1]);
 
 assert.throws(() => validateInterviewStep({
   answerReview: { conclusion: "引用错题", strengths: [], improvements: [], turnNumbers: [1] },
-  nextQuestion: { text: "继续追问第二题。", focus: "project", basedOnTurnNumber: 2 },
+  nextQuestion: { text: "继续追问“第二题”。", focus: "project", basedOnTurnNumber: 2, answerEvidence: "第二题" },
   complete: false
 }, { turns: [{ turnNumber: 1, answer: "第一题" }, { turnNumber: 2, answer: "第二题" }] }), /刚回答|上一题.*复盘/);
+
+assert.throws(() => validateInterviewStep({
+  answerReview: { conclusion: "题号正确", strengths: [], improvements: [], turnNumbers: [2] },
+  nextQuestion: { text: "请再介绍一个项目。", focus: "project", basedOnTurnNumber: 2, answerEvidence: "第二题" },
+  complete: false
+}, { turns: [{ turnNumber: 1, answer: "第一题" }, { turnNumber: 2, answer: "第二题回答" }] }), /回答片段|承接/);
 
 assert.throws(() => validateInterviewStep({
   answerReview: { conclusion: "完成", strengths: [], improvements: [], turnNumbers: [1] },
