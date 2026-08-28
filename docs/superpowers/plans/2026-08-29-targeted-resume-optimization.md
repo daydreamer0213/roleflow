@@ -64,7 +64,7 @@ git commit -m "docs: plan targeted resume optimization"
 - Produces: `buildResumeEvidenceCatalog(input)`, `validateResumeOptimizationDraft(raw, context)`, `normalizeResumeSuggestionDecisions(suggestions, input)`, and `renderOptimizedResume(sourceText, suggestions)`.
 - Suggestion shape: `{id, operation, originalText, proposedText, reason, evidenceIds, decision, userText}`.
 
-- [ ] **Step 1: Write the failing core contract test**
+- [x] **Step 1: Write the failing core contract test**
 
 Cover these observable breaks:
 
@@ -82,17 +82,17 @@ assert.throws(() => validateResumeOptimizationDraft({ suggestions: [{
 
 Also prove that accepted, edited, and ignored operations produce the literal expected final resume, and overlapping anchors are rejected.
 
-- [ ] **Step 2: Run the test and verify RED**
+- [x] **Step 2: Run the test and verify RED**
 
 Run: `node tests/resume_optimization_contract_smoke.js`
 
 Expected: fail because `src/core/resume_optimization.js` does not exist.
 
-- [ ] **Step 3: Implement the minimal core module**
+- [x] **Step 3: Implement the minimal core module**
 
 Evidence IDs are deterministic within one draft. Validate exact unique anchors, non-overlapping source ranges, supported operations (`replace`, `remove`, `insert_after`), referenced evidence existence, new numeric tokens, and role-boundary escalation. Apply accepted edits from the end of the source text toward the beginning so offsets remain stable.
 
-- [ ] **Step 4: Run the focused test and existing privacy test**
+- [x] **Step 4: Run the focused test and existing privacy test**
 
 ```powershell
 node tests/resume_optimization_contract_smoke.js
@@ -101,7 +101,7 @@ node tests/resume_privacy_smoke.js
 
 Expected: both print `ok` and exit 0.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/core/resume_optimization.js tests/resume_optimization_contract_smoke.js tests/run_all.js
