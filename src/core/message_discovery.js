@@ -10,6 +10,7 @@ const {
 } = require("./storage");
 const { safeDigest, messageKey } = require("../adapters/sites/boss_message_dom");
 const { MANUAL_ONLY_CATEGORIES } = require("./message_reply_contract");
+const { recordFunnelRowObservations } = require("./funnel_observation");
 const {
   listPreviewStates,
   recordPreviewState,
@@ -81,6 +82,12 @@ async function runBossMessageDiscovery({
   if (!scan || !Array.isArray(scan.rows)) {
     return emitStopped("BOSS_MESSAGE_QUEUE_INVALID", 0, [], logger, onStatus, retained);
   }
+  recordFunnelRowObservations(db, {
+    profileId,
+    platform: "boss",
+    rows: scan.rows,
+    observedAt: now()
+  });
   const baselines = new Map(listPreviewStates(db, { profileId })
     .map((state) => [state.conversationKey, state]));
   const unresolvedByConversation = new Map(listUnresolvedMessageDiscoveryItems(db, { profileId })
@@ -282,6 +289,7 @@ async function runBossMessageDiscovery({
       messageIntent: classification.messageIntent,
       messageCategory: classification.messageCategory,
       missingFactKey: classification.missingFact?.key || "",
+      manualActions: classification.manualActions || [],
       progressUpdate: classification.progressUpdate,
       occurredAt: now()
     });

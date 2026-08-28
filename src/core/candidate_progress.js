@@ -1,3 +1,4 @@
+const crypto = require("node:crypto");
 const { immediateTransaction } = require("../storage/storage_shared");
 const { ensureFunnelEntry } = require("../storage/funnel_store");
 
@@ -408,6 +409,11 @@ function recordDiscoveredMessageGroupClassification(db, input = {}) {
     : "";
   const messageKeys = normalizedMessageKeys(input.messageKeys);
   const messageGroupKey = safeDigestKey(input.messageGroupKey, "messageGroupKey");
+  const manualActions = Array.isArray(input.manualActions) ? input.manualActions : [];
+  if (manualActions.some((item) => item?.kind !== "resume_request")) {
+    throw progressError("PROGRESS_MANUAL_ACTION_INVALID", "message manual action is invalid");
+  }
+  const resumeRequested = manualActions.some((item) => item?.kind === "resume_request");
   const messageIntent = String(input.messageIntent || "").trim();
   if (!MESSAGE_INTENTS.has(messageIntent)) {
     throw progressError("PROGRESS_MESSAGE_INTENT_INVALID", "message intent is invalid");
@@ -485,6 +491,26 @@ function recordDiscoveredMessageGroupClassification(db, input = {}) {
       metadata: classificationMetadata,
       occurredAt
     }, { keyKind: "message-group" });
+    if (resumeRequested) {
+      persistProgressEvent(db, {
+        cardId,
+        idempotencyKey: derivedProgressIdempotencyKey([
+          "resume-request",
+          platform,
+          messageGroupKey
+        ]),
+        type: "resume_requested",
+        actor: "system",
+        summary: "招聘方请求附件简历",
+        metadata: {
+          platform,
+          threadKey,
+          messageGroupKey,
+          source: "platform_observation"
+        },
+        occurredAt
+      });
+    }
     if (!INTERVIEW_PROGRESS_STAGES.has(card.stage)) {
       transitionProgressCard(db, {
         cardId,
@@ -958,6 +984,13 @@ function progressIdempotencyKey(value) {
   return key;
 }
 
+function derivedProgressIdempotencyKey(parts) {
+  const hex = crypto.createHash("sha256").update(parts.map(String).join("\u001f")).digest("hex").slice(0, 32).split("");
+  hex[12] = "4";
+  hex[16] = ((Number.parseInt(hex[16], 16) & 3) | 8).toString(16);
+  return `progress:${hex.slice(0, 8).join("")}-${hex.slice(8, 12).join("")}-${hex.slice(12, 16).join("")}-${hex.slice(16, 20).join("")}-${hex.slice(20).join("")}`;
+}
+
 function communicationIdempotencyKey(value) {
   const key = String(value || "").trim();
   if (!/^communication:[1-9]\d*:[1-9]\d*:(succeeded|already_communicated)$/.test(key)) {
@@ -1035,6 +1068,7 @@ module.exports = {
   TERMINAL_PROGRESS_STAGES,
   ensureProgressCard,
   recordProgressEvent,
+  derivedProgressIdempotencyKey,
   transitionProgressCard,
   correctProgressStage,
   recordVerifiedCommunicationStart,

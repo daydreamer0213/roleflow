@@ -355,10 +355,10 @@ async function uniqueCandidateAndPrivacySmoke() {
   });
   assert.strictEqual(repeat.status, "completed");
   assert.strictEqual(repeat.processed, 0);
-  assert.strictEqual(
-    listProgressEvents(db, fixture.card.id).length,
-    2,
-    "one message event plus one group event must remain idempotent"
+  assert.deepStrictEqual(
+    listProgressEvents(db, fixture.card.id).map((event) => event.type).sort(),
+    ["inbound_reply_observed", "incoming_message_classified", "message_group_classified"].sort(),
+    "the safe row observation, message event, and group event must remain idempotent"
   );
 }
 

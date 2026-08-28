@@ -392,7 +392,7 @@ git commit -m "feat: enroll real job search activity"
 - Modify: `tests/message_discovery_smoke.js`
 - Modify: `tests/run_all.js`
 
-- [ ] **Step 1: Write failing safe-observation tests**
+- [x] **Step 1: Write failing safe-observation tests**
 
 Use digested fixture rows and assert:
 
@@ -406,7 +406,7 @@ Use digested fixture rows and assert:
 - a classified résumé request appends `resume_requested` in the same transaction as the message-group classification;
 - `messageIntent = interview_invitation` continues to support the interview stage without a duplicate count.
 
-- [ ] **Step 2: Run and confirm the failure**
+- [x] **Step 2: Run and confirm the failure**
 
 ```powershell
 node tests/funnel_message_observation_smoke.js
@@ -414,7 +414,7 @@ node tests/funnel_message_observation_smoke.js
 
 Expected: failure because `src/core/funnel_observation.js` does not exist.
 
-- [ ] **Step 3: Implement the safe row adapter**
+- [x] **Step 3: Implement the safe row adapter**
 
 Export:
 
@@ -431,13 +431,13 @@ The function must:
 5. call the existing progress-event sanitizer rather than inserting directly;
 6. return safe counts only.
 
-- [ ] **Step 4: Integrate with the existing scan and classification**
+- [x] **Step 4: Integrate with the existing scan and classification**
 
 Call `recordFunnelRowObservations` once after `scanConversationRows()` is validated and before queue planning. This reuses the current read and adds no refresh, click, pacing bypass, or access-budget consumption.
 
 Pass the already-safe `manualActions` into `recordDiscoveredMessageGroupClassification`. When it contains `resume_request`, append one `resume_requested` event in the same database transaction, keyed by the safe message-group digest.
 
-- [ ] **Step 5: Run message-discovery regressions**
+- [x] **Step 5: Run message-discovery regressions**
 
 ```powershell
 node tests/funnel_message_observation_smoke.js
@@ -449,7 +449,7 @@ node tests/boss_message_reader_smoke.js
 
 Expected: all pass and fixture assertions prove no raw message persistence.
 
-- [ ] **Step 6: Commit the observation slice**
+- [x] **Step 6: Commit the observation slice**
 
 ```powershell
 git add src/core/funnel_observation.js src/core/message_discovery.js src/core/candidate_progress.js tests/funnel_message_observation_smoke.js tests/message_discovery_smoke.js tests/run_all.js
