@@ -6,6 +6,7 @@ const jobStore = require("../storage/job_store");
 const { nowIso, parseJson, OUTCOME_STATUSES, storageError, optionalInteger, optionalPositiveInteger, nullableText, validDate, immediateTransaction } = require("../storage/storage_shared");
 const scanStore = require("../storage/scan_store");
 const messageLearningStore = require("../storage/message_learning_store");
+const funnelStore = require("../storage/funnel_store");
 const {
   recordMessageReplyDrafts,
   getMessageReplyDraft,
@@ -838,6 +839,66 @@ CREATE INDEX IF NOT EXISTS idx_candidate_fact_revisions_memory
   ON candidate_fact_revisions(answer_memory_id, fact_key);
 `;
 
+const JOB_SEARCH_FUNNEL_SCHEMA = `
+CREATE TABLE IF NOT EXISTS candidate_funnel_policies (
+  profile_id INTEGER PRIMARY KEY,
+  preliminary_sample_target INTEGER NOT NULL CHECK(preliminary_sample_target BETWEEN 10 AND 500),
+  comparable_sample_target INTEGER NOT NULL CHECK(comparable_sample_target BETWEEN 10 AND 500),
+  formal_sample_target INTEGER NOT NULL CHECK(formal_sample_target BETWEEN 10 AND 500),
+  updated_at TEXT NOT NULL,
+  CHECK(preliminary_sample_target < comparable_sample_target),
+  CHECK(comparable_sample_target < formal_sample_target),
+  FOREIGN KEY(profile_id) REFERENCES candidate_profiles(id)
+);
+
+CREATE TABLE IF NOT EXISTS candidate_funnel_cohorts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  profile_id INTEGER NOT NULL,
+  preliminary_sample_target INTEGER NOT NULL CHECK(preliminary_sample_target BETWEEN 10 AND 500),
+  comparable_sample_target INTEGER NOT NULL CHECK(comparable_sample_target BETWEEN 10 AND 500),
+  formal_sample_target INTEGER NOT NULL CHECK(formal_sample_target BETWEEN 10 AND 500),
+  sample_count INTEGER NOT NULL CHECK(sample_count > 0),
+  started_at TEXT NOT NULL,
+  ended_at TEXT NOT NULL,
+  frozen_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  CHECK(preliminary_sample_target < comparable_sample_target),
+  CHECK(comparable_sample_target < formal_sample_target),
+  FOREIGN KEY(profile_id) REFERENCES candidate_profiles(id)
+);
+CREATE INDEX IF NOT EXISTS idx_candidate_funnel_cohorts_profile
+  ON candidate_funnel_cohorts(profile_id, frozen_at DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS candidate_funnel_entries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  profile_id INTEGER NOT NULL,
+  job_id INTEGER NOT NULL,
+  card_id INTEGER,
+  cohort_id INTEGER,
+  plan_id INTEGER,
+  source_kind TEXT NOT NULL CHECK(source_kind IN ('applied', 'communication', 'reply_sent')),
+  started_at TEXT NOT NULL,
+  mature_at TEXT NOT NULL,
+  direction_key TEXT NOT NULL DEFAULT '',
+  decision_bucket TEXT NOT NULL DEFAULT '',
+  resume_version_id INTEGER,
+  greeting_key TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(profile_id, job_id),
+  FOREIGN KEY(profile_id) REFERENCES candidate_profiles(id),
+  FOREIGN KEY(job_id) REFERENCES jobs(id),
+  FOREIGN KEY(card_id) REFERENCES candidate_progress_cards(id),
+  FOREIGN KEY(cohort_id) REFERENCES candidate_funnel_cohorts(id),
+  FOREIGN KEY(plan_id) REFERENCES search_plans(id),
+  FOREIGN KEY(resume_version_id) REFERENCES candidate_resume_versions(id)
+);
+CREATE INDEX IF NOT EXISTS idx_candidate_funnel_entries_pool
+  ON candidate_funnel_entries(profile_id, cohort_id, mature_at, id);
+CREATE INDEX IF NOT EXISTS idx_candidate_funnel_entries_cohort
+  ON candidate_funnel_entries(cohort_id, started_at, id);
+`;
+
 const MIGRATIONS = [
   {
     version: 1,
@@ -1006,6 +1067,13 @@ const MIGRATIONS = [
     apply(db) {
       db.exec(MESSAGE_REPLY_LEARNING_SCHEMA);
       backfillCandidateFactRevisions(db);
+    }
+  },
+  {
+    version: 18,
+    name: "job_search_funnel_v1",
+    apply(db) {
+      db.exec(JOB_SEARCH_FUNNEL_SCHEMA);
     }
   }
 ];
@@ -1642,6 +1710,15 @@ module.exports = {
   listCandidateFactRevisions,
   deleteCandidateFact,
   closeMessageReplyDrafts,
+  getFunnelPolicy: funnelStore.getFunnelPolicy,
+  saveFunnelPolicy: funnelStore.saveFunnelPolicy,
+  ensureFunnelEntry: funnelStore.ensureFunnelEntry,
+  getFunnelEntry: funnelStore.getFunnelEntry,
+  listFunnelEntries: funnelStore.listFunnelEntries,
+  freezeReadyFunnelCohort: funnelStore.freezeReadyFunnelCohort,
+  listFunnelCohorts: funnelStore.listFunnelCohorts,
+  getFunnelCohort: funnelStore.getFunnelCohort,
+  listFunnelProgressEvents: funnelStore.listFunnelProgressEvents,
   workflowJobTaskRow,
   jobAnalysisAttemptRow,
   countWorkflowJobTasks,

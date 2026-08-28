@@ -1,27 +1,34 @@
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
+const { openDb, createBatch, upsertJob } = require("../src/core/storage");
 const {
-  DEFAULT_FORMAL_SAMPLE_TARGET,
-  normalizeFormalSampleTarget,
+  ensureProgressCard,
+  recordProgressEvent
+} = require("../src/core/candidate_progress");
+const {
   feedbackMaturesAt,
   readNoReplyMaturesAt,
   diagnosisStrength,
   projectFunnelEntry,
   buildFunnelSnapshot
 } = require("../src/core/funnel_maturity");
+const {
+  getFunnelPolicy,
+  saveFunnelPolicy,
+  ensureFunnelEntry,
+  getFunnelEntry,
+  listFunnelEntries,
+  freezeReadyFunnelCohort,
+  listFunnelCohorts,
+  getFunnelCohort,
+  listFunnelProgressEvents
+} = require("../src/storage/funnel_store");
 
 function event(type, occurredAt, metadata = {}) {
   return { type, occurredAt, metadata };
 }
 
 function maturityRulesSmoke() {
-  assert.equal(DEFAULT_FORMAL_SAMPLE_TARGET, 50);
-  assert.equal(normalizeFormalSampleTarget(), 50);
-  assert.equal(normalizeFormalSampleTarget(20), 20);
-  assert.equal(normalizeFormalSampleTarget("500"), 500);
-  assert.throws(() => normalizeFormalSampleTarget(19), /between 20 and 500/);
-  assert.throws(() => normalizeFormalSampleTarget(501), /between 20 and 500/);
-  assert.throws(() => normalizeFormalSampleTarget(20.5), /between 20 and 500/);
-
   assert.equal(
     feedbackMaturesAt("2026-08-25T02:00:00.000Z"),
     "2026-08-27T02:00:00.000Z",
@@ -42,11 +49,10 @@ function maturityRulesSmoke() {
     "2026-08-31T08:30:00.000Z"
   );
 
-  assert.equal(diagnosisStrength(19, 50), "facts");
-  assert.equal(diagnosisStrength(20, 50), "preliminary");
-  assert.equal(diagnosisStrength(49, 50), "preliminary");
-  assert.equal(diagnosisStrength(50, 50), "formal");
-  assert.equal(diagnosisStrength(20, 20), "formal");
+  assert.equal(diagnosisStrength(29), "facts");
+  assert.equal(diagnosisStrength(30), "preliminary");
+  assert.equal(diagnosisStrength(50), "comparable");
+  assert.equal(diagnosisStrength(70), "formal");
 }
 
 function projectionRulesSmoke() {
@@ -126,7 +132,11 @@ function snapshotRulesSmoke() {
     })]]
   ]), {
     now: "2026-08-28T00:00:00.000Z",
-    formalSampleTarget: 50
+    samplePolicy: {
+      preliminarySampleTarget: 30,
+      comparableSampleTarget: 50,
+      formalSampleTarget: 70
+    }
   });
 
   assert.equal(snapshot.started, 3);
@@ -141,7 +151,231 @@ function snapshotRulesSmoke() {
   });
 }
 
+function storageRulesSmoke() {
+  const db = openDb(":memory:");
+  try {
+    const startedAt = "2026-08-25T02:00:00.000Z";
+    const fixture = storageFixture(db, "main", startedAt, {
+      keyword: "AI 应用开发",
+      greeting: "您好，我做过 RAG 应用。",
+      recommendation: "primary"
+    });
+    const resumeVersionId = insertResumeVersion(db, fixture.profileId, "resume-a", startedAt);
+    const card = ensureProgressCard(db, {
+      ...fixture,
+      source: "boss",
+      now: startedAt
+    });
+
+    assert.deepEqual(getFunnelPolicy(db, { profileId: fixture.profileId }), {
+      profileId: fixture.profileId,
+      preliminarySampleTarget: 30,
+      comparableSampleTarget: 50,
+      formalSampleTarget: 70,
+      updatedAt: null
+    });
+    assert.equal(saveFunnelPolicy(db, {
+      profileId: fixture.profileId,
+      preliminarySampleTarget: 40,
+      comparableSampleTarget: 60,
+      formalSampleTarget: 80,
+      updatedAt: startedAt
+    }).formalSampleTarget, 80);
+    assert.throws(() => saveFunnelPolicy(db, {
+      profileId: fixture.profileId,
+      preliminarySampleTarget: 50,
+      comparableSampleTarget: 50,
+      formalSampleTarget: 70,
+      updatedAt: startedAt
+    }), /strictly increase/);
+    saveFunnelPolicy(db, {
+      profileId: fixture.profileId,
+      preliminarySampleTarget: 30,
+      comparableSampleTarget: 50,
+      formalSampleTarget: 70,
+      updatedAt: startedAt
+    });
+
+    const first = ensureFunnelEntry(db, {
+      profileId: fixture.profileId,
+      planId: fixture.planId,
+      jobId: fixture.jobId,
+      cardId: card.id,
+      sourceKind: "applied",
+      startedAt
+    });
+    assert.equal(first.directionKey, "AI 应用开发");
+    assert.equal(first.decisionBucket, "primary");
+    assert.equal(first.resumeVersionId, resumeVersionId);
+    assert.equal(first.greetingKey, digest("您好，我做过 RAG 应用。"));
+    assert.equal(first.matureAt, "2026-08-27T02:00:00.000Z");
+
+    db.prepare("UPDATE candidate_resume_versions SET is_active = 0, updated_at = ? WHERE id = ?")
+      .run("2026-08-26T00:00:00.000Z", resumeVersionId);
+    insertResumeVersion(db, fixture.profileId, "resume-b", "2026-08-26T00:00:00.000Z");
+    db.prepare("UPDATE jobs SET keyword = 'Java', greeting = '新的招呼语', analysis_json = '{\"recommendation\":\"caution\"}' WHERE id = ?")
+      .run(fixture.jobId);
+    const repeated = ensureFunnelEntry(db, {
+      profileId: fixture.profileId,
+      planId: fixture.planId,
+      jobId: fixture.jobId,
+      cardId: card.id,
+      sourceKind: "communication",
+      startedAt: "2026-08-26T00:00:00.000Z"
+    });
+    assert.deepEqual(repeated, first, "later activity must not rewrite the original entry snapshot");
+    assert.equal(listFunnelEntries(db, { profileId: fixture.profileId }).length, 1);
+
+    const inboundOnly = storageFixture(db, "inbound-only", startedAt);
+    ensureProgressCard(db, { ...inboundOnly, source: "boss", now: startedAt });
+    assert.equal(getFunnelEntry(db, {
+      profileId: inboundOnly.profileId,
+      jobId: inboundOnly.jobId
+    }), null, "a progress card alone must not become a funnel entry");
+
+    for (let index = 1; index < 69; index += 1) {
+      const extra = addJobToFixture(db, fixture, `mature-${index}`, startedAt);
+      ensureFunnelEntry(db, {
+        profileId: fixture.profileId,
+        planId: fixture.planId,
+        jobId: extra.jobId,
+        sourceKind: "applied",
+        startedAt
+      });
+    }
+    assert.equal(listFunnelEntries(db, {
+      profileId: fixture.profileId,
+      unassignedOnly: true
+    }).length, 69);
+    assert.equal(freezeReadyFunnelCohort(db, {
+      profileId: fixture.profileId,
+      now: "2026-08-28T00:00:00.000Z"
+    }), null, "69 mature entries do not meet a formal target of 70");
+
+    for (let index = 69; index < 83; index += 1) {
+      const extra = addJobToFixture(db, fixture, `mature-${index}`, startedAt);
+      ensureFunnelEntry(db, {
+        profileId: fixture.profileId,
+        planId: fixture.planId,
+        jobId: extra.jobId,
+        sourceKind: "applied",
+        startedAt
+      });
+    }
+    const immature = addJobToFixture(db, fixture, "immature", "2026-08-28T02:00:00.000Z");
+    ensureFunnelEntry(db, {
+      profileId: fixture.profileId,
+      planId: fixture.planId,
+      jobId: immature.jobId,
+      sourceKind: "applied",
+      startedAt: "2026-08-28T02:00:00.000Z"
+    });
+
+    const cohort = freezeReadyFunnelCohort(db, {
+      profileId: fixture.profileId,
+      now: "2026-08-28T03:00:00.000Z"
+    });
+    assert.equal(cohort.sampleCount, 83, "all mature entries join the cohort instead of the first 70");
+    assert.equal(getFunnelCohort(db, {
+      profileId: fixture.profileId,
+      cohortId: cohort.id
+    }).entries.length, 83);
+    assert.equal(listFunnelCohorts(db, { profileId: fixture.profileId, limit: 10 }).length, 1);
+    assert.equal(freezeReadyFunnelCohort(db, {
+      profileId: fixture.profileId,
+      now: "2026-08-28T03:00:00.000Z"
+    }), null, "freezing is idempotent when only immature work remains");
+    assert.equal(getFunnelEntry(db, {
+      profileId: fixture.profileId,
+      jobId: immature.jobId
+    }).cohortId, null);
+
+    recordProgressEvent(db, {
+      cardId: card.id,
+      idempotencyKey: "progress:00000000-0000-4000-8000-000000000099",
+      type: "interview_invited",
+      actor: "user",
+      summary: "用户记录收到面试邀请",
+      metadata: { source: "user_record" },
+      occurredAt: "2026-08-29T02:00:00.000Z"
+    });
+    const progressEvents = listFunnelProgressEvents(db, {
+      profileId: fixture.profileId,
+      entryIds: [first.id]
+    });
+    assert.equal(progressEvents.length, 1);
+    assert.equal(progressEvents[0].entryId, first.id);
+    assert.equal(progressEvents[0].type, "interview_invited");
+    assert.equal(getFunnelEntry(db, {
+      profileId: fixture.profileId,
+      jobId: fixture.jobId
+    }).cohortId, cohort.id, "late outcomes must not move frozen membership");
+
+    const secondProfile = storageFixture(db, "second-profile", startedAt);
+    const sharedJobEntry = ensureFunnelEntry(db, {
+      profileId: secondProfile.profileId,
+      planId: secondProfile.planId,
+      jobId: fixture.jobId,
+      sourceKind: "applied",
+      startedAt
+    });
+    assert.notEqual(sharedJobEntry.profileId, first.profileId);
+    assert.equal(sharedJobEntry.jobId, first.jobId);
+  } finally {
+    db.close();
+  }
+}
+
+function storageFixture(db, suffix, now, observation = {}) {
+  const profileId = Number(db.prepare(`INSERT INTO candidate_profiles(
+    display_name, profile_json, source_hash, created_at, updated_at
+  ) VALUES (?, '{}', NULL, ?, ?)`).run(`Candidate ${suffix}`, now, now).lastInsertRowid);
+  const planJson = JSON.stringify({
+    name: `Plan ${suffix}`,
+    directions: [observation.keyword || "AI 应用开发"]
+  });
+  const planId = Number(db.prepare(`INSERT INTO search_plans(
+    profile_id, name, plan_json, profile_version_id, is_active, created_at, updated_at
+  ) VALUES (?, ?, ?, NULL, 1, ?, ?)`).run(profileId, `Plan ${suffix}`, planJson, now, now).lastInsertRowid);
+  const { jobId } = addJobToFixture(db, { profileId, planId }, `job-${suffix}`, now, observation);
+  return { profileId, planId, jobId };
+}
+
+function addJobToFixture(db, owner, suffix, now, observation = {}) {
+  const batchId = createBatch(db, "boss", observation.keyword || "AI 应用开发", "funnel fixture", {
+    profileId: owner.profileId,
+    searchPlanId: owner.planId
+  });
+  const sourceId = `funnel-${suffix}`;
+  const jobId = upsertJob(db, {
+    source: "boss",
+    sourceId,
+    keyword: observation.keyword || "AI 应用开发",
+    title: `Job ${suffix}`,
+    company: "Fixture Co",
+    location: "Guangzhou",
+    greeting: observation.greeting || "",
+    analysis: { recommendation: observation.recommendation || "apply" }
+  }, batchId);
+  db.prepare("UPDATE job_observations SET seen_at = ? WHERE batch_id = ? AND job_id = ?")
+    .run(now, batchId, jobId);
+  return { jobId, batchId };
+}
+
+function insertResumeVersion(db, profileId, versionKey, now) {
+  return Number(db.prepare(`INSERT INTO candidate_resume_versions(
+    profile_id, resume_document_id, version_key, name, target_roles_json, keywords_json,
+    primary_projects_json, summary, analysis_json, is_active, created_at, updated_at
+  ) VALUES (?, NULL, ?, ?, '[]', '[]', '[]', '', '{}', 1, ?, ?)`)
+    .run(profileId, versionKey, versionKey, now, now).lastInsertRowid);
+}
+
+function digest(value) {
+  return `sha256:${crypto.createHash("sha256").update(String(value).trim().replace(/\s+/g, " ")).digest("hex")}`;
+}
+
 maturityRulesSmoke();
 projectionRulesSmoke();
 snapshotRulesSmoke();
+storageRulesSmoke();
 console.log("job_search_funnel_smoke: ok");

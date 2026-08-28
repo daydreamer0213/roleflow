@@ -17,6 +17,7 @@ const ONBOARDING_RUN_VERSION = 14;
 const MESSAGE_DISCOVERY_RUNTIME_VERSION = 15;
 const SHARED_BOSS_PACING_VERSION = 16;
 const MESSAGE_REPLY_LEARNING_VERSION = 17;
+const JOB_SEARCH_FUNNEL_VERSION = 18;
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-migration-"));
 let db;
@@ -45,10 +46,11 @@ try {
       { version: ONBOARDING_RUN_VERSION, name: "onboarding_runs_v1", backup_path: null },
       { version: MESSAGE_DISCOVERY_RUNTIME_VERSION, name: "message_discovery_runtime_states_v1", backup_path: null },
       { version: SHARED_BOSS_PACING_VERSION, name: "shared_boss_pacing_v1", backup_path: null },
-      { version: MESSAGE_REPLY_LEARNING_VERSION, name: "message_reply_learning_v1", backup_path: null }
+      { version: MESSAGE_REPLY_LEARNING_VERSION, name: "message_reply_learning_v1", backup_path: null },
+      { version: JOB_SEARCH_FUNNEL_VERSION, name: "job_search_funnel_v1", backup_path: null }
     ]
   );
-  assert.strictEqual(freshMigrations[freshMigrations.length - 1].name, "message_reply_learning_v1");
+  assert.strictEqual(freshMigrations[freshMigrations.length - 1].name, "job_search_funnel_v1");
   assert.strictEqual(freshMigrations[freshMigrations.length - 1].version, SCHEMA_VERSION);
   assert(db.prepare("PRAGMA table_info(communication_batches)").all()
     .some((column) => column.name === "runtime_json"));
@@ -111,6 +113,17 @@ try {
       `${table} must exist after message reply learning migration`
     );
   }
+  for (const table of ["candidate_funnel_policies", "candidate_funnel_cohorts", "candidate_funnel_entries"]) {
+    assert.strictEqual(
+      db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name = ?").get(table).n,
+      1,
+      `${table} must exist after funnel migration`
+    );
+  }
+  assert.strictEqual(
+    db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='index' AND name='idx_candidate_funnel_entries_pool'").get().n,
+    1
+  );
   assert.deepStrictEqual(
     db.prepare("PRAGMA table_info(message_discovery_runtime_states)").all().map((column) => column.name),
     ["platform", "pacing_json", "updated_at"]
@@ -136,7 +149,8 @@ try {
   );
   assert(SCHEMA_VERSION >= 3);
   assert.strictEqual(SHARED_BOSS_PACING_VERSION, 16);
-  assert.strictEqual(SCHEMA_VERSION, MESSAGE_REPLY_LEARNING_VERSION);
+  assert.strictEqual(MESSAGE_REPLY_LEARNING_VERSION, 17);
+  assert.strictEqual(SCHEMA_VERSION, JOB_SEARCH_FUNNEL_VERSION);
   assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
   const planNow = "2026-08-16T00:00:00.000Z";
   const planProfileId = Number(db.prepare(`INSERT INTO candidate_profiles(
@@ -332,7 +346,8 @@ try {
       { version: ONBOARDING_RUN_VERSION, name: "onboarding_runs_v1" },
       { version: MESSAGE_DISCOVERY_RUNTIME_VERSION, name: "message_discovery_runtime_states_v1" },
       { version: SHARED_BOSS_PACING_VERSION, name: "shared_boss_pacing_v1" },
-      { version: MESSAGE_REPLY_LEARNING_VERSION, name: "message_reply_learning_v1" }
+      { version: MESSAGE_REPLY_LEARNING_VERSION, name: "message_reply_learning_v1" },
+      { version: JOB_SEARCH_FUNNEL_VERSION, name: "job_search_funnel_v1" }
     ]
   );
   assert.strictEqual(db.prepare("SELECT source FROM keyword_sources WHERE keyword = 'v1-preserved'").get().source, "migration-smoke");
