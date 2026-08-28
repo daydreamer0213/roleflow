@@ -19,6 +19,11 @@ assert.strictEqual(normalizeReplyDraftText("  您好，\r\n  我可以到岗。 
 assert.strictEqual(replyDraftWasEdited("您好， 我可以到岗。", "您好，\n我可以到岗。"), false, "whitespace-only changes are not authoritative edits");
 assert.strictEqual(replyDraftWasEdited("目前在职，一个月内到岗", "目前已离职，下周到岗"), true);
 assert(/^sha256:[a-f0-9]{64}$/.test(replyDraftDigest("最终回答")));
+assert.strictEqual(
+  replyDraftDigest("我目前 在职"),
+  replyDraftDigest("我目前\n在职"),
+  "digest idempotency must use the same whitespace equivalence as edit detection"
+);
 
 const changed = deriveUserChangedText(
   "您好，我目前在职，一个月内可以到岗。",
@@ -52,6 +57,13 @@ assert.deepStrictEqual(validateReplyEditFactExtraction(null, { changedText: chan
   scope: { kind: "global", key: "" },
   facts: []
 });
+assert.deepStrictEqual(validateReplyEditFactExtraction({
+  scope: { kind: "global", key: "" },
+  facts: []
+}, {
+  changedText: changed,
+  scope: { kind: "job", key: "42" }
+}).scope, { kind: "job", key: "42" }, "the extractor must not broaden a job-scoped answer into global memory");
 
 const db = openDb(":memory:");
 

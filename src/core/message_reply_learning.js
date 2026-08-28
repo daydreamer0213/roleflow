@@ -14,7 +14,7 @@ function normalizeReplyDraftText(value) {
 }
 
 function replyDraftDigest(value) {
-  return `sha256:${createHash("sha256").update(normalizeReplyDraftText(value)).digest("hex")}`;
+  return `sha256:${createHash("sha256").update(comparableText(value)).digest("hex")}`;
 }
 
 function replyDraftWasEdited(originalText, finalText) {
@@ -36,11 +36,13 @@ function deriveUserChangedText(originalText, finalText) {
   return final.slice(prefix, final.length - suffix || final.length).join("").slice(0, 2000);
 }
 
-function validateReplyEditFactExtraction(value, { changedText = "" } = {}) {
+function validateReplyEditFactExtraction(value, options = {}) {
+  const changedText = options.changedText || "";
   const extraction = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const evidenceSource = String(changedText || "");
-  const scopeValue = extraction.scope && typeof extraction.scope === "object" && !Array.isArray(extraction.scope)
-    ? extraction.scope
+  const suppliedScope = Object.hasOwn(options, "scope") ? options.scope : extraction.scope;
+  const scopeValue = suppliedScope && typeof suppliedScope === "object" && !Array.isArray(suppliedScope)
+    ? suppliedScope
     : {};
   const scope = {
     kind: VALID_SCOPE_KINDS.has(scopeValue.kind) ? scopeValue.kind : "global",

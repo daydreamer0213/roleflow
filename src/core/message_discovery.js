@@ -69,12 +69,6 @@ async function runBossMessageDiscovery({
   }
   const profile = messageReplyProfile(storedProfile.profile);
   const facts = listCandidateFacts(db, profileId);
-  const answerMemories = listCandidateAnswerMemories(db, {
-    profileId,
-    activeOnly: true,
-    source: "user_edited_reply",
-    limit: 100
-  });
   let retained = unresolvedSummary(db, profileId);
   let scan;
   try {
@@ -234,6 +228,14 @@ async function runBossMessageDiscovery({
 
     let classification;
     try {
+      const answerMemories = incoming.messages.length
+        ? listCandidateAnswerMemories(db, {
+          profileId,
+          activeOnly: true,
+          source: "user_edited_reply",
+          limit: 100
+        })
+        : [];
       classification = incoming.messages.length
         ? await classifyMessageGroup({
           profile,

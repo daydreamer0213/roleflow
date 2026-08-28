@@ -1365,6 +1365,18 @@ server.listen(0, "127.0.0.1", async () => {
       assert(extractedReplyFacts.scope);
       assert("已经离职，下周可以到岗，常住深圳，期望薪资25K，可以接受短期出差".includes(fact.evidenceText));
     }
+    const negativeReplyFacts = await mockReplyAdapter.extractReplyEditFacts({
+      changedText: "我不接受短期出差，不接受异地工作，也不接受加班。"
+    });
+    assert.deepStrictEqual(
+      Object.fromEntries(negativeReplyFacts.facts.map((fact) => [fact.factKey, fact.factValue])),
+      {
+        accepts_travel: "不接受出差",
+        accepts_relocation: "不接受",
+        accepts_overtime: "不接受"
+      },
+      "explicit negative preferences must not be reversed by positive substring matches"
+    );
 
     const interviewMention = await mockReplyAdapter.draftMessageGroup({
       messages: [{ messageKey: "sha256:" + "c".repeat(64), text: "项目提供线上面试与简历管理能力。" }],

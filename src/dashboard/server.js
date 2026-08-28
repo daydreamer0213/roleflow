@@ -69,6 +69,7 @@ const {
   recordRecommendationFeedback,
   saveCandidateFact,
   listCandidateFacts,
+  getMessageReplyDraft,
   isJobAwaitingAction,
   OUTCOME_STATUSES,
   getOutcomeAnalyticsSnapshot
@@ -3597,7 +3598,7 @@ async function handleMessageReplyDraft(req, res, service) {
     }
     if (action === "complete") {
       const completionKind = String(params.completionKind || "").trim();
-      if (!new Set(["copied", "sent"]).has(completionKind)) {
+      if (completionKind !== "copied") {
         throw Object.assign(new Error("completion kind is invalid"), { code: "MESSAGE_REPLY_COMPLETION_KIND_INVALID" });
       }
       const result = await service.completeDraft({
@@ -3682,32 +3683,46 @@ async function handleProgress(req, res, db, messageDiscovery = null, replyLearni
       }
       const preserveInterviewStage = action === "reply_confirmed_sent"
         && ["interview_invited", "interview_scheduled"].includes(card.stage);
+      const recordProgress = () => {
+        if (preserveInterviewStage) {
+          recordProgressEvent(db, {
+            cardId: card.id,
+            idempotencyKey: params.idempotencyKey,
+            type: definition.eventType,
+            actor: "user",
+            summary: enteredSummary || definition.summary
+          });
+        } else {
+          recordManualProgressAction(db, {
+            cardId: card.id,
+            idempotencyKey: params.idempotencyKey,
+            stage: definition.stage,
+            eventType: definition.eventType,
+            summary: enteredSummary || definition.summary,
+            nextAction: definition.nextAction,
+            scheduledAt
+          });
+        }
+      };
+      if (action === "reply_confirmed_sent" && !params.draftId
+        && hasOpenMessageReplyDraft(db, card.profileId, card.id)) {
+        throw appError("MESSAGE_REPLY_DRAFT_REQUIRED", "请到消息页完成并记录这条回复草稿。", { statusCode: 409 });
+      }
       if (action === "reply_confirmed_sent" && replyLearning && params.draftId) {
+        const draft = getMessageReplyDraft(db, { profileId: card.profileId, draftId: params.draftId });
+        if (!draft) throw appError("MESSAGE_REPLY_DRAFT_NOT_FOUND", "回复草稿不存在。", { statusCode: 404 });
+        if (draft.cardId !== card.id) {
+          throw appError("MESSAGE_REPLY_DRAFT_CARD_MISMATCH", "回复草稿不属于当前岗位。", { statusCode: 409 });
+        }
         await replyLearning.completeDraft({
           profileId: card.profileId,
           draftId: params.draftId,
           finalText: params.finalText,
-          completionKind: "sent"
-        });
-      }
-      if (preserveInterviewStage) {
-        recordProgressEvent(db, {
-          cardId: card.id,
-          idempotencyKey: params.idempotencyKey,
-          type: definition.eventType,
-          actor: "user",
-          summary: enteredSummary || definition.summary
+          completionKind: "sent",
+          afterComplete: recordProgress
         });
       } else {
-        recordManualProgressAction(db, {
-          cardId: card.id,
-          idempotencyKey: params.idempotencyKey,
-          stage: definition.stage,
-          eventType: definition.eventType,
-          summary: enteredSummary || definition.summary,
-          nextAction: definition.nextAction,
-          scheduledAt
-        });
+        recordProgress();
       }
       if (action === "reply_confirmed_sent" && messageDiscovery) {
         messageDiscovery.clearDraftForCard(card.profileId, card.id);
@@ -5072,7 +5087,8 @@ function renderCompactQueuePage({ db, plan, searchParams, outcomeAnalyticsPanel 
   const pool = ["focus", "primary", "apply", "caution", "analysis_pending", "detail_pending", "activity_pending", "no_reply", "not_recommended", "waiting_reply", "needs_user_action", "interview"].includes(searchParams.get("pool")) ? searchParams.get("pool") : "focus";
   const scope = ["all", "new", "repeated", "backlog"].includes(searchParams.get("scope")) ? searchParams.get("scope") : "all";
   const latestMainBatchId = getLatestMainScanBatchId(db, { planId: plan.id });
-  const progressCards = listProgressCardsWithEvents(db, { profileId: plan.profileId });
+  const progressCards = listProgressCardsWithEvents(db, { profileId: plan.profileId })
+    .map((card) => ({ ...card, hasOpenMessageDraft: hasOpenMessageReplyDraft(db, card.profileId, card.id) }));
   const progressByJob = new Map(progressCards.map((card) => [Number(card.jobId), card]));
   const decisionJobs = listDecisionPool(db, { planId: plan.id })
     .map((job) => ({ ...job, progressCard: progressByJob.get(Number(job.id)) || null }));
@@ -5479,7 +5495,9 @@ function renderProgressPanel(card) {
   const requestKey = () => `<input type="hidden" name="idempotencyKey" value="${escapeAttr(newProgressRequestKey())}">`;
   const actionButton = (action, label) => `<form method="post" action="/api/progress">${context}${requestKey()}<button name="action" value="${action}">${label}</button></form>`;
   const stageAction = card.stage === "reply_ready"
-    ? actionButton("reply_confirmed_sent", "已手动发送")
+    ? card.hasOpenMessageDraft
+      ? `<a href="/messages?profileId=${escapeAttr(card.profileId)}">到消息页处理草稿</a>`
+      : actionButton("reply_confirmed_sent", "已手动发送")
     : card.stage === "interview_invited"
       ? `<form class="follow" method="post" action="/api/progress">${context}${requestKey()}<input type="hidden" name="action" value="mark_interview_scheduled"><input name="summary" placeholder="你确认的面试安排" required><input type="datetime-local" name="scheduledAt" required><button>标记已安排面试</button></form>`
       : "";
@@ -5490,6 +5508,11 @@ function renderProgressPanel(card) {
     .map((stage) => `<option value="${stage}">${escapeHtml(progressStageLabel(stage))}</option>`)
     .join("");
   return `<section class="progress-card" style="margin-top:12px;padding:12px;border:1px solid #86b9ad;border-radius:7px;background:#f3faf8"><strong>${escapeHtml(progressStageLabel(card.stage))}</strong><div class="line">下一步：${escapeHtml(card.nextAction || "等待用户确认")}${card.scheduledAt ? ` · ${escapeHtml(compactDateTime(card.scheduledAt))}` : ""}</div>${eventTimeline ? `<ol>${eventTimeline}</ol>` : ""}<p class="line">所有按钮只更新本地记录，不会自动填写或发送。</p><div class="quick-actions">${controls}</div><details><summary>纠正阶段</summary><form class="follow" method="post" action="/api/progress">${context}${requestKey()}<input type="hidden" name="action" value="correct_stage"><select name="targetStage">${correctionOptions}</select><input name="reason" placeholder="纠正原因" required><button>保存纠正</button></form></details></section>`;
+}
+
+function hasOpenMessageReplyDraft(db, profileId, cardId) {
+  return Boolean(db.prepare(`SELECT 1 FROM message_reply_drafts
+    WHERE profile_id = ? AND card_id = ? AND closed_at IS NULL LIMIT 1`).get(profileId, cardId));
 }
 
 function newProgressRequestKey() {

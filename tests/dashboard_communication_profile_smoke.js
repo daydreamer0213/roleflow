@@ -68,6 +68,9 @@ async function main() {
   assert.doesNotMatch(page.body, new RegExp(`<textarea[^>]*data-draft-id="${fixture.draft.id}"[^>]*readonly`));
   assert.match(page.body, new RegExp(`/communication-profile\\?profileId=${fixture.profileId}`));
   await editableDraftClientSmoke(page.body, fixture.draft.id);
+  const queueWithDraft = await getText(base, `/queue?planId=${fixture.planId}&pool=needs_user_action`);
+  assert(queueWithDraft.body.includes("到消息页处理草稿"));
+  assert(!queueWithDraft.body.includes('name="action" value="reply_confirmed_sent"'), "queue must not bypass an open message draft");
 
   let response = await postJson(base, "/api/message-reply-draft", {
     action: "save",
@@ -101,6 +104,15 @@ async function main() {
   assert.strictEqual(response.body.learnedFactCount, 1);
   assert(!Object.hasOwn(response.body, "finalText"));
   assert.strictEqual(listOpenMessageReplyDrafts(db, { profileId: fixture.profileId }).length, 1, "copy keeps the draft visible for manual sending");
+
+  response = await postJson(base, "/api/message-reply-draft", {
+    action: "complete",
+    profileId: fixture.profileId,
+    draftId: fixture.draft.id,
+    text: "不得从草稿接口伪造已发送状态",
+    completionKind: "sent"
+  });
+  assert.strictEqual(response.status, 400, "sent completion must only exist on the manual progress path");
 
   let profilePage = await getText(base, `/communication-profile?profileId=${fixture.profileId}`);
   assert.strictEqual(profilePage.status, 200);
@@ -167,6 +179,35 @@ async function main() {
     messageCategory: "availability",
     messages: ["我可以尽快到岗。"]
   })[0];
+  response = await postForm(base, "/api/progress", {
+    action: "reply_confirmed_sent",
+    cardId: fixture.cardId,
+    idempotencyKey: "progress:00000000-0000-4000-8000-000000000098"
+  });
+  assert.strictEqual(response.status, 409, "an open message draft must not be closed without its final text");
+  assert.strictEqual(getMessageReplyDraft(db, { profileId: fixture.profileId, draftId: sentDraft.id }).closedAt, "");
+  const otherJobId = Number(db.prepare(`INSERT INTO jobs(
+    source, source_id, title, first_seen_at, last_seen_at
+  ) VALUES ('boss', 'other-progress-job', '另一个岗位', ?, ?)`).run("2026-08-28T06:10:00.000Z", "2026-08-28T06:10:00.000Z").lastInsertRowid);
+  const otherCardId = Number(db.prepare(`INSERT INTO candidate_progress_cards(
+    profile_id, plan_id, job_id, source, stage, next_action, last_event_at, created_at, updated_at
+  ) VALUES (?, ?, ?, 'boss', 'reply_ready', 'Review draft', ?, ?, ?)`).run(
+    fixture.profileId,
+    fixture.planId,
+    otherJobId,
+    "2026-08-28T06:10:00.000Z",
+    "2026-08-28T06:10:00.000Z",
+    "2026-08-28T06:10:00.000Z"
+  ).lastInsertRowid);
+  response = await postForm(base, "/api/progress", {
+    action: "reply_confirmed_sent",
+    cardId: otherCardId,
+    draftId: sentDraft.id,
+    finalText: "不得借另一个岗位的卡片完成这条草稿。",
+    idempotencyKey: "progress:00000000-0000-4000-8000-000000000099"
+  });
+  assert.strictEqual(response.status, 409, "sent completion must bind the draft to the current progress card");
+  assert.strictEqual(getMessageReplyDraft(db, { profileId: fixture.profileId, draftId: sentDraft.id }).closedAt, "");
   const progressKey = "progress:00000000-0000-4000-8000-000000000001";
   response = await postForm(base, "/api/progress", {
     action: "reply_confirmed_sent",
@@ -191,6 +232,37 @@ async function main() {
   assert.strictEqual(response.status, 303);
   assert.strictEqual(db.prepare("SELECT COUNT(*) AS count FROM candidate_progress_events WHERE card_id = ? AND idempotency_key = ?")
     .get(fixture.cardId, progressKey).count, 1);
+
+  const atomicDraft = recordMessageReplyDrafts(db, {
+    profileId: fixture.profileId,
+    cardId: fixture.cardId,
+    jobId: fixture.jobId,
+    messageGroupKey: `sha256:${"f".repeat(64)}`,
+    questionSummary: "对方再次询问到岗时间。",
+    messageIntent: "information_request",
+    messageCategory: "availability",
+    messages: ["我还需要确认。"]
+  })[0];
+  const conflictKey = "progress:00000000-0000-4000-8000-000000000002";
+  db.prepare(`INSERT INTO candidate_progress_events(
+    card_id, idempotency_key, type, actor, summary, metadata_json, occurred_at, created_at
+  ) VALUES (?, ?, 'different_event', 'user', '冲突事件', '{}', ?, ?)`).run(
+    fixture.cardId,
+    conflictKey,
+    "2026-08-28T06:20:00.000Z",
+    "2026-08-28T06:20:00.000Z"
+  );
+  response = await postForm(base, "/api/progress", {
+    action: "reply_confirmed_sent",
+    cardId: fixture.cardId,
+    draftId: atomicDraft.id,
+    finalText: "我可以两周后到岗。",
+    idempotencyKey: conflictKey
+  });
+  assert.strictEqual(response.status, 400);
+  assert.strictEqual(getMessageReplyDraft(db, { profileId: fixture.profileId, draftId: atomicDraft.id }).closedAt, "", "a failed progress event must roll back draft completion");
+  assert.strictEqual(listCandidateAnswerMemories(db, { profileId: fixture.profileId, activeOnly: false })
+    .some((memoryItem) => memoryItem.draftId === atomicDraft.id), false, "a failed progress event must roll back the learned answer");
 
   const publicStatus = await getJson(base, `/api/message-discovery-status?profileId=${fixture.profileId}`);
   assert.strictEqual(publicStatus.status, 200);
@@ -318,6 +390,7 @@ async function editableDraftClientSmoke(markup, draftId) {
   const pendingCopy = copyHandlers.get("click")();
   await new Promise((resolve) => setImmediate(resolve));
   assert.strictEqual(requests.filter((item) => item.body.action === "complete").length, 0, "copy completion waits for an autosave already in flight");
+  field.value = "复制后继续输入的新内容";
   releaseHeldSave();
   await Promise.all([pendingSave, pendingCopy]);
   holdSave = false;
@@ -325,9 +398,11 @@ async function editableDraftClientSmoke(markup, draftId) {
   const clipboardIndex = raceOrder.findIndex((item) => item[0] === "clipboard" && item[1] === "复制前的最后修改");
   const completeIndex = raceOrder.findIndex((item) => item[0] === "fetch" && item[1] === "complete");
   assert(clipboardIndex >= 0 && completeIndex > clipboardIndex, "clipboard write must finish before local completion starts");
+  assert.strictEqual(requests.filter((item) => item.body.action === "complete").at(-1).body.text, "复制前的最后修改", "completion must persist the exact text copied, not later typing");
   assert.match(feedback.textContent, /已记住你这次修改的回答/);
 
   completeFailure = true;
+  field.value = "复制前的最后修改";
   await copyHandlers.get("click")();
   assert.deepStrictEqual(order.slice(-2), [["clipboard", "复制前的最后修改"], ["fetch", "complete"]]);
   assert.match(feedback.textContent, /已复制；这次修改暂未保存，请稍后重试/);

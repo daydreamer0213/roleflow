@@ -1,3 +1,5 @@
+const { immediateTransaction } = require("../storage/storage_shared");
+
 const PROGRESS_STAGES = new Set([
   "contact_started",
   "waiting_reply",
@@ -177,8 +179,7 @@ function correctProgressStage(db, input = {}) {
     throw progressError("PROGRESS_STAGE_TRANSITION_INVALID", "closed progress can only reopen to needs_user_action");
   }
   const now = isoText(input.now);
-  db.exec("BEGIN IMMEDIATE");
-  try {
+  return progressTransaction(db, () => {
     const persisted = persistProgressEvent(db, {
       cardId,
       idempotencyKey,
@@ -189,7 +190,6 @@ function correctProgressStage(db, input = {}) {
       occurredAt: now
     });
     if (!persisted.inserted) {
-      db.exec("COMMIT");
       return getProgressCard(db, cardId);
     }
     const result = db.prepare(`UPDATE candidate_progress_cards
@@ -197,12 +197,8 @@ function correctProgressStage(db, input = {}) {
       WHERE id = ? AND stage = ?`)
       .run(toStage, now, cardId, expectedStage);
     if (Number(result.changes) !== 1) throw progressError("PROGRESS_STAGE_CONFLICT", "progress stage changed concurrently");
-    db.exec("COMMIT");
-  } catch (error) {
-    try { db.exec("ROLLBACK"); } catch {}
-    throw error;
-  }
-  return getProgressCard(db, cardId);
+    return getProgressCard(db, cardId);
+  });
 }
 
 function recordVerifiedCommunicationStart(db, input = {}) {
@@ -527,8 +523,7 @@ function recordManualProgressAction(db, input = {}) {
     throw progressError("PROGRESS_STAGE_TRANSITION_INVALID", "closed progress can only be reopened");
   }
   const now = isoText(input.now);
-  db.exec("BEGIN IMMEDIATE");
-  try {
+  return progressTransaction(db, () => {
     const persisted = persistProgressEvent(db, {
       cardId,
       idempotencyKey,
@@ -539,7 +534,6 @@ function recordManualProgressAction(db, input = {}) {
       occurredAt: now
     });
     if (!persisted.inserted) {
-      db.exec("COMMIT");
       return getProgressCard(db, cardId);
     }
     if (closedReopen) {
@@ -558,12 +552,8 @@ function recordManualProgressAction(db, input = {}) {
         now
       });
     }
-    db.exec("COMMIT");
-  } catch (error) {
-    try { db.exec("ROLLBACK"); } catch {}
-    throw error;
-  }
-  return getProgressCard(db, cardId);
+    return getProgressCard(db, cardId);
+  });
 }
 
 function sanitizedMessageSummary(messageCategory, { missingFactKey = "", messageIntent = "" } = {}) {
@@ -578,6 +568,10 @@ function sanitizedMessageSummary(messageCategory, { missingFactKey = "", message
     identity_uncertain: "岗位或线程关联待确认",
     other: missingFactKey ? "需要补充用户确认事实" : "招聘方问题已分类"
   }[category] || "招聘方问题已分类";
+}
+
+function progressTransaction(db, work) {
+  return db.isTransaction ? work() : immediateTransaction(db, work);
 }
 
 function getProgressCardForJob(db, input = {}) {

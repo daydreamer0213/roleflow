@@ -113,7 +113,7 @@ function completeDraft(db, input, { forceEdited }) {
     throw storageError("MESSAGE_REPLY_COMPLETION_KIND_INVALID", "completionKind is invalid");
   }
   const completedAt = isoText(input.completedAt || nowIso(), "completedAt");
-  const finalDigest = sha256(finalText);
+  const finalDigest = sha256(normalizeDigestText(finalText));
   const changed = forceEdited || comparableText(draft.originalText) !== comparableText(finalText);
   const source = changed ? "user_edited_reply" : "draft_adopted";
   const changedText = changed ? draftText(input.changedText || finalText) : "";
@@ -121,14 +121,28 @@ function completeDraft(db, input, { forceEdited }) {
   const extractedFacts = changed ? normalizedExtractedFacts(input.extractedFacts) : [];
   return immediateTransaction(db, () => {
     const existing = db.prepare(`SELECT * FROM candidate_answer_memories
-      WHERE draft_id = ? AND final_digest = ?`).get(draft.id, finalDigest);
+      WHERE draft_id = ? AND final_digest = ?`).get(draft.id, finalDigest)
+      || db.prepare(`SELECT * FROM candidate_answer_memories
+        WHERE draft_id = ? ORDER BY updated_at DESC, id DESC`).all(draft.id)
+        .find((memory) => comparableText(memory.final_text) === comparableText(finalText));
     if (existing) {
-      if (completionKind === "sent" && existing.completion_kind !== "sent") {
-        db.prepare(`UPDATE candidate_answer_memories
-          SET completion_kind = 'sent', updated_at = ? WHERE id = ?`).run(completedAt, existing.id);
-      }
+      const active = db.prepare(`SELECT id FROM candidate_answer_memories
+        WHERE profile_id = ? AND draft_id = ? AND withdrawn_at IS NULL
+        ORDER BY updated_at DESC, id DESC LIMIT 1`).get(profileId, draft.id);
+      const affectedKeys = new Set(db.prepare(`SELECT DISTINCT fact_key FROM candidate_fact_revisions
+        WHERE answer_memory_id IN (?, ?)`).all(existing.id, active?.id || existing.id).map((row) => row.fact_key));
+      const strongerKind = completionKind === "sent" || existing.completion_kind === "sent" ? "sent" : existing.completion_kind;
+      db.prepare(`UPDATE candidate_answer_memories
+        SET final_digest = ?, completion_kind = ?, withdrawn_at = NULL, updated_at = ? WHERE id = ?`)
+        .run(finalDigest, strongerKind, completedAt, existing.id);
+      for (const factKey of affectedKeys) projectCandidateFact(db, profileId, factKey, completedAt);
       updateDraftOnCompletion(db, draft, finalText, completionKind, completedAt);
-      return { ...mapMemory(db.prepare("SELECT * FROM candidate_answer_memories WHERE id = ?").get(existing.id)), changed };
+      const result = { ...mapMemory(db.prepare("SELECT * FROM candidate_answer_memories WHERE id = ?").get(existing.id)), changed };
+      input.afterComplete?.(result);
+      return result;
+    }
+    if (draft.closedAt && completionKind !== "profile_edit") {
+      throw storageError("MESSAGE_REPLY_DRAFT_CLOSED", "message reply draft is already closed");
     }
     const previous = input.supersedesMemoryId
       ? db.prepare(`SELECT * FROM candidate_answer_memories
@@ -137,7 +151,7 @@ function completeDraft(db, input, { forceEdited }) {
       )
       : db.prepare(`SELECT * FROM candidate_answer_memories
           WHERE profile_id = ? AND draft_id = ? AND withdrawn_at IS NULL
-          ORDER BY created_at DESC, id DESC LIMIT 1`).get(profileId, draft.id);
+          ORDER BY updated_at DESC, id DESC LIMIT 1`).get(profileId, draft.id);
     const questionSummary = inlineText(input.questionSummary || draft.questionSummary, 160);
     const messageIntent = inlineText(input.messageIntent || draft.messageIntent, 80);
     const messageCategory = inlineText(input.messageCategory || draft.messageCategory, 80);
@@ -151,10 +165,7 @@ function completeDraft(db, input, { forceEdited }) {
         draft.originalText, finalText, changedText, JSON.stringify(scope), source, completionKind,
         previous?.id || null, completedAt, completedAt
       ).lastInsertRowid);
-    const affectedKeys = new Set(previous
-      ? db.prepare("SELECT fact_key FROM candidate_fact_revisions WHERE answer_memory_id = ?")
-        .all(previous.id).map((row) => row.fact_key)
-      : []);
+    const affectedKeys = new Set();
     for (const fact of extractedFacts) {
       affectedKeys.add(fact.factKey);
       db.prepare(`INSERT INTO candidate_fact_revisions(
@@ -165,7 +176,9 @@ function completeDraft(db, input, { forceEdited }) {
     }
     for (const factKey of affectedKeys) projectCandidateFact(db, profileId, factKey, completedAt);
     updateDraftOnCompletion(db, draft, finalText, completionKind, completedAt);
-    return { ...mapMemory(db.prepare("SELECT * FROM candidate_answer_memories WHERE id = ?").get(memoryId)), changed };
+    const result = { ...mapMemory(db.prepare("SELECT * FROM candidate_answer_memories WHERE id = ?").get(memoryId)), changed };
+    input.afterComplete?.(result);
+    return result;
   });
 }
 
@@ -183,7 +196,7 @@ function listCandidateAnswerMemories(db, {
     conditions.push("m.withdrawn_at IS NULL");
     conditions.push(`m.id = (SELECT m2.id FROM candidate_answer_memories m2
       WHERE m2.profile_id = m.profile_id AND m2.draft_id = m.draft_id AND m2.withdrawn_at IS NULL
-      ORDER BY m2.created_at DESC, m2.id DESC LIMIT 1)`);
+      ORDER BY m2.updated_at DESC, m2.id DESC LIMIT 1)`);
   }
   if (sourceText) {
     conditions.push("m.source = ?");
@@ -305,10 +318,14 @@ function projectCandidateFact(db, profileId, factKey, projectedAt) {
       AND (r.answer_memory_id IS NULL OR (
         m.withdrawn_at IS NULL AND
         m.id = (SELECT m2.id FROM candidate_answer_memories m2
+          JOIN candidate_fact_revisions r2
+            ON r2.answer_memory_id = m2.id
+            AND r2.fact_key = r.fact_key
+            AND r2.withdrawn_at IS NULL
           WHERE m2.profile_id = m.profile_id AND m2.draft_id = m.draft_id AND m2.withdrawn_at IS NULL
-          ORDER BY m2.created_at DESC, m2.id DESC LIMIT 1)
+          ORDER BY m2.updated_at DESC, m2.id DESC LIMIT 1)
       ))
-    ORDER BY r.created_at DESC, r.id DESC
+    ORDER BY CASE WHEN r.answer_memory_id IS NULL THEN r.created_at ELSE m.updated_at END DESC, r.id DESC
     LIMIT 1`).get(profileId, factKey);
   if (!revision || revision.operation === "delete") {
     db.prepare("DELETE FROM candidate_facts WHERE profile_id = ? AND fact_key = ?")
@@ -495,6 +512,10 @@ function digestKey(value, label) {
 
 function sha256(value) {
   return `sha256:${createHash("sha256").update(String(value)).digest("hex")}`;
+}
+
+function normalizeDigestText(value) {
+  return String(value == null ? "" : value).replace(/\s+/g, " ").trim().slice(0, MAX_DRAFT_TEXT);
 }
 
 function isoText(value, label) {

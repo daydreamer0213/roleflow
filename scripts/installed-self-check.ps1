@@ -230,9 +230,14 @@ try {
   Write-CheckLog ("SELF_CHECK_FAILED {0} {1}" -f $_.Exception.Message, (($ChildOutput -join " ").Trim()))
   throw
 } finally {
-  if ($null -ne $DashboardProcess -and -not $DashboardProcess.HasExited) {
-    Stop-Process -Id $DashboardProcess.Id -Force -ErrorAction SilentlyContinue
-    Wait-Process -Id $DashboardProcess.Id -Timeout 5 -ErrorAction SilentlyContinue
+  if ($null -ne $DashboardProcess) {
+    if (-not $DashboardProcess.HasExited) {
+      Stop-Process -Id $DashboardProcess.Id -Force -ErrorAction SilentlyContinue
+      if (-not $DashboardProcess.WaitForExit(5000)) {
+        throw "Dashboard self-check process did not stop within five seconds."
+      }
+    }
+    [void]$DashboardProcess.WaitForExit()
   }
   Remove-SelfCheckDirectory -Directory $SelfCheckDir -Parent $SelfCheckParent
   if ((Test-Path -LiteralPath $SelfCheckParent -PathType Container) -and

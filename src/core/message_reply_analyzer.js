@@ -13,7 +13,8 @@ function createMessageReplyAnalyzer({ adapter, logger = null } = {}) {
     }));
     const requestedSubjectKeys = deriveRequestedSubjectKeys(messages, normalizedFacts);
     const scopedFacts = normalizedFacts.filter((fact) => factMatchesRequestedScope(fact, requestedSubjectKeys));
-    const activeMemories = normalizeAnswerMemories(answerMemories);
+    const activeMemories = normalizeAnswerMemories(answerMemories)
+      .filter((memory) => memoryMatchesContext(memory, job, requestedSubjectKeys));
     const input = {
       profile,
       job,
@@ -74,6 +75,18 @@ function normalizeMemoryScope(value) {
   const scope = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const kind = ["global", "job", "company", "experience"].includes(scope.kind) ? scope.kind : "global";
   return { kind, key: String(scope.key || "").replace(/\s+/g, " ").trim().slice(0, 160) };
+}
+
+function memoryMatchesContext(memory, job = {}, requestedSubjectKeys = []) {
+  const scope = memory?.scope || { kind: "global", key: "" };
+  if (scope.kind === "global") return true;
+  if (scope.kind === "job") {
+    return [job?.id, job?.sourceId].map((value) => String(value || "").trim())
+      .filter(Boolean).includes(scope.key);
+  }
+  if (scope.kind === "company") return scopeText(scope.key) === scopeText(job?.company);
+  if (scope.kind === "experience") return requestedSubjectKeys.includes(scope.key);
+  return false;
 }
 
 function deriveRequestedSubjectKeys(messages, facts) {

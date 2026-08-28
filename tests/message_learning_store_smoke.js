@@ -171,6 +171,168 @@ try {
     withdrawnAt: "2026-08-28T01:09:00.000Z"
   }).withdrawnAt, withdrawn.withdrawnAt, "withdraw must be idempotent");
 
+  const layoutDraft = recordMessageReplyDrafts(db, {
+    profileId: fixture.profileId,
+    cardId: fixture.cardId,
+    jobId: fixture.jobId,
+    messageGroupKey: digest("layout-equivalence"),
+    questionSummary: "对方确认在职状态。",
+    messageIntent: "information_request",
+    messageCategory: "availability",
+    messages: ["请确认状态。"],
+    createdAt: "2026-08-28T01:09:01.000Z"
+  })[0];
+  const layoutFirst = completeMessageReplyDraft(db, {
+    profileId: fixture.profileId,
+    draftId: layoutDraft.id,
+    finalText: "我目前 在职",
+    changedText: "我目前 在职",
+    completionKind: "copied",
+    extractedFacts: [{ factKey: "employment_status", factValue: "在职", evidenceText: "在职" }],
+    completedAt: "2026-08-28T01:09:02.000Z"
+  });
+  db.prepare("UPDATE candidate_answer_memories SET final_digest = ? WHERE id = ?")
+    .run(digest("legacy-layout-digest"), layoutFirst.id);
+  const layoutRepeat = completeMessageReplyDraft(db, {
+    profileId: fixture.profileId,
+    draftId: layoutDraft.id,
+    finalText: "我目前\n在职",
+    changedText: "我目前\n在职",
+    completionKind: "copied",
+    extractedFacts: [{ factKey: "employment_status", factValue: "在职", evidenceText: "在职" }],
+    completedAt: "2026-08-28T01:09:03.000Z"
+  });
+  assert.strictEqual(layoutRepeat.id, layoutFirst.id, "layout-only whitespace must not duplicate an answer memory");
+  assert.notStrictEqual(layoutRepeat.finalDigest, digest("legacy-layout-digest"), "legacy digests must be upgraded when equivalent text is completed again");
+  assert.strictEqual(listCandidateFactRevisions(db, { profileId: fixture.profileId, factKey: "employment_status" })
+    .filter((revision) => revision.answerMemoryId === layoutFirst.id).length, 1, "layout-only whitespace must not duplicate fact revisions");
+
+  const revisionDraft = recordMessageReplyDrafts(db, {
+    profileId: fixture.profileId,
+    cardId: fixture.cardId,
+    jobId: fixture.jobId,
+    messageGroupKey: digest("revision-chain"),
+    questionSummary: "对方确认加班接受度。",
+    messageIntent: "information_request",
+    messageCategory: "qualification",
+    messages: ["我可以配合必要加班。"],
+    createdAt: "2026-08-28T01:09:10.000Z"
+  })[0];
+  const olderOvertimeDraft = recordMessageReplyDrafts(db, {
+    profileId: fixture.profileId,
+    cardId: fixture.cardId,
+    jobId: fixture.jobId,
+    messageGroupKey: digest("older-overtime"),
+    questionSummary: "另一轮确认加班接受度。",
+    messageIntent: "information_request",
+    messageCategory: "qualification",
+    messages: ["请确认。"],
+    createdAt: "2026-08-28T01:09:11.000Z"
+  })[0];
+  const olderOvertime = completeMessageReplyDraft(db, {
+    profileId: fixture.profileId,
+    draftId: olderOvertimeDraft.id,
+    finalText: "我可以接受加班。",
+    changedText: "接受加班",
+    completionKind: "copied",
+    extractedFacts: [{ factKey: "accepts_overtime", factValue: "接受", evidenceText: "接受加班" }],
+    completedAt: "2026-08-28T01:09:15.000Z"
+  });
+  const answerA = completeMessageReplyDraft(db, {
+    profileId: fixture.profileId,
+    draftId: revisionDraft.id,
+    finalText: "我不接受加班。",
+    changedText: "不接受加班",
+    completionKind: "copied",
+    scope: { kind: "job", key: String(fixture.jobId) },
+    extractedFacts: [{ factKey: "accepts_overtime", factValue: "不接受", evidenceText: "不接受加班" }],
+    completedAt: "2026-08-28T01:09:20.000Z"
+  });
+  const answerB = completeMessageReplyDraft(db, {
+    profileId: fixture.profileId,
+    draftId: revisionDraft.id,
+    finalText: "谢谢，我了解了。",
+    changedText: "谢谢，我了解了",
+    completionKind: "copied",
+    scope: { kind: "job", key: String(fixture.jobId) },
+    extractedFacts: [],
+    completedAt: "2026-08-28T01:09:30.000Z"
+  });
+  assert.strictEqual(currentFacts(db, fixture.profileId).accepts_overtime, "不接受", "a politeness-only edit must not delete a previously confirmed fact");
+  withdrawCandidateAnswerMemory(db, {
+    profileId: fixture.profileId,
+    memoryId: olderOvertime.id,
+    withdrawnAt: "2026-08-28T01:09:32.000Z"
+  });
+  assert.strictEqual(currentFacts(db, fixture.profileId).accepts_overtime, "不接受", "reprojecting the same key elsewhere must preserve the latest fact-bearing revision in this draft");
+  const newerOvertimeDraft = recordMessageReplyDrafts(db, {
+    profileId: fixture.profileId,
+    cardId: fixture.cardId,
+    jobId: fixture.jobId,
+    messageGroupKey: digest("newer-overtime"),
+    questionSummary: "再次确认加班接受度。",
+    messageIntent: "information_request",
+    messageCategory: "qualification",
+    messages: ["请再次确认。"],
+    createdAt: "2026-08-28T01:09:33.000Z"
+  })[0];
+  completeMessageReplyDraft(db, {
+    profileId: fixture.profileId,
+    draftId: newerOvertimeDraft.id,
+    finalText: "我可以接受加班。",
+    changedText: "接受加班",
+    completionKind: "copied",
+    extractedFacts: [{ factKey: "accepts_overtime", factValue: "接受", evidenceText: "接受加班" }],
+    completedAt: "2026-08-28T01:09:35.000Z"
+  });
+  assert.strictEqual(currentFacts(db, fixture.profileId).accepts_overtime, "接受");
+  const answerARestored = completeMessageReplyDraft(db, {
+    profileId: fixture.profileId,
+    draftId: revisionDraft.id,
+    finalText: "我不接受加班。  ",
+    changedText: "不接受加班",
+    completionKind: "copied",
+    scope: { kind: "job", key: String(fixture.jobId) },
+    extractedFacts: [{ factKey: "accepts_overtime", factValue: "不接受", evidenceText: "不接受加班" }],
+    completedAt: "2026-08-28T01:09:40.000Z"
+  });
+  assert.strictEqual(answerARestored.id, answerA.id, "A to B to A and line whitespace must reactivate the original answer instead of duplicating it");
+  assert.strictEqual(currentFacts(db, fixture.profileId).accepts_overtime, "不接受", "reactivating A must also make A's facts newer than facts from another draft");
+  assert.strictEqual(listCandidateAnswerMemories(db, { profileId: fixture.profileId, activeOnly: true })
+    .find((memory) => memory.draftId === revisionDraft.id).id, answerA.id, "the restored A answer must become active again");
+  assert.strictEqual(listCandidateAnswerMemories(db, { profileId: fixture.profileId, activeOnly: false })
+    .filter((memory) => memory.draftId === revisionDraft.id).length, 2);
+  assert.strictEqual(answerB.withdrawnAt, "");
+  withdrawCandidateAnswerMemory(db, {
+    profileId: fixture.profileId,
+    memoryId: answerA.id,
+    withdrawnAt: "2026-08-28T01:09:45.000Z"
+  });
+  const reactivatedWithdrawn = completeMessageReplyDraft(db, {
+    profileId: fixture.profileId,
+    draftId: revisionDraft.id,
+    finalText: "我不接受加班。",
+    changedText: "不接受加班",
+    completionKind: "sent",
+    scope: { kind: "job", key: String(fixture.jobId) },
+    extractedFacts: [{ factKey: "accepts_overtime", factValue: "不接受", evidenceText: "不接受加班" }],
+    completedAt: "2026-08-28T01:09:50.000Z"
+  });
+  assert.strictEqual(reactivatedWithdrawn.id, answerA.id);
+  assert.strictEqual(reactivatedWithdrawn.withdrawnAt, "", "re-completing a withdrawn answer must reactivate it");
+  assert.throws(
+    () => completeMessageReplyDraft(db, {
+      profileId: fixture.profileId,
+      draftId: revisionDraft.id,
+      finalText: "已发送后出现的另一份内容",
+      changedText: "另一份内容",
+      completionKind: "copied",
+      completedAt: "2026-08-28T01:09:55.000Z"
+    }),
+    (error) => error.code === "MESSAGE_REPLY_DRAFT_CLOSED",
+    "a sent draft must reject a new late completion"
+  );
+
   saveCandidateFact(db, {
     profileId: fixture.profileId,
     factKey: "current_city",

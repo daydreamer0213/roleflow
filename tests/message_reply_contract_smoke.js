@@ -46,6 +46,10 @@ async function main() {
     nextAction: "Review draft before manual send"
   });
   assert.deepStrictEqual(validated.messages, ["complete draft"]);
+  const rawSummary = "请问你什么时候可以到岗？";
+  const sanitizedSummary = validateMessageReply(safeReply({ messageSummary: rawSummary }), { facts: validFacts, now: NOW });
+  assert.strictEqual(sanitizedSummary.messageSummary, "对方正在确认候选人的到岗时间。");
+  assert.notStrictEqual(sanitizedSummary.messageSummary, rawSummary, "raw recruiter text must never become the durable message summary");
   const memoryContext = [{
     id: 7,
     questionSummary: "对方正在确认候选人的到岗时间。",
@@ -351,7 +355,8 @@ async function main() {
   });
   assert.strictEqual(semantic.messageCategory, "other");
   assert.strictEqual(semantic.messageIntent, "information_update");
-  assert.strictEqual(semantic.messageSummary, "对方在介绍项目提供的线上面试和简历管理能力。");
+  assert.strictEqual(semantic.messageSummary, "对方正在补充当前岗位、项目或流程信息。");
+  assert(!semantic.messageSummary.includes("线上面试与简历管理能力"), "model-provided recruiter wording must not become durable summary text");
   assert.deepStrictEqual(semantic.messages, ["了解了，这部分业务与我的项目方向有一定关联。"]);
   assert.strictEqual(semanticMessages[0].text, "");
 
@@ -497,6 +502,44 @@ async function main() {
   assert.strictEqual(memoryAdapterInput.answerMemories[0].finalAnswer, "", "temporary memory answer text must be cleared after the model call");
   assert.strictEqual(suppliedMemories[0].finalText, memoryContext[0].finalAnswer, "analyzer cleanup must not mutate durable memory objects");
   assert.strictEqual(memoryMessages[0].text, "");
+
+  let scopedMemoryAdapterInput;
+  const scopedMemoryAnalyzer = createMessageReplyAnalyzer({
+    adapter: {
+      async draftMessageGroup(input) {
+        scopedMemoryAdapterInput = input;
+        return {
+          messageIntent: "general_communication",
+          messageCategory: "other",
+          messageSummary: "请继续沟通。",
+          requiredFactKeys: [],
+          usedFactKeys: [],
+          usedMemoryIds: input.answerMemories.map((memory) => memory.id),
+          responseItems: [],
+          coverage: [],
+          missingFact: null,
+          messages: ["继续沟通。"]
+        };
+      }
+    }
+  });
+  const scopedMemoryMessages = [{ messageKey: "sha256:" + "7".repeat(64), text: "继续聊聊这个岗位吧。" }];
+  const scopedMemoryResult = await scopedMemoryAnalyzer({
+    profile: { id: 1 },
+    job: { id: 2, sourceId: "boss-job-2", title: "Java Engineer", company: "示例公司" },
+    messages: scopedMemoryMessages,
+    facts: [],
+    answerMemories: [
+      { id: 20, source: "user_edited_reply", finalText: "全局回答", scope: { kind: "global", key: "" } },
+      { id: 21, source: "user_edited_reply", finalText: "当前岗位回答", scope: { kind: "job", key: "2" } },
+      { id: 22, source: "user_edited_reply", finalText: "其他岗位回答", scope: { kind: "job", key: "99" } },
+      { id: 23, source: "user_edited_reply", finalText: "当前公司回答", scope: { kind: "company", key: "示例公司" } },
+      { id: 24, source: "user_edited_reply", finalText: "其他公司回答", scope: { kind: "company", key: "别家公司" } }
+    ],
+    now: NOW
+  });
+  assert.deepStrictEqual(scopedMemoryResult.usedMemoryIds, [20, 21, 23]);
+  assert.deepStrictEqual(scopedMemoryAdapterInput.answerMemories.map((memory) => memory.id), [20, 21, 23], "answer memories must stay inside their saved scope");
 
   console.log("message_reply_contract_smoke ok");
 }

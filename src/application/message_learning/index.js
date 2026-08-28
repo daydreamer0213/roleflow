@@ -44,22 +44,29 @@ function createMessageReplyLearningService({
     });
   }
 
-  async function completeDraft({ profileId, draftId, finalText, completionKind }) {
+  async function completeDraft({ profileId, draftId, finalText, completionKind, afterComplete }) {
     const draft = requiredDraft(profileId, draftId);
     const existing = listCandidateAnswerMemories(db, {
       profileId,
       activeOnly: false,
       limit: 500
-    }).find((memory) => memory.draftId === draft.id && memory.finalDigest === replyDraftDigest(finalText));
+    }).find((memory) => memory.draftId === draft.id && (
+      memory.finalDigest === replyDraftDigest(finalText)
+      || !replyDraftWasEdited(memory.finalText, finalText)
+    ));
     if (existing) {
       const memory = completeMessageReplyDraft(db, {
         profileId,
         draftId,
         finalText,
         completionKind,
+        afterComplete,
         completedAt: nowIso(now())
       });
       return completionResult(memory, requiredDraft(profileId, draftId), 0, "not_needed");
+    }
+    if (draft.closedAt) {
+      throw serviceError("MESSAGE_REPLY_DRAFT_CLOSED", "message reply draft is already closed");
     }
     const changed = replyDraftWasEdited(draft.originalText, finalText);
     const changedText = changed ? deriveUserChangedText(draft.originalText, finalText) : "";
@@ -72,6 +79,7 @@ function createMessageReplyLearningService({
       finalText,
       changedText,
       completionKind,
+      afterComplete,
       scope: extraction.scope,
       extractedFacts: extraction.facts,
       completedAt: nowIso(now())
@@ -159,7 +167,7 @@ function createMessageReplyLearningService({
         messageCategory: draft.messageCategory,
         scope: defaultScope(draft)
       });
-      const validated = validateReplyEditFactExtraction(value, { changedText });
+      const validated = validateReplyEditFactExtraction(value, { changedText, scope: defaultScope(draft) });
       return { ...validated, status: "succeeded" };
     } catch (error) {
       logger?.warn?.("message_reply_fact_extraction_failed", {

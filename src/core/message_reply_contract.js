@@ -79,6 +79,7 @@ function validateMessageReply(value, context = {}) {
       : normalized.messages;
   return {
     ...normalized,
+    messageSummary: safeMessageSummary(normalized.messageIntent, normalized.messageCategory),
     messages,
     progressUpdate: {
       stage: safeStage,
@@ -197,6 +198,23 @@ function assertManualOnlyHasNoDraft(normalized) {
     || normalized.messageIntent === "manual_review";
   if (!manualOnly || !normalized.messages.length) return;
   throw contractError("MESSAGE_REPLY_MANUAL_ONLY", "this message category requires manual handling");
+}
+
+function safeMessageSummary(messageIntent, messageCategory) {
+  if (messageIntent === "interview_invitation") return "对方正式邀请候选人参加面试。";
+  if (messageIntent === "interest_check") return "对方正在询问候选人是否愿意了解或继续沟通该岗位。";
+  if (messageIntent === "information_update") return "对方正在补充当前岗位、项目或流程信息。";
+  if (messageIntent === "general_communication") return "对方正在进行普通沟通。";
+  if (messageIntent === "manual_review") return "这条消息暂时无法可靠判断，需要人工确认。";
+  return {
+    project_fact: "对方正在确认候选人的项目经历。",
+    qualification: "对方正在确认候选人的任职资格。",
+    salary: "对方正在沟通薪资信息。",
+    availability: "对方正在确认候选人的到岗时间。",
+    sensitive: "对方正在询问敏感个人信息。",
+    identity_uncertain: "当前消息对应的岗位身份仍不明确。",
+    other: "对方正在确认候选人的相关信息。"
+  }[messageCategory] || "对方正在进行岗位沟通。";
 }
 
 function safeReplyStage(normalized) {

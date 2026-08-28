@@ -495,16 +495,16 @@ MockModelAdapter.prototype.extractReplyEditFacts = async function extractReplyEd
   const salary = text.match(/期望薪资\s*([0-9]+(?:\.[0-9]+)?(?:[kK]|万)?(?:\s*[-~到]\s*[0-9]+(?:\.[0-9]+)?(?:[kK]|万)?)?)/);
   if (salary) facts.push({ factKey: "expected_salary", factValue: salary[1].replace(/\s+/g, ""), evidenceText: salary[0] });
   addMockReplyFact(facts, text, "accepts_travel", [
-    [/(?:可以)?接受短期出差/, "接受短期出差"],
-    [/不接受出差/, "不接受出差"]
+    [/不接受(?:短期)?出差/, "不接受出差"],
+    [/(?:可以)?接受短期出差/, "接受短期出差"]
   ]);
   addMockReplyFact(facts, text, "accepts_relocation", [
-    [/(?:可以)?接受异地|(?:可以)?接受搬迁/, "接受"],
-    [/不接受异地|不接受搬迁/, "不接受"]
+    [/不接受异地(?:工作)?|不接受搬迁/, "不接受"],
+    [/(?:可以)?接受异地|(?:可以)?接受搬迁/, "接受"]
   ]);
   addMockReplyFact(facts, text, "accepts_overtime", [
-    [/(?:可以)?接受加班/, "接受"],
-    [/不接受加班/, "不接受"]
+    [/不接受加班/, "不接受"],
+    [/(?:可以)?接受加班/, "接受"]
   ]);
   return {
     scope: normalizeMockReplyScope(scope),

@@ -8,7 +8,8 @@ const {
   upsertJob,
   recordMessageReplyDrafts,
   completeMessageReplyDraft,
-  getMessageReplyDraft
+  getMessageReplyDraft,
+  withdrawCandidateAnswerMemory
 } = require("../src/core/storage");
 const {
   ensureProgressCard,
@@ -53,6 +54,7 @@ async function main() {
   factPolicySmoke();
   decisionCardProjectionSmoke();
   await uniqueCandidateAndPrivacySmoke();
+  await answerMemoryRefreshSmoke();
   await unsafeModelPersistenceSmoke();
   await identityStopsSmoke();
   await threadAndContextResolutionSmoke();
@@ -2088,6 +2090,62 @@ function selectedConversation({
 
 function message(direction, messageId, text, contentKind = "text") {
   return { direction, messageId, text, contentKind };
+}
+
+async function answerMemoryRefreshSmoke() {
+  const first = createFixture({ suffix: "memory-refresh-a", title: "Memory Refresh A" });
+  const second = createFixture({
+    suffix: "memory-refresh-b",
+    title: "Memory Refresh B",
+    profileId: first.profileId,
+    planId: first.planId
+  });
+  const seed = recordMessageReplyDrafts(db, {
+    profileId: first.profileId,
+    cardId: first.card.id,
+    jobId: first.jobId,
+    messageGroupKey: safeDigest(["memory-refresh-seed"]),
+    questionSummary: "对方询问沟通意向。",
+    messageIntent: "interest_check",
+    messageCategory: "other",
+    messages: ["模型原稿"],
+    createdAt: NOW
+  })[0];
+  const memory = completeMessageReplyDraft(db, {
+    profileId: first.profileId,
+    draftId: seed.id,
+    finalText: "这是需要撤回的用户回答。",
+    changedText: "这是需要撤回的用户回答",
+    completionKind: "copied",
+    extractedFacts: [],
+    completedAt: NOW
+  });
+  let call = 0;
+  const summary = await runBossMessageDiscovery({
+    db,
+    profileId: first.profileId,
+    reader: fakeReader([
+      selectedConversation({ title: first.title, messageId: "123456789012811" }),
+      selectedConversation({ title: second.title, messageId: "123456789012812" })
+    ]),
+    classifyMessageGroup: async ({ answerMemories }) => {
+      call += 1;
+      if (call === 1) {
+        assert.deepStrictEqual(answerMemories.map((item) => item.id), [memory.id]);
+        withdrawCandidateAnswerMemory(db, {
+          profileId: first.profileId,
+          memoryId: memory.id,
+          withdrawnAt: "2026-07-30T01:00:01.000Z"
+        });
+      } else {
+        assert.deepStrictEqual(answerMemories, [], "each conversation must reload current active answer memories");
+      }
+      return classification({ messages: ["本轮草稿"] });
+    },
+    now: () => NOW,
+    sleepFn: async () => {}
+  });
+  assert.strictEqual(summary.processed, 2);
 }
 
 function fact(key, daysAgo) {
