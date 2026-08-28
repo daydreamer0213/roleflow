@@ -258,7 +258,7 @@ git commit -m "feat: add targeted resume workspace"
 - Consumes all stage-three outputs.
 - Produces exact code SHA and verification evidence before stage four begins.
 
-- [ ] **Step 1: Run focused stage-three checks**
+- [x] **Step 1: Run focused stage-three checks**
 
 ```powershell
 node tests/resume_optimization_contract_smoke.js
@@ -270,11 +270,11 @@ node tests/dashboard_funnel_smoke.js
 node tests/message_learning_store_smoke.js
 ```
 
-- [ ] **Step 2: Run local desktop/mobile visual verification**
+- [x] **Step 2: Run local desktop/mobile visual verification**
 
 Use the bundled headless Edge/Playwright only against the local Dashboard fixture. Verify 1440px and 390px widths, no horizontal overflow, useful reading order, keyboard-reachable form controls, and no console error.
 
-- [ ] **Step 3: Run repository gates**
+- [x] **Step 3: Run repository gates**
 
 ```powershell
 npm test
@@ -283,7 +283,7 @@ git status --short --branch
 git rev-parse HEAD
 ```
 
-- [ ] **Step 4: Commit the stage-three acceptance note**
+- [x] **Step 4: Commit the stage-three acceptance note**
 
 ```powershell
 git add docs/superpowers/plans/2026-08-29-targeted-resume-optimization.md
@@ -291,3 +291,12 @@ git commit -m "docs: record targeted resume verification"
 ```
 
 Do not claim natural conversion improvement: fixture and Mock checks prove mechanism only.
+
+**Acceptance record (2026-08-29):**
+
+- Verified code SHA: `b9609f281c67f61b4768d58f9638aa03fa805de8`.
+- All seven focused stage-three checks passed.
+- Local Edge/Playwright verification passed at 1440px and 390px: comparison layout, direct-edit confirmation, controls, responsive stacking, no horizontal overflow, and no console errors.
+- Fresh repository gate: `All 120 offline checks passed.`
+- `git diff --check` passed before this acceptance-only edit.
+- No real BOSS page, real application, external interview, or external write was used.
