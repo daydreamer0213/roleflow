@@ -43,6 +43,7 @@ const logger = { info() {}, warn() {}, error() {}, requestId() { return "dashboa
     { currentPath: "/messages?planId=17", href: "/messages?planId=17", todayPath: "/plan?planId=17", label: "消息发现" },
     { currentPath: "/funnel?planId=17", href: "/funnel?planId=17", todayPath: "/plan?planId=17", label: "求职体检" },
     { currentPath: "/resume-optimization?planId=17", href: "/resume-optimization?planId=17", todayPath: "/plan?planId=17", label: "定向简历" },
+    { currentPath: "/interview?planId=17", href: "/interview?planId=17", todayPath: "/plan?planId=17", label: "模拟面试" },
     { currentPath: "/settings", label: "模型设置" },
     { currentPath: "/diagnostics", label: "诊断" },
     { currentPath: "/onboarding", label: "简历" }

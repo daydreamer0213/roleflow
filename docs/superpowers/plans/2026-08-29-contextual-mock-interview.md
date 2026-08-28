@@ -192,21 +192,21 @@ git commit -m "feat: add dynamic mock interview service"
 **Interfaces:**
 - Routes: `GET /interview`, `POST /api/interview/start`, `POST /api/interview/answer`, `POST /api/interview/finish`, `POST /api/interview/retry`.
 
-- [ ] **Step 1: Write a failing HTTP test**
+- [x] **Step 1: Write a failing HTTP test**
 
 Prove a user can start without an invitation, the page shows the bound job/resume, each form carries owned IDs, answer text is escaped, completed reports show conclusion/strengths/improvements/retry controls before the transcript, and retry comparison shows both answers.
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 Run: `node tests/dashboard_mock_interview_smoke.js`
 
 Expected: 404 or missing page module.
 
-- [ ] **Step 3: Implement routes and page**
+- [x] **Step 3: Implement routes and page**
 
 The page must remain a local text workflow and must not check browser readiness. Use a single answer form per current question. Disable duplicate submission in the existing lightweight script style; preserve browser back/refresh idempotence.
 
-- [ ] **Step 4: Run HTTP and shell tests**
+- [x] **Step 4: Run HTTP and shell tests**
 
 ```powershell
 node tests/dashboard_mock_interview_smoke.js
@@ -214,7 +214,7 @@ node tests/dashboard_shell_smoke.js
 node tests/dashboard_resume_optimization_smoke.js
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/dashboard/pages/mock_interview.js src/dashboard/ui/navigation.js src/dashboard/server.js src/dashboard/assets/roleflow.css tests/dashboard_mock_interview_smoke.js tests/dashboard_shell_smoke.js tests/run_all.js

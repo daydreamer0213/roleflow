@@ -197,6 +197,8 @@ const { createFunnelAnalysisService } = require("../application/funnel_analysis"
 const { renderFunnelPage } = require("./pages/funnel");
 const { createResumeOptimizationService } = require("../application/resume_optimization");
 const { renderResumeOptimizationPage, RESUME_OPTIMIZATION_SCRIPT } = require("./pages/resume_optimization");
+const { createMockInterviewService } = require("../application/mock_interview");
+const { renderMockInterviewPage, MOCK_INTERVIEW_SCRIPT } = require("./pages/mock_interview");
 
 const DASHBOARD_ASSETS = Object.freeze({
   "/assets/roleflow.css": {
@@ -494,6 +496,7 @@ function createDashboardServer({
   outcomeAnalytics = {},
   funnelAnalysisService = null,
   resumeOptimizationService = null,
+  mockInterviewService = null,
   acquisitionContextResolver = resolveLiveAcquisitionContext,
   inheritedPreviewResolver = resolveLiveInheritedContext,
   browserReadinessProbe = null,
@@ -716,6 +719,12 @@ function createDashboardServer({
       : null,
     funnelAnalysisService: funnelAnalysis
   });
+  const getMockInterviewService = () => mockInterviewService || createMockInterviewService({
+    db,
+    adapter: modelReady("deep_analysis")
+      ? createModelAdapter(getRuntimeModel("deep_analysis"), { logger })
+      : null
+  });
   const messageDiscovery = createMessageDiscoveryController({
     db,
     root,
@@ -873,6 +882,12 @@ function createDashboardServer({
         db,
         searchParams: url.searchParams,
         resumeOptimization: getResumeOptimizationService(),
+        modelReady: modelReady("deep_analysis")
+      }));
+      if (req.method === "GET" && url.pathname === "/interview") return sendHtml(res, renderMockInterviewDashboardPage({
+        db,
+        searchParams: url.searchParams,
+        mockInterview: getMockInterviewService(),
         modelReady: modelReady("deep_analysis")
       }));
       if (req.method === "GET" && url.pathname === "/messages") return sendHtml(res, renderMessageDiscoveryPage({
@@ -1051,6 +1066,22 @@ function createDashboardServer({
       if (req.method === "POST" && url.pathname === "/api/resume-optimization/activate") return handleResumeOptimizationActivate(req, res, {
         db,
         resumeOptimization: getResumeOptimizationService()
+      });
+      if (req.method === "POST" && url.pathname === "/api/interview/start") return handleMockInterviewStart(req, res, {
+        db,
+        mockInterview: getMockInterviewService()
+      });
+      if (req.method === "POST" && url.pathname === "/api/interview/answer") return handleMockInterviewAnswer(req, res, {
+        db,
+        mockInterview: getMockInterviewService()
+      });
+      if (req.method === "POST" && url.pathname === "/api/interview/finish") return handleMockInterviewFinish(req, res, {
+        db,
+        mockInterview: getMockInterviewService()
+      });
+      if (req.method === "POST" && url.pathname === "/api/interview/retry") return handleMockInterviewRetry(req, res, {
+        db,
+        mockInterview: getMockInterviewService()
       });
       if (req.method === "POST" && url.pathname === "/api/message-discovery") return handleMessageDiscovery(req, res, messageDiscovery, {
         ensureBrowserWorkspaceReady: () => ensureManagedWorkspaceReady("message_discovery_start")
@@ -5172,6 +5203,75 @@ async function handleResumeOptimizationActivate(req, res, { db, resumeOptimizati
 function requiredResumeOptimizationPlan(db, planId) {
   const plan = getSearchPlan(db, Number(planId));
   if (!plan) throw appError("RESUME_OPTIMIZATION_PLAN_NOT_FOUND", "筛选方案不存在。", { statusCode: 404 });
+  return plan;
+}
+
+function renderMockInterviewDashboardPage({ db, searchParams, mockInterview, modelReady }) {
+  const plan = getSearchPlan(db, searchParams.get("planId"));
+  if (!plan) return renderErrorPage("找不到这份筛选方案，请从今日任务重新进入模拟面试。", "/plan");
+  const sessionId = Number(searchParams.get("sessionId") || 0) || null;
+  const dashboard = mockInterview.dashboard({
+    profileId: plan.profileId,
+    planId: plan.id,
+    sessionId
+  });
+  return renderPage("模拟面试训练", `${renderMockInterviewPage({ dashboard, modelReady })}${MOCK_INTERVIEW_SCRIPT}`);
+}
+
+async function handleMockInterviewStart(req, res, { db, mockInterview }) {
+  const params = parseBody(await readBody(req), req.headers["content-type"] || "");
+  const plan = requiredMockInterviewPlan(db, params.planId);
+  const session = await mockInterview.startSession({
+    profileId: plan.profileId,
+    planId: plan.id,
+    jobId: Number(params.jobId),
+    resumeVersionId: Number(params.resumeVersionId),
+    settings: {
+      type: params.type,
+      difficulty: params.difficulty,
+      plannedQuestions: Number(params.plannedQuestions)
+    }
+  });
+  redirect(res, `/interview?planId=${encodeURIComponent(plan.id)}&sessionId=${encodeURIComponent(session.id)}`);
+}
+
+async function handleMockInterviewAnswer(req, res, { db, mockInterview }) {
+  const params = parseBody(await readBody(req), req.headers["content-type"] || "");
+  const plan = requiredMockInterviewPlan(db, params.planId);
+  const sessionId = Number(params.sessionId);
+  await mockInterview.answerTurn({
+    profileId: plan.profileId,
+    sessionId,
+    turnNumber: Number(params.turnNumber),
+    answerText: params.answerText
+  });
+  redirect(res, `/interview?planId=${encodeURIComponent(plan.id)}&sessionId=${encodeURIComponent(sessionId)}`);
+}
+
+async function handleMockInterviewFinish(req, res, { db, mockInterview }) {
+  const params = parseBody(await readBody(req), req.headers["content-type"] || "");
+  const plan = requiredMockInterviewPlan(db, params.planId);
+  const sessionId = Number(params.sessionId);
+  await mockInterview.finishSession({ profileId: plan.profileId, sessionId });
+  redirect(res, `/interview?planId=${encodeURIComponent(plan.id)}&sessionId=${encodeURIComponent(sessionId)}`);
+}
+
+async function handleMockInterviewRetry(req, res, { db, mockInterview }) {
+  const params = parseBody(await readBody(req), req.headers["content-type"] || "");
+  const plan = requiredMockInterviewPlan(db, params.planId);
+  const sessionId = Number(params.sessionId);
+  await mockInterview.retryTurn({
+    profileId: plan.profileId,
+    sessionId,
+    turnNumber: Number(params.turnNumber),
+    answerText: params.answerText
+  });
+  redirect(res, `/interview?planId=${encodeURIComponent(plan.id)}&sessionId=${encodeURIComponent(sessionId)}`);
+}
+
+function requiredMockInterviewPlan(db, planId) {
+  const plan = getSearchPlan(db, Number(planId));
+  if (!plan) throw appError("MOCK_INTERVIEW_PLAN_NOT_FOUND", "筛选方案不存在。", { statusCode: 404 });
   return plan;
 }
 
