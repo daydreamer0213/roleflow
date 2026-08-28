@@ -10,18 +10,18 @@
 
 ## Global Constraints
 
-- [ ] Work only on stage one, “消息学习闭环”. Do not build funnel analytics, résumé optimization, or interview simulation in this plan.
-- [ ] Do not redesign or replace the existing message discovery, candidate progress, profile, or model configuration paths.
-- [ ] Treat a user edit as authoritative input. “复制草稿” and “已手动发送” complete learning without a second confirmation.
-- [ ] Typing/autosave must never update `candidate_facts`; only completion can promote a user edit into answer memory and fact revisions.
-- [ ] An unchanged adopted model draft may be recorded as quality feedback, but it must not become an authoritative fact or future answer memory.
-- [ ] Repeating completion with the same draft and final text must be idempotent. A later changed final text creates a new revision.
-- [ ] If fact extraction fails or cannot classify the change, keep the completed answer memory and let copy/manual-send succeed.
-- [ ] Keep all BOSS actions read-only. This feature must not fill, paste, click send, or introduce automatic sending.
-- [ ] Persist only the already-safe HR question summary and digested message-group identity; do not add raw HR message text to storage, logs, or public status JSON.
-- [ ] Preserve the public message-discovery status response's current privacy property: it must not contain reply text, answer memory text, or candidate facts.
-- [ ] Use no new heavy framework, vector database, remote memory service, ORM, queue, or frontend migration. Add a dependency only if Task 1 proves it is simpler and measurably better than the local implementation.
-- [ ] Use fixtures, in-memory SQLite, mock adapters, and fake browser state. Do not access real BOSS for this stage.
+- [x] Work only on stage one, “消息学习闭环”. Do not build funnel analytics, résumé optimization, or interview simulation in this plan.
+- [x] Do not redesign or replace the existing message discovery, candidate progress, profile, or model configuration paths.
+- [x] Treat a user edit as authoritative input. “复制草稿” and “已手动发送” complete learning without a second confirmation.
+- [x] Typing/autosave must never update `candidate_facts`; only completion can promote a user edit into answer memory and fact revisions.
+- [x] An unchanged adopted model draft may be recorded as quality feedback, but it must not become an authoritative fact or future answer memory.
+- [x] Repeating completion with the same draft and final text must be idempotent. A later changed final text creates a new revision.
+- [x] If fact extraction fails or cannot classify the change, keep the completed answer memory and let copy/manual-send succeed.
+- [x] Keep all BOSS actions read-only. This feature must not fill, paste, click send, or introduce automatic sending.
+- [x] Persist only the already-safe HR question summary and digested message-group identity; do not add raw HR message text to storage, logs, or public status JSON.
+- [x] Preserve the public message-discovery status response's current privacy property: it must not contain reply text, answer memory text, or candidate facts.
+- [x] Use no new heavy framework, vector database, remote memory service, ORM, queue, or frontend migration. Add a dependency only if Task 1 proves it is simpler and measurably better than the local implementation.
+- [x] Use fixtures, in-memory SQLite, mock adapters, and fake browser state. Do not access real BOSS for this stage.
 
 ---
 
@@ -32,13 +32,13 @@
 - Create: `docs/superpowers/reports/2026-08-28-message-reply-learning-reuse-evaluation.md`
 - Modify only if a direct reusable component wins: `docs/superpowers/plans/2026-08-28-message-reply-learning-loop.md`
 
-- [ ] **Step 1: Search current primary sources**
+- [x] **Step 1: Search current primary sources**
 
 Search official repositories and documentation for maintained open-source components covering: edited-response memory extraction, local user memory, SQLite-backed semantic memory, feedback/adoption tracking, and lightweight text-diff handling. Include at least Mem0, LangMem, and one Node-native/local-first alternative if they are still maintained on the execution date.
 
 Do not copy source or add a package during this step. Record source URL, current license, language/runtime, persistence requirements, whether an external service is mandatory, and the smallest useful integration surface.
 
-- [ ] **Step 2: Compare against RoleFlow's fixed acceptance fixtures**
+- [x] **Step 2: Compare against RoleFlow's fixed acceptance fixtures**
 
 Document whether each candidate can support all six behaviors without taking ownership of RoleFlow data:
 
@@ -51,7 +51,7 @@ Document whether each candidate can support all six behaviors without taking own
 
 Score integration size, local/offline operation, deterministic idempotency, evidence traceability, maintenance, license compatibility with AGPL-3.0-only, model/provider coupling, and testability.
 
-- [ ] **Step 3: Write the reuse decision**
+- [x] **Step 3: Write the reuse decision**
 
 The report must end with one of:
 
@@ -61,7 +61,7 @@ The report must end with one of:
 
 Default to `reference_only` when results are tied. Any selected component must stay behind `createMessageReplyLearningService` and must not change the schema/API/user flow in this plan.
 
-- [ ] **Step 4: Verify the report has no placeholders**
+- [x] **Step 4: Verify the report has no placeholders**
 
 Run:
 
@@ -71,7 +71,7 @@ rg -n "TODO|TBD|待补充|以后再定|placeholder" docs/superpowers/reports/202
 
 Expected: no matches.
 
-- [ ] **Step 5: Commit the research checkpoint**
+- [x] **Step 5: Commit the research checkpoint**
 
 ```powershell
 git add docs/superpowers/reports/2026-08-28-message-reply-learning-reuse-evaluation.md docs/superpowers/plans/2026-08-28-message-reply-learning-loop.md
@@ -92,7 +92,7 @@ git commit -m "docs: evaluate reply memory reuse options"
 - Modify: `tests/candidate_store_contract_smoke.js`
 - Modify: `tests/run_all.js`
 
-- [ ] **Step 1: Write the failing storage tests**
+- [x] **Step 1: Write the failing storage tests**
 
 In `tests/message_learning_store_smoke.js`, create an in-memory database and assert:
 
@@ -108,7 +108,7 @@ In `tests/message_learning_store_smoke.js`, create an in-memory database and ass
 
 Add the test to `tests/run_all.js` immediately after `candidate_store_contract_smoke.js`.
 
-- [ ] **Step 2: Run the new test and confirm the expected failure**
+- [x] **Step 2: Run the new test and confirm the expected failure**
 
 ```powershell
 node tests/message_learning_store_smoke.js
@@ -116,7 +116,7 @@ node tests/message_learning_store_smoke.js
 
 Expected: failure because `src/storage/message_learning_store.js` and schema v17 do not exist.
 
-- [ ] **Step 3: Add schema migration 17**
+- [x] **Step 3: Add schema migration 17**
 
 In `src/core/storage.js`, add `MESSAGE_REPLY_LEARNING_SCHEMA` and migration:
 
@@ -162,7 +162,7 @@ Required checks:
 
 `backfillCandidateFactRevisions` creates one `set` revision for each existing `candidate_facts` row without changing that row's current value/source/timestamps.
 
-- [ ] **Step 4: Implement the focused store**
+- [x] **Step 4: Implement the focused store**
 
 Export these exact functions from `src/storage/message_learning_store.js`:
 
@@ -191,19 +191,19 @@ Use `immediateTransaction` from `src/storage/storage_shared.js`; do not hand-rol
 
 Do not run a model call inside a database transaction.
 
-- [ ] **Step 5: Route every direct fact edit through revision history**
+- [x] **Step 5: Route every direct fact edit through revision history**
 
 Modify `saveCandidateFact` in `src/storage/candidate_store.js` so a changed value appends a `set` revision and updates `candidate_facts` atomically. Saving the same normalized value/source again is a no-op revision. Keep its current return shape unchanged so existing callers do not break.
 
 Reuse store helpers rather than duplicating projection logic. Do not change fact-key normalization or the 2,000-character value limit.
 
-- [ ] **Step 6: Re-export storage functions and update exact export contracts**
+- [x] **Step 6: Re-export storage functions and update exact export contracts**
 
 Import/re-export the new store functions through `src/core/storage.js`. Update the exact export expectations in `tests/candidate_store_contract_smoke.js` only for intentional new facade exports; keep `candidate_store.js`'s existing public surface stable unless `deleteCandidateFact` must be exposed there.
 
 Update `tests/storage_migration_smoke.js` to assert schema 17 and the three new tables. Replace the stale assertion `SCHEMA_VERSION === SHARED_BOSS_PACING_VERSION` with separate assertions that migration 16 remains the shared pacing migration and migration 17 is the current schema.
 
-- [ ] **Step 7: Run targeted storage checks**
+- [x] **Step 7: Run targeted storage checks**
 
 ```powershell
 node tests/message_learning_store_smoke.js
@@ -213,7 +213,7 @@ node tests/candidate_store_contract_smoke.js
 
 Expected: all three print their `ok` message and exit 0.
 
-- [ ] **Step 8: Commit the storage slice**
+- [x] **Step 8: Commit the storage slice**
 
 ```powershell
 git add src/core/storage.js src/storage/candidate_store.js src/storage/message_learning_store.js tests/message_learning_store_smoke.js tests/storage_migration_smoke.js tests/candidate_store_contract_smoke.js tests/run_all.js
@@ -231,7 +231,7 @@ git commit -m "feat: persist reply learning history"
 - Create: `tests/message_reply_learning_smoke.js`
 - Modify: `tests/run_all.js`
 
-- [ ] **Step 1: Write failing pure-contract and service tests**
+- [x] **Step 1: Write failing pure-contract and service tests**
 
 Cover these cases in `tests/message_reply_learning_smoke.js`:
 
@@ -246,7 +246,7 @@ Cover these cases in `tests/message_reply_learning_smoke.js`:
 - repeated same-text completion returns the existing memory;
 - revision/withdraw requests recompute current facts through the store.
 
-- [ ] **Step 2: Run the new test and confirm failure**
+- [x] **Step 2: Run the new test and confirm failure**
 
 ```powershell
 node tests/message_reply_learning_smoke.js
@@ -254,7 +254,7 @@ node tests/message_reply_learning_smoke.js
 
 Expected: failure because the core contract and application service do not exist.
 
-- [ ] **Step 3: Implement pure comparison and extraction validation**
+- [x] **Step 3: Implement pure comparison and extraction validation**
 
 Export from `src/core/message_reply_learning.js`:
 
@@ -279,7 +279,7 @@ The extraction contract is:
 
 Only fact keys already accepted by `isKnownFactKey` in `src/core/message_reply_contract.js` may be projected. Export that existing predicate instead of creating a second key registry. `evidenceText` must be a literal substring of `changedText`; invalid entries are dropped. An entirely invalid response returns an empty fact list and a conservative scope, not an exception that blocks completion.
 
-- [ ] **Step 4: Implement the application service**
+- [x] **Step 4: Implement the application service**
 
 Export this factory from `src/application/message_learning/index.js`:
 
@@ -310,7 +310,7 @@ deleteFact({ profileId, factKey })
 
 If the adapter lacks `extractReplyEditFacts`, treat it as an available degradation (`extractionStatus: "unavailable"`), not a configuration failure. The full edited answer still becomes an active answer memory.
 
-- [ ] **Step 5: Run the targeted learning checks**
+- [x] **Step 5: Run the targeted learning checks**
 
 ```powershell
 node tests/message_reply_learning_smoke.js
@@ -319,7 +319,7 @@ node tests/message_learning_store_smoke.js
 
 Expected: both pass.
 
-- [ ] **Step 6: Commit the learning service slice**
+- [x] **Step 6: Commit the learning service slice**
 
 ```powershell
 git add src/core/message_reply_learning.js src/application/message_learning/index.js tests/message_reply_learning_smoke.js tests/message_learning_store_smoke.js tests/run_all.js
@@ -340,7 +340,7 @@ git commit -m "feat: learn from completed reply edits"
 - Modify: `tests/message_reply_contract_smoke.js`
 - Modify: `tests/semantic_pipeline_smoke.js`
 
-- [ ] **Step 1: Add failing adapter and contract tests**
+- [x] **Step 1: Add failing adapter and contract tests**
 
 Extend the existing tests to prove:
 
@@ -352,7 +352,7 @@ Extend the existing tests to prove:
 - existing fact freshness, stable-subject scoping, manual-only categories, and interview-intent protections remain unchanged;
 - memory absence remains backward compatible (`usedMemoryIds: []`).
 
-- [ ] **Step 2: Run tests and confirm failure**
+- [x] **Step 2: Run tests and confirm failure**
 
 ```powershell
 node tests/model_adapter_smoke.js
@@ -362,7 +362,7 @@ node tests/semantic_pipeline_smoke.js
 
 Expected: at least the new extraction/memory assertions fail.
 
-- [ ] **Step 3: Add the low-cost extraction adapter method**
+- [x] **Step 3: Add the low-cost extraction adapter method**
 
 Implement on both model adapters:
 
@@ -374,7 +374,7 @@ The OpenAI-compatible method uses `chatJson(..., { kind: "extractReplyEditFacts"
 
 The mock method should use small explicit patterns for the five common volatile fact groups above and return no fact when it cannot parse a value. Do not build a general NLP framework.
 
-- [ ] **Step 4: Supply bounded active answer memories to the existing analyzer**
+- [x] **Step 4: Supply bounded active answer memories to the existing analyzer**
 
 In `src/core/message_reply_analyzer.js`:
 
@@ -386,11 +386,11 @@ In `src/core/message_reply_analyzer.js`:
 
 The drafting prompt may use a memory only when the current recruiter question is semantically the same and the scope matches. It must return `usedMemoryIds` so `validateMessageReply` can verify provenance. Memory-derived text is allowed as a draft source; it does not automatically create a new candidate fact.
 
-- [ ] **Step 5: Extend the reply contract without weakening current checks**
+- [x] **Step 5: Extend the reply contract without weakening current checks**
 
 Export `isKnownFactKey` from `src/core/message_reply_contract.js`. Normalize `usedMemoryIds` to unique positive integers, verify every used ID exists in the supplied active memory set, and preserve all existing `usedFactKeys`, freshness, missing-fact, category, coverage, and intent validation.
 
-- [ ] **Step 6: Run the targeted model/contract checks**
+- [x] **Step 6: Run the targeted model/contract checks**
 
 ```powershell
 node tests/model_adapter_smoke.js
@@ -400,7 +400,7 @@ node tests/semantic_pipeline_smoke.js
 
 Expected: all pass.
 
-- [ ] **Step 7: Commit the model integration slice**
+- [x] **Step 7: Commit the model integration slice**
 
 ```powershell
 git add src/adapters/models/openai_compatible.js src/adapters/models/mock.js src/core/message_reply_analyzer.js src/core/message_reply_contract.js tests/model_adapter_smoke.js tests/message_reply_contract_smoke.js tests/semantic_pipeline_smoke.js
@@ -418,7 +418,7 @@ git commit -m "feat: reuse confirmed reply memories"
 - Modify: `tests/message_discovery_smoke.js`
 - Modify: `tests/dashboard_message_discovery_smoke.js`
 
-- [ ] **Step 1: Add failing discovery persistence tests**
+- [x] **Step 1: Add failing discovery persistence tests**
 
 Extend core and controller tests to assert:
 
@@ -432,7 +432,7 @@ Extend core and controller tests to assert:
 - active answer memories are loaded from storage and supplied to `classifyMessageGroup`;
 - raw incoming HR text is still cleared and absent from persistent tables.
 
-- [ ] **Step 2: Run tests and confirm failure**
+- [x] **Step 2: Run tests and confirm failure**
 
 ```powershell
 node tests/message_discovery_smoke.js
@@ -441,7 +441,7 @@ node tests/dashboard_message_discovery_smoke.js
 
 Expected: new durable-draft assertions fail.
 
-- [ ] **Step 3: Persist drafts immediately after classification**
+- [x] **Step 3: Persist drafts immediately after classification**
 
 In `src/core/message_discovery.js`, keep the existing classification and candidate-progress call order. After the progress card is recorded and before `safeResult` is emitted:
 
@@ -463,7 +463,7 @@ Change `safeResult` to expose `drafts`, not a second free-floating `messages` co
 
 Load active `user_edited_reply` memories once per profile/run and supply them to the analyzer. Refresh the bounded list after each completed browser group only if the run itself can observe a local completion; otherwise the next discovery run loads the new values. Current `candidate_facts` remain the first structured source.
 
-- [ ] **Step 4: Make the controller's page state durable and its JSON private**
+- [x] **Step 4: Make the controller's page state durable and its JSON private**
 
 Update `sanitizeResults`, `pageRun`, `durableStatus`, `dismiss`, and `clearDraftForCard`:
 
@@ -474,7 +474,7 @@ Update `sanitizeResults`, `pageRun`, `durableStatus`, `dismiss`, and `clearDraft
 
 Do not persist whole controller runs or raw browser snapshots.
 
-- [ ] **Step 5: Run targeted discovery tests**
+- [x] **Step 5: Run targeted discovery tests**
 
 ```powershell
 node tests/message_discovery_smoke.js
@@ -484,7 +484,7 @@ node tests/message_preview_state_smoke.js
 
 Expected: all pass and the public JSON privacy assertions remain green.
 
-- [ ] **Step 6: Commit the discovery slice**
+- [x] **Step 6: Commit the discovery slice**
 
 ```powershell
 git add src/core/message_discovery.js src/dashboard/message_discovery_controller.js tests/message_discovery_smoke.js tests/dashboard_message_discovery_smoke.js
@@ -504,7 +504,7 @@ git commit -m "feat: keep message reply drafts across restarts"
 - Create: `tests/dashboard_communication_profile_smoke.js`
 - Modify: `tests/run_all.js`
 
-- [ ] **Step 1: Write failing HTTP and client interaction tests**
+- [x] **Step 1: Write failing HTTP and client interaction tests**
 
 Use the existing Dashboard fake request/client harnesses to assert:
 
@@ -521,7 +521,7 @@ Use the existing Dashboard fake request/client harnesses to assert:
 
 Add `dashboard_communication_profile_smoke.js` to `tests/run_all.js` next to the message-discovery Dashboard test.
 
-- [ ] **Step 2: Run UI/API tests and confirm failure**
+- [x] **Step 2: Run UI/API tests and confirm failure**
 
 ```powershell
 node tests/dashboard_message_discovery_smoke.js
@@ -530,7 +530,7 @@ node tests/dashboard_communication_profile_smoke.js
 
 Expected: failures because the endpoints/view/edit behavior do not exist.
 
-- [ ] **Step 3: Construct one learning service in the Dashboard server**
+- [x] **Step 3: Construct one learning service in the Dashboard server**
 
 In `createDashboardServer`, add an injectable `messageReplyLearningService` for tests. The default creates one service with the current deep-analysis adapter:
 
@@ -544,7 +544,7 @@ const replyLearning = messageReplyLearningService || createMessageReplyLearningS
 
 Resolve the adapter per completion if runtime model settings can change while the server remains open; do not cache credentials or duplicate the model-settings system. When no verified model is available, use the service's `unavailable` extraction degradation and still save the answer memory.
 
-- [ ] **Step 4: Add narrow local routes**
+- [x] **Step 4: Add narrow local routes**
 
 Add:
 
@@ -570,7 +570,7 @@ Never return original/final answer text from mutation endpoints. Enforce the sam
 
 For `reply_confirmed_sent`, use one server path that completes the selected durable draft and records `recordManualProgressAction` with the existing idempotency key. If extraction fails, keep the progress action and saved answer memory; do not make the user confirm again. Do not reuse historical completion to authorize any BOSS operation.
 
-- [ ] **Step 5: Render editable drafts and lightweight feedback**
+- [x] **Step 5: Render editable drafts and lightweight feedback**
 
 In `src/dashboard/message_discovery_view.js`:
 
@@ -589,7 +589,7 @@ Client behavior:
 5. page navigation/submit flushes the latest text once;
 6. no extra confirmation dialog.
 
-- [ ] **Step 6: Render the communication profile page**
+- [x] **Step 6: Render the communication profile page**
 
 `src/dashboard/communication_profile_view.js` should show:
 
@@ -599,7 +599,7 @@ Client behavior:
 
 Do not show unchanged adopted drafts as authoritative answers. They may contribute to future quality statistics but stay out of the main page. A removed/withdrawn answer must no longer be supplied to drafting; its historical row remains for traceability.
 
-- [ ] **Step 7: Run UI/API regression checks**
+- [x] **Step 7: Run UI/API regression checks**
 
 ```powershell
 node tests/dashboard_message_discovery_smoke.js
@@ -609,7 +609,7 @@ node tests/message_reply_learning_smoke.js
 
 Expected: all pass.
 
-- [ ] **Step 8: Commit the user-facing slice**
+- [x] **Step 8: Commit the user-facing slice**
 
 ```powershell
 git add src/dashboard/communication_profile_view.js src/dashboard/message_discovery_view.js src/dashboard/server.js tests/dashboard_message_discovery_smoke.js tests/dashboard_communication_profile_smoke.js tests/run_all.js
@@ -628,7 +628,7 @@ git commit -m "feat: learn from edited message drafts"
 - Modify if actual implementation differs: `docs/superpowers/specs/2026-08-28-roleflow-learning-loop-design.md`
 - Modify if actual implementation differs: `docs/superpowers/plans/2026-08-28-message-reply-learning-loop.md`
 
-- [ ] **Step 1: Update user and handoff documentation**
+- [x] **Step 1: Update user and handoff documentation**
 
 Document the exact shipped behavior:
 
@@ -643,7 +643,7 @@ Document the exact shipped behavior:
 
 Update authoritative SHA/test counts only after the final commit exists. Do not claim real-platform acceptance.
 
-- [ ] **Step 2: Run a focused review of the complete diff**
+- [x] **Step 2: Run a focused review of the complete diff**
 
 Review from the stage-one base:
 
@@ -663,7 +663,7 @@ Check specifically for:
 - speculative analytics/résumé/interview code;
 - new dependencies or abstractions not justified by Task 1.
 
-- [ ] **Step 3: Run all targeted checks together**
+- [x] **Step 3: Run all targeted checks together**
 
 ```powershell
 node tests/message_learning_store_smoke.js
@@ -678,7 +678,7 @@ node tests/storage_migration_smoke.js
 
 Expected: every test prints `ok` and exits 0.
 
-- [ ] **Step 4: Run the full offline gate**
+- [x] **Step 4: Run the full offline gate**
 
 ```powershell
 npm test
@@ -686,7 +686,7 @@ npm test
 
 Expected: all registered offline checks pass. Record the actual total; do not reuse an older count.
 
-- [ ] **Step 5: Run repository cleanliness checks**
+- [x] **Step 5: Run repository cleanliness checks**
 
 ```powershell
 git diff --check
@@ -695,14 +695,14 @@ git status --short
 
 Expected before the documentation commit: `git diff --check` has no output; `git status --short` lists only intentional documentation updates.
 
-- [ ] **Step 6: Commit final documentation**
+- [x] **Step 6: Commit final documentation**
 
 ```powershell
 git add docs/resume_and_feedback_workflow.md docs/PROJECT_HANDOFF.md docs/NEXT_PHASE.md docs/superpowers/specs/2026-08-28-roleflow-learning-loop-design.md docs/superpowers/plans/2026-08-28-message-reply-learning-loop.md
 git commit -m "docs: hand off reply learning loop"
 ```
 
-- [ ] **Step 7: Re-run completion evidence on the exact final SHA**
+- [x] **Step 7: Re-run completion evidence on the exact final SHA**
 
 ```powershell
 git rev-parse HEAD
@@ -713,6 +713,6 @@ git status --short --branch
 
 Expected: full gate passes on the reported SHA, no diff-check errors, and the worktree is clean. State explicitly that no real BOSS page was accessed in this stage.
 
-- [ ] **Step 8: Stop before external integration**
+- [x] **Step 8: Stop before external integration**
 
 Do not push, merge, tag, build an installer, or create a Release as part of this plan. Those are later external/integration actions and require a fresh check of the then-current branch, release scope, and user authorization.
