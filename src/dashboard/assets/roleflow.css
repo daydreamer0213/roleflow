@@ -197,3 +197,19 @@ h2{font-size:19px;font-weight:600}
 .funnel-sample-details .funnel-metrics{margin:0 0 16px}
 .funnel-flow{margin-top:18px;border-top:4px solid var(--rf-teal)}
 .funnel-round-compare{border-left:4px solid var(--rf-orange)}
+
+/* Growth workbenches: edit or answer first; rationale and history stay nearby. */
+.resume-new-draft,.interview-new-session{margin-bottom:18px;border-top:1px solid var(--rf-rule);border-bottom:1px solid var(--rf-rule)}
+.resume-new-draft>summary,.interview-new-session>summary,.interview-past-answers>summary,.interview-past-sessions>summary{display:flex;align-items:center;min-height:46px;color:var(--rf-ink-soft);font-size:13px;font-weight:600;cursor:pointer}
+.resume-new-draft>.resume-opt-create,.interview-new-session>.interview-start{margin:0 0 16px}
+.resume-workbench-columns{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(320px,.7fr);gap:18px;align-items:start}
+.resume-workbench-columns .resume-opt-editor,.resume-workbench-columns .resume-change-ledger{margin:0}
+.resume-change-ledger{max-height:760px;overflow:auto}
+.resume-change-ledger .resume-opt-compare{grid-template-columns:1fr}
+.interview-workbench .interview-current-question{border-top:4px solid var(--rf-teal);box-shadow:0 8px 24px rgba(23,36,33,.08)}
+.interview-past-answers,.interview-past-sessions{border-top:1px solid var(--rf-rule)}
+.interview-past-answers>.interview-transcript,.interview-past-sessions>.interview-history{margin:0 0 16px}
+@media(max-width:920px){
+  .resume-workbench-columns{grid-template-columns:1fr}
+  .resume-change-ledger{max-height:none;overflow:visible}
+}

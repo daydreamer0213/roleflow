@@ -29,7 +29,7 @@ function renderResumeOptimizationPage({ dashboard = {}, modelReady = true } = {}
         <p class="lede">选择源简历和目标投递方向，RoleFlow 会从该方向自动选择代表岗位，直接生成一份可以继续修改的完整草稿。</p>
         <div class="heading-meta"><span>${escapeHtml(plan.name || "当前筛选方案")}</span><span>原简历永不覆盖</span></div>
       </section>
-      ${renderCreatePanel(dashboard, modelReady)}
+      ${selected ? `<details class="resume-new-draft"><summary>生成另一个定向版本</summary>${renderCreatePanel(dashboard, modelReady)}</details>` : renderCreatePanel(dashboard, modelReady)}
       ${selected ? renderSelectedDraft(dashboard, selected) : renderEmptyState()}
     </main><p class="footer-note">本页只读写 RoleFlow 本地数据；不会访问 BOSS、不会投递、不会填写或发送任何外部内容。</p>`
   });
@@ -65,11 +65,11 @@ function renderSelectedDraft(dashboard, draft) {
   const resume = (dashboard.resumes || []).find((item) => Number(item.id) === Number(draft.sourceResumeVersionId));
   const jobs = dashboard.selectedJobs || [];
   const activated = draft.status === "activated";
-  return `<section class="resume-opt-workspace" aria-labelledby="resume-opt-draft-title">
+  return `<section class="resume-opt-workspace resume-workbench" aria-labelledby="resume-opt-draft-title">
     <div class="resume-opt-conclusion"><div><p class="section-label">当前优化结论</p><h2 id="resume-opt-draft-title">${escapeHtml(draft.headline || "完整定向简历草稿")}</h2></div><span class="status ${activated ? "good" : "waiting"}">${activated ? "已启用新版本" : "可以继续编辑"}</span></div>
     <dl class="resume-opt-binding"><div><dt>冻结源简历</dt><dd>${escapeHtml(resume?.name || `简历版本 ${draft.sourceResumeVersionId}`)}</dd></div><div><dt>目标投递方向</dt><dd>${escapeHtml(draft.targetDirection || "历史草稿未记录")}</dd></div><div><dt>模型来源</dt><dd>${escapeHtml([draft.modelIdentity?.provider, draft.modelIdentity?.model].filter(Boolean).join(" · ") || "本地记录")}</dd></div></dl>
-    ${renderSelectedJobs(jobs)}
     ${draft.draftFormat === "whole_draft" ? renderWholeDraft(dashboard, draft, evidence) : renderLegacyDraft(draft, evidence)}
+    ${renderSelectedJobs(jobs)}
     ${activated ? renderActivatedNotice(dashboard, draft) : ""}
     ${renderHistory(dashboard, draft)}
   </section>`;
@@ -82,16 +82,16 @@ function renderSelectedJobs(jobs) {
 function renderWholeDraft(dashboard, draft, evidence) {
   const planId = dashboard.plan?.id || "";
   const activated = draft.status === "activated";
-  return `<form class="card pad resume-opt-editor" method="post" action="/api/resume-optimization/save" data-resume-editor data-resume-submit data-resume-success-target="resume-opt-draft-title">
+  return `<div class="resume-workbench-columns"><form class="card pad resume-opt-editor" method="post" action="/api/resume-optimization/save" data-resume-editor data-resume-submit data-resume-success-target="resume-opt-draft-title">
     <input type="hidden" name="planId" value="${escapeAttr(planId)}"><input type="hidden" name="draftId" value="${escapeAttr(draft.id)}">
     <div class="resume-opt-section-head"><div><p class="section-label">完整简历草稿</p><h2>${draft.userEditedAt ? "用户已修改" : "系统生成版本"}</h2></div><button class="secondary" type="button" data-copy-resume>复制当前全文</button></div>
     <label class="resume-opt-full-editor" for="resume-opt-final-text">当前全文<textarea id="resume-opt-final-text" name="finalText" rows="22"${activated ? " readonly" : ""}>${escapeHtml(draft.finalText || draft.generatedText || "")}</textarea></label>
     ${activated ? `<p class="notice">已创建新的简历版本 #${escapeHtml(draft.resultResumeVersionId || "")}；源简历仍保持原样。</p>` : `<div class="resume-opt-savebar"><span data-resume-save-status aria-live="polite">修改后会在 600 毫秒内自动保存。</span><div class="button-row"><button class="secondary" type="submit" data-resume-success-target="resume-opt-draft-title">保存草稿</button><button type="submit" formaction="/api/resume-optimization/activate" data-resume-success-target="resume-opt-activated">启用为新版本</button></div></div>`}
-  </form>${renderChangeLedger(draft.changeLedger || draft.suggestions || [], evidence, Boolean(draft.userEditedAt))}`;
+  </form>${renderChangeLedger(draft.changeLedger || draft.suggestions || [], evidence, Boolean(draft.userEditedAt))}</div>`;
 }
 
 function renderChangeLedger(changes, evidence, userEdited) {
-  return `<section class="card pad resume-opt-ledger" aria-labelledby="resume-opt-ledger-title"><p class="section-label">修改了什么</p><h2 id="resume-opt-ledger-title">系统生成基线的只读修改说明</h2>${userEdited ? '<p class="hint">你后续对全文的修改以当前文字为准；下方说明只对应系统最初生成的版本。</p>' : ""}<div class="resume-opt-list">${changes.map((change, index) => renderLedgerItem(change, index, evidence)).join("")}</div></section>`;
+  return `<section class="card pad resume-opt-ledger resume-change-ledger" aria-labelledby="resume-opt-ledger-title"><p class="section-label">修改了什么</p><h2 id="resume-opt-ledger-title">系统生成基线的只读修改说明</h2>${userEdited ? '<p class="hint">你后续对全文的修改以当前文字为准；下方说明只对应系统最初生成的版本。</p>' : ""}<div class="resume-opt-list">${changes.map((change, index) => renderLedgerItem(change, index, evidence)).join("")}</div></section>`;
 }
 
 function renderLedgerItem(change, index, evidence) {

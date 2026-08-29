@@ -94,6 +94,7 @@ const logger = {
     const page = await request(baseUrl, `/interview?planId=${owner.planId}&sessionId=51`);
     assert.equal(page.status, 200);
     assert.match(page.body, /<title>模拟面试训练<\/title>/);
+    assert.match(page.body, /class="[^"]*interview-workbench/);
     assert.match(page.body, /aria-current="page">面试训练<\/a>/);
     assert.match(page.body, /无需面试邀请/);
     assert.match(page.body, /简历通用面试/);
@@ -137,6 +138,7 @@ const logger = {
     });
     assert.equal((ongoingPage.match(/请说明你在项目中的个人贡献。/g) || []).length, 1, "the unanswered current question must not be duplicated in the transcript");
     assert.doesNotMatch(ongoingPage, /等待回答/);
+    assert.match(ongoingPage, /class="[^"]*interview-current-question/);
     assert.match(ongoingPage, /data-interview-draft="answer"/);
 
     const start = await request(baseUrl, "/api/interview/start", {

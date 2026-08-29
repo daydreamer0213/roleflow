@@ -20,7 +20,7 @@ function renderMockInterviewPage({ dashboard = {}, modelReady = true } = {}) {
         <p class="lede">无需面试邀请：默认直接基于当前简历练习每位面试官都可能追问的内容；有合适岗位时，也可以切换到岗位专项面试。追问会承接你的上一条回答，结束后再做具体到题号的复盘和重练。</p>
         <div class="heading-meta"><span>${escapeHtml(plan.name || "当前筛选方案")}</span><span>本地文字练习</span><span>不会写入候选人事实</span></div>
       </section>
-      ${renderStartPanel(dashboard, modelReady)}
+      ${selected ? `<details class="interview-new-session"><summary>开始另一轮训练</summary>${renderStartPanel(dashboard, modelReady)}</details>` : renderStartPanel(dashboard, modelReady)}
       ${selected ? renderSession(dashboard, selected) : renderEmptyState()}
     </main><p class="footer-note">本页只读写 RoleFlow 本地训练记录；不会访问 BOSS、不会投递、不会发送消息，也不会把练习回答自动变成候选人事实。</p>`
   });
@@ -62,12 +62,20 @@ function renderSession(dashboard, session) {
   const subtitle = general
     ? `基于 ${session.context?.resume?.name || `简历版本 ${session.resumeVersionId}`} 的通用训练`
     : session.context?.job?.company || "公司未记录";
-  return `<section class="interview-workspace" aria-labelledby="interview-session-title">
+  const transcript = renderTranscript(dashboard, session);
+  const history = renderHistory(dashboard, session);
+  const pastAnswers = transcript && !completed
+    ? `<details class="interview-past-answers"><summary>查看已答题目和即时复盘</summary>${transcript}</details>`
+    : transcript;
+  const pastSessions = history && !completed
+    ? `<details class="interview-past-sessions"><summary>查看历史训练</summary>${history}</details>`
+    : history;
+  return `<section class="interview-workspace interview-workbench" aria-labelledby="interview-session-title">
     <div class="interview-session-head"><div><p class="section-label">${completed ? "本轮训练已完成" : "训练进行中"}</p><h2 id="interview-session-title">${escapeHtml(title)}</h2><p>${escapeHtml(subtitle)}</p></div><span class="status ${completed ? "good" : "waiting"}">${completed ? "可复盘和重练" : `第 ${(session.turns || []).length} / ${escapeHtml(session.settings?.plannedQuestions || "-")} 题`}</span></div>
     ${renderBinding(session)}
     ${completed ? renderReport(session) : renderCurrentQuestion(dashboard, session)}
-    ${renderTranscript(dashboard, session)}
-    ${renderHistory(dashboard, session)}
+    ${pastAnswers}
+    ${pastSessions}
   </section>`;
 }
 
@@ -88,7 +96,7 @@ function renderCurrentQuestion(dashboard, session) {
     const canFinish = turns.length >= Number(session.settings?.plannedQuestions || 0);
     return canFinish ? `<section id="interview-active-step" class="card pad interview-finish"><p class="section-label">题目已完成</p><h3>生成本轮复盘</h3><p>复盘会引用具体题号，不会把训练分数包装成录用概率。</p><form method="post" action="/api/interview/finish" data-interview-submit data-interview-success-target="interview-report-title"><input type="hidden" name="planId" value="${escapeAttr(planId)}"><input type="hidden" name="sessionId" value="${escapeAttr(session.id)}"><button>结束并生成复盘</button><p class="alert" data-interview-error role="alert"></p></form></section>` : "";
   }
-  return `<section id="interview-active-step" class="interview-current" aria-labelledby="interview-current-question">
+  return `<section id="interview-active-step" class="interview-current interview-current-question" aria-labelledby="interview-current-question">
     <div class="interview-question-number">Q${escapeHtml(current.turnNumber)}</div>
     <div><p class="section-label">当前问题 · ${escapeHtml(focusLabel(current.questionFocus))}</p><h3 id="interview-current-question">${escapeHtml(current.questionText)}</h3>${renderQuestionEvidence(session, current)}${current.basedOnTurnNumber ? `<p class="interview-followup">这是一道承接第 ${escapeHtml(current.basedOnTurnNumber)} 题回答的追问。</p>` : ""}
       <form method="post" action="/api/interview/answer" data-interview-submit data-interview-draft="answer" data-interview-success-target="interview-active-step"><input type="hidden" name="planId" value="${escapeAttr(planId)}"><input type="hidden" name="sessionId" value="${escapeAttr(session.id)}"><input type="hidden" name="turnNumber" value="${escapeAttr(current.turnNumber)}"><label>我的回答<textarea name="answerText" rows="8" maxlength="20000" required autofocus></textarea><small>按真实经历作答。提交后会直接保存并生成下一题，不会再二次确认。</small></label><button>提交回答并继续</button><p class="alert" data-interview-error role="alert"></p></form>
