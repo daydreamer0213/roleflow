@@ -55,7 +55,7 @@ function renderMessageDiscoveryPage({ db, searchParams, controller, replySendCon
   const recoveryMessages = messageDiscoveryRecoveryMessages();
   const reason = messageDiscoveryReasonText(status.reasonCode);
   const phaseNotice = messageDiscoveryPhaseText(status);
-  const resultSections = status.results.map((result, resultIndex) => {
+  const resultViews = status.results.map((result, resultIndex) => {
     const job = result.job || {};
     const manualActions = (result.manualActions || []).filter((item) => item?.kind === "resume_request");
     const durableDrafts = Array.isArray(result.drafts) ? result.drafts.filter((draft) => Number(draft?.id) > 0) : [];
@@ -81,7 +81,7 @@ function renderMessageDiscoveryPage({ db, searchParams, controller, replySendCon
     }).join("");
     const inboundMessages = Array.isArray(result.inboundMessages) ? result.inboundMessages : [];
     const inboundSection = inboundMessages.length
-      ? `<section class="message-inbound"><h3>HR 消息</h3>${inboundMessages.map((message) => `<p class="line">${escapeHtml(message.text)}</p>`).join("")}</section>`
+      ? `<section class="message-inbound"><h3>HR 消息原文</h3>${inboundMessages.map((message) => `<p class="line">${escapeHtml(message.text)}</p>`).join("")}</section>`
       : "";
     const source = result.contextSource === "local_cache"
       ? "本地已有岗位资料"
@@ -108,8 +108,18 @@ function renderMessageDiscoveryPage({ db, searchParams, controller, replySendCon
     const sentForm = drafts && !durableDrafts.length
       ? `<form method="post" action="/api/progress"><input type="hidden" name="cardId" value="${result.cardId}"><input type="hidden" name="idempotencyKey" value="${escapeAttr(newProgressRequestKey())}"><input type="hidden" name="action" value="reply_confirmed_sent"><button class="secondary">我已在 BOSS 手动发送</button></form>`
       : "";
-    return `<section class="panel message-result"><h2>${escapeHtml(job.title || "岗位处理结果")}</h2><p class="line">${escapeHtml(job.company || "公司待确认")} · 阶段：${escapeHtml(progressStageLabel(result.stage))}</p>${inboundSection}${decisionCard}<h3>下一步</h3>${nextSection}${sentForm}</section>`;
-  }).join("");
+    const viewId = `message-view-${resultIndex}`;
+    const title = job.title || "岗位处理结果";
+    const company = job.company || "公司待确认";
+    const preview = result.messageSummary || messageIntentLabel(result.messageIntent);
+    return {
+      list: `<label class="message-list-item" for="${viewId}"><input id="${viewId}" type="radio" name="message-current" data-message-view="${resultIndex}" aria-controls="message-detail-${resultIndex}"${resultIndex === 0 ? " checked" : ""}><span><strong>${escapeHtml(title)}</strong><small>${escapeHtml(company)}</small><em>${escapeHtml(preview)}</em></span></label>`,
+      detail: `<section id="message-detail-${resultIndex}" class="panel message-result" data-message-detail-panel="${resultIndex}"${resultIndex === 0 ? "" : " hidden"}><h2>${escapeHtml(title)}</h2><p class="line">${escapeHtml(company)} · 阶段：${escapeHtml(progressStageLabel(result.stage))}</p>${inboundSection}${decisionCard}<h3>下一步</h3>${nextSection}${sentForm}</section>`
+    };
+  });
+  const resultWorkspace = resultViews.length
+    ? `<section class="message-workspace" aria-label="新消息与回复"><aside class="message-list" aria-label="HR 新消息"><h2>HR 新消息</h2>${resultViews.map((view) => view.list).join("")}</aside><div class="message-detail">${resultViews.map((view) => view.detail).join("")}</div></section>`
+    : "";
   const controls = `<section class="message-controls" aria-label="消息发现操作">
     <form data-discovery-form method="post" action="/api/message-discovery"><input type="hidden" name="action" value="start"><input type="hidden" name="profileId" value="${profileId}"><button data-page-primary="true"${status.status === "running" ? " disabled" : ""}>开始只读发现</button></form>
     <form data-discovery-form method="post" action="/api/message-discovery"><input type="hidden" name="action" value="stop"><input type="hidden" name="profileId" value="${profileId}"><button class="secondary"${status.status === "running" ? "" : " disabled"}>安全停止</button></form>
@@ -141,7 +151,7 @@ function renderMessageDiscoveryPage({ db, searchParams, controller, replySendCon
     planId: plan?.id || "",
     stage: "消息",
     brandHref: plan?.id ? `/plan?planId=${plan.id}` : "/onboarding",
-    content: `<main id="main-content" class="message-layout"><header class="page-heading"><p class="eyebrow">消息工作台</p><h1>BOSS 消息发现与回复</h1><p class="lede">先在后台只读发现 HR 新消息并准备草稿。你修改后点击“确认发送”，系统才会在固定消息页逐条核对、填入并发送；也可以继续复制后人工处理。</p></header>${controls}<p class="message-feedback" data-discovery-feedback role="status" aria-live="polite" aria-busy="false"></p><section class="panel message-state"><h2>${escapeHtml(statusLabel)}</h2><p class="line">可见 ${Math.max(0, Number(counters.visible) || 0)} · HR 新回复 ${Math.max(0, Number(counters.newReplies) || 0)} · 已读 ${Math.max(0, Number(counters.currentRead) || 0)} · 送达 ${Math.max(0, Number(counters.currentDelivered) || 0)}</p><p class="line">排队 ${status.queued} · 已处理 ${status.processed} · 未解决 ${Math.max(0, Number(status.unresolved) || 0)}</p>${phaseNotice ? `<p class="line">${escapeHtml(phaseNotice)}</p>` : ""}${reason ? `<p class="risk-text">${escapeHtml(reason)}</p>` : ""}</section>${unresolvedSections}${resultSections || (!unresolvedSections ? '<section class="panel"><p class="line">当前没有岗位处理结果。</p></section>' : "")}${sendBatchPanel}<p class="button-row"><a class="button-link secondary" data-flush-drafts href="/communication-profile?profileId=${encodeURIComponent(profileId)}">管理我的沟通资料</a><a class="button-link secondary" data-flush-drafts href="${escapeAttr(manualPath)}">返回人工粘贴流程</a></p></main>`,
+    content: `<main id="main-content" class="message-layout"><header class="page-heading"><p class="eyebrow">消息工作台</p><h1>BOSS 消息发现与回复</h1><p class="lede">先在后台只读发现 HR 新消息并准备草稿。你修改后点击“确认发送”，系统才会在固定消息页逐条核对、填入并发送；也可以继续复制后人工处理。</p></header>${controls}<p class="message-feedback" data-discovery-feedback role="status" aria-live="polite" aria-busy="false"></p><section class="panel message-state"><h2>${escapeHtml(statusLabel)}</h2><p class="line">可见 ${Math.max(0, Number(counters.visible) || 0)} · HR 新回复 ${Math.max(0, Number(counters.newReplies) || 0)} · 已读 ${Math.max(0, Number(counters.currentRead) || 0)} · 送达 ${Math.max(0, Number(counters.currentDelivered) || 0)}</p><p class="line">排队 ${status.queued} · 已处理 ${status.processed} · 未解决 ${Math.max(0, Number(status.unresolved) || 0)}</p>${phaseNotice ? `<p class="line">${escapeHtml(phaseNotice)}</p>` : ""}${reason ? `<p class="risk-text">${escapeHtml(reason)}</p>` : ""}</section>${unresolvedSections}${resultWorkspace || (!unresolvedSections ? '<section class="panel"><p class="line">当前没有岗位处理结果。</p></section>' : "")}${sendBatchPanel}<p class="button-row"><a class="button-link secondary" data-flush-drafts href="/communication-profile?profileId=${encodeURIComponent(profileId)}">管理我的沟通资料</a><a class="button-link secondary" data-flush-drafts href="${escapeAttr(manualPath)}">返回人工粘贴流程</a></p></main>`,
     scripts: [messageDiscoveryClientScript(scriptState)]
   });
 }
@@ -177,6 +187,7 @@ function messageDiscoveryClientScript(scriptState) {
     const queueDraftWrite=(field,action,completionKind="",text=field.value)=>{const previous=draftWrites.get(field)||Promise.resolve();const pending=previous.catch(()=>undefined).then(()=>{setDraftSaveStatus(field,"正在保存…");return postDraft(field,text,action,completionKind);});draftWrites.set(field,pending);const clear=()=>{if(draftWrites.get(field)===pending)draftWrites.delete(field);};pending.then((result)=>{const revision=Number(result?.revision);if(Number.isSafeInteger(revision)&&revision>=0){field.dataset.revision=String(revision);field.dataset.draftRevision=String(revision);}setDraftSaveStatus(field,field.value===text?"已自动保存":"有修改待保存");clear();},()=>{setDraftSaveStatus(field,field.value===text?"保存失败，请重试":"有修改待保存");clear();});return pending;};
     const saveDraft=async(field)=>{cancelDraftSave(field);return queueDraftWrite(field,"save");};
     for(const field of document.querySelectorAll("[data-draft-text]"))field.addEventListener("input",()=>{setDraftSaveStatus(field,"有修改待保存");cancelDraftSave(field);draftTimers.set(field,setTimeout(async()=>{draftTimers.delete(field);try{await queueDraftWrite(field,"save");}catch{feedback.textContent="本次修改还没有保存，请稍后重试。";}},600));});
+    for(const choice of document.querySelectorAll("[data-message-view]"))choice.addEventListener("change",async()=>{if(!choice.checked)return;const current=document.querySelector("[data-message-detail-panel]:not([hidden])");if(current){const fields=Array.from(current.querySelectorAll("[data-draft-text]"));try{await Promise.all(fields.map(saveDraft));}catch{feedback.textContent="当前草稿未能保存，请稍后重试。";}}for(const panel of document.querySelectorAll("[data-message-detail-panel]"))panel.hidden=panel.dataset.messageDetailPanel!==choice.dataset.messageView;});
     for(const button of document.querySelectorAll("[data-copy-draft]"))button.addEventListener("click",async()=>{const field=document.getElementById(button.dataset.copyDraft);if(!field)return;const text=field.value;try{await navigator.clipboard.writeText(text);}catch{feedback.textContent="复制失败，请重试。";return;}if("copyOnly" in button.dataset){feedback.textContent="草稿已复制。";return;}cancelDraftSave(field);try{const result=await queueDraftWrite(field,"complete","copied",text);feedback.textContent=result.changed?"已记住你这次修改的回答":"草稿已复制。";}catch{feedback.textContent="已复制；这次修改暂未保存，请稍后重试";}});
     for(const form of document.querySelectorAll("[data-sent-draft]"))form.addEventListener("submit",()=>{const field=document.getElementById(form.dataset.sentDraft);if(!field)return;cancelDraftSave(field);const hidden=form.querySelector('[name="finalText"]');if(hidden)hidden.value=field.value;});
     const sendPanel=document.querySelector("[data-send-batch-panel]");

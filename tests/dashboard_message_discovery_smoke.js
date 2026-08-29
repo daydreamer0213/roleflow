@@ -424,6 +424,11 @@ async function main() {
   assert(completedPage.body.includes("HR 消息"));
   assert(completedPage.body.includes(OPEN_HR_TEXT));
   assert(completedPage.body.includes("可见 52 · HR 新回复 1 · 已读 31 · 送达 20"));
+  assert.match(completedPage.body, /class="[^"]*message-workspace/);
+  assert.match(completedPage.body, /class="[^"]*message-list/);
+  assert.match(completedPage.body, /class="[^"]*message-detail/);
+  assert.match(completedPage.body, /HR 消息原文/);
+  assert.doesNotMatch(completedPage.body, /<h2>已读 \d+<\/h2>|<h2>送达 \d+<\/h2>/);
   assert(!completedPage.body.includes("工作安排：工作安排未确认"));
   assert.match(completedPage.body, new RegExp(`data-send-single="${renderedDraft.id}"`));
   assert.match(completedPage.body, new RegExp(`data-send-select="${renderedDraft.id}"`));
@@ -535,7 +540,7 @@ async function main() {
     "manual BOSS action must appear before the local reply drafts"
   );
   assertHeadingsInOrder(understoodPage.body, [
-    "<h3>HR 消息</h3>",
+    "<h3>HR 消息原文</h3>",
     "沟通结论",
     "这份机会",
     "岗位主要做什么",
