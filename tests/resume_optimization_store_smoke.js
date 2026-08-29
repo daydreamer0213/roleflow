@@ -27,7 +27,12 @@ try {
   const owner = storage.saveProfileAnalysis(db, {
     profile: profile("Owner"),
     document: document("source-hash", sourceText),
-    searchPlan: null
+    searchPlan: {
+      name: "AI 应用投递",
+      cities: ["广州"],
+      directions: ["AI 应用工程师"],
+      keywords: [{ word: "知识库", priority: "A" }]
+    }
   });
   const other = storage.saveProfileAnalysis(db, {
     profile: profile("Other"),
@@ -122,6 +127,7 @@ try {
 
   const activated = storage.activateResumeOptimization(db, {
     profileId: owner.profileId,
+    planId: owner.planId,
     optimizationId: draft.id,
     finalText,
     version: {
@@ -133,6 +139,14 @@ try {
     }
   });
   assert.strictEqual(activated.status, "activated");
+  const activeRound = storage.getActiveFunnelStrategyRound(db, {
+    profileId: owner.profileId,
+    planId: owner.planId
+  });
+  assert.strictEqual(activated.strategyRoundId, activeRound.id);
+  assert.deepStrictEqual(activeRound.changeKinds, ["resume"]);
+  assert.strictEqual(activeRound.resumeVersionId, activated.resultResumeVersionId);
+  assert.strictEqual(activeRound.sourceKey, `resume_optimization:${draft.id}`);
   assert(activated.resultResumeVersionId > 0);
   assert(activated.resultResumeDocumentId > 0);
   assert.notStrictEqual(activated.resultResumeVersionId, owner.resumeVersionId);
@@ -147,6 +161,7 @@ try {
 
   const retried = storage.activateResumeOptimization(db, {
     profileId: owner.profileId,
+    planId: owner.planId,
     optimizationId: draft.id,
     finalText,
     version: { name: "重试不得产生新版本" }
@@ -155,9 +170,11 @@ try {
   assert.strictEqual(retried.resultResumeDocumentId, activated.resultResumeDocumentId);
   assert.strictEqual(db.prepare("SELECT count(*) AS n FROM resume_documents").get().n, countsBefore.documents + 1);
   assert.strictEqual(db.prepare("SELECT count(*) AS n FROM candidate_resume_versions").get().n, countsBefore.versions + 1);
+  assert.strictEqual(db.prepare("SELECT count(*) AS n FROM candidate_funnel_strategy_rounds").get().n, 1);
 
   assert.throws(() => storage.activateResumeOptimization(db, {
     profileId: owner.profileId,
+    planId: owner.planId,
     optimizationId: draft.id,
     finalText: `${finalText}\n迟到修改`
   }), (error) => error.code === "RESUME_OPTIMIZATION_CLOSED");
@@ -185,22 +202,43 @@ try {
   });
   const rollbackCounts = {
     documents: db.prepare("SELECT count(*) AS n FROM resume_documents").get().n,
-    versions: db.prepare("SELECT count(*) AS n FROM candidate_resume_versions").get().n
+    versions: db.prepare("SELECT count(*) AS n FROM candidate_resume_versions").get().n,
+    rounds: db.prepare("SELECT count(*) AS n FROM candidate_funnel_strategy_rounds").get().n
   };
+  const previousRound = storage.getActiveFunnelStrategyRound(db, {
+    profileId: owner.profileId,
+    planId: owner.planId
+  });
+  const rollbackSavedText = storage.getResumeOptimization(db, {
+    profileId: owner.profileId,
+    optimizationId: rollbackDraft.id
+  }).finalText;
   db.exec(`CREATE TRIGGER fail_resume_optimization_activation
-    BEFORE INSERT ON candidate_resume_versions
-    WHEN NEW.version_key = 'resume_optimization_${rollbackDraft.id}'
+    BEFORE INSERT ON candidate_funnel_strategy_rounds
+    WHEN NEW.source_key = 'resume_optimization:${rollbackDraft.id}'
     BEGIN SELECT RAISE(ABORT, 'forced activation failure'); END;`);
   assert.throws(() => storage.activateResumeOptimization(db, {
     profileId: owner.profileId,
+    planId: owner.planId,
     optimizationId: rollbackDraft.id,
-    finalText: "个人总结\n参与知识库开发\n技能：Node.js",
+    finalText: `${rollbackSavedText}\n启用时更新但必须回滚`,
     version: { name: "必须回滚" }
   }), /forced activation failure/);
   db.exec("DROP TRIGGER fail_resume_optimization_activation");
-  assert.strictEqual(storage.getResumeOptimization(db, { profileId: owner.profileId, optimizationId: rollbackDraft.id }).status, "draft");
+  const rolledBack = storage.getResumeOptimization(db, { profileId: owner.profileId, optimizationId: rollbackDraft.id });
+  assert.strictEqual(rolledBack.status, "draft");
+  assert.strictEqual(rolledBack.finalText, rollbackSavedText);
+  assert.strictEqual(rolledBack.strategyRoundId, null);
   assert.strictEqual(db.prepare("SELECT count(*) AS n FROM resume_documents").get().n, rollbackCounts.documents);
   assert.strictEqual(db.prepare("SELECT count(*) AS n FROM candidate_resume_versions").get().n, rollbackCounts.versions);
+  assert.strictEqual(db.prepare("SELECT count(*) AS n FROM candidate_funnel_strategy_rounds").get().n, rollbackCounts.rounds);
+  const restoredRound = storage.getActiveFunnelStrategyRound(db, {
+    profileId: owner.profileId,
+    planId: owner.planId
+  });
+  assert.strictEqual(restoredRound.id, previousRound.id);
+  assert.strictEqual(restoredRound.status, "active");
+  assert.strictEqual(restoredRound.closedAt, null);
 
   console.log("resume_optimization_store_smoke ok");
 } finally {

@@ -227,6 +227,16 @@ try {
   });
   assert.strictEqual(activated.status, "activated");
   assert(storage.listCandidateResumeVersions(db, owner.profileId).some((version) => version.id === activated.resultResumeVersionId));
+  const activatedVersion = storage.listCandidateResumeVersions(db, owner.profileId)
+    .find((version) => version.id === activated.resultResumeVersionId);
+  assert.strictEqual(activatedVersion.name, "AI 应用工程师定向版");
+  assert.deepStrictEqual(activatedVersion.targetRoles, ["AI 应用工程师"]);
+  const strategyRound = storage.getActiveFunnelStrategyRound(db, {
+    profileId: owner.profileId,
+    planId: owner.planId
+  });
+  assert.strictEqual(activated.strategyRoundId, strategyRound.id);
+  assert.strictEqual(strategyRound.sourceKey, `resume_optimization:${draft.id}`);
 
   const dashboard = service.dashboard({ profileId: owner.profileId, planId: owner.planId, draftId: draft.id });
   assert.strictEqual(dashboard.selectedDraft.id, draft.id);

@@ -1,6 +1,7 @@
 const crypto = require("node:crypto");
 const { nowIso, parseJson, immediateTransaction, storageError } = require("./storage_shared");
 const { maskResumeContacts } = require("../core/resume_privacy");
+const { getActiveFunnelStrategyRound, startFunnelStrategyRound } = require("./funnel_store");
 
 function sha256(text) {
   return crypto.createHash("sha256").update(String(text ?? "")).digest("hex");
@@ -158,6 +159,7 @@ function saveResumeOptimizationDraft(db, input = {}) {
 
 function activateResumeOptimization(db, input = {}) {
   const profileId = positiveId(input.profileId, "profileId");
+  const planId = positiveId(input.planId, "planId");
   const optimizationId = positiveId(input.optimizationId, "optimizationId");
   const requestedFinalText = boundedText(input.finalText, 200_000, "最终简历文字");
   return immediateTransaction(db, () => {
@@ -206,6 +208,7 @@ function activateResumeOptimization(db, input = {}) {
       source: "resume_optimization",
       optimizationId,
       sourceResumeVersionId: Number(row.source_resume_version_id),
+      targetDirection: row.target_direction || "",
       targetJobIds: parseJson(row.target_job_ids_json, []),
       modelIdentity: parseJson(row.model_identity_json, {})
     };
@@ -227,12 +230,25 @@ function activateResumeOptimization(db, input = {}) {
       now
     ).lastInsertRowid);
 
+    const fromRound = getActiveFunnelStrategyRound(db, { profileId, planId });
+    const strategyRound = startFunnelStrategyRound(db, {
+      profileId,
+      planId,
+      fromRoundId: fromRound?.id || null,
+      sourceKey: `resume_optimization:${optimizationId}`,
+      changeKinds: ["resume"],
+      changeNote: "启用定向简历",
+      resumeVersionId: versionId,
+      startedAt: now
+    });
+
     db.prepare(`UPDATE resume_optimizations
       SET status = 'activated', result_resume_document_id = ?, result_resume_version_id = ?,
-        activated_at = ?, updated_at = ?
+        strategy_round_id = ?, activated_at = ?, updated_at = ?
       WHERE id = ? AND profile_id = ? AND status = 'draft'`).run(
       documentId,
       versionId,
+      strategyRound.id,
       now,
       now,
       optimizationId,

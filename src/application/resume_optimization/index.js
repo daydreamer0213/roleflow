@@ -134,16 +134,14 @@ function createResumeOptimizationService({ db, adapter = null, funnelAnalysisSer
     const owned = getDraft({ profileId, draftId: draftId || optimizationId });
     if (!owned) throw serviceError("RESUME_OPTIMIZATION_NOT_FOUND", "定向简历草稿不存在");
     const plan = ownedPlan(owned.profileId, planId);
-    const jobs = rowsForJobIds(owned.targetJobIds);
-    const titles = [...new Set(jobs.map((job) => String(job.title || "").trim()).filter(Boolean))];
     return activateResumeOptimization(db, {
       profileId: owned.profileId,
       planId: plan.id,
       optimizationId: owned.id,
       finalText,
       version: {
-        name: titles.length === 1 ? `${titles[0]}定向版` : "定向简历",
-        targetRoles: titles,
+        name: owned.targetDirection ? `${owned.targetDirection}定向版` : "定向简历",
+        targetRoles: owned.targetDirection ? [owned.targetDirection] : [],
         summary: owned.headline || "基于目标岗位证据生成并由用户确认的定向版本。"
       }
     });

@@ -216,7 +216,7 @@ function verifyLegacyBackfill() {
 
   const migrated = storage.openDb(dbPath);
   try {
-    assert.equal(migrated.prepare("PRAGMA user_version").get().user_version, 23);
+    assert.equal(migrated.prepare("PRAGMA user_version").get().user_version, storage.SCHEMA_VERSION);
     const rounds = storage.listFunnelStrategyRounds(migrated, { profileId: 1, planId: 1 });
     assert.equal(rounds.length, 2);
     assert.equal(rounds[0].status, "active");
