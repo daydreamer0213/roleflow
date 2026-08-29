@@ -9,6 +9,8 @@ const {
   recordMessageReplyDrafts,
   completeMessageReplyDraft,
   getMessageReplyDraft,
+  listMessageInboundContexts,
+  listCandidateAnswerMemories,
   withdrawCandidateAnswerMemory
 } = require("../src/core/storage");
 const {
@@ -110,6 +112,7 @@ function decisionCardProjectionSmoke() {
     companyBusiness: "JD 显示该岗位服务于企业知识管理。",
     fitLabel: "高",
     fitSummary: "岗位方向与候选人的 RAG 项目经历一致",
+    workSchedule: "工作安排未确认",
     salary: "15-25K·13薪",
     opportunityVerdict: "值得继续聊",
     opportunitySummary: "岗位方向与候选人的 RAG 项目经历一致"
@@ -130,9 +133,22 @@ function decisionCardProjectionSmoke() {
   assert(!Object.hasOwn(unknownCompany, "companyScope"));
   assert.strictEqual(unknownCompany.fitLabel, "低");
   assert.strictEqual(unknownCompany.fitSummary, "生产环境运维经验仍需确认");
+  assert.strictEqual(unknownCompany.workSchedule, "工作安排未确认");
   assert.strictEqual(unknownCompany.salary, "");
   assert.strictEqual(unknownCompany.opportunityVerdict, "不建议优先投入时间");
   assert.strictEqual(unknownCompany.opportunitySummary, "生产环境运维经验仍需确认");
+
+  const scheduled = projectMessageDecisionCard({
+    ...base,
+    analysis: {
+      ...base.analysis,
+      workSchedule: "double_weekend",
+      workScheduleEvidence: "周末双休",
+      fitLevel: "A",
+      recommendation: "apply"
+    }
+  });
+  assert.strictEqual(scheduled.workSchedule, "双休（周末双休）");
 
   const guarded = projectMessageDecisionCard({
     ...base,
@@ -287,6 +303,12 @@ async function uniqueCandidateAndPrivacySmoke() {
   assert.deepStrictEqual(summary.results[0].messages, [PRIVATE_DRAFT]);
   assert.strictEqual(summary.results[0].drafts.length, 1);
   assert.strictEqual(summary.results[0].drafts[0].text, PRIVATE_DRAFT);
+  assert.deepStrictEqual(summary.results[0].inboundMessages, [{ kind: "text", text: PRIVATE_BODY }]);
+  const inboundContext = listMessageInboundContexts(db, { profileId: fixture.profileId, cardId: fixture.card.id })[0];
+  assert.deepStrictEqual(inboundContext.inboundMessages, [{ kind: "text", text: PRIVATE_BODY }]);
+  assert.strictEqual(inboundContext.messageGroupKey, db.prepare(
+    "SELECT message_group_key FROM message_reply_drafts WHERE id = ?"
+  ).get(summary.results[0].drafts[0].id).message_group_key);
   const durableDraft = getMessageReplyDraft(db, {
     profileId: fixture.profileId,
     draftId: summary.results[0].drafts[0].id
@@ -299,7 +321,11 @@ async function uniqueCandidateAndPrivacySmoke() {
     ...db.prepare("SELECT * FROM message_reply_drafts WHERE profile_id = ?").all(fixture.profileId),
     ...db.prepare("SELECT * FROM candidate_answer_memories WHERE profile_id = ?").all(fixture.profileId)
   ]);
-  assert(!learningStorageText.includes(PRIVATE_BODY), "raw HR message text must remain ephemeral");
+  assert(!learningStorageText.includes(PRIVATE_BODY), "raw HR message text must stay out of drafts and answer memories");
+  assert(!JSON.stringify(listCandidateAnswerMemories(db, {
+    profileId: fixture.profileId,
+    activeOnly: false
+  })).includes(PRIVATE_BODY), "raw HR message text must not become learned answer content");
   assert.strictEqual(summary.results[0].stage, "reply_ready");
   assert.deepStrictEqual(summary.results[0].job, {
     title: "Java Engineer",
@@ -308,6 +334,7 @@ async function uniqueCandidateAndPrivacySmoke() {
     companyBusiness: "JD 显示该岗位服务于企业交易系统交付。",
     fitLabel: "中",
     fitSummary: "Spring 项目证据匹配；生产值班经验待确认",
+    workSchedule: "工作安排未确认",
     salary: "20-30K",
     opportunityVerdict: "可以了解，但要先确认关键问题",
     opportunitySummary: "Spring 项目证据匹配；生产值班经验待确认"
@@ -1229,6 +1256,10 @@ async function messageGroupBoundarySmoke() {
   assert.strictEqual(structuredSummary.results[0].stage, "needs_user_action");
   assert.deepStrictEqual(structuredSummary.results[0].messages, [structuredDraft]);
   assert.deepStrictEqual(structuredSummary.results[0].manualActions, [{ kind: "resume_request" }]);
+  assert.deepStrictEqual(structuredSummary.results[0].inboundMessages, [
+    { kind: "text", text: languageQuestion },
+    { kind: "resume_request", text: "HR 邀请你发送简历" }
+  ]);
   assert.strictEqual(
     listProgressEvents(db, structured.card.id).filter((event) => event.type === "incoming_message_classified").length,
     3,
@@ -1258,6 +1289,9 @@ async function messageGroupBoundarySmoke() {
   assert.strictEqual(resumeOnlySummary.processed, 1);
   assert.deepStrictEqual(resumeOnlySummary.results[0].messages, []);
   assert.deepStrictEqual(resumeOnlySummary.results[0].manualActions, [{ kind: "resume_request" }]);
+  assert.deepStrictEqual(resumeOnlySummary.results[0].inboundMessages, [
+    { kind: "resume_request", text: "HR 邀请你发送简历" }
+  ]);
   assert.strictEqual(resumeOnlySummary.results[0].stage, "needs_user_action");
 
   const platformOnly = createFixture({ suffix: "group-platform-only", title: "Group Platform Only Engineer" });
@@ -1680,7 +1714,8 @@ async function classificationOutcomeSmoke() {
       "模型结果未通过安全校验，需要人工处理"
     );
     assert.deepStrictEqual(invalidSummary.results[0].messages, []);
-    assert(!JSON.stringify(invalidSummary).includes(PRIVATE_BODY));
+    assert.deepStrictEqual(invalidSummary.results[0].inboundMessages, [{ kind: "text", text: PRIVATE_BODY }]);
+    assert(!invalidSummary.results[0].messageSummary.includes(PRIVATE_BODY));
   }
 
   for (const [index, code] of ["MODEL_AUTH_FAILED", "MODEL_TIMEOUT"].entries()) {
@@ -2315,7 +2350,12 @@ function fakeReader(conversations) {
           conversationKey: safeDigest(["conversation", String(index)]),
           previewDigest: safeDigest(["preview", `preview-${index}`]),
           previewKind: "possible_hr_reply",
-          transientSignature: safeDigest(["row", String(index)])
+          transientSignature: safeDigest(["row", String(index)]),
+          sourceJobId: `boss:message-fixture-${index}`,
+          lastMessageId: String(conversation.messages?.at(-1)?.messageId || "123456789012345"),
+          lastMessageDirection: "friend",
+          lastMessageStatus: "unknown",
+          identityVerified: true
         })))
       };
     },

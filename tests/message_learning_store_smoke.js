@@ -10,6 +10,8 @@ const {
   withdrawCandidateAnswerMemory,
   listCandidateFactRevisions,
   closeMessageReplyDrafts,
+  saveMessageInboundContext,
+  getMessageInboundContext,
   saveCandidateFact,
   listCandidateFacts
 } = require("../src/core/storage");
@@ -37,6 +39,7 @@ try {
   assert.strictEqual(drafts[0].revision, 0);
   assert(!db.prepare("PRAGMA table_info(message_reply_drafts)").all()
     .some((column) => /raw|hr_message|recruiter_message/i.test(column.name)), "durable drafts must not add a raw HR message column");
+  saveInboundContext(db, fixture, digest("group-1"), "对方询问到岗时间。", "378917037748760");
 
   const repeatedDrafts = recordMessageReplyDrafts(db, {
     profileId: fixture.profileId,
@@ -115,6 +118,11 @@ try {
   assert.strictEqual(listCandidateAnswerMemories(db, { profileId: fixture.profileId, activeOnly: false }).length, 2);
   assert.strictEqual(listCandidateFactRevisions(db, { profileId: fixture.profileId }).length, 2, "duplicate completion must not duplicate fact revisions");
   assert.strictEqual(listOpenMessageReplyDrafts(db, { profileId: fixture.profileId }).some((draft) => draft.id === drafts[0].id), false, "sent completion closes the draft");
+  assert(getMessageInboundContext(db, {
+    profileId: fixture.profileId,
+    cardId: fixture.cardId,
+    messageGroupKey: digest("group-1")
+  }), "a sibling open draft must retain its shared HR display context");
   const staleClosedSave = saveMessageReplyDraftEdit(db, {
     profileId: fixture.profileId,
     draftId: drafts[0].id,
@@ -365,6 +373,11 @@ try {
     closedAt: "2026-08-28T01:10:00.000Z"
   });
   assert.strictEqual(listOpenMessageReplyDrafts(db, { profileId: fixture.profileId }).length, 0);
+  assert.strictEqual(getMessageInboundContext(db, {
+    profileId: fixture.profileId,
+    cardId: fixture.cardId,
+    messageGroupKey: digest("group-1")
+  }), null, "closing the last draft in a group must purge its HR display context");
   assert.strictEqual(getMessageReplyDraft(db, { profileId: fixture.profileId, draftId: drafts[0].id }).id, drafts[0].id, "closed drafts remain durable history");
 
   const other = createFixture(db, "other");
@@ -399,6 +412,23 @@ function createFixture(database, suffix = "main") {
 
 function digest(value) {
   return `sha256:${require("node:crypto").createHash("sha256").update(value).digest("hex")}`;
+}
+
+function saveInboundContext(database, fixture, messageGroupKey, text, lastMessageId) {
+  return saveMessageInboundContext(database, {
+    profileId: fixture.profileId,
+    cardId: fixture.cardId,
+    messageGroupKey,
+    conversationKey: digest(`conversation:${messageGroupKey}`),
+    sourceJobId: `boss:learning-${fixture.jobId}`,
+    lastMessageId,
+    messageIntent: "information_request",
+    messageCategory: "availability",
+    inboundMessages: [{ kind: "text", text }],
+    manualActions: [],
+    createdAt: "2026-08-28T01:00:00.000Z",
+    updatedAt: "2026-08-28T01:00:00.000Z"
+  });
 }
 
 function currentFacts(database, profileId) {

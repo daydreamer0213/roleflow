@@ -17,6 +17,7 @@ const {
   setSiteRuntimeState,
   recordSiteAccessEvent,
   listOpenMessageReplyDrafts,
+  listMessageInboundContexts,
   closeMessageReplyDrafts
 } = require("../core/storage");
 
@@ -309,7 +310,7 @@ function createMessageDiscoveryController(deps = {}) {
     if (!result) return;
     run.clearedCardIds.add(cardId);
     run.results = run.results.map((item) => Number(item.cardId) === cardId
-      ? { ...item, drafts: [], messages: [] }
+      ? { ...item, inboundMessages: [], drafts: [], messages: [] }
       : item);
   }
 
@@ -355,7 +356,7 @@ function createMessageDiscoveryController(deps = {}) {
     if (statusValue.waitUntil !== undefined) run.waitUntil = safeTimestamp(statusValue.waitUntil);
     run.results = sanitizeResults(Array.isArray(statusValue.results) ? statusValue.results : [])
       .map((item) => run.clearedCardIds.has(Number(item.cardId))
-        ? { ...item, drafts: [], messages: [] }
+        ? { ...item, inboundMessages: [], drafts: [], messages: [] }
         : item);
     run.updatedAt = at.toISOString();
     if (run.status === "running") {
@@ -397,6 +398,7 @@ function createMessageDiscoveryController(deps = {}) {
           : "",
         contextComplete: item?.contextComplete === true,
         job: sanitizeJobUnderstanding(item?.job),
+        inboundMessages: sanitizeInboundMessages(item?.inboundMessages),
         drafts,
         messages
       };
@@ -411,6 +413,18 @@ function createMessageDiscoveryController(deps = {}) {
         instruction: "请在 BOSS 消息卡片中人工选择“同意”或“拒绝”。"
       }]
       : [];
+  }
+
+  function sanitizeInboundMessages(value) {
+    const result = [];
+    for (const item of Array.isArray(value) ? value : []) {
+      const kind = String(item?.kind || "");
+      const text = safeText(item?.text, 4000).replace(/\r\n?/g, "\n").trim();
+      if (kind === "text" && text) result.push({ kind, text });
+      else if (kind === "resume_request" && text === "HR 邀请你发送简历") result.push({ kind, text });
+      if (result.length >= 5) break;
+    }
+    return result;
   }
 
   function publicRun(run) {
@@ -472,6 +486,7 @@ function createMessageDiscoveryController(deps = {}) {
 
   function durableStatus(profileId) {
     const drafts = listOpenMessageReplyDrafts(db, { profileId, limit: 500 });
+    const inboundContexts = listMessageInboundContexts(db, { profileId, limit: 500 });
     const unresolved = listUnresolvedMessageDiscoveryItems(db, { profileId });
     if (!drafts.length && unresolved.length === 0) return emptyStatus(profileId);
     const byCard = new Map();
@@ -480,7 +495,18 @@ function createMessageDiscoveryController(deps = {}) {
       values.push(draft);
       byCard.set(draft.cardId, values);
     }
-    const results = [...byCard.entries()].map(([cardId, cardDrafts]) => durableDraftResult(profileId, cardId, cardDrafts));
+    const contextsByCard = new Map();
+    for (const context of inboundContexts) {
+      const values = contextsByCard.get(context.cardId) || [];
+      values.push(context);
+      contextsByCard.set(context.cardId, values);
+    }
+    const results = [...byCard.entries()].map(([cardId, cardDrafts]) => durableDraftResult(
+      profileId,
+      cardId,
+      cardDrafts,
+      contextsByCard.get(cardId) || []
+    ));
     return {
       ...emptyStatus(profileId),
       status: unresolved.length ? "needs_user_action" : "completed",
@@ -505,7 +531,7 @@ function createMessageDiscoveryController(deps = {}) {
     };
   }
 
-  function durableDraftResult(profileId, cardId, drafts) {
+  function durableDraftResult(profileId, cardId, drafts, contexts = []) {
     const row = db.prepare(`SELECT c.id AS card_id, c.job_id, c.stage,
       j.title, j.company, j.salary, j.description, j.analysis_json
       FROM candidate_progress_cards c
@@ -513,6 +539,9 @@ function createMessageDiscoveryController(deps = {}) {
       WHERE c.id = ? AND c.profile_id = ?`).get(cardId, profileId);
     if (!row) throw messageDiscoveryError("MESSAGE_DISCOVERY_CONTEXT_INVALID", "durable draft context is missing", 500);
     const first = drafts[0];
+    const openGroupKeys = new Set(drafts.map((draft) => draft.messageGroupKey));
+    const activeContexts = contexts.filter((context) => openGroupKeys.has(context.messageGroupKey));
+    const inboundMessages = sanitizeInboundMessages(activeContexts.flatMap((context) => context.inboundMessages));
     const safeDrafts = drafts.sort((left, right) => left.draftIndex - right.draftIndex).slice(0, 2).map((draft) => ({
       id: draft.id,
       text: draft.currentText,
@@ -534,10 +563,11 @@ function createMessageDiscoveryController(deps = {}) {
       messageSummary: safeInlineText(first.questionSummary, 160),
       missingFactKey: "",
       manualActionReason: "",
-      manualActions: [],
+      manualActions: sanitizeManualActions(activeContexts.flatMap((context) => context.manualActions)),
       contextSource: "local_cache",
       contextComplete: Boolean(row.description),
       job,
+      inboundMessages,
       drafts: safeDrafts,
       messages: safeDrafts.map((draft) => draft.text)
     };
@@ -698,6 +728,7 @@ function sanitizeJobUnderstanding(value) {
     companyBusiness: safeInlineText(job.companyBusiness, 300),
     fitLabel: safeInlineText(job.fitLabel, 20),
     fitSummary: safeInlineText(job.fitSummary, 180),
+    workSchedule: safeInlineText(job.workSchedule, 180),
     salary: safeInlineText(job.salary, 80),
     opportunityVerdict: safeInlineText(job.opportunityVerdict, 80),
     opportunitySummary: safeInlineText(job.opportunitySummary, 180)

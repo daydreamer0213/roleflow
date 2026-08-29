@@ -20,6 +20,8 @@ const {
   clearSiteRuntimeState,
   listSiteAccessEvents,
   recordMessageReplyDrafts,
+  saveMessageInboundContext,
+  getMessageInboundContext,
   closeMessageReplyDrafts
 } = require("../src/core/storage");
 const {
@@ -49,6 +51,8 @@ const PRIVATE_BODY = "脱敏测试问题";
 const PRIVATE_PREVIEW = "脱敏会话预览";
 const PRIVATE_RECRUITER = "脱敏招聘方";
 const PRIVATE_DRAFT = "PRIVATE_DISCOVERY_DRAFT";
+const OPEN_HR_TEXT = "方便介绍一下跨境电商项目吗？";
+const RESUME_REQUEST_SUMMARY = "HR 邀请你发送简历";
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-dashboard-messages-"));
 const dbPath = path.join(root, "dashboard-messages.sqlite");
 const db = openDb(dbPath);
@@ -336,9 +340,37 @@ async function main() {
   assertNoPrivateData(unresolvedPage.body);
   await waitForLeaseRelease();
 
+  const openMessageGroupKey = `sha256:${"9".repeat(64)}`;
+  const renderedDraft = recordMessageReplyDrafts(db, {
+    profileId: fixture.profileId,
+    cardId: fixture.card.id,
+    jobId: fixture.jobId,
+    messageGroupKey: openMessageGroupKey,
+    questionSummary: "对方正在确认候选人的任职资格。",
+    messageIntent: "information_request",
+    messageCategory: "qualification",
+    messages: [PRIVATE_DRAFT],
+    createdAt: "2026-07-31T01:00:00.000Z"
+  })[0];
+  saveMessageInboundContext(db, {
+    profileId: fixture.profileId,
+    cardId: fixture.card.id,
+    messageGroupKey: openMessageGroupKey,
+    conversationKey: `sha256:${"8".repeat(64)}`,
+    sourceJobId: "boss:dashboard-message-job",
+    lastMessageId: "378917037748761",
+    messageIntent: "information_request",
+    messageCategory: "qualification",
+    inboundMessages: [{ kind: "text", text: OPEN_HR_TEXT }],
+    manualActions: [],
+    createdAt: "2026-07-31T01:00:00.000Z",
+    updatedAt: "2026-07-31T01:00:00.000Z"
+  });
   scenarios.push(completedRun({
     fixture,
     drafts: [PRIVATE_DRAFT],
+    durableDrafts: [renderedDraft],
+    inboundMessages: [{ kind: "text", text: OPEN_HR_TEXT }],
     callModel: true
   }));
   response = await postJson(base, "/api/message-discovery", {
@@ -380,8 +412,17 @@ async function main() {
   const completedPage = await request(base, `/messages?profileId=${fixture.profileId}`);
   assert.strictEqual(completedPage.status, 200);
   assert(completedPage.body.includes(PRIVATE_DRAFT));
+  assert(completedPage.body.includes("HR 消息"));
+  assert(completedPage.body.includes(OPEN_HR_TEXT));
+  assert(!completedPage.body.includes("工作安排：工作安排未确认"));
+  assert.match(completedPage.body, new RegExp(`data-send-single="${renderedDraft.id}"`));
+  assert.match(completedPage.body, new RegExp(`data-send-select="${renderedDraft.id}"`));
+  assert.match(completedPage.body, new RegExp(`data-draft-revision="${renderedDraft.revision}"`));
   assertManualProgressRemainsOrdinary(completedPage.body);
   assertNoPrivateData(completedPage.body);
+  const diagnosticsResponse = await request(base, "/api/runtime-diagnostics");
+  assert.strictEqual(diagnosticsResponse.status, 200);
+  assert(!diagnosticsResponse.body.includes(OPEN_HR_TEXT), "HR display text must stay out of runtime diagnostics");
 
   response = await postJson(base, "/api/message-discovery", {
     action: "dismiss",
@@ -391,6 +432,11 @@ async function main() {
   status = await getStatus(base, fixture.profileId);
   assert.strictEqual(status.status, "dismissed");
   assert.deepStrictEqual(status.results, []);
+  assert.strictEqual(getMessageInboundContext(db, {
+    profileId: fixture.profileId,
+    cardId: fixture.card.id,
+    messageGroupKey: openMessageGroupKey
+  }), null, "dismiss must purge the closed draft's HR display context");
   assert.strictEqual(cleanupTimers.activeCount(), 0, "dismiss must clear the cleanup timer");
 
   cleanupFailure = new Error("fake browser cleanup failed");
@@ -441,6 +487,11 @@ async function main() {
     "需要在 BOSS 人工处理附件简历请求",
     "请在 BOSS 消息卡片中人工选择“同意”或“拒绝”。",
     "推荐回复",
+    "HR 消息",
+    OPEN_HR_TEXT,
+    RESUME_REQUEST_SUMMARY,
+    "岗位理解",
+    "工作安排：双休",
     "您好，感谢邀请，请问面试时间和形式如何安排？",
     "JD 暂未说明公司的具体业务。"
   ]) assert(understoodPage.body.includes(expected), `missing user decision content: ${expected}`);
@@ -450,6 +501,8 @@ async function main() {
     "manual BOSS action must appear before the local reply drafts"
   );
   assertHeadingsInOrder(understoodPage.body, [
+    "<h3>HR 消息</h3>",
+    "<h3>岗位理解</h3>",
     "<h3>结论</h3>",
     "<h3>这份机会</h3>",
     "<h3>岗位主要做什么</h3>",
@@ -458,6 +511,16 @@ async function main() {
     "<h3>薪资</h3>",
     "<h3>下一步</h3>"
   ]);
+  assert(
+    understoodPage.body.indexOf('class="message-inbound"')
+      < understoodPage.body.indexOf('class="message-job-understanding"'),
+    "HR message must appear before job understanding"
+  );
+  assert(
+    understoodPage.body.indexOf('class="message-job-understanding"')
+      < understoodPage.body.indexOf('class="message-draft"'),
+    "job understanding must appear before reply drafts"
+  );
   for (const rawValue of ["interview_invitation", "information_request", "manual_review"]) {
     assert(!understoodPage.body.includes(rawValue), `raw intent must stay out of markup: ${rawValue}`);
   }
@@ -1394,6 +1457,8 @@ function unmatchedRun() {
 function completedRun({
   fixture,
   drafts,
+  durableDrafts = [],
+  inboundMessages = [],
   callModel = false,
   stage = "reply_ready",
   messageIntent = "information_request",
@@ -1440,6 +1505,12 @@ function completedRun({
         messageCategory,
         messageSummary,
         missingFactKey: "",
+        inboundMessages,
+        drafts: durableDrafts.map((draft) => ({
+          id: draft.id,
+          text: draft.text || draft.currentText,
+          revision: draft.revision
+        })),
         messages: drafts,
         hrMessage: PRIVATE_BODY,
         previewText: PRIVATE_PREVIEW,
@@ -1491,6 +1562,7 @@ function jobUnderstandingCompletedRun(fixture) {
       companyBusiness: "JD 显示该岗位服务于企业知识管理。",
       fitLabel: "中",
       fitSummary: "候选人有 RAG 项目经验；生产运维经验仍需确认",
+      workSchedule: "双休",
       salary: "15-25K·13薪",
       opportunityVerdict: "可以了解，但要先确认关键问题",
       opportunitySummary: "候选人有 RAG 项目经验；生产运维经验仍需确认"
@@ -1513,6 +1585,7 @@ function jobUnderstandingCompletedRun(fixture) {
         contextSource: "local_cache",
         contextComplete: true,
         job,
+        inboundMessages: [{ kind: "text", text: OPEN_HR_TEXT }],
         manualActions: [{
           kind: "resume_request",
           title: "ATTACKER ACTION TITLE",
@@ -1537,6 +1610,7 @@ function jobUnderstandingCompletedRun(fixture) {
         contextSource: "message_discovery_detail",
         contextComplete: true,
         job: { ...job, title: "面试岗位" },
+        inboundMessages: [{ kind: "resume_request", text: RESUME_REQUEST_SUMMARY }],
         messages: ["您好，感谢邀请，请问面试时间和形式如何安排？"]
       }, {
         cardId: fixture.card.id + 2,
@@ -1767,17 +1841,37 @@ function durableDraftRecoverySmoke() {
       messages: [PRIVATE_DRAFT],
       createdAt: now
     })[0];
+    saveMessageInboundContext(durableDb, {
+      profileId,
+      cardId,
+      messageGroupKey: `sha256:${"d".repeat(64)}`,
+      conversationKey: `sha256:${"c".repeat(64)}`,
+      sourceJobId: "boss:durable-job",
+      lastMessageId: "378917037748762",
+      messageIntent: "information_request",
+      messageCategory: "qualification",
+      inboundMessages: [{ kind: "text", text: OPEN_HR_TEXT }],
+      manualActions: [],
+      createdAt: now,
+      updatedAt: now
+    });
     const controller = createMessageDiscoveryController({ db: durableDb });
     const pageState = controller.pageState(profileId);
     assert.strictEqual(pageState.status, "completed");
     assert.strictEqual(pageState.results[0].drafts[0].id, draft.id);
     assert.strictEqual(pageState.results[0].drafts[0].text, PRIVATE_DRAFT);
     assert.strictEqual(pageState.results[0].job.title, "持久化岗位");
+    assert.deepStrictEqual(pageState.results[0].inboundMessages, [{ kind: "text", text: OPEN_HR_TEXT }]);
     const publicStatus = controller.status(profileId);
     assert(!JSON.stringify(publicStatus).includes(PRIVATE_DRAFT), "durable draft text must stay out of public status JSON");
     assert(!Object.hasOwn(publicStatus.results[0], "drafts"));
     controller.clearDraftForCard(profileId, cardId);
     assert.strictEqual(controller.pageState(profileId).results.length, 0);
+    assert.strictEqual(getMessageInboundContext(durableDb, {
+      profileId,
+      cardId,
+      messageGroupKey: `sha256:${"d".repeat(64)}`
+    }), null);
     assert.strictEqual(closeMessageReplyDrafts(durableDb, { profileId, cardId, closedAt: now }), 0, "clearDraftForCard must already close durable rows");
   } finally {
     durableDb.close();
@@ -1808,7 +1902,7 @@ function assertMessageDiscoveryProductFrame(markup, fixture) {
 }
 
 function assertManualProgressRemainsOrdinary(markup) {
-  assert.match(markup, /<form method="post" action="\/api\/progress">[\s\S]*?name="action" value="reply_confirmed_sent"/, "manual sent must remain an ordinary progress form");
+  assert.match(markup, /<form[^>]*action="\/api\/progress"[^>]*>[\s\S]*?name="action" value="reply_confirmed_sent"/, "manual sent must remain an ordinary progress form");
   assert.doesNotMatch(markup, /<form[^>]*action="\/api\/progress"[^>]*data-discovery-form/, "manual sent must stay outside discovery fetch wiring");
 }
 

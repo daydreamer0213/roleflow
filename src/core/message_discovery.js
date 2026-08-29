@@ -6,7 +6,8 @@ const {
   getCandidateProfile,
   listCandidateFacts,
   listCandidateAnswerMemories,
-  recordMessageReplyDrafts
+  recordMessageReplyDrafts,
+  saveMessageInboundContext
 } = require("./storage");
 const { safeDigest, messageKey } = require("../adapters/sites/boss_message_dom");
 const { MANUAL_ONLY_CATEGORIES } = require("./message_reply_contract");
@@ -235,6 +236,7 @@ async function runBossMessageDiscovery({
       return emitStopped(incoming.reasonCode, queue.length, results, logger, onStatus, retained, processed, counters);
     }
 
+    const inboundMessages = inboundDisplayMessages(incoming);
     let classification;
     try {
       const answerMemories = incoming.messages.length
@@ -306,6 +308,23 @@ async function runBossMessageDiscovery({
       messages: safeDraftMessages(classification),
       createdAt: now()
     });
+    if (drafts.some((draft) => !draft.closedAt) && target.identityVerified === true) {
+      const contextAt = now();
+      saveMessageInboundContext(db, {
+        profileId,
+        cardId: card.id,
+        messageGroupKey: incoming.messageGroupKey,
+        conversationKey: target.conversationKey,
+        sourceJobId: target.sourceJobId,
+        lastMessageId: target.lastMessageId,
+        messageIntent: classification.messageIntent,
+        messageCategory: classification.messageCategory,
+        inboundMessages,
+        manualActions: classification.manualActions || [],
+        createdAt: contextAt,
+        updatedAt: contextAt
+      });
+    }
     commitBaseline(db, profileId, target, now());
     clearUnresolvedMessageDiscoveryItem(db, {
       profileId,
@@ -321,7 +340,8 @@ async function runBossMessageDiscovery({
       classification,
       resolved.job,
       resolved.contextSource || resolved.job.contextSource || "",
-      drafts
+      drafts,
+      inboundMessages
     ));
     emitStatus(
       safeStatus("running", { queued: queue.length, processed, results, unresolved: retained.count, reasonCode: retained.reasonCode, counters }),
@@ -567,7 +587,7 @@ function clearMessageSources(messages) {
   }
 }
 
-function safeResult(card, result, resolvedJob, contextSource, drafts = []) {
+function safeResult(card, result, resolvedJob, contextSource, drafts = [], inboundMessages = []) {
   const missingFactKey = String(result.missingFact?.key || "").trim().slice(0, 80);
   const safeDrafts = Array.isArray(drafts) ? drafts.slice(0, 2).map((draft) => ({
     id: Number(draft.id),
@@ -588,9 +608,33 @@ function safeResult(card, result, resolvedJob, contextSource, drafts = []) {
     contextSource: ["local_cache", "message_discovery_detail"].includes(contextSource) ? contextSource : "",
     contextComplete: hasCompleteJobContext(resolvedJob),
     job: projectMessageDecisionCard(resolvedJob),
+    inboundMessages: safeInboundDisplayMessages(inboundMessages),
     drafts: safeDrafts,
     messages
   };
+}
+
+function inboundDisplayMessages(incoming = {}) {
+  const values = Array.isArray(incoming.messages)
+    ? incoming.messages.map((message) => ({ kind: "text", text: String(message?.text || "") }))
+    : [];
+  if (Array.isArray(incoming.manualActions)
+    && incoming.manualActions.some((action) => action?.kind === "resume_request")) {
+    values.push({ kind: "resume_request", text: "HR 邀请你发送简历" });
+  }
+  return safeInboundDisplayMessages(values);
+}
+
+function safeInboundDisplayMessages(value) {
+  const result = [];
+  for (const item of Array.isArray(value) ? value : []) {
+    const kind = String(item?.kind || "");
+    const text = String(item?.text || "").replace(/\r\n?/g, "\n").trim().slice(0, 4000);
+    if (kind === "text" && text) result.push({ kind, text });
+    else if (kind === "resume_request" && text === "HR 邀请你发送简历") result.push({ kind, text });
+    if (result.length >= 5) break;
+  }
+  return result;
 }
 
 function safeDraftMessages(result = {}) {
@@ -635,6 +679,7 @@ function projectMessageDecisionCard(job = {}) {
     ...companyDecisionSummary(analysis),
     fitLabel,
     fitSummary,
+    workSchedule: decisionWorkSchedule(analysis),
     salary: safeProjectionText(job.salary, 80),
     opportunityVerdict: opportunityVerdict(analysis.recommendation),
     opportunitySummary
@@ -748,6 +793,7 @@ function safeStatus(status, value = {}) {
     results: Array.isArray(value.results)
       ? value.results.map((item) => ({
         ...item,
+        inboundMessages: safeInboundDisplayMessages(item.inboundMessages),
         drafts: Array.isArray(item.drafts) ? item.drafts.map((draft) => ({ ...draft })) : [],
         messages: Array.isArray(item.messages) ? [...item.messages] : []
       }))
@@ -764,6 +810,17 @@ function visibleCounters(rows, unbound) {
     currentDelivered: values.filter((row) => row?.previewKind === "self_delivered").length,
     unbound: Math.max(0, Number(unbound) || 0)
   };
+}
+
+function decisionWorkSchedule(analysis = {}) {
+  const label = {
+    double_weekend: "双休",
+    alternating_weekend: "大小周/单双休",
+    single_weekend: "单休"
+  }[String(analysis.workSchedule || "")];
+  if (!label) return "工作安排未确认";
+  const evidence = meaningfulAnalysisText(analysis.workScheduleEvidence, 120);
+  return evidence ? `${label}（${evidence}）` : label;
 }
 
 function safeCounters(value = {}) {

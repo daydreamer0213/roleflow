@@ -304,10 +304,14 @@ function closeMessageReplyDrafts(db, {
   const profile = positiveInteger(profileId, "profileId");
   const card = positiveInteger(cardId, "cardId");
   const at = isoText(closedAt, "closedAt");
-  return Number(db.prepare(`UPDATE message_reply_drafts
-    SET closed_at = COALESCE(closed_at, ?), updated_at = ?
-    WHERE profile_id = ? AND card_id = ? AND closed_at IS NULL`)
-    .run(at, at, profile, card).changes);
+  return immediateTransaction(db, () => {
+    const changes = Number(db.prepare(`UPDATE message_reply_drafts
+      SET closed_at = COALESCE(closed_at, ?), updated_at = ?
+      WHERE profile_id = ? AND card_id = ? AND closed_at IS NULL`)
+      .run(at, at, profile, card).changes);
+    purgeClosedInboundContexts(db, { profileId: profile, cardId: card });
+    return changes;
+  });
 }
 
 function projectCandidateFact(db, profileId, factKey, projectedAt) {
@@ -357,6 +361,27 @@ function updateDraftOnCompletion(db, draft, finalText, completionKind, at) {
     closed_at = CASE WHEN ? = 'sent' THEN COALESCE(closed_at, ?) ELSE closed_at END,
     updated_at = ?
     WHERE id = ?`).run(finalText, changedCurrent ? 1 : 0, completionKind, at, at, draft.id);
+  if (completionKind === "sent") {
+    purgeClosedInboundContexts(db, {
+      profileId: draft.profileId,
+      cardId: draft.cardId,
+      messageGroupKey: draft.messageGroupKey
+    });
+  }
+}
+
+function purgeClosedInboundContexts(db, { profileId, cardId, messageGroupKey = "" }) {
+  const groupClause = messageGroupKey ? "AND message_group_key = ?" : "";
+  const values = messageGroupKey ? [profileId, cardId, messageGroupKey] : [profileId, cardId];
+  db.prepare(`DELETE FROM message_inbound_contexts
+    WHERE profile_id = ? AND card_id = ? ${groupClause}
+      AND NOT EXISTS (
+        SELECT 1 FROM message_reply_drafts drafts
+        WHERE drafts.profile_id = message_inbound_contexts.profile_id
+          AND drafts.card_id = message_inbound_contexts.card_id
+          AND drafts.message_group_key = message_inbound_contexts.message_group_key
+          AND drafts.closed_at IS NULL
+      )`).run(...values);
 }
 
 function requireDraft(db, profileId, draftId) {

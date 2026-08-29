@@ -9,7 +9,9 @@ const {
   getMessageReplyDraft,
   listCandidateAnswerMemories,
   listCandidateFacts,
-  listOpenMessageReplyDrafts
+  listOpenMessageReplyDrafts,
+  saveMessageInboundContext,
+  getMessageInboundContext
 } = require("../src/core/storage");
 const { createMessageReplyLearningService } = require("../src/application/message_learning");
 const { createDashboardServer } = require("../src/dashboard/server");
@@ -179,6 +181,20 @@ async function main() {
     messageCategory: "availability",
     messages: ["我可以尽快到岗。"]
   })[0];
+  saveMessageInboundContext(db, {
+    profileId: fixture.profileId,
+    cardId: fixture.cardId,
+    messageGroupKey: `sha256:${"e".repeat(64)}`,
+    conversationKey: `sha256:${"7".repeat(64)}`,
+    sourceJobId: "boss:learning-job",
+    lastMessageId: "378917037748763",
+    messageIntent: "information_request",
+    messageCategory: "availability",
+    inboundMessages: [{ kind: "text", text: "HR 原文只保留到草稿发送完成" }],
+    manualActions: [],
+    createdAt: "2026-08-28T06:10:00.000Z",
+    updatedAt: "2026-08-28T06:10:00.000Z"
+  });
   response = await postForm(base, "/api/progress", {
     action: "reply_confirmed_sent",
     cardId: fixture.cardId,
@@ -218,6 +234,11 @@ async function main() {
   });
   assert.strictEqual(response.status, 303);
   assert.strictEqual(getMessageReplyDraft(db, { profileId: fixture.profileId, draftId: sentDraft.id }).closedAt.length > 0, true);
+  assert.strictEqual(getMessageInboundContext(db, {
+    profileId: fixture.profileId,
+    cardId: fixture.cardId,
+    messageGroupKey: `sha256:${"e".repeat(64)}`
+  }), null, "manual sent completion must purge the last open draft's HR context in the same local transaction");
   const eventCount = db.prepare("SELECT COUNT(*) AS count FROM candidate_progress_events WHERE card_id = ? AND idempotency_key = ?")
     .get(fixture.cardId, progressKey).count;
   assert.strictEqual(eventCount, 1);
