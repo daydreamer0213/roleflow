@@ -195,7 +195,7 @@ const { renderWorkflowPage: renderWorkflowDocument } = require("./pages/workflow
 const { buildCommunicationViewModel } = require("./view_models/communication");
 const { renderCommunicationPage: renderCommunicationDocument } = require("./pages/communication");
 const { createFunnelAnalysisService } = require("../application/funnel_analysis");
-const { renderFunnelPage } = require("./pages/funnel");
+const { renderFunnelPage, FUNNEL_STRATEGY_SCRIPT } = require("./pages/funnel");
 const { createResumeOptimizationService } = require("../application/resume_optimization");
 const { renderResumeOptimizationPage, RESUME_OPTIMIZATION_SCRIPT } = require("./pages/resume_optimization");
 const { createMockInterviewService } = require("../application/mock_interview");
@@ -5310,7 +5310,7 @@ function renderFunnelDashboardPage({ db, searchParams, funnelAnalysis }) {
   const plan = getSearchPlan(db, searchParams.get("planId"));
   if (!plan) return renderErrorPage("找不到这份筛选方案，请从今日任务重新进入求职体检。", "/plan");
   const dashboard = funnelAnalysis.refresh({ profileId: plan.profileId, planId: plan.id });
-  return renderPage("求职体检", renderFunnelPage({ plan, dashboard }));
+  return renderPage("求职体检", `${renderFunnelPage({ plan, dashboard })}${FUNNEL_STRATEGY_SCRIPT}`);
 }
 
 async function handleFunnelStrategyRound(req, res, { db, funnelAnalysis }) {

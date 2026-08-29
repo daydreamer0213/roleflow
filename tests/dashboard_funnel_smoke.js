@@ -1,7 +1,8 @@
 const assert = require("node:assert/strict");
+const vm = require("node:vm");
 const { openDb, ensureActiveFunnelStrategyRound } = require("../src/core/storage");
 const { createDashboardServer } = require("../src/dashboard/server");
-const { renderFunnelPage } = require("../src/dashboard/pages/funnel");
+const { renderFunnelPage, FUNNEL_STRATEGY_SCRIPT } = require("../src/dashboard/pages/funnel");
 
 const logger = {
   info() {}, warn() {}, error() {},
@@ -60,6 +61,9 @@ const logger = {
     assert.match(response.body, /每个岗位至少经过 48 小时/);
     assert.match(response.body, /跨周末顺延到周一/);
     assert.match(response.body, /等待和未知状态不进入失败分母/);
+    assert.match(response.body, /等待反馈成熟/);
+    assert.match(response.body, /至少 48 小时；周末顺延/);
+    await funnelStrategyClientSmoke(FUNNEL_STRATEGY_SCRIPT);
 
     for (const label of ["发起求职动作", "招聘方已读", "招聘方回复", "有效沟通", "索要简历", "发出面试邀请", "确认面试或后续"]) {
       assert.match(response.body, new RegExp(label), `funnel stage is visible: ${label}`);
@@ -372,4 +376,39 @@ async function getText(baseUrl, pathname) {
     contentType: response.headers.get("content-type") || "",
     body: await response.text()
   };
+}
+
+async function funnelStrategyClientSmoke(markup) {
+  const script = markup.replace(/^<script>|<\/script>$/g, "");
+  const formHandlers = new Map();
+  const changeHandlers = [];
+  const message = { textContent: "" };
+  const validity = [];
+  const checkboxes = [0, 1].map(() => ({
+    checked: false,
+    setCustomValidity(value) { validity.push(value); },
+    reportValidity() { validity.push("reported"); },
+    addEventListener(type, handler) { if (type === "change") changeHandlers.push(handler); }
+  }));
+  const form = {
+    querySelectorAll(selector) { return selector === 'input[name="changeKinds"]' ? checkboxes : []; },
+    querySelector(selector) { return selector === "[data-funnel-strategy-error]" ? message : null; },
+    addEventListener(type, handler) { formHandlers.set(type, handler); }
+  };
+  vm.runInNewContext(script, {
+    document: { querySelector(selector) { return selector === "[data-funnel-strategy-form]" ? form : null; } },
+    console
+  });
+  let prevented = false;
+  formHandlers.get("submit")({ preventDefault() { prevented = true; } });
+  assert.equal(prevented, true);
+  assert.match(message.textContent, /至少选择/);
+  assert(validity.includes("reported"));
+
+  checkboxes[1].checked = true;
+  for (const handler of changeHandlers) handler();
+  prevented = false;
+  formHandlers.get("submit")({ preventDefault() { prevented = true; } });
+  assert.equal(prevented, false, "choosing either strategy change must allow the native form submit");
+  assert.equal(message.textContent, "");
 }

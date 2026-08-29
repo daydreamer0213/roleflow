@@ -116,7 +116,7 @@ function renderSampleMetrics({ diagnosticSample, started, waiting, unknown }) {
   return `<section class="metric-grid funnel-metrics" aria-label="求职样本状态">
     <div class="metric"><span class="metric-label">本轮成熟样本</span><strong class="metric-value">${diagnosticSample}</strong><span class="metric-note">只统计当前策略</span></div>
     <div class="metric"><span class="metric-label">本轮已进入</span><strong class="metric-value">${started}</strong><span class="metric-note">含成熟与等待反馈</span></div>
-    <div class="metric"><span class="metric-label">等待 48 小时</span><strong class="metric-value">${waiting}</strong><span class="metric-note">暂不作为失败</span></div>
+    <div class="metric"><span class="metric-label">等待反馈成熟</span><strong class="metric-value">${waiting}</strong><span class="metric-note">至少 48 小时；周末顺延</span></div>
     <div class="metric"><span class="metric-label">状态未知</span><strong class="metric-value">${unknown}</strong><span class="metric-note">不当作失败</span></div>
   </section>`;
 }
@@ -223,12 +223,13 @@ function renderStrategyBoundary(planId, currentRound) {
   if (!roundId) return "";
   return `<section class="card pad funnel-round-boundary" aria-labelledby="funnel-round-boundary-title">
     <div><p class="section-label">我已经完成外部调整</p><h2 id="funnel-round-boundary-title">从下一次求职动作开始验证新方案</h2><p>先在外部完成修改，再在这里记录边界。旧岗位继续留在第 ${Math.max(1, Number(currentRound.sequenceNumber || 1))} 轮，新岗位进入下一轮。</p></div>
-    <form method="post" action="/api/funnel/strategy-round">
+    <form method="post" action="/api/funnel/strategy-round" data-funnel-strategy-form>
       <input type="hidden" name="planId" value="${escapeAttr(planId)}">
       <input type="hidden" name="fromRoundId" value="${escapeAttr(roundId)}">
       <fieldset><legend>这次调整了什么？</legend><label><input type="checkbox" name="changeKinds" value="greeting"> 招呼语</label><label><input type="checkbox" name="changeKinds" value="strategy"> 求职方向或投递策略</label></fieldset>
       <label>调整说明（可选）<textarea name="changeNote" maxlength="300" rows="3" placeholder="例如：缩短招呼语，突出 RAG 项目经验"></textarea></label>
       <button type="submit">修改完成，开始验证新方案</button>
+      <p class="alert" data-funnel-strategy-error role="alert"></p>
     </form>
   </section>`;
 }
@@ -282,4 +283,6 @@ function positiveNumber(value, fallback) {
   return Number.isFinite(number) && number > 0 ? number : fallback;
 }
 
-module.exports = { renderFunnelPage };
+const FUNNEL_STRATEGY_SCRIPT = `<script>(()=>{const form=document.querySelector('[data-funnel-strategy-form]');if(!form)return;const choices=Array.from(form.querySelectorAll('input[name="changeKinds"]'));const error=form.querySelector('[data-funnel-strategy-error]');const clear=()=>{if(choices[0])choices[0].setCustomValidity('');if(error)error.textContent='';};for(const choice of choices)choice.addEventListener('change',clear);form.addEventListener('submit',(event)=>{clear();if(choices.some((choice)=>choice.checked))return;event.preventDefault();const message='请至少选择招呼语或求职方向 / 投递策略。';if(error)error.textContent=message;if(choices[0]){choices[0].setCustomValidity(message);choices[0].reportValidity();}});})();</script>`;
+
+module.exports = { renderFunnelPage, FUNNEL_STRATEGY_SCRIPT };
