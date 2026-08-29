@@ -99,8 +99,11 @@ function normalizeQuestion(value, evidenceById) {
   for (const evidenceId of resumeEvidenceIds) {
     if (!evidenceById.has(evidenceId)) throw new Error(`问题引用了不存在的简历证据：${evidenceId}`);
   }
+  const text = cleanText(value.text, 4_000, "问题");
+  const citedEvidence = resumeEvidenceIds.map((evidenceId) => evidenceById.get(evidenceId));
+  assertQuestionResponsibilityBoundary(text, citedEvidence);
   return {
-    text: cleanText(value.text, 4_000, "问题"),
+    text,
     focus: cleanText(value.focus, 120, "问题重点"),
     resumeEvidenceIds,
     basedOnTurnNumber: basedOn === null || basedOn === undefined || basedOn === ""
@@ -108,6 +111,16 @@ function normalizeQuestion(value, evidenceById) {
       : Number(basedOn),
     answerEvidence: cleanText(value.answerEvidence, 300, "回答片段", { required: false })
   };
+}
+
+function assertQuestionResponsibilityBoundary(questionText, citedEvidence) {
+  const assumesStrongOwnership = /你(?:主要)?(?:负责|主导|牵头|独立完成|独立负责|全权负责)的/.test(questionText);
+  if (!assumesStrongOwnership) return;
+  const evidenceSupportsStrongOwnership = citedEvidence.some((item) =>
+    /负责|主导|牵头|独立完成|独立负责|全权负责/.test(String(item?.text || "")));
+  if (!evidenceSupportsStrongOwnership) {
+    throw new Error("问题不能超出简历证据中的职责边界");
+  }
 }
 
 function validateInterviewStep(raw, context = {}) {

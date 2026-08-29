@@ -41,6 +41,45 @@ const first = validateInterviewStep({
 assert.strictEqual(first.nextQuestion.basedOnTurnNumber, null);
 assert.deepStrictEqual(first.nextQuestion.resumeEvidenceIds, ["R2"]);
 
+assert.throws(() => validateInterviewStep({
+  answerReview: null,
+  nextQuestion: {
+    text: "请具体说说你负责的知识库开发工作。",
+    focus: "contribution",
+    resumeEvidenceIds: ["R2"],
+    basedOnTurnNumber: null
+  },
+  complete: false
+}, { ...stepContext, turns: [] }), /职责边界/);
+
+const neutralContributionQuestion = validateInterviewStep({
+  answerReview: null,
+  nextQuestion: {
+    text: "请具体说说你在知识库开发中参与了哪些工作。",
+    focus: "contribution",
+    resumeEvidenceIds: ["R2"],
+    basedOnTurnNumber: null
+  },
+  complete: false
+}, { ...stepContext, turns: [] });
+assert.strictEqual(neutralContributionQuestion.nextQuestion.focus, "contribution");
+
+const strongOwnershipContext = {
+  ...stepContext,
+  resumeEvidenceCatalog: buildResumeInterviewEvidenceCatalog("个人总结\n负责知识库接口联调\n技能：Node.js")
+};
+const supportedOwnershipQuestion = validateInterviewStep({
+  answerReview: null,
+  nextQuestion: {
+    text: "请具体说说你负责的知识库接口联调工作。",
+    focus: "contribution",
+    resumeEvidenceIds: ["R2"],
+    basedOnTurnNumber: null
+  },
+  complete: false
+}, { ...strongOwnershipContext, turns: [] });
+assert.strictEqual(supportedOwnershipQuestion.nextQuestion.focus, "contribution");
+
 for (const resumeEvidenceIds of [[], ["UNKNOWN"], ["R1", "R2", "R3", "R4", "R5"]]) {
   assert.throws(() => validateInterviewStep({
     answerReview: null,
