@@ -1,6 +1,8 @@
 const assert = require("node:assert/strict");
+const vm = require("node:vm");
 const { openDb, saveProfileAnalysis } = require("../src/core/storage");
 const { createDashboardServer } = require("../src/dashboard/server");
+const { RESUME_OPTIMIZATION_SCRIPT } = require("../src/dashboard/pages/resume_optimization");
 
 const logger = {
   info() {}, warn() {}, error() {},
@@ -141,7 +143,7 @@ const logger = {
       ]).toString()
     });
     assert.equal(create.status, 303);
-    assert.equal(create.headers.location, `/resume-optimization?planId=${owner.planId}&draftId=41`);
+    assert.equal(create.headers.location, `/resume-optimization?planId=${owner.planId}&draftId=41#resume-opt-draft-title`);
     assert.deepEqual(calls.create, [{
       profileId: owner.profileId,
       planId: owner.planId,
@@ -166,6 +168,7 @@ const logger = {
       }).toString()
     });
     assert.equal(activate.status, 303);
+    assert.equal(activate.headers.location, `/resume-optimization?planId=${owner.planId}&draftId=41#resume-opt-activated`);
     assert.equal(calls.activate.length, 1, "activation must call the service exactly once without an intermediate confirmation page");
     assert.deepEqual(calls.activate[0], {
       profileId: owner.profileId,
@@ -205,6 +208,7 @@ const logger = {
       process.off("unhandledRejection", recordUnhandled);
     }
     assert.equal(unhandled.length, 0, "resume failure must not become an unhandled rejection");
+    await resumeSubmitClientSmoke(RESUME_OPTIMIZATION_SCRIPT);
 
     console.log("dashboard_resume_optimization_smoke ok");
   } finally {
@@ -256,4 +260,63 @@ async function waitFor(predicate) {
     if (Date.now() > deadline) throw new Error("timed out waiting for request");
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
+}
+
+async function resumeSubmitClientSmoke(markup) {
+  const script = markup.replace(/^<script>|<\/script>$/g, "");
+  const formHandlers = new Map();
+  const fieldHandlers = new Map();
+  const status = { textContent: "修改后会自动保存。" };
+  const editor = {
+    value: "失败后仍应保留的简历全文",
+    readOnly: false,
+    addEventListener(type, handler) { fieldHandlers.set(type, handler); }
+  };
+  const button = { disabled: false, textContent: "启用为新版本", formAction: "/api/resume-optimization/activate" };
+  const form = {
+    action: "/api/resume-optimization/save",
+    elements: { planId: { value: "1" }, draftId: { value: "41" }, finalText: editor },
+    querySelector(selector) {
+      if (selector === "[data-resume-save-status]" || selector === "[data-resume-error]") return status;
+      return null;
+    },
+    addEventListener(type, handler) { formHandlers.set(type, handler); }
+  };
+  class FakeFormData {
+    constructor(source) { this.source = source; }
+    *[Symbol.iterator]() {
+      for (const [name, control] of Object.entries(this.source.elements)) yield [name, control.value];
+    }
+  }
+  let response = { ok: false, url: "", async text() { return JSON.stringify({ error: "模型生成失败，请直接重试。" }); } };
+  const navigations = [];
+  const context = {
+    document: {
+      querySelector(selector) {
+        if (selector === "[data-resume-editor]") return form;
+        if (selector === "[data-copy-resume]") return null;
+        return null;
+      },
+      querySelectorAll(selector) { return selector === "[data-resume-submit]" ? [form] : []; },
+      getElementById(id) { return id === "resume-opt-final-text" ? editor : null; }
+    },
+    navigator: { clipboard: { async writeText() {} } },
+    FormData: FakeFormData,
+    URLSearchParams,
+    fetch: async () => response,
+    location: { assign(url) { navigations.push(url); } },
+    setTimeout,
+    clearTimeout,
+    console
+  };
+  vm.runInNewContext(script, context);
+  await formHandlers.get("submit")({ preventDefault() {}, submitter: button });
+  assert.equal(editor.value, "失败后仍应保留的简历全文");
+  assert.match(status.textContent, /模型生成失败/);
+  assert.equal(button.disabled, false);
+  assert.equal(button.textContent, "启用为新版本");
+
+  response = { ok: true, url: "http://127.0.0.1/resume-optimization?planId=1&draftId=41#resume-opt-activated", async text() { return ""; } };
+  await formHandlers.get("submit")({ preventDefault() {}, submitter: button });
+  assert.deepEqual(navigations, [response.url]);
 }

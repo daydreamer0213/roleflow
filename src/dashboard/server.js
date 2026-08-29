@@ -5368,7 +5368,7 @@ async function handleResumeOptimizationCreate(req, res, { db, resumeOptimization
     sourceResumeVersionId: Number(params.sourceResumeVersionId),
     targetDirection: String(params.targetDirection || "").trim()
   });
-  redirect(res, `/resume-optimization?planId=${encodeURIComponent(plan.id)}&draftId=${encodeURIComponent(draft.id)}`);
+  redirect(res, `/resume-optimization?planId=${encodeURIComponent(plan.id)}&draftId=${encodeURIComponent(draft.id)}#resume-opt-draft-title`);
 }
 
 async function handleResumeOptimizationSave(req, res, { db, resumeOptimization }) {
@@ -5386,7 +5386,7 @@ async function handleResumeOptimizationSave(req, res, { db, resumeOptimization }
   if (contentType.includes("application/json") || String(req.headers.accept || "").includes("application/json")) {
     return sendJson(res, 200, { ok: true });
   }
-  redirect(res, `/resume-optimization?planId=${encodeURIComponent(plan.id)}&draftId=${encodeURIComponent(draftId)}`);
+  redirect(res, `/resume-optimization?planId=${encodeURIComponent(plan.id)}&draftId=${encodeURIComponent(draftId)}#resume-opt-draft-title`);
 }
 
 async function handleResumeOptimizationActivate(req, res, { db, resumeOptimization }) {
@@ -5399,7 +5399,7 @@ async function handleResumeOptimizationActivate(req, res, { db, resumeOptimizati
     draftId,
     finalText: String(params.finalText || "")
   }));
-  redirect(res, `/resume-optimization?planId=${encodeURIComponent(plan.id)}&draftId=${encodeURIComponent(draftId)}`);
+  redirect(res, `/resume-optimization?planId=${encodeURIComponent(plan.id)}&draftId=${encodeURIComponent(draftId)}#resume-opt-activated`);
 }
 
 function requiredResumeOptimizationPlan(db, planId) {
