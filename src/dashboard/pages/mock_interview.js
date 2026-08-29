@@ -42,10 +42,11 @@ function renderStartPanel(dashboard, modelReady) {
       </fieldset>
       <div class="interview-job-panel" data-interview-job-panel hidden><label>目标岗位<select name="jobId" disabled>${jobs.map((job) => `<option value="${escapeAttr(job.id)}">${escapeHtml(job.title || "未命名岗位")} · ${escapeHtml(job.company || "公司未记录")}</option>`).join("")}</select></label></div>
       <label>简历版本<select name="resumeVersionId" required>${resumes.map((resume) => `<option value="${escapeAttr(resume.id)}"${activeResume?.id === resume.id ? " selected" : ""}>${escapeHtml(resume.name || "简历版本")}${resume.isActive ? " · 当前使用" : ""}</option>`).join("")}</select></label>
-      <label>面试类型<select name="type"><option value="mixed">综合面试</option><option value="technical">技术 / 业务</option><option value="behavioral">行为问题</option><option value="general">通用沟通</option></select></label>
+      <label>题目侧重<select name="type"><option value="mixed">综合面试</option><option value="technical">技术 / 业务</option><option value="behavioral">行为问题</option><option value="general">自我介绍与沟通</option></select></label>
       <label>难度<select name="difficulty"><option value="standard">标准</option><option value="warmup">热身</option><option value="challenging">高压追问</option></select></label>
       <label>计划题数<select name="plannedQuestions"><option value="3">3 题 · 快速练习</option><option value="5" selected>5 题 · 推荐</option><option value="8">8 题 · 完整练习</option><option value="12">12 题 · 深入练习</option></select></label>
       <div class="button-row"><button${!modelReady || !resumes.length ? " disabled" : ""}>开始模拟面试</button><span class="hint">训练范围和简历会冻结在本轮记录中，后续更新不会悄悄切换上下文。</span></div>
+      <p class="alert" data-interview-error role="alert"></p>
     </form>
   </section>`;
 }
@@ -85,12 +86,12 @@ function renderCurrentQuestion(dashboard, session) {
   if (!current) return `<section class="card pad alert"><strong>首题尚未生成</strong><p>请返回历史记录重新打开；当前冻结会话不会丢失。</p></section>`;
   if (current.answerText) {
     const canFinish = turns.length >= Number(session.settings?.plannedQuestions || 0);
-    return canFinish ? `<section class="card pad interview-finish"><p class="section-label">题目已完成</p><h3>生成本轮复盘</h3><p>复盘会引用具体题号，不会把训练分数包装成录用概率。</p><form method="post" action="/api/interview/finish" data-interview-submit><input type="hidden" name="planId" value="${escapeAttr(planId)}"><input type="hidden" name="sessionId" value="${escapeAttr(session.id)}"><button>结束并生成复盘</button></form></section>` : "";
+    return canFinish ? `<section id="interview-active-step" class="card pad interview-finish"><p class="section-label">题目已完成</p><h3>生成本轮复盘</h3><p>复盘会引用具体题号，不会把训练分数包装成录用概率。</p><form method="post" action="/api/interview/finish" data-interview-submit><input type="hidden" name="planId" value="${escapeAttr(planId)}"><input type="hidden" name="sessionId" value="${escapeAttr(session.id)}"><button>结束并生成复盘</button><p class="alert" data-interview-error role="alert"></p></form></section>` : "";
   }
-  return `<section class="interview-current" aria-labelledby="interview-current-question">
+  return `<section id="interview-active-step" class="interview-current" aria-labelledby="interview-current-question">
     <div class="interview-question-number">Q${escapeHtml(current.turnNumber)}</div>
     <div><p class="section-label">当前问题 · ${escapeHtml(focusLabel(current.questionFocus))}</p><h3 id="interview-current-question">${escapeHtml(current.questionText)}</h3>${renderQuestionEvidence(session, current)}${current.basedOnTurnNumber ? `<p class="interview-followup">这是一道承接第 ${escapeHtml(current.basedOnTurnNumber)} 题回答的追问。</p>` : ""}
-      <form method="post" action="/api/interview/answer" data-interview-submit><input type="hidden" name="planId" value="${escapeAttr(planId)}"><input type="hidden" name="sessionId" value="${escapeAttr(session.id)}"><input type="hidden" name="turnNumber" value="${escapeAttr(current.turnNumber)}"><label>我的回答<textarea name="answerText" rows="8" maxlength="20000" required autofocus></textarea><small>按真实经历作答。提交后会直接保存并生成下一题，不会再二次确认。</small></label><button>提交回答并继续</button></form>
+      <form method="post" action="/api/interview/answer" data-interview-submit data-interview-draft="answer"><input type="hidden" name="planId" value="${escapeAttr(planId)}"><input type="hidden" name="sessionId" value="${escapeAttr(session.id)}"><input type="hidden" name="turnNumber" value="${escapeAttr(current.turnNumber)}"><label>我的回答<textarea name="answerText" rows="8" maxlength="20000" required autofocus></textarea><small>按真实经历作答。提交后会直接保存并生成下一题，不会再二次确认。</small></label><button>提交回答并继续</button><p class="alert" data-interview-error role="alert"></p></form>
     </div>
   </section>`;
 }
@@ -105,10 +106,10 @@ function renderReport(session) {
 }
 
 function renderTranscript(dashboard, session) {
-  const turns = session.turns || [];
+  const turns = (session.turns || []).filter((turn) => turn.answerText);
   const planId = dashboard.plan?.id || "";
   if (!turns.length) return "";
-  return `<section class="interview-transcript" aria-labelledby="interview-transcript-title"><div class="interview-section-head"><div><p class="section-label">逐题记录</p><h3 id="interview-transcript-title">问题、原回答与复盘</h3></div><span>${turns.filter((turn) => turn.answerText).length} 题已答</span></div><div class="interview-turn-list">${turns.map((turn) => `<article class="interview-turn"><header><span>Q${escapeHtml(turn.turnNumber)}</span><div><p>${escapeHtml(focusLabel(turn.questionFocus))}</p><h4>${escapeHtml(turn.questionText)}</h4>${renderQuestionEvidence(session, turn)}</div></header>${turn.answerText ? `<div class="interview-answer"><strong>原回答</strong><p>${escapeHtml(turn.answerText)}</p></div>${renderAnswerReview(turn.answerReview)}` : '<p class="muted">等待回答</p>'}${renderRetries(turn.retries)}${session.status === "completed" && turn.answerText ? `<form class="interview-retry-form" method="post" action="/api/interview/retry" data-interview-submit><input type="hidden" name="planId" value="${escapeAttr(planId)}"><input type="hidden" name="sessionId" value="${escapeAttr(session.id)}"><input type="hidden" name="turnNumber" value="${escapeAttr(turn.turnNumber)}"><label>重答这题<textarea name="answerText" rows="5" maxlength="20000" required></textarea><small>新回答会与原回答并列保存，不覆盖历史。</small></label><button class="secondary">保存重答并比较</button></form>` : ""}</article>`).join("")}</div></section>`;
+  return `<section class="interview-transcript" aria-labelledby="interview-transcript-title"><div class="interview-section-head"><div><p class="section-label">逐题记录</p><h3 id="interview-transcript-title">问题、原回答与复盘</h3></div><span>${turns.length} 题已答</span></div><div class="interview-turn-list">${turns.map((turn) => `<article id="interview-turn-${escapeAttr(turn.turnNumber)}" class="interview-turn"><header><span>Q${escapeHtml(turn.turnNumber)}</span><div><p>${escapeHtml(focusLabel(turn.questionFocus))}</p><h4>${escapeHtml(turn.questionText)}</h4>${renderQuestionEvidence(session, turn)}</div></header><div class="interview-answer"><strong>原回答</strong><p>${escapeHtml(turn.answerText)}</p></div>${renderAnswerReview(turn.answerReview)}${renderRetries(turn.retries)}${session.status === "completed" ? `<form class="interview-retry-form" method="post" action="/api/interview/retry" data-interview-submit data-interview-draft="retry"><input type="hidden" name="planId" value="${escapeAttr(planId)}"><input type="hidden" name="sessionId" value="${escapeAttr(session.id)}"><input type="hidden" name="turnNumber" value="${escapeAttr(turn.turnNumber)}"><label>重答这题<textarea name="answerText" rows="5" maxlength="20000" required></textarea><small>新回答会与原回答并列保存，不覆盖历史。</small></label><button class="secondary">保存重答并比较</button><p class="alert" data-interview-error role="alert"></p></form>` : ""}</article>`).join("")}</div></section>`;
 }
 
 function renderAnswerReview(review) {
@@ -158,7 +159,7 @@ function renderStructures(items = []) {
 }
 
 function typeLabel(value) {
-  return { mixed: "综合面试", technical: "技术 / 业务", behavioral: "行为问题", general: "通用沟通" }[value] || "综合面试";
+  return { mixed: "综合面试", technical: "技术 / 业务", behavioral: "行为问题", general: "自我介绍与沟通" }[value] || "综合面试";
 }
 
 function difficultyLabel(value) {
@@ -169,6 +170,6 @@ function focusLabel(value) {
   return { intro: "自我介绍", motivation: "岗位动机", project: "项目深挖", technical: "技术 / 业务", behavioral: "行为问题", pressure: "压力追问", questions: "反问" }[value] || value || "岗位问题";
 }
 
-const MOCK_INTERVIEW_SCRIPT = `<script>(()=>{const start=document.querySelector('.interview-start-form');if(start){const panel=start.querySelector('[data-interview-job-panel]');const job=panel&&panel.querySelector('select[name="jobId"]');const sync=()=>{const selected=start.querySelector('input[name="sessionKind"]:checked');const specific=selected&&selected.value==='job_specific';if(panel)panel.hidden=!specific;if(job){job.disabled=!specific;job.required=!!specific;}};for(const radio of start.querySelectorAll('input[name="sessionKind"]'))radio.addEventListener('change',sync);sync();}for(const form of document.querySelectorAll('[data-interview-submit]')){form.addEventListener('submit',()=>{const button=form.querySelector('button');if(button){button.disabled=true;button.textContent='处理中…';}});}})();</script>`;
+const MOCK_INTERVIEW_SCRIPT = `<script>(()=>{const start=document.querySelector('.interview-start-form');if(start){const panel=start.querySelector('[data-interview-job-panel]');const job=panel&&panel.querySelector('select[name="jobId"]');const sync=()=>{const selected=start.querySelector('input[name="sessionKind"]:checked');const specific=selected&&selected.value==='job_specific';if(panel)panel.hidden=!specific;if(job){job.disabled=!specific;job.required=!!specific;}};for(const radio of start.querySelectorAll('input[name="sessionKind"]'))radio.addEventListener('change',sync);sync();}const storage={get:(key)=>{try{return localStorage.getItem(key)}catch{return null}},set:(key,value)=>{try{localStorage.setItem(key,value)}catch{}},remove:(key)=>{try{localStorage.removeItem(key)}catch{}}};for(const form of document.querySelectorAll('[data-interview-submit]')){const field=form.querySelector('textarea[name="answerText"]');const kind=form.dataset.interviewDraft||'';const sessionId=form.elements.sessionId?.value||'';const turnNumber=form.elements.turnNumber?.value||'';const key=field&&kind&&sessionId&&turnNumber?'roleflow:interview-draft:'+sessionId+':'+turnNumber+':'+kind:'';if(key&&!field.value){const saved=storage.get(key);if(saved!==null)field.value=saved;}if(key)field.addEventListener('input',()=>storage.set(key,field.value));form.addEventListener('submit',async(event)=>{event.preventDefault();const button=event.submitter||form.querySelector('button');const label=button?.textContent||'';const error=form.querySelector('[data-interview-error]');if(error)error.textContent='';if(button){button.disabled=true;button.textContent='处理中…';}try{const response=await fetch(form.action,{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams(new FormData(form))});if(!response.ok){const text=await response.text();let message='操作失败，请稍后重试。';try{message=JSON.parse(text).error||message}catch{}throw new Error(message);}if(key)storage.remove(key);location.assign(response.url||form.action);}catch(failure){if(error)error.textContent=failure.message||'操作失败，请稍后重试。';if(button){button.disabled=false;button.textContent=label;}}});}})();</script>`;
 
 module.exports = { renderMockInterviewPage, MOCK_INTERVIEW_SCRIPT };

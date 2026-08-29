@@ -2,6 +2,8 @@ const assert = require("node:assert/strict");
 const storage = require("../src/core/storage");
 const { openDb, saveProfileAnalysis } = storage;
 const { createDashboardServer } = require("../src/dashboard/server");
+const { renderMockInterviewPage, MOCK_INTERVIEW_SCRIPT } = require("../src/dashboard/pages/mock_interview");
+const vm = require("node:vm");
 
 const logger = {
   info() {}, warn() {}, error() {},
@@ -96,6 +98,9 @@ const logger = {
     assert.match(page.body, /无需面试邀请/);
     assert.match(page.body, /简历通用面试/);
     assert.match(page.body, /岗位专项面试/);
+    assert.match(page.body, /题目侧重/);
+    assert.match(page.body, /自我介绍与沟通/);
+    assert.doesNotMatch(page.body, /面试类型/);
     assert.match(page.body, /value="resume_general" checked/);
     assert.match(page.body, /这道题来自简历/);
     assert.match(page.body, /参与知识库开发/);
@@ -111,6 +116,28 @@ const logger = {
     assert.match(page.body, /我参与知识库开发，并负责接口联调/);
     assert.match(page.body, /name="sessionId" value="51"/);
     assert.match(page.body, /name="turnNumber" value="1"/);
+    assert.match(page.body, /data-interview-draft="retry"/);
+
+    const ongoingSession = {
+      ...selectedSession,
+      status: "active",
+      report: null,
+      turns: [
+        { ...selectedSession.turns[0], retries: [] },
+        { id: 62, turnNumber: 2, questionText: "请说明你在项目中的个人贡献。", questionFocus: "project", resumeEvidenceIds: ["R1"], basedOnTurnNumber: 1, answerText: "", answerReview: null, retries: [] }
+      ]
+    };
+    const ongoingPage = renderMockInterviewPage({
+      dashboard: {
+        profile: { id: owner.profileId }, plan: { id: owner.planId, name: "页面测试方案" },
+        resumes: [{ id: owner.resumeVersionId, name: "基础简历", isActive: true }],
+        jobs: [], sessions: [ongoingSession], selectedSession: ongoingSession
+      },
+      modelReady: true
+    });
+    assert.equal((ongoingPage.match(/请说明你在项目中的个人贡献。/g) || []).length, 1, "the unanswered current question must not be duplicated in the transcript");
+    assert.doesNotMatch(ongoingPage, /等待回答/);
+    assert.match(ongoingPage, /data-interview-draft="answer"/);
 
     const start = await request(baseUrl, "/api/interview/start", {
       method: "POST",
@@ -120,7 +147,7 @@ const logger = {
       }).toString()
     });
     assert.equal(start.status, 303);
-    assert.equal(start.headers.location, `/interview?planId=${owner.planId}&sessionId=52`);
+    assert.equal(start.headers.location, `/interview?planId=${owner.planId}&sessionId=52#interview-active-step`);
     assert.deepEqual(calls.start[0], {
       profileId: owner.profileId, planId: owner.planId, sessionKind: "resume_general", jobId: null,
       resumeVersionId: owner.resumeVersionId,
@@ -146,12 +173,14 @@ const logger = {
       body: new URLSearchParams({ planId: String(owner.planId), sessionId: "51", turnNumber: "1", answerText: "我的回答" }).toString()
     });
     assert.equal(answer.status, 303);
+    assert.equal(answer.headers.location, `/interview?planId=${owner.planId}&sessionId=51#interview-active-step`);
     assert.deepEqual(calls.answer[0], { profileId: owner.profileId, planId: owner.planId, sessionId: 51, turnNumber: 1, answerText: "我的回答" });
 
     const finish = await request(baseUrl, "/api/interview/finish", {
       method: "POST", body: new URLSearchParams({ planId: String(owner.planId), sessionId: "51" }).toString()
     });
     assert.equal(finish.status, 303);
+    assert.equal(finish.headers.location, `/interview?planId=${owner.planId}&sessionId=51#interview-report-title`);
     assert.deepEqual(calls.finish[0], { profileId: owner.profileId, planId: owner.planId, sessionId: 51 });
 
     const retry = await request(baseUrl, "/api/interview/retry", {
@@ -159,6 +188,7 @@ const logger = {
       body: new URLSearchParams({ planId: String(owner.planId), sessionId: "51", turnNumber: "1", answerText: "我的重答" }).toString()
     });
     assert.equal(retry.status, 303);
+    assert.equal(retry.headers.location, `/interview?planId=${owner.planId}&sessionId=51#interview-turn-1`);
     assert.deepEqual(calls.retry[0], { profileId: owner.profileId, planId: owner.planId, sessionId: 51, turnNumber: 1, answerText: "我的重答" });
     assert.equal(readinessCalls, 0, "local interview workflow must not inspect browser readiness");
 
@@ -180,6 +210,7 @@ const logger = {
       process.off("unhandledRejection", recordUnhandled);
     }
     assert.equal(unhandled.length, 0, "interview failure must not become an unhandled rejection");
+    await interviewDraftClientSmoke(MOCK_INTERVIEW_SCRIPT);
     await verifyDefaultServiceConcurrency();
 
     console.log("dashboard_mock_interview_smoke ok");
@@ -309,4 +340,73 @@ async function request(baseUrl, pathname, options = {}) {
     if (timeout) clearTimeout(timeout);
   }
   return { status: response.status, headers: Object.fromEntries(response.headers.entries()), body: await response.text() };
+}
+
+async function interviewDraftClientSmoke(markup) {
+  const script = markup.replace(/^<script>|<\/script>$/g, "");
+  const handlers = new Map();
+  const fieldHandlers = new Map();
+  const field = {
+    value: "",
+    addEventListener(type, handler) { fieldHandlers.set(type, handler); }
+  };
+  const button = { disabled: false, textContent: "提交回答并继续" };
+  const error = { textContent: "" };
+  const form = {
+    action: "/api/interview/answer",
+    dataset: { interviewDraft: "answer" },
+    elements: {
+      planId: { value: "1" }, sessionId: { value: "51" }, turnNumber: { value: "2" }, answerText: field
+    },
+    querySelector(selector) {
+      if (selector === 'textarea[name="answerText"]') return field;
+      if (selector === "button") return button;
+      if (selector === "[data-interview-error]") return error;
+      return null;
+    },
+    querySelectorAll() { return []; },
+    addEventListener(type, handler) { handlers.set(type, handler); }
+  };
+  const values = new Map([["roleflow:interview-draft:51:2:answer", "刷新后恢复的回答"]]);
+  const storage = {
+    getItem(key) { return values.has(key) ? values.get(key) : null; },
+    setItem(key, value) { values.set(key, String(value)); },
+    removeItem(key) { values.delete(key); }
+  };
+  class FakeFormData {
+    constructor(source) { this.source = source; }
+    *[Symbol.iterator]() {
+      for (const [name, control] of Object.entries(this.source.elements)) yield [name, control.value];
+    }
+  }
+  let response = { ok: false, url: "", async text() { return JSON.stringify({ error: "模型暂时不可用，请稍后重试。" }); } };
+  const navigations = [];
+  const context = {
+    document: {
+      querySelector(selector) { return selector === ".interview-start-form" ? null : null; },
+      querySelectorAll(selector) { return selector === "[data-interview-submit]" ? [form] : []; }
+    },
+    localStorage: storage,
+    FormData: FakeFormData,
+    URLSearchParams,
+    fetch: async () => response,
+    location: { assign(url) { navigations.push(url); } },
+    console
+  };
+  vm.runInNewContext(script, context);
+  assert.equal(field.value, "刷新后恢复的回答");
+  field.value = "失败后仍要保留的回答";
+  fieldHandlers.get("input")();
+  assert.equal(values.get("roleflow:interview-draft:51:2:answer"), field.value);
+  await handlers.get("submit")({ preventDefault() {}, submitter: button });
+  assert.equal(field.value, "失败后仍要保留的回答");
+  assert.equal(values.get("roleflow:interview-draft:51:2:answer"), field.value);
+  assert.match(error.textContent, /模型暂时不可用/);
+  assert.equal(button.disabled, false);
+  assert.equal(button.textContent, "提交回答并继续");
+
+  response = { ok: true, url: "http://127.0.0.1/interview?planId=1&sessionId=51#interview-active-step", async text() { return ""; } };
+  await handlers.get("submit")({ preventDefault() {}, submitter: button });
+  assert.equal(values.has("roleflow:interview-draft:51:2:answer"), false, "successful submission must clear only the submitted local draft");
+  assert.deepEqual(navigations, [response.url]);
 }

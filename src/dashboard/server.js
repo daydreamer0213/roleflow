@@ -5436,7 +5436,7 @@ async function handleMockInterviewStart(req, res, { db, mockInterview }) {
       plannedQuestions: Number(params.plannedQuestions)
     }
   });
-  redirect(res, `/interview?planId=${encodeURIComponent(plan.id)}&sessionId=${encodeURIComponent(session.id)}`);
+  redirect(res, `/interview?planId=${encodeURIComponent(plan.id)}&sessionId=${encodeURIComponent(session.id)}#interview-active-step`);
 }
 
 async function handleMockInterviewAnswer(req, res, { db, mockInterview }) {
@@ -5450,7 +5450,7 @@ async function handleMockInterviewAnswer(req, res, { db, mockInterview }) {
     turnNumber: Number(params.turnNumber),
     answerText: params.answerText
   });
-  redirect(res, `/interview?planId=${encodeURIComponent(plan.id)}&sessionId=${encodeURIComponent(sessionId)}`);
+  redirect(res, `/interview?planId=${encodeURIComponent(plan.id)}&sessionId=${encodeURIComponent(sessionId)}#interview-active-step`);
 }
 
 async function handleMockInterviewFinish(req, res, { db, mockInterview }) {
@@ -5458,7 +5458,7 @@ async function handleMockInterviewFinish(req, res, { db, mockInterview }) {
   const plan = requiredMockInterviewPlan(db, params.planId);
   const sessionId = Number(params.sessionId);
   await mockInterview.finishSession({ profileId: plan.profileId, planId: plan.id, sessionId });
-  redirect(res, `/interview?planId=${encodeURIComponent(plan.id)}&sessionId=${encodeURIComponent(sessionId)}`);
+  redirect(res, `/interview?planId=${encodeURIComponent(plan.id)}&sessionId=${encodeURIComponent(sessionId)}#interview-report-title`);
 }
 
 async function handleMockInterviewRetry(req, res, { db, mockInterview }) {
@@ -5472,7 +5472,7 @@ async function handleMockInterviewRetry(req, res, { db, mockInterview }) {
     turnNumber: Number(params.turnNumber),
     answerText: params.answerText
   });
-  redirect(res, `/interview?planId=${encodeURIComponent(plan.id)}&sessionId=${encodeURIComponent(sessionId)}`);
+  redirect(res, `/interview?planId=${encodeURIComponent(plan.id)}&sessionId=${encodeURIComponent(sessionId)}#interview-turn-${encodeURIComponent(Number(params.turnNumber))}`);
 }
 
 function requiredMockInterviewPlan(db, planId) {
