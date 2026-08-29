@@ -1045,7 +1045,9 @@ const MOCK_INTERVIEW_V1_SCHEMA = `
 CREATE TABLE IF NOT EXISTS mock_interview_sessions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   profile_id INTEGER NOT NULL,
-  job_id INTEGER NOT NULL,
+  plan_id INTEGER,
+  session_kind TEXT NOT NULL CHECK(session_kind IN ('resume_general', 'job_specific')),
+  job_id INTEGER,
   resume_version_id INTEGER NOT NULL,
   context_hash TEXT NOT NULL,
   context_json TEXT NOT NULL,
@@ -1057,8 +1059,13 @@ CREATE TABLE IF NOT EXISTS mock_interview_sessions (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   FOREIGN KEY(profile_id) REFERENCES candidate_profiles(id),
+  FOREIGN KEY(plan_id) REFERENCES search_plans(id),
   FOREIGN KEY(job_id) REFERENCES jobs(id),
-  FOREIGN KEY(resume_version_id) REFERENCES candidate_resume_versions(id)
+  FOREIGN KEY(resume_version_id) REFERENCES candidate_resume_versions(id),
+  CHECK(
+    (session_kind = 'resume_general' AND job_id IS NULL) OR
+    (session_kind = 'job_specific' AND job_id IS NOT NULL)
+  )
 );
 CREATE INDEX IF NOT EXISTS idx_mock_interview_sessions_profile
   ON mock_interview_sessions(profile_id, status, updated_at DESC, id DESC);
@@ -1069,7 +1076,9 @@ CREATE TABLE IF NOT EXISTS mock_interview_turns (
   turn_number INTEGER NOT NULL CHECK(turn_number > 0),
   question_text TEXT NOT NULL,
   question_focus TEXT NOT NULL,
+  resume_evidence_ids_json TEXT NOT NULL DEFAULT '[]',
   based_on_turn_number INTEGER,
+  answer_evidence TEXT NOT NULL DEFAULT '',
   answer_text TEXT NOT NULL DEFAULT '',
   answer_review_json TEXT,
   answered_at TEXT,
@@ -1315,8 +1324,72 @@ const MIGRATIONS = [
     apply(db) {
       migrateResumeOptimizationWholeDraft(db);
     }
+  },
+  {
+    version: 25,
+    name: "mock_interview_resume_general_v3",
+    apply(db) {
+      migrateMockInterviewResumeGeneral(db);
+    }
   }
 ];
+
+function migrateMockInterviewResumeGeneral(db) {
+  db.exec(MOCK_INTERVIEW_V1_SCHEMA);
+  const sessionColumns = new Set(db.prepare("PRAGMA table_info(mock_interview_sessions)")
+    .all().map((column) => column.name));
+  if (!sessionColumns.has("session_kind")) {
+    db.exec(`
+      DROP INDEX IF EXISTS idx_mock_interview_sessions_profile;
+      DROP INDEX IF EXISTS idx_mock_interview_sessions_plan;
+      CREATE TABLE mock_interview_sessions_v25 (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        profile_id INTEGER NOT NULL,
+        plan_id INTEGER,
+        session_kind TEXT NOT NULL CHECK(session_kind IN ('resume_general', 'job_specific')),
+        job_id INTEGER,
+        resume_version_id INTEGER NOT NULL,
+        context_hash TEXT NOT NULL,
+        context_json TEXT NOT NULL,
+        settings_json TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('active', 'completed')),
+        report_json TEXT,
+        model_identity_json TEXT NOT NULL DEFAULT '{}',
+        completed_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(profile_id) REFERENCES candidate_profiles(id),
+        FOREIGN KEY(plan_id) REFERENCES search_plans(id),
+        FOREIGN KEY(job_id) REFERENCES jobs(id),
+        FOREIGN KEY(resume_version_id) REFERENCES candidate_resume_versions(id),
+        CHECK(
+          (session_kind = 'resume_general' AND job_id IS NULL) OR
+          (session_kind = 'job_specific' AND job_id IS NOT NULL)
+        )
+      );
+      INSERT INTO mock_interview_sessions_v25(
+        id, profile_id, plan_id, session_kind, job_id, resume_version_id,
+        context_hash, context_json, settings_json, status, report_json,
+        model_identity_json, completed_at, created_at, updated_at
+      )
+      SELECT id, profile_id, plan_id, 'job_specific', job_id, resume_version_id,
+        context_hash, context_json, settings_json, status, report_json,
+        model_identity_json, completed_at, created_at, updated_at
+      FROM mock_interview_sessions;
+      DROP TABLE mock_interview_sessions;
+      ALTER TABLE mock_interview_sessions_v25 RENAME TO mock_interview_sessions;
+    `);
+  }
+  const turnColumns = new Set(db.prepare("PRAGMA table_info(mock_interview_turns)")
+    .all().map((column) => column.name));
+  if (!turnColumns.has("resume_evidence_ids_json")) {
+    db.exec("ALTER TABLE mock_interview_turns ADD COLUMN resume_evidence_ids_json TEXT NOT NULL DEFAULT '[]'");
+  }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_mock_interview_sessions_profile
+    ON mock_interview_sessions(profile_id, status, updated_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_mock_interview_sessions_plan
+    ON mock_interview_sessions(profile_id, plan_id, status, updated_at DESC, id DESC)`);
+}
 
 function migrateResumeOptimizationWholeDraft(db) {
   db.exec(RESUME_OPTIMIZATION_SCHEMA);

@@ -33,6 +33,7 @@ const MOCK_INTERVIEW_PLAN_BINDING_VERSION = 21;
 const MESSAGE_REPLY_SENDING_VERSION = 22;
 const FUNNEL_STRATEGY_ROUNDS_VERSION = 23;
 const RESUME_OPTIMIZATION_WHOLE_DRAFT_VERSION = 24;
+const MOCK_INTERVIEW_RESUME_GENERAL_VERSION = 25;
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-migration-"));
 let db;
@@ -68,10 +69,11 @@ try {
       { version: MOCK_INTERVIEW_PLAN_BINDING_VERSION, name: "mock_interview_plan_binding_v2", backup_path: null },
       { version: MESSAGE_REPLY_SENDING_VERSION, name: "message_reply_sending_v1", backup_path: null },
       { version: FUNNEL_STRATEGY_ROUNDS_VERSION, name: "funnel_strategy_rounds_v2", backup_path: null },
-      { version: RESUME_OPTIMIZATION_WHOLE_DRAFT_VERSION, name: "resume_optimization_whole_draft_v2", backup_path: null }
+      { version: RESUME_OPTIMIZATION_WHOLE_DRAFT_VERSION, name: "resume_optimization_whole_draft_v2", backup_path: null },
+      { version: MOCK_INTERVIEW_RESUME_GENERAL_VERSION, name: "mock_interview_resume_general_v3", backup_path: null }
     ]
   );
-  assert.strictEqual(freshMigrations[freshMigrations.length - 1].name, "resume_optimization_whole_draft_v2");
+  assert.strictEqual(freshMigrations[freshMigrations.length - 1].name, "mock_interview_resume_general_v3");
   assert.strictEqual(freshMigrations[freshMigrations.length - 1].version, SCHEMA_VERSION);
   assert(db.prepare("PRAGMA table_info(communication_batches)").all()
     .some((column) => column.name === "runtime_json"));
@@ -171,8 +173,12 @@ try {
   );
   assert(db.prepare("PRAGMA table_info(mock_interview_sessions)").all()
     .some((column) => column.name === "plan_id"), "mock interview sessions must be plan-bound");
+  assert(db.prepare("PRAGMA table_info(mock_interview_sessions)").all()
+    .some((column) => column.name === "session_kind"), "mock interview sessions must expose session kind");
   assert(db.prepare("PRAGMA table_info(mock_interview_turns)").all()
     .some((column) => column.name === "answer_evidence"), "mock interview follow-ups must persist answer evidence");
+  assert(db.prepare("PRAGMA table_info(mock_interview_turns)").all()
+    .some((column) => column.name === "resume_evidence_ids_json"), "mock interview questions must persist resume evidence IDs");
   assert.strictEqual(
     db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='index' AND name='idx_candidate_funnel_entries_pool'").get().n,
     1
@@ -210,7 +216,7 @@ try {
   assert(SCHEMA_VERSION >= 3);
   assert.strictEqual(SHARED_BOSS_PACING_VERSION, 16);
   assert.strictEqual(MESSAGE_REPLY_LEARNING_VERSION, 17);
-  assert.strictEqual(SCHEMA_VERSION, RESUME_OPTIMIZATION_WHOLE_DRAFT_VERSION);
+  assert.strictEqual(SCHEMA_VERSION, MOCK_INTERVIEW_RESUME_GENERAL_VERSION);
   assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
   const planNow = "2026-08-16T00:00:00.000Z";
   const planProfileId = Number(db.prepare(`INSERT INTO candidate_profiles(
@@ -307,6 +313,92 @@ try {
   assert.strictEqual(migratedResume.sourceText, "旧源简历");
   db.close();
 
+  const interviewV24Path = path.join(root, "mock-interview", "v24-completed.sqlite");
+  fs.mkdirSync(path.dirname(interviewV24Path), { recursive: true });
+  db = new DatabaseSync(interviewV24Path);
+  db.exec(`
+    CREATE TABLE schema_migrations (
+      version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL, backup_path TEXT
+    );
+    CREATE TABLE candidate_profiles (id INTEGER PRIMARY KEY);
+    CREATE TABLE search_plans (id INTEGER PRIMARY KEY, profile_id INTEGER);
+    CREATE TABLE jobs (id INTEGER PRIMARY KEY);
+    CREATE TABLE candidate_resume_versions (id INTEGER PRIMARY KEY, profile_id INTEGER);
+    INSERT INTO candidate_profiles VALUES (1);
+    INSERT INTO search_plans VALUES (2, 1);
+    INSERT INTO jobs VALUES (3);
+    INSERT INTO candidate_resume_versions VALUES (4, 1);
+    CREATE TABLE mock_interview_sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      profile_id INTEGER NOT NULL,
+      job_id INTEGER NOT NULL,
+      resume_version_id INTEGER NOT NULL,
+      context_hash TEXT NOT NULL,
+      context_json TEXT NOT NULL,
+      settings_json TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('active', 'completed')),
+      report_json TEXT,
+      model_identity_json TEXT NOT NULL DEFAULT '{}',
+      completed_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      plan_id INTEGER
+    );
+    CREATE TABLE mock_interview_turns (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id INTEGER NOT NULL,
+      turn_number INTEGER NOT NULL CHECK(turn_number > 0),
+      question_text TEXT NOT NULL,
+      question_focus TEXT NOT NULL,
+      based_on_turn_number INTEGER,
+      answer_text TEXT NOT NULL DEFAULT '',
+      answer_review_json TEXT,
+      answered_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      answer_evidence TEXT NOT NULL DEFAULT '',
+      UNIQUE(session_id, turn_number)
+    );
+    CREATE TABLE mock_interview_retries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id INTEGER NOT NULL,
+      turn_id INTEGER NOT NULL,
+      retry_index INTEGER NOT NULL CHECK(retry_index > 0),
+      answer_text TEXT NOT NULL,
+      review_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE(session_id, turn_id, retry_index)
+    );
+    INSERT INTO mock_interview_sessions VALUES (
+      7, 1, 3, 4, 'v24-context-hash', '{"job":{"id":3},"resume":{"text":"旧简历"}}',
+      '{"type":"mixed","difficulty":"standard","plannedQuestions":1}', 'completed',
+      '{"conclusion":"旧复盘"}', '{"provider":"mock","model":"old"}',
+      '2026-08-28T10:05:00.000Z', '2026-08-28T10:00:00.000Z', '2026-08-28T10:06:00.000Z', 2
+    );
+    INSERT INTO mock_interview_turns VALUES (
+      8, 7, 1, '旧问题', 'experience', NULL, '旧回答', '{"conclusion":"旧逐题复盘"}',
+      '2026-08-28T10:03:00.000Z', '2026-08-28T10:01:00.000Z', '2026-08-28T10:03:00.000Z', ''
+    );
+    INSERT INTO mock_interview_retries VALUES (
+      9, 7, 8, 1, '旧重答', '{"conclusion":"旧重答复盘"}', '2026-08-28T10:06:00.000Z'
+    );
+    PRAGMA user_version = ${RESUME_OPTIMIZATION_WHOLE_DRAFT_VERSION};
+  `);
+  const v24SessionBefore = { ...db.prepare("SELECT * FROM mock_interview_sessions WHERE id = 7").get() };
+  const v24TurnBefore = { ...db.prepare("SELECT * FROM mock_interview_turns WHERE id = 8").get() };
+  const v24RetryBefore = { ...db.prepare("SELECT * FROM mock_interview_retries WHERE id = 9").get() };
+  db.close();
+  db = openDb(interviewV24Path);
+  const v25Session = { ...db.prepare("SELECT * FROM mock_interview_sessions WHERE id = 7").get() };
+  const v25Turn = { ...db.prepare("SELECT * FROM mock_interview_turns WHERE id = 8").get() };
+  const v25Retry = { ...db.prepare("SELECT * FROM mock_interview_retries WHERE id = 9").get() };
+  for (const [key, value] of Object.entries(v24SessionBefore)) assert.deepStrictEqual(v25Session[key], value, `v24 session ${key} must survive`);
+  for (const [key, value] of Object.entries(v24TurnBefore)) assert.deepStrictEqual(v25Turn[key], value, `v24 turn ${key} must survive`);
+  assert.deepStrictEqual(v25Retry, v24RetryBefore);
+  assert.strictEqual(v25Session.session_kind, "job_specific");
+  assert.strictEqual(v25Turn.resume_evidence_ids_json, "[]");
+  db.close();
+
   const mockInterviewV19Path = path.join(root, "mock-interview", "v19.sqlite");
   db = openDb(mockInterviewV19Path);
   const mockInterviewMigrationNow = "2026-08-29T00:00:00.000Z";
@@ -323,7 +415,7 @@ try {
   `);
   db.close();
   db = openDb(mockInterviewV19Path);
-  assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, RESUME_OPTIMIZATION_WHOLE_DRAFT_VERSION);
+  assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, MOCK_INTERVIEW_RESUME_GENERAL_VERSION);
   assert.strictEqual(
     db.prepare("SELECT display_name FROM candidate_profiles WHERE id = ?").get(preservedProfileId).display_name,
     "Mock interview v19 migration",
@@ -438,7 +530,7 @@ try {
   db.close();
 
   db = openDb(mockInterviewV20Path);
-  assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, RESUME_OPTIMIZATION_WHOLE_DRAFT_VERSION);
+  assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, MOCK_INTERVIEW_RESUME_GENERAL_VERSION);
   assert.strictEqual(
     db.prepare("SELECT plan_id FROM mock_interview_sessions WHERE id = ?").get(uniqueSessionId).plan_id,
     v20Owner.planId,
@@ -618,7 +710,8 @@ try {
       { version: MOCK_INTERVIEW_PLAN_BINDING_VERSION, name: "mock_interview_plan_binding_v2" },
       { version: MESSAGE_REPLY_SENDING_VERSION, name: "message_reply_sending_v1" },
       { version: FUNNEL_STRATEGY_ROUNDS_VERSION, name: "funnel_strategy_rounds_v2" },
-      { version: RESUME_OPTIMIZATION_WHOLE_DRAFT_VERSION, name: "resume_optimization_whole_draft_v2" }
+      { version: RESUME_OPTIMIZATION_WHOLE_DRAFT_VERSION, name: "resume_optimization_whole_draft_v2" },
+      { version: MOCK_INTERVIEW_RESUME_GENERAL_VERSION, name: "mock_interview_resume_general_v3" }
     ]
   );
   assert.strictEqual(db.prepare("SELECT source FROM keyword_sources WHERE keyword = 'v1-preserved'").get().source, "migration-smoke");

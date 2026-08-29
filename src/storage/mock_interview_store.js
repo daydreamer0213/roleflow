@@ -20,9 +20,15 @@ function requiredText(value, label, maxLength = 20_000) {
 
 function questionInput(value = {}) {
   const basedOn = value.basedOnTurnNumber;
+  const resumeEvidenceIds = [...new Set((Array.isArray(value.resumeEvidenceIds) ? value.resumeEvidenceIds : [])
+    .map((item) => String(item || "").trim()).filter(Boolean))];
+  if (resumeEvidenceIds.length < 1 || resumeEvidenceIds.length > 4) {
+    throw new Error("问题必须引用 1-4 条简历证据");
+  }
   return {
     text: requiredText(value.text, "问题", 4_000),
     focus: requiredText(value.focus, "问题重点", 120),
+    resumeEvidenceIds,
     basedOnTurnNumber: basedOn == null || basedOn === "" ? null : Number(basedOn),
     answerEvidence: String(value.answerEvidence || "").trim().slice(0, 300)
   };
@@ -50,6 +56,7 @@ function turnRow(row, retries = []) {
     turnNumber: Number(row.turn_number),
     questionText: row.question_text,
     questionFocus: row.question_focus,
+    resumeEvidenceIds: parseJson(row.resume_evidence_ids_json, []),
     basedOnTurnNumber: row.based_on_turn_number == null ? null : Number(row.based_on_turn_number),
     answerEvidence: row.answer_evidence || "",
     answerText: row.answer_text || "",
@@ -78,7 +85,8 @@ function sessionRow(db, row) {
     id: Number(row.id),
     profileId: Number(row.profile_id),
     planId: Number(row.plan_id),
-    jobId: Number(row.job_id),
+    sessionKind: row.session_kind || "job_specific",
+    jobId: row.job_id == null ? null : Number(row.job_id),
     resumeVersionId: Number(row.resume_version_id),
     contextHash: row.context_hash,
     context: parseJson(row.context_json, {}),
@@ -105,16 +113,23 @@ function ownedSessionRow(db, profileId, planId, sessionId) {
 function createMockInterviewSession(db, input = {}) {
   const profileId = positiveId(input.profileId, "profileId");
   const planId = positiveId(input.planId, "planId");
-  const jobId = positiveId(input.jobId, "jobId");
+  const sessionKind = String(input.sessionKind || "").trim();
+  if (!["resume_general", "job_specific"].includes(sessionKind)) throw new Error("面试类型无效");
+  const jobId = sessionKind === "job_specific" ? positiveId(input.jobId, "jobId") : null;
+  if (sessionKind === "resume_general" && input.jobId !== undefined && input.jobId !== null && input.jobId !== "") {
+    throw new Error("简历通用面试不能绑定岗位");
+  }
   const resumeVersionId = positiveId(input.resumeVersionId, "resumeVersionId");
   const ownedPlan = db.prepare("SELECT id FROM search_plans WHERE id = ? AND profile_id = ?").get(planId, profileId);
   if (!ownedPlan) throw storageError("MOCK_INTERVIEW_PLAN_NOT_FOUND", "筛选方案不存在或不属于当前候选人");
-  const ownedJob = db.prepare(`SELECT jobs.id FROM jobs
-    WHERE jobs.id = ? AND EXISTS (
-      SELECT 1 FROM job_observations o JOIN batches b ON b.id = o.batch_id
-      WHERE o.job_id = jobs.id AND b.profile_id = ? AND b.search_plan_id = ?
-    )`).get(jobId, profileId, planId);
-  if (!ownedJob) throw storageError("MOCK_INTERVIEW_JOB_NOT_FOUND", "岗位不存在或不属于当前筛选方案");
+  if (sessionKind === "job_specific") {
+    const ownedJob = db.prepare(`SELECT jobs.id FROM jobs
+      WHERE jobs.id = ? AND EXISTS (
+        SELECT 1 FROM job_observations o JOIN batches b ON b.id = o.batch_id
+        WHERE o.job_id = jobs.id AND b.profile_id = ? AND b.search_plan_id = ?
+      )`).get(jobId, profileId, planId);
+    if (!ownedJob) throw storageError("MOCK_INTERVIEW_JOB_NOT_FOUND", "岗位不存在或不属于当前筛选方案");
+  }
   const ownedResume = db.prepare("SELECT id FROM candidate_resume_versions WHERE id = ? AND profile_id = ? AND is_active = 1")
     .get(resumeVersionId, profileId);
   if (!ownedResume) throw storageError("MOCK_INTERVIEW_RESUME_NOT_FOUND", "启用中的简历不存在或不属于当前候选人");
@@ -126,11 +141,12 @@ function createMockInterviewSession(db, input = {}) {
   return immediateTransaction(db, () => {
     const now = nowIso();
     const result = db.prepare(`INSERT INTO mock_interview_sessions(
-      profile_id, plan_id, job_id, resume_version_id, context_hash, context_json, settings_json,
+      profile_id, plan_id, session_kind, job_id, resume_version_id, context_hash, context_json, settings_json,
       status, report_json, model_identity_json, completed_at, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', NULL, ?, NULL, ?, ?)`).run(
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', NULL, ?, NULL, ?, ?)`).run(
       profileId,
       planId,
+      sessionKind,
       jobId,
       resumeVersionId,
       sha256(contextJson),
@@ -152,9 +168,21 @@ function getMockInterviewSession(db, { profileId, planId, sessionId }) {
 
 function listMockInterviewSessions(db, input = {}) {
   const boundedLimit = Math.max(1, Math.min(100, Number(input.limit) || 30));
+  const clauses = ["profile_id = ?"];
+  const params = [positiveId(input.profileId, "profileId")];
+  if (input.planId !== undefined && input.planId !== null && input.planId !== "") {
+    clauses.push("plan_id = ?");
+    params.push(positiveId(input.planId, "planId"));
+  }
+  if (input.sessionKind) {
+    const sessionKind = String(input.sessionKind).trim();
+    if (!["resume_general", "job_specific"].includes(sessionKind)) throw new Error("面试类型无效");
+    clauses.push("session_kind = ?");
+    params.push(sessionKind);
+  }
   return db.prepare(`SELECT * FROM mock_interview_sessions
-    WHERE profile_id = ? AND plan_id = ? ORDER BY updated_at DESC, id DESC LIMIT ?`)
-    .all(positiveId(input.profileId, "profileId"), positiveId(input.planId, "planId"), boundedLimit)
+    WHERE ${clauses.join(" AND ")} ORDER BY updated_at DESC, id DESC LIMIT ?`)
+    .all(...params, boundedLimit)
     .map((row) => sessionRow(db, row));
 }
 
@@ -177,13 +205,14 @@ function insertQuestionRow(db, sessionId, question, now = nowIso()) {
   }
   if (!previous && question.answerEvidence) throw new Error("首题不能包含上一回答片段");
   const result = db.prepare(`INSERT INTO mock_interview_turns(
-    session_id, turn_number, question_text, question_focus, based_on_turn_number, answer_evidence,
+    session_id, turn_number, question_text, question_focus, resume_evidence_ids_json, based_on_turn_number, answer_evidence,
     answer_text, answer_review_json, answered_at, created_at, updated_at
-  ) VALUES (?, ?, ?, ?, ?, ?, '', NULL, NULL, ?, ?)`).run(
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, '', NULL, NULL, ?, ?)`).run(
     sessionId,
     turnNumber,
     question.text,
     question.focus,
+    JSON.stringify(question.resumeEvidenceIds),
     question.basedOnTurnNumber,
     question.answerEvidence,
     now,

@@ -52,15 +52,40 @@ try {
   assert.throws(() => storage.createMockInterviewSession(db, {
     profileId: other.profileId,
     planId: other.planId,
+    sessionKind: "job_specific",
     jobId,
     resumeVersionId: other.resumeVersionId,
     context: { job: { id: jobId }, resume: { text: "其他简历" } },
-    settings: { type: "mixed", difficulty: "standard", plannedQuestions: 5 }
+    settings: { type: "mixed", difficulty: "standard", plannedQuestions: 5 },
+    initialQuestion: { text: "外部岗位", focus: "intro", resumeEvidenceIds: ["R1"] }
   }), /岗位|不属于|not found/i);
+
+  assert.throws(() => storage.createMockInterviewSession(db, {
+    profileId: owner.profileId,
+    planId: owner.planId,
+    sessionKind: "job_specific",
+    jobId: null,
+    resumeVersionId: owner.resumeVersionId,
+    context: { job: null, resume: { text: "冻结简历正文" } },
+    settings: { type: "mixed", difficulty: "standard", plannedQuestions: 3 },
+    initialQuestion: { text: "岗位专项题", focus: "intro", resumeEvidenceIds: ["R1"] }
+  }), /岗位|positive integer/i);
+
+  assert.throws(() => storage.createMockInterviewSession(db, {
+    profileId: other.profileId,
+    planId: other.planId,
+    sessionKind: "resume_general",
+    jobId,
+    resumeVersionId: other.resumeVersionId,
+    context: { job: null, resume: { text: "其他简历" } },
+    settings: { type: "mixed", difficulty: "standard", plannedQuestions: 3 },
+    initialQuestion: { text: "通用题", focus: "experience", resumeEvidenceIds: ["R1"] }
+  }), /通用|岗位/);
 
   const frozenContext = {
     job: { id: jobId, title: "AI 应用工程师", company: "示例科技", description: "完整冻结 JD" },
     resume: { versionId: owner.resumeVersionId, text: "冻结简历正文" },
+    resumeEvidenceCatalog: [{ id: "R1", kind: "resume", text: "冻结简历正文" }],
     facts: [{ key: "availability", value: "两周到岗" }]
   };
   db.exec(`CREATE TRIGGER fail_initial_interview_question BEFORE INSERT ON mock_interview_turns
@@ -69,11 +94,12 @@ try {
   assert.throws(() => storage.createMockInterviewSession(db, {
     profileId: owner.profileId,
     planId: owner.planId,
+    sessionKind: "job_specific",
     jobId,
     resumeVersionId: owner.resumeVersionId,
     context: frozenContext,
     settings: { type: "mixed", difficulty: "standard", plannedQuestions: 3 },
-    initialQuestion: { text: "forced initial failure", focus: "intro", basedOnTurnNumber: null, answerEvidence: "" }
+    initialQuestion: { text: "forced initial failure", focus: "intro", resumeEvidenceIds: ["R1"], basedOnTurnNumber: null, answerEvidence: "" }
   }), /forced initial question failure/);
   db.exec("DROP TRIGGER fail_initial_interview_question");
   assert.strictEqual(db.prepare("SELECT count(*) AS n FROM mock_interview_sessions").get().n, 0,
@@ -82,14 +108,17 @@ try {
   const session = storage.createMockInterviewSession(db, {
     profileId: owner.profileId,
     planId: owner.planId,
+    sessionKind: "job_specific",
     jobId,
     resumeVersionId: owner.resumeVersionId,
     context: frozenContext,
     settings: { type: "mixed", difficulty: "standard", plannedQuestions: 3 },
-    initialQuestion: { text: "请介绍你和该岗位最相关的经历。", focus: "intro", basedOnTurnNumber: null, answerEvidence: "" },
+    initialQuestion: { text: "请介绍你和该岗位最相关的经历。", focus: "intro", resumeEvidenceIds: ["R1"], basedOnTurnNumber: null, answerEvidence: "" },
     modelIdentity: { provider: "mock", model: "deterministic" }
   });
   assert.strictEqual(session.status, "active");
+  assert.strictEqual(session.sessionKind, "job_specific");
+  assert.strictEqual(session.jobId, jobId);
   assert.strictEqual(session.planId, owner.planId);
   assert.strictEqual(session.turns.length, 1);
   assert.deepStrictEqual(session.context, frozenContext);
@@ -104,15 +133,17 @@ try {
 
   const first = session.turns[0];
   assert.strictEqual(first.turnNumber, 1);
+  assert.deepStrictEqual(first.resumeEvidenceIds, ["R1"]);
   assert.throws(() => storage.appendMockInterviewQuestion(db, {
     profileId: owner.profileId, planId: owner.planId,
     sessionId: session.id,
-    question: { text: "不能跳过未回答问题", focus: "invalid", basedOnTurnNumber: 1, answerEvidence: "" }
+    question: { text: "不能跳过未回答问题", focus: "invalid", resumeEvidenceIds: ["R1"], basedOnTurnNumber: 1, answerEvidence: "" }
   }), /回答/);
 
   const nextQuestion = {
     text: "你刚才提到“知识库”，具体贡献是什么？",
     focus: "project",
+    resumeEvidenceIds: ["R1"],
     basedOnTurnNumber: 1,
     answerEvidence: "知识库"
   };
@@ -171,6 +202,7 @@ try {
     question: {
       text: "你提到“接口”，请说明怎样验证联调结果？",
       focus: "technical",
+      resumeEvidenceIds: ["R1"],
       basedOnTurnNumber: 2,
       answerEvidence: "接口"
     }
@@ -185,6 +217,7 @@ try {
     question: {
       text: "你提到“超时”，再说明一个场景。",
       focus: "technical",
+      resumeEvidenceIds: ["R1"],
       basedOnTurnNumber: 3,
       answerEvidence: "超时"
     }
@@ -216,7 +249,7 @@ try {
   }).id, session.id);
   assert.throws(() => storage.appendMockInterviewQuestion(db, {
     profileId: owner.profileId, planId: owner.planId, sessionId: session.id,
-    question: { text: "迟到问题", focus: "invalid", basedOnTurnNumber: 2, answerEvidence: "接口" }
+    question: { text: "迟到问题", focus: "invalid", resumeEvidenceIds: ["R1"], basedOnTurnNumber: 2, answerEvidence: "接口" }
   }), /结束/);
 
   assert.throws(() => storage.recordMockInterviewRetry(db, {
@@ -234,6 +267,52 @@ try {
   });
   assert.strictEqual(loaded.turns.length, 3);
   assert.strictEqual(loaded.turns[1].retries.length, 1);
+
+  const generalContext = {
+    sessionKind: "resume_general",
+    job: null,
+    resume: { versionId: owner.resumeVersionId, text: "参与企业知识库开发" },
+    resumeEvidenceCatalog: [{ id: "R1", kind: "resume", text: "参与企业知识库开发" }]
+  };
+  const general = storage.createMockInterviewSession(db, {
+    profileId: owner.profileId,
+    planId: owner.planId,
+    sessionKind: "resume_general",
+    jobId: null,
+    resumeVersionId: owner.resumeVersionId,
+    context: generalContext,
+    settings: { type: "mixed", difficulty: "standard", plannedQuestions: 3 },
+    initialQuestion: {
+      text: "简历中写到企业知识库，请介绍这段经历。",
+      focus: "experience",
+      resumeEvidenceIds: ["R1"],
+      basedOnTurnNumber: null,
+      answerEvidence: ""
+    }
+  });
+  assert.strictEqual(general.sessionKind, "resume_general");
+  assert.strictEqual(general.jobId, null);
+  assert.deepStrictEqual(general.turns[0].resumeEvidenceIds, ["R1"]);
+
+  storage.createMockInterviewSession(db, {
+    profileId: owner.profileId,
+    planId: secondOwnerPlanId,
+    sessionKind: "resume_general",
+    jobId: null,
+    resumeVersionId: owner.resumeVersionId,
+    context: generalContext,
+    settings: { type: "mixed", difficulty: "standard", plannedQuestions: 3 },
+    initialQuestion: {
+      text: "请梳理知识库经历。", focus: "experience", resumeEvidenceIds: ["R1"],
+      basedOnTurnNumber: null, answerEvidence: ""
+    }
+  });
+  const profileWideGeneral = storage.listMockInterviewSessions(db, {
+    profileId: owner.profileId,
+    sessionKind: "resume_general"
+  });
+  assert.strictEqual(profileWideGeneral.length, 2);
+  assert(profileWideGeneral.every((item) => item.sessionKind === "resume_general"));
 
   console.log("mock_interview_store_smoke ok");
 } finally {
