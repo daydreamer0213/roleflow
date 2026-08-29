@@ -136,3 +136,23 @@ h2{font-size:19px;font-weight:600}
   .today-section-head{align-items:flex-start;flex-direction:column}
   .today-cycle .metric-grid{grid-template-columns:1fr}
 }
+
+/* Job discovery: results stay visible; execution diagnostics stay secondary. */
+.workflow-focus{margin-top:18px}
+.workflow-focus .workflow-primary{margin:0;padding:20px 22px;background:var(--rf-ink);border:0;border-left:5px solid var(--rf-orange);border-radius:var(--rf-radius)}
+.workflow-focus .workflow-primary h2{color:#fff}
+.workflow-focus .workflow-primary-grid{border:0;background:#52625d}
+.workflow-focus .workflow-primary-field{background:#fff}
+.workflow-result-list{margin-top:18px;padding-top:16px;border-top:2px solid var(--rf-teal)}
+.workflow-result-list .workflow-tracks{margin:0}
+.workflow-result-list .workflow-track{border-radius:7px}
+.workflow-technical>summary{color:var(--rf-ink-soft);font-size:13px;font-weight:600}
+.job-ledger{display:grid;gap:0;margin-top:16px;border-top:2px solid var(--rf-ink)}
+.job-ledger .job{margin:0;padding:17px 4px;border:0;border-bottom:1px solid var(--rf-rule);border-radius:0;box-shadow:none}
+.job-ledger .job-top{align-items:center}
+.job-ledger .details{margin-top:12px}
+.job-ledger .progress-card{border-radius:var(--rf-radius)!important}
+@media(max-width:760px){
+  .workflow-focus .workflow-primary{padding:16px}
+  .job-ledger .job{padding-inline:0}
+}

@@ -514,6 +514,7 @@ async function assertCommunicationClient() {
 
   const queue = await getText(baseUrl, `/queue?planId=${fixture.planId}`);
   const plan = await getText(baseUrl, `/plan?planId=${fixture.planId}`);
+  assert.match(queue.body, /class="[^"]*job-ledger/);
   assert.match(queue.body, new RegExp(`/communication/new\\?planId=${fixture.planId}`));
   assert.match(plan.body, new RegExp(`/communication/new\\?planId=${fixture.planId}`));
   assert.match(queue.body, /批量沟通清单/);

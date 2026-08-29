@@ -1790,6 +1790,10 @@ async function testWorkflowProgressPanel(baseUrl, database, fixture) {
     `/workflow?runId=${encodeURIComponent(fixture.workflowId)}`
   );
   assert.strictEqual(page.status, 200);
+  assert.match(page.body, /class="[^"]*workflow-focus/);
+  assert.match(page.body, /class="[^"]*workflow-result-list/);
+  assert.match(page.body, />运行详情<\/summary>/);
+  assert.match(page.body, /data-workflow-panel/);
   // Break caught: moving technical diagnostics into the first view or hiding user-facing acquisition progress again.
   const primaryStart = page.body.indexOf('class="workflow-primary"');
   const primaryEnd = page.body.indexOf("</section>", primaryStart) + "</section>".length;
