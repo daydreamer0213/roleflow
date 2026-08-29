@@ -6,6 +6,7 @@ const jobStore = require("../storage/job_store");
 const { nowIso, parseJson, OUTCOME_STATUSES, storageError, optionalInteger, optionalPositiveInteger, nullableText, validDate, immediateTransaction } = require("../storage/storage_shared");
 const scanStore = require("../storage/scan_store");
 const messageLearningStore = require("../storage/message_learning_store");
+const messageReplySendStore = require("../storage/message_reply_send_store");
 const funnelStore = require("../storage/funnel_store");
 const resumeOptimizationStore = require("../storage/resume_optimization_store");
 const mockInterviewStore = require("../storage/mock_interview_store");
@@ -841,6 +842,75 @@ CREATE INDEX IF NOT EXISTS idx_candidate_fact_revisions_memory
   ON candidate_fact_revisions(answer_memory_id, fact_key);
 `;
 
+const MESSAGE_REPLY_SENDING_SCHEMA = `
+CREATE TABLE IF NOT EXISTS message_inbound_contexts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  profile_id INTEGER NOT NULL,
+  card_id INTEGER NOT NULL,
+  message_group_key TEXT NOT NULL,
+  conversation_key TEXT NOT NULL,
+  source_job_id TEXT NOT NULL,
+  last_message_id TEXT NOT NULL,
+  message_intent TEXT NOT NULL,
+  message_category TEXT NOT NULL,
+  display_json TEXT NOT NULL,
+  manual_actions_json TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(profile_id, card_id, message_group_key),
+  FOREIGN KEY(profile_id) REFERENCES candidate_profiles(id),
+  FOREIGN KEY(card_id) REFERENCES candidate_progress_cards(id)
+);
+CREATE INDEX IF NOT EXISTS idx_message_inbound_contexts_profile
+  ON message_inbound_contexts(profile_id, updated_at DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS message_reply_send_batches (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  profile_id INTEGER NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('confirmed','running','completed','stopped','interrupted')),
+  stop_code TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT,
+  FOREIGN KEY(profile_id) REFERENCES candidate_profiles(id)
+);
+CREATE INDEX IF NOT EXISTS idx_message_reply_send_batches_profile
+  ON message_reply_send_batches(profile_id, status, updated_at DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS message_reply_send_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  batch_id INTEGER NOT NULL,
+  position INTEGER NOT NULL,
+  draft_id INTEGER NOT NULL,
+  card_id INTEGER NOT NULL,
+  job_id INTEGER NOT NULL,
+  conversation_key TEXT NOT NULL,
+  source_job_id TEXT NOT NULL,
+  expected_last_message_id TEXT NOT NULL,
+  draft_revision INTEGER NOT NULL,
+  reply_text TEXT NOT NULL,
+  reply_digest TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('pending','selecting','verified','filled','click_dispatched','succeeded','target_mismatch','platform_rejected','ambiguous','stopped')),
+  click_count INTEGER NOT NULL DEFAULT 0 CHECK(click_count IN (0,1)),
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  error_code TEXT NOT NULL DEFAULT '',
+  error_message TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(batch_id, position),
+  UNIQUE(batch_id, draft_id),
+  FOREIGN KEY(batch_id) REFERENCES message_reply_send_batches(id),
+  FOREIGN KEY(draft_id) REFERENCES message_reply_drafts(id),
+  FOREIGN KEY(card_id) REFERENCES candidate_progress_cards(id),
+  FOREIGN KEY(job_id) REFERENCES jobs(id)
+);
+CREATE INDEX IF NOT EXISTS idx_message_reply_send_items_batch
+  ON message_reply_send_items(batch_id, position, id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_message_reply_send_items_open_draft
+  ON message_reply_send_items(draft_id)
+  WHERE status IN ('pending','selecting','verified','filled','click_dispatched','ambiguous');
+`;
+
 const JOB_SEARCH_FUNNEL_SCHEMA = `
 CREATE TABLE IF NOT EXISTS candidate_funnel_policies (
   profile_id INTEGER PRIMARY KEY,
@@ -1184,6 +1254,13 @@ const MIGRATIONS = [
     name: "mock_interview_plan_binding_v2",
     apply(db) {
       migrateMockInterviewPlanBinding(db);
+    }
+  },
+  {
+    version: 22,
+    name: "message_reply_sending_v1",
+    apply(db) {
+      db.exec(MESSAGE_REPLY_SENDING_SCHEMA);
     }
   }
 ];
@@ -1854,6 +1931,16 @@ module.exports = {
   listCandidateFactRevisions,
   deleteCandidateFact,
   closeMessageReplyDrafts,
+  saveMessageInboundContext: messageReplySendStore.saveMessageInboundContext,
+  getMessageInboundContext: messageReplySendStore.getMessageInboundContext,
+  listMessageInboundContexts: messageReplySendStore.listMessageInboundContexts,
+  deleteMessageInboundContext: messageReplySendStore.deleteMessageInboundContext,
+  createMessageReplySendBatch: messageReplySendStore.createMessageReplySendBatch,
+  getMessageReplySendBatch: messageReplySendStore.getMessageReplySendBatch,
+  listMessageReplySendItems: messageReplySendStore.listMessageReplySendItems,
+  transitionMessageReplySendBatch: messageReplySendStore.transitionMessageReplySendBatch,
+  transitionMessageReplySendItem: messageReplySendStore.transitionMessageReplySendItem,
+  stopPendingMessageReplySendItems: messageReplySendStore.stopPendingMessageReplySendItems,
   getFunnelPolicy: funnelStore.getFunnelPolicy,
   saveFunnelPolicy: funnelStore.saveFunnelPolicy,
   ensureFunnelEntry: funnelStore.ensureFunnelEntry,

@@ -29,6 +29,7 @@ const JOB_SEARCH_FUNNEL_VERSION = 18;
 const RESUME_OPTIMIZATION_VERSION = 19;
 const MOCK_INTERVIEW_VERSION = 20;
 const MOCK_INTERVIEW_PLAN_BINDING_VERSION = 21;
+const MESSAGE_REPLY_SENDING_VERSION = 22;
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-migration-"));
 let db;
@@ -61,10 +62,11 @@ try {
       { version: JOB_SEARCH_FUNNEL_VERSION, name: "job_search_funnel_v1", backup_path: null },
       { version: RESUME_OPTIMIZATION_VERSION, name: "resume_optimization_v1", backup_path: null },
       { version: MOCK_INTERVIEW_VERSION, name: "mock_interview_v1", backup_path: null },
-      { version: MOCK_INTERVIEW_PLAN_BINDING_VERSION, name: "mock_interview_plan_binding_v2", backup_path: null }
+      { version: MOCK_INTERVIEW_PLAN_BINDING_VERSION, name: "mock_interview_plan_binding_v2", backup_path: null },
+      { version: MESSAGE_REPLY_SENDING_VERSION, name: "message_reply_sending_v1", backup_path: null }
     ]
   );
-  assert.strictEqual(freshMigrations[freshMigrations.length - 1].name, "mock_interview_plan_binding_v2");
+  assert.strictEqual(freshMigrations[freshMigrations.length - 1].name, "message_reply_sending_v1");
   assert.strictEqual(freshMigrations[freshMigrations.length - 1].version, SCHEMA_VERSION);
   assert(db.prepare("PRAGMA table_info(communication_batches)").all()
     .some((column) => column.name === "runtime_json"));
@@ -146,6 +148,18 @@ try {
       `${table} must exist after stage-four migration`
     );
   }
+  for (const table of ["message_inbound_contexts", "message_reply_send_batches", "message_reply_send_items"]) {
+    assert.strictEqual(
+      db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name = ?").get(table).n,
+      1,
+      `${table} must exist after reply sending migration`
+    );
+  }
+  assert.strictEqual(
+    db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='index' AND name='idx_message_reply_send_items_open_draft'").get().n,
+    1,
+    "open reply items need a unique draft guard"
+  );
   assert(db.prepare("PRAGMA table_info(mock_interview_sessions)").all()
     .some((column) => column.name === "plan_id"), "mock interview sessions must be plan-bound");
   assert(db.prepare("PRAGMA table_info(mock_interview_turns)").all()
@@ -180,7 +194,7 @@ try {
   assert(SCHEMA_VERSION >= 3);
   assert.strictEqual(SHARED_BOSS_PACING_VERSION, 16);
   assert.strictEqual(MESSAGE_REPLY_LEARNING_VERSION, 17);
-  assert.strictEqual(SCHEMA_VERSION, MOCK_INTERVIEW_PLAN_BINDING_VERSION);
+  assert.strictEqual(SCHEMA_VERSION, MESSAGE_REPLY_SENDING_VERSION);
   assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
   const planNow = "2026-08-16T00:00:00.000Z";
   const planProfileId = Number(db.prepare(`INSERT INTO candidate_profiles(
@@ -238,7 +252,7 @@ try {
   `);
   db.close();
   db = openDb(mockInterviewV19Path);
-  assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, MOCK_INTERVIEW_PLAN_BINDING_VERSION);
+  assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, MESSAGE_REPLY_SENDING_VERSION);
   assert.strictEqual(
     db.prepare("SELECT display_name FROM candidate_profiles WHERE id = ?").get(preservedProfileId).display_name,
     "Mock interview v19 migration",
@@ -353,7 +367,7 @@ try {
   db.close();
 
   db = openDb(mockInterviewV20Path);
-  assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, MOCK_INTERVIEW_PLAN_BINDING_VERSION);
+  assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, MESSAGE_REPLY_SENDING_VERSION);
   assert.strictEqual(
     db.prepare("SELECT plan_id FROM mock_interview_sessions WHERE id = ?").get(uniqueSessionId).plan_id,
     v20Owner.planId,
@@ -530,7 +544,8 @@ try {
       { version: JOB_SEARCH_FUNNEL_VERSION, name: "job_search_funnel_v1" },
       { version: RESUME_OPTIMIZATION_VERSION, name: "resume_optimization_v1" },
       { version: MOCK_INTERVIEW_VERSION, name: "mock_interview_v1" },
-      { version: MOCK_INTERVIEW_PLAN_BINDING_VERSION, name: "mock_interview_plan_binding_v2" }
+      { version: MOCK_INTERVIEW_PLAN_BINDING_VERSION, name: "mock_interview_plan_binding_v2" },
+      { version: MESSAGE_REPLY_SENDING_VERSION, name: "message_reply_sending_v1" }
     ]
   );
   assert.strictEqual(db.prepare("SELECT source FROM keyword_sources WHERE keyword = 'v1-preserved'").get().source, "migration-smoke");
