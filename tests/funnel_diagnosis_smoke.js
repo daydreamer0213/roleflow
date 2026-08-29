@@ -1,25 +1,24 @@
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
-const { openDb } = require("../src/core/storage");
+const storage = require("../src/core/storage");
 const { createFunnelAnalysisService } = require("../src/application/funnel_analysis");
 
-const NOW = "2026-09-01T02:00:00.000Z";
-const db = openDb(":memory:");
+const NOW = "2026-09-05T02:00:00.000Z";
+const db = storage.openDb(":memory:");
 try {
   const service = createFunnelAnalysisService({ db, now: () => NOW });
 
   const facts = createOwner(db, "facts");
   seedEntries(db, facts, 29, (index) => [readEvent(index)]);
-  const factsDashboard = service.getDashboard({ profileId: facts.profileId });
-  assert.equal(factsDashboard.currentPool.mature, 29);
-  assert.equal(factsDashboard.currentPool.strength, "facts");
+  const factsDashboard = service.getDashboard({ profileId: facts.profileId, planId: facts.planId });
+  assert.equal(factsDashboard.currentRound.mature, 29);
+  assert.equal(factsDashboard.currentRound.strength, "facts");
   assert.match(factsDashboard.headline, /少于 30/);
   assert.match(factsDashboard.priorityCheck, /继续积累到 30/);
   assert.deepEqual(factsDashboard.comparisons, {
     direction: [],
     decisionBucket: [],
-    resumeVersion: [],
-    greeting: []
+    resumeVersion: []
   });
 
   const preliminary = createOwner(db, "preliminary");
@@ -27,8 +26,8 @@ try {
     readEvent(index),
     ...(index < 5 ? [replyEvent(index)] : [])
   ]);
-  const preliminaryDashboard = service.getDashboard({ profileId: preliminary.profileId });
-  assert.equal(preliminaryDashboard.currentPool.strength, "preliminary");
+  const preliminaryDashboard = service.getDashboard({ profileId: preliminary.profileId, planId: preliminary.planId });
+  assert.equal(preliminaryDashboard.currentRound.strength, "preliminary");
   assert.match(preliminaryDashboard.headline, /初步观察/);
   assert.match(preliminaryDashboard.headline, /已读到回复/);
   assert.match(preliminaryDashboard.priorityCheck, /岗位匹配|开场表达/);
@@ -37,10 +36,10 @@ try {
   seedEntries(db, replyWindow, 30, (index) => [
     index < 10 ? readEvent(index) : freshReadEvent(index)
   ]);
-  const replyWindowDashboard = service.getDashboard({ profileId: replyWindow.profileId });
-  assert.equal(replyWindowDashboard.currentPool.mature, 30);
-  assert.equal(replyWindowDashboard.currentPool.waiting, 20);
-  assert.equal(replyWindowDashboard.currentPool.unknown, 20);
+  const replyWindowDashboard = service.getDashboard({ profileId: replyWindow.profileId, planId: replyWindow.planId });
+  assert.equal(replyWindowDashboard.currentRound.mature, 30);
+  assert.equal(replyWindowDashboard.currentRound.waiting, 20);
+  assert.equal(replyWindowDashboard.currentRound.unknown, 20);
   assert.deepEqual(replyWindowDashboard.funnel.replied, {
     numerator: 0,
     denominator: 10,
@@ -62,17 +61,17 @@ try {
     resumeVersionId: index < 30 ? resumeA : resumeB,
     greetingKey: digest(index < 30 ? "greeting-a" : "greeting-b")
   }));
-  const comparableDashboard = service.getDashboard({ profileId: comparable.profileId });
-  assert.equal(comparableDashboard.currentPool.strength, "comparable");
+  const comparableDashboard = service.getDashboard({ profileId: comparable.profileId, planId: comparable.planId });
+  assert.equal(comparableDashboard.currentRound.strength, "comparable");
   assert.match(comparableDashboard.headline, /阶段诊断/);
   assert.equal(comparableDashboard.comparisons.direction.length, 2);
   assert.equal(comparableDashboard.comparisons.resumeVersion.length, 2);
-  assert.equal(comparableDashboard.comparisons.greeting.length, 2);
+  assert.equal(Object.hasOwn(comparableDashboard.comparisons, "greeting"), false,
+    "personalized greeting digests must not appear as a strategy comparison");
   assert.deepEqual(comparableDashboard.comparisons.resumeVersion.map((item) => item.label), [
     "resume-a",
     "resume-b"
   ]);
-  assert(comparableDashboard.comparisons.greeting.every((item) => /^招呼语版本 /.test(item.label)));
   const directionRates = Object.fromEntries(comparableDashboard.comparisons.direction
     .map((item) => [item.key, item.replied.rate]));
   assert.equal(directionRates["AI 应用"], 0.5);
@@ -82,7 +81,7 @@ try {
   seedEntries(db, metricEvidence, 50, (index) => [
     index < 20 ? freshReadEvent(index) : readEvent(index)
   ], (index) => ({ directionKey: index < 25 ? "少量已读" : "充分已读" }));
-  const metricEvidenceDashboard = service.getDashboard({ profileId: metricEvidence.profileId });
+  const metricEvidenceDashboard = service.getDashboard({ profileId: metricEvidence.profileId, planId: metricEvidence.planId });
   assert.equal(metricEvidenceDashboard.comparisons.direction.length, 2);
   assert(metricEvidenceDashboard.comparisons.direction.every((item) => item.replied === null),
     "a comparison metric stays hidden unless at least two groups meet its conditional denominator");
@@ -91,14 +90,14 @@ try {
   seedEntries(db, noMetricEvidence, 50, () => [], (index) => ({
     directionKey: index < 25 ? "未知 A" : "未知 B"
   }));
-  const noMetricDashboard = service.getDashboard({ profileId: noMetricEvidence.profileId });
+  const noMetricDashboard = service.getDashboard({ profileId: noMetricEvidence.profileId, planId: noMetricEvidence.planId });
   assert.deepEqual(noMetricDashboard.comparisons.direction, [],
     "a dimension with no supported metric must not return empty comparison cards");
 
   const unknown = createOwner(db, "unknown");
   seedEntries(db, unknown, 35, () => []);
-  const unknownDashboard = service.getDashboard({ profileId: unknown.profileId });
-  assert.equal(unknownDashboard.currentPool.unknown, 35);
+  const unknownDashboard = service.getDashboard({ profileId: unknown.profileId, planId: unknown.planId });
+  assert.equal(unknownDashboard.currentRound.unknown, 35);
   assert.match(unknownDashboard.headline, /状态未知|证据不足/);
   assert.match(unknownDashboard.priorityCheck, /补充/);
 
@@ -109,10 +108,12 @@ try {
     ...(index < 25 ? [progressEvent("interview_invited", index)] : []),
     ...(index < 5 ? [progressEvent("interview_scheduled", index)] : [])
   ]);
-  const formalDashboard = service.refresh({ profileId: formal.profileId });
-  assert.equal(formalDashboard.currentPool.started, 0, "frozen entries leave the next rolling pool");
-  assert.equal(formalDashboard.latestCohort.sampleCount, 83, "formal freezing keeps every mature entry");
-  assert.equal(formalDashboard.latestCohort.strength, "formal");
+  const formalDashboard = service.refresh({ profileId: formal.profileId, planId: formal.planId });
+  assert.equal(formalDashboard.currentRound.started, 83, "a strategy round continues beyond the formal threshold");
+  assert.equal(formalDashboard.currentRound.mature, 83);
+  assert.equal(formalDashboard.currentRound.strength, "formal");
+  assert.equal(formalDashboard.currentRound.nextTarget, null);
+  assert.equal(formalDashboard.currentRound.id, formal.roundId);
   assert.match(formalDashboard.headline, /正式诊断/);
   assert.match(formalDashboard.priorityCheck, /模拟面试/);
   assert(!/证明|导致|准确率/.test(formalDashboard.headline));
@@ -124,32 +125,105 @@ try {
     comparableSampleTarget: 60,
     formalSampleTarget: 80
   });
-  const historicalPolicyDashboard = service.getDashboard({ profileId: formal.profileId });
+  const historicalPolicyDashboard = service.getDashboard({ profileId: formal.profileId, planId: formal.planId });
   assert.equal(historicalPolicyDashboard.policy.preliminarySampleTarget, 40);
-  assert.equal(historicalPolicyDashboard.latestCohort.strength, "formal",
-    "a frozen cohort keeps the thresholds that were active when it froze");
-  assert.match(historicalPolicyDashboard.latestCohort.headline, /正式诊断/);
+  assert.equal(historicalPolicyDashboard.currentRound.strength, "formal",
+    "an active round keeps the thresholds that were active when it began");
   assert.match(historicalPolicyDashboard.headline, /正式诊断/);
 
-  const rolling = createOwner(db, "rolling");
-  seedEntries(db, rolling, 83, (index) => [readEvent(index), replyEvent(index)]);
-  service.refresh({ profileId: rolling.profileId });
-  seedEntries(db, rolling, 35, (index) => [readEvent(index)], () => ({}), 100);
-  const nextPreliminary = service.getDashboard({ profileId: rolling.profileId });
-  assert.equal(nextPreliminary.currentPool.mature, 35);
-  assert.equal(nextPreliminary.latestCohort.sampleCount, 83);
-  assert.equal(nextPreliminary.analysisSource, "current_pool",
-    "a new rolling pool must not be permanently hidden by the previous frozen cohort");
-  assert.equal(nextPreliminary.currentPool.strength, "preliminary");
-  assert.match(nextPreliminary.headline, /初步观察/);
-  assert.equal(nextPreliminary.funnel.read.numerator, 35);
+  const rounds = createOwner(db, "rounds");
+  const roundAEntries = seedEntries(db, rounds, 50, (index) => [
+    readEvent(index),
+    ...(index < 49 ? [replyEvent(index)] : [])
+  ]);
+  const roundAId = rounds.roundId;
+  const roundB = service.startStrategyRound({
+    profileId: rounds.profileId,
+    planId: rounds.planId,
+    fromRoundId: roundAId,
+    sourceKey: `test:greeting:${roundAId}`,
+    changeKinds: ["greeting"],
+    changeNote: "修改招呼语"
+  });
+  rounds.roundId = roundB.id;
 
-  seedEntries(db, rolling, 20, (index) => [readEvent(index)], () => ({}), 135);
-  const nextComparable = service.getDashboard({ profileId: rolling.profileId });
-  assert.equal(nextComparable.currentPool.mature, 55);
-  assert.equal(nextComparable.analysisSource, "current_pool");
-  assert.equal(nextComparable.currentPool.strength, "comparable");
-  assert.match(nextComparable.headline, /阶段诊断/);
+  seedEntries(db, rounds, 29, (index) => [readEvent(index)], () => ({}), 100);
+  const at29 = service.getDashboard({ profileId: rounds.profileId, planId: rounds.planId });
+  assert.equal(at29.currentRound.strength, "facts");
+  assert.equal(at29.currentRound.id, roundB.id);
+
+  seedEntries(db, rounds, 1, (index) => [readEvent(index)], () => ({}), 129);
+  const at30 = service.getDashboard({ profileId: rounds.profileId, planId: rounds.planId });
+  assert.equal(at30.currentRound.strength, "preliminary");
+
+  seedEntries(db, rounds, 19, (index) => [readEvent(index)], () => ({}), 130);
+  const at49 = service.getDashboard({ profileId: rounds.profileId, planId: rounds.planId });
+  assert.equal(at49.currentRound.mature, 49);
+  assert.equal(at49.roundComparison.status, "insufficient");
+
+  seedEntries(db, rounds, 1, (index) => [readEvent(index)], () => ({}), 149);
+  const at50 = service.getDashboard({ profileId: rounds.profileId, planId: rounds.planId });
+  assert.equal(at50.currentRound.strength, "comparable");
+  assert.equal(at50.roundComparison.status, "ready");
+  const currentRepliesBeforeLateEvent = at50.funnel.replied.numerator;
+  assert.equal(at50.previousRound.funnel.replied.numerator, 49);
+
+  appendEvent(db, roundAEntries[49].cardId, replyEvent(999));
+  const afterLateReply = service.getDashboard({ profileId: rounds.profileId, planId: rounds.planId });
+  assert.equal(afterLateReply.previousRound.funnel.replied.numerator, 50,
+    "a late result updates its original round");
+  assert.equal(afterLateReply.funnel.replied.numerator, currentRepliesBeforeLateEvent,
+    "a late result from A must not change B's numerator");
+  assert.equal(afterLateReply.currentRound.mature, 50,
+    "a late result from A must not change B's denominator");
+
+  seedEntries(db, rounds, 19, (index) => [readEvent(index)], () => ({}), 150);
+  const at69 = service.getDashboard({ profileId: rounds.profileId, planId: rounds.planId });
+  assert.equal(at69.currentRound.mature, 69);
+  assert.equal(at69.currentRound.strength, "comparable");
+  seedEntries(db, rounds, 1, (index) => [readEvent(index)], () => ({}), 169);
+  const at70 = service.getDashboard({ profileId: rounds.profileId, planId: rounds.planId });
+  assert.equal(at70.currentRound.strength, "formal");
+  seedEntries(db, rounds, 13, (index) => [readEvent(index)], () => ({}), 170);
+  const at83 = service.refresh({ profileId: rounds.profileId, planId: rounds.planId });
+  assert.equal(at83.currentRound.mature, 83);
+  assert.equal(at83.currentRound.id, roundB.id, "83 jobs stay in the same strategy round");
+  assert(!/证明|导致|准确率/.test(JSON.stringify(at83)));
+
+  const incompatible = createOwner(db, "incompatible", ["AI 应用"]);
+  seedEntries(db, incompatible, 50, (index) => [readEvent(index)]);
+  db.prepare("UPDATE search_plans SET plan_json = ? WHERE id = ?")
+    .run(JSON.stringify({ directions: ["Java 后端"] }), incompatible.planId);
+  const incompatibleNext = service.startStrategyRound({
+    profileId: incompatible.profileId,
+    planId: incompatible.planId,
+    fromRoundId: incompatible.roundId,
+    sourceKey: `test:direction:${incompatible.roundId}`,
+    changeKinds: ["strategy"],
+    changeNote: "切换投递方向"
+  });
+  incompatible.roundId = incompatibleNext.id;
+  seedEntries(db, incompatible, 50, (index) => [readEvent(index)], () => ({}), 100);
+  assert.equal(service.getDashboard({
+    profileId: incompatible.profileId,
+    planId: incompatible.planId
+  }).roundComparison.status, "incompatible");
+
+  const confounded = createOwner(db, "confounded");
+  seedEntries(db, confounded, 50, (index) => [readEvent(index)]);
+  const confoundedNext = service.startStrategyRound({
+    profileId: confounded.profileId,
+    planId: confounded.planId,
+    fromRoundId: confounded.roundId,
+    sourceKey: `test:confounded:${confounded.roundId}`,
+    changeKinds: ["greeting", "resume"],
+    changeNote: "同时修改招呼语和简历"
+  });
+  confounded.roundId = confoundedNext.id;
+  seedEntries(db, confounded, 50, (index) => [readEvent(index)], () => ({}), 100);
+  const confoundedDashboard = service.getDashboard({ profileId: confounded.profileId, planId: confounded.planId });
+  assert.equal(confoundedDashboard.roundComparison.status, "confounded");
+  assert.equal(confoundedDashboard.roundComparison.note, "多项调整共同发生，无法区分单项影响");
 
   const saved = service.savePolicy({
     profileId: facts.profileId,
@@ -170,14 +244,20 @@ try {
   db.close();
 }
 
-function createOwner(database, suffix) {
+function createOwner(database, suffix, directions = ["AI 应用"]) {
   const profileId = Number(database.prepare(`INSERT INTO candidate_profiles(
     display_name, profile_json, source_hash, created_at, updated_at
   ) VALUES (?, '{}', NULL, ?, ?)`).run(`Diagnosis ${suffix}`, NOW, NOW).lastInsertRowid);
   const planId = Number(database.prepare(`INSERT INTO search_plans(
     profile_id, name, plan_json, profile_version_id, is_active, created_at, updated_at
-  ) VALUES (?, ?, '{}', NULL, 1, ?, ?)`).run(profileId, `Diagnosis ${suffix}`, NOW, NOW).lastInsertRowid);
-  return { profileId, planId, suffix };
+  ) VALUES (?, ?, ?, NULL, 1, ?, ?)`)
+    .run(profileId, `Diagnosis ${suffix}`, JSON.stringify({ directions }), NOW, NOW).lastInsertRowid);
+  const round = storage.ensureActiveFunnelStrategyRound(database, {
+    profileId,
+    planId,
+    startedAt: "2026-08-20T01:00:00.000Z"
+  });
+  return { profileId, planId, roundId: round.id, suffix };
 }
 
 function seedEntries(database, owner, count, eventsForIndex, dimensionsForIndex = () => ({}), offset = 0) {
@@ -189,13 +269,14 @@ function seedEntries(database, owner, count, eventsForIndex, dimensionsForIndex 
     next_action, scheduled_at, last_event_at, created_at, updated_at
   ) VALUES (?, ?, ?, 'boss', '', '', 'waiting_reply', '', NULL, ?, ?, ?)`);
   const insertEntry = database.prepare(`INSERT INTO candidate_funnel_entries(
-    profile_id, job_id, card_id, cohort_id, plan_id, source_kind,
+    profile_id, job_id, card_id, cohort_id, plan_id, strategy_round_id, source_kind,
     started_at, mature_at, direction_key, decision_bucket,
     resume_version_id, greeting_key, created_at, updated_at
-  ) VALUES (?, ?, ?, NULL, ?, 'applied', ?, ?, ?, ?, ?, ?, ?, ?)`);
+  ) VALUES (?, ?, ?, NULL, ?, ?, 'applied', ?, ?, ?, ?, ?, ?, ?, ?)`);
   const insertEvent = database.prepare(`INSERT INTO candidate_progress_events(
     card_id, idempotency_key, type, actor, summary, metadata_json, occurred_at, created_at
   ) VALUES (?, ?, ?, ?, '', ?, ?, ?)`);
+  const inserted = [];
   for (let localIndex = 0; localIndex < count; localIndex += 1) {
     const index = localIndex + offset;
     const startedAt = new Date(Date.parse("2026-08-20T02:00:00.000Z") + index * 1000).toISOString();
@@ -207,6 +288,7 @@ function seedEntries(database, owner, count, eventsForIndex, dimensionsForIndex 
       jobId,
       cardId,
       owner.planId,
+      owner.roundId,
       startedAt,
       "2026-08-22T02:00:00.000Z",
       dimensions.directionKey || "AI 应用",
@@ -217,17 +299,26 @@ function seedEntries(database, owner, count, eventsForIndex, dimensionsForIndex 
       startedAt
     );
     for (const event of eventsForIndex(index)) {
-      insertEvent.run(
-        cardId,
-        `progress:${crypto.randomUUID()}`,
-        event.type,
-        event.actor || "system",
-        JSON.stringify(event.metadata || { source: "platform_observation" }),
-        event.occurredAt || "2026-08-20T03:00:00.000Z",
-        event.occurredAt || "2026-08-20T03:00:00.000Z"
-      );
+      appendEvent(database, cardId, event, insertEvent);
     }
+    inserted.push({ jobId, cardId });
   }
+  return inserted;
+}
+
+function appendEvent(database, cardId, event, prepared = null) {
+  const insertEvent = prepared || database.prepare(`INSERT INTO candidate_progress_events(
+    card_id, idempotency_key, type, actor, summary, metadata_json, occurred_at, created_at
+  ) VALUES (?, ?, ?, ?, '', ?, ?, ?)`);
+  insertEvent.run(
+    cardId,
+    `progress:${crypto.randomUUID()}`,
+    event.type,
+    event.actor || "system",
+    JSON.stringify(event.metadata || { source: "platform_observation" }),
+    event.occurredAt || "2026-08-20T03:00:00.000Z",
+    event.occurredAt || "2026-08-20T03:00:00.000Z"
+  );
 }
 
 function readEvent(index) {

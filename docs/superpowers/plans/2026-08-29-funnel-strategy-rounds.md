@@ -318,7 +318,7 @@ The dashboard result contains:
 }
 ```
 
-- [ ] **Step 1: Replace rolling-pool fixtures with A/B round fixtures**
+- [x] **Step 1: Replace rolling-pool fixtures with A/B round fixtures**
 
 In `tests/funnel_diagnosis_smoke.js`, create round A with 50 mature entries, start round B after a greeting change, add B entries at 29/30/49/50/69/70/83 boundaries, and assert:
 
@@ -335,7 +335,7 @@ assert.equal(at49.roundComparison.status, "insufficient");
 
 Add one late reply to A after B begins and assert A changes while B's numerator and denominator do not. Add direction mismatch and multi-change fixtures; expect `incompatible` and `confounded`, respectively, and ensure no copy contains `证明`, `导致`, or `准确率`.
 
-- [ ] **Step 2: Run the diagnosis test and verify old rolling behavior fails**
+- [x] **Step 2: Run the diagnosis test and verify old rolling behavior fails**
 
 ```powershell
 node tests/funnel_diagnosis_smoke.js
@@ -343,23 +343,23 @@ node tests/funnel_diagnosis_smoke.js
 
 Expected: failure because the service still analyzes unassigned entries and freezes cohorts.
 
-- [ ] **Step 3: Make the service plan- and round-scoped**
+- [x] **Step 3: Make the service plan- and round-scoped**
 
 Change `dashboard`, `refresh`, and `snapshotFor` to accept `planId`. Load or lazily create the current round, then query only entries with its `strategy_round_id`. Remove `freezeReadyFunnelCohort` from the refresh path; do not delete the compatibility function.
 
 Use the round's frozen thresholds for `diagnosisStrength` and `nextTarget`. At 70+, keep `nextTarget` as `null` and leave every later entry in the same round.
 
-- [ ] **Step 4: Implement compatibility and comparison rules**
+- [x] **Step 4: Implement compatibility and comparison rules**
 
 Choose the nearest earlier round from the same `(profileId, planId)`. Compare only when both have at least their frozen comparable target, both strategy snapshots contain the same normalized direction list, and neither is `legacyUncertain`.
 
 If `currentRound.changeKinds.length > 1`, return `status: "confounded"` with the exact user-facing meaning “多项调整共同发生，无法区分单项影响”. Otherwise compute before/after stage counts from each round independently. Keep differences descriptive; do not calculate a causal score.
 
-- [ ] **Step 5: Preserve useful within-round grouping without greeting leakage**
+- [x] **Step 5: Preserve useful within-round grouping without greeting leakage**
 
 Keep direction, recommendation bucket, and résumé version group observations only when the current round is `comparable` or `formal`. Remove the per-job `greeting_key` group from main comparison because personalized greetings are not a global strategy version. Return no raw digest in the dashboard object.
 
-- [ ] **Step 6: Run diagnosis regressions**
+- [x] **Step 6: Run diagnosis regressions**
 
 ```powershell
 node tests/funnel_diagnosis_smoke.js
@@ -369,7 +369,7 @@ node tests/funnel_threshold_policy_smoke.js
 
 Expected: all pass with current-round isolation and unchanged maturity semantics.
 
-- [ ] **Step 7: Commit the analysis checkpoint**
+- [x] **Step 7: Commit the analysis checkpoint**
 
 ```powershell
 git add src/application/funnel_analysis/index.js tests/funnel_diagnosis_smoke.js

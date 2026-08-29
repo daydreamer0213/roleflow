@@ -1,10 +1,10 @@
 const {
   getFunnelPolicy,
   saveFunnelPolicy,
+  ensureActiveFunnelStrategyRound,
+  listFunnelStrategyRounds,
+  startFunnelStrategyRound,
   listFunnelEntries,
-  freezeReadyFunnelCohort,
-  listFunnelCohorts,
-  getFunnelCohort,
   listFunnelProgressEvents
 } = require("../../storage/funnel_store");
 const { buildFunnelSnapshot } = require("../../core/funnel_maturity");
@@ -14,69 +14,133 @@ function createFunnelAnalysisService({ db, now = () => new Date().toISOString() 
   const clock = typeof now === "function" ? now : () => now;
 
   return Object.freeze({
-    refresh({ profileId } = {}) {
-      freezeReadyFunnelCohort(db, { profileId, now: clock() });
-      return dashboard(db, { profileId, now: clock() });
+    refresh({ profileId, planId } = {}) {
+      return dashboard(db, { profileId, planId, now: clock() });
     },
-    getDashboard({ profileId } = {}) {
-      return dashboard(db, { profileId, now: clock() });
+    getDashboard({ profileId, planId } = {}) {
+      return dashboard(db, { profileId, planId, now: clock() });
     },
     savePolicy(input = {}) {
       return saveFunnelPolicy(db, { ...input, updatedAt: clock() });
+    },
+    startStrategyRound(input = {}) {
+      return startFunnelStrategyRound(db, {
+        ...input,
+        startedAt: input.startedAt || clock()
+      });
     }
   });
 }
 
-function dashboard(db, { profileId, now }) {
+function dashboard(db, { profileId, planId, now }) {
   const policy = getFunnelPolicy(db, { profileId });
-  const currentEntries = listFunnelEntries(db, { profileId, unassignedOnly: true });
-  const currentSnapshot = snapshotFor(db, currentEntries, { profileId, now, policy });
-  const latestRow = listFunnelCohorts(db, { profileId, limit: 1 })[0] || null;
-  const latest = latestRow ? getFunnelCohort(db, { profileId, cohortId: latestRow.id }) : null;
-  const latestPolicy = latest ? {
-    preliminarySampleTarget: latest.preliminarySampleTarget,
-    comparableSampleTarget: latest.comparableSampleTarget,
-    formalSampleTarget: latest.formalSampleTarget
-  } : policy;
-  const latestSnapshot = latest
-    ? snapshotFor(db, latest.entries, { profileId, now, policy: latestPolicy })
+  const current = ensureActiveFunnelStrategyRound(db, { profileId, planId, startedAt: now });
+  const currentPolicy = roundPolicy(current);
+  const currentEntries = listFunnelEntries(db, {
+    profileId,
+    planId,
+    strategyRoundId: current.id
+  });
+  const currentSnapshot = snapshotFor(db, currentEntries, { profileId, now, policy: currentPolicy });
+  const currentAnalysis = analyze(db, currentEntries, currentSnapshot, currentPolicy, profileId);
+  const previous = listFunnelStrategyRounds(db, { profileId, planId, limit: 30 })
+    .find((round) => round.id !== current.id) || null;
+  const previousPolicy = previous ? roundPolicy(previous) : null;
+  const previousEntries = previous ? listFunnelEntries(db, {
+    profileId,
+    planId,
+    strategyRoundId: previous.id
+  }) : [];
+  const previousSnapshot = previous
+    ? snapshotFor(db, previousEntries, { profileId, now, policy: previousPolicy })
     : null;
-  const currentAnalysis = analyze(db, currentEntries, currentSnapshot, policy, profileId);
-  const latestAnalysis = latest
-    ? analyze(db, latest.entries, latestSnapshot, latestPolicy, profileId)
+  const previousAnalysis = previous
+    ? analyze(db, previousEntries, previousSnapshot, previousPolicy, profileId)
     : null;
-  const useCurrent = !latestAnalysis || currentSnapshot.strength !== "facts";
-  const selected = useCurrent ? currentAnalysis : latestAnalysis;
+  const currentRound = roundSummary(current, currentSnapshot, currentAnalysis, currentPolicy);
+  const previousRound = previous
+    ? roundSummary(previous, previousSnapshot, previousAnalysis, previousPolicy)
+    : null;
 
   return {
     policy,
-    analysisSource: useCurrent ? "current_pool" : "latest_cohort",
-    currentPool: {
-      ...poolSummary(currentSnapshot, policy),
-      ...currentAnalysis
-    },
-    latestCohort: latest ? {
-      ...latest,
-      strength: latestSnapshot.strength,
-      funnel: latestSnapshot.stages,
-      unknown: latestSnapshot.unknown,
-      comparisons: latestAnalysis.comparisons,
-      headline: latestAnalysis.headline,
-      priorityCheck: latestAnalysis.priorityCheck,
-      immediatePositive: latestSnapshot.immediatePositive,
-      earlyPositive: latestSnapshot.earlyPositive
-    } : null,
-    funnel: selected.funnel,
-    comparisons: selected.comparisons,
-    headline: selected.headline,
-    priorityCheck: selected.priorityCheck,
+    analysisSource: "current_pool",
+    currentRound,
+    previousRound,
+    roundComparison: compareRounds({ current, currentSnapshot, previous, previousSnapshot }),
+    currentPool: currentRound,
+    latestCohort: null,
+    funnel: currentAnalysis.funnel,
+    comparisons: currentAnalysis.comparisons,
+    headline: currentAnalysis.headline,
+    priorityCheck: currentAnalysis.priorityCheck,
     evidenceNotes: [
       "仅统计用户确认已投、已验证发起沟通或确认已发送回复的岗位。",
       "每个岗位至少经过 48 小时；跨周末顺延到周一。",
+      "当前诊断只读取当前策略轮次；较晚出现的结果仍回到原轮次。",
       "岗位已成熟后若出现新的已读，未回复结论从这次已读重新等待 48 小时。",
       "等待和未知状态不进入失败分母，观察关系不代表因果。"
     ]
   };
+}
+
+function roundPolicy(round) {
+  return {
+    preliminarySampleTarget: round.thresholds.preliminary,
+    comparableSampleTarget: round.thresholds.comparable,
+    formalSampleTarget: round.thresholds.formal
+  };
+}
+
+function roundSummary(round, snapshot, analysis, policy) {
+  return {
+    ...round,
+    ...poolSummary(snapshot, policy),
+    funnel: snapshot.stages,
+    comparisons: analysis.comparisons,
+    headline: analysis.headline,
+    priorityCheck: analysis.priorityCheck,
+    immediatePositive: snapshot.immediatePositive,
+    earlyPositive: snapshot.earlyPositive
+  };
+}
+
+function compareRounds({ current, currentSnapshot, previous, previousSnapshot }) {
+  const empty = { before: null, after: null };
+  if (!previous || !previousSnapshot) {
+    return { status: "none", note: "暂无可比较的上一策略轮次", ...empty };
+  }
+  const before = { roundId: previous.id, mature: previousSnapshot.mature, stages: previousSnapshot.stages };
+  const after = { roundId: current.id, mature: currentSnapshot.mature, stages: currentSnapshot.stages };
+  if (current.legacyUncertain || previous.legacyUncertain
+    || !sameDirections(current.strategySnapshot?.directions, previous.strategySnapshot?.directions)) {
+    return {
+      status: "incompatible",
+      note: current.legacyUncertain || previous.legacyUncertain
+        ? "历史策略边界无法确认，本轮不与该轮直接比较"
+        : "前后轮次的投递方向不同，不直接比较",
+      before,
+      after
+    };
+  }
+  if (previousSnapshot.mature < previous.thresholds.comparable
+    || currentSnapshot.mature < current.thresholds.comparable) {
+    return { status: "insufficient", note: "前后轮次都达到可比较样本量后再展示变化", before, after };
+  }
+  if (current.changeKinds.length > 1) {
+    return { status: "confounded", note: "多项调整共同发生，无法区分单项影响", before, after };
+  }
+  return { status: "ready", note: "前后轮次均达到可比较样本量，仅展示观察到的变化", before, after };
+}
+
+function sameDirections(left, right) {
+  return normalizedDirections(left).join("\n") === normalizedDirections(right).join("\n");
+}
+
+function normalizedDirections(value) {
+  return [...new Set((Array.isArray(value) ? value : [])
+    .map((item) => String(item || "").trim().toLocaleLowerCase("zh-CN"))
+    .filter(Boolean))].sort();
 }
 
 function analyze(db, entries, snapshot, policy, profileId) {
@@ -115,7 +179,8 @@ function poolSummary(snapshot, policy) {
 function nextTarget(strength, policy) {
   if (strength === "facts") return policy.preliminarySampleTarget;
   if (strength === "preliminary") return policy.comparableSampleTarget;
-  return policy.formalSampleTarget;
+  if (strength === "comparable") return policy.formalSampleTarget;
+  return null;
 }
 
 function diagnose(snapshot, policy) {
@@ -169,7 +234,7 @@ function diagnose(snapshot, policy) {
 }
 
 function buildComparisons(db, entries, snapshot, policy, profileId) {
-  const empty = { direction: [], decisionBucket: [], resumeVersion: [], greeting: [] };
+  const empty = { direction: [], decisionBucket: [], resumeVersion: [] };
   if (!['comparable', 'formal'].includes(snapshot.strength)) return empty;
   const projectionById = new Map(snapshot.entries.map((entry) => [entry.id, entry]));
   const minimum = Math.max(10, Math.floor(policy.preliminarySampleTarget / 2));
@@ -183,13 +248,6 @@ function buildComparisons(db, entries, snapshot, policy, profileId) {
       (entry) => entry.resumeVersionId ? `resume:${entry.resumeVersionId}` : "",
       minimum,
       (key) => resumeLabels.get(Number(key.slice("resume:".length))) || "已记录简历版本"
-    ),
-    greeting: compareDimension(
-      entries,
-      projectionById,
-      (entry) => entry.greetingKey,
-      minimum,
-      (key) => `招呼语版本 ${key.replace(/^sha256:/, "").slice(0, 8)}`
     )
   };
 }

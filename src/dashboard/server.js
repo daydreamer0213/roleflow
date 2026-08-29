@@ -5306,7 +5306,7 @@ function renderQueuePage({ db, searchParams, logger, outcomeAnalyticsReader = ge
 function renderFunnelDashboardPage({ db, searchParams, funnelAnalysis }) {
   const plan = getSearchPlan(db, searchParams.get("planId"));
   if (!plan) return renderErrorPage("找不到这份筛选方案，请从今日任务重新进入求职体检。", "/plan");
-  const dashboard = funnelAnalysis.refresh({ profileId: plan.profileId });
+  const dashboard = funnelAnalysis.refresh({ profileId: plan.profileId, planId: plan.id });
   return renderPage("求职体检", renderFunnelPage({ plan, dashboard }));
 }
 

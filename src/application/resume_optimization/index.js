@@ -57,7 +57,7 @@ function createResumeOptimizationService({ db, adapter = null, funnelAnalysisSer
       source: "user_edited_reply",
       limit: 100
     }), jobs);
-    const funnelDiagnosis = compactDiagnosis(funnelAnalysis.getDashboard({ profileId }));
+    const funnelDiagnosis = compactDiagnosis(funnelAnalysis.getDashboard({ profileId, planId: plan.id }));
     const evidenceCatalog = buildResumeEvidenceCatalog({
       sourceText: prepared.text,
       jobs,
@@ -153,7 +153,7 @@ function createResumeOptimizationService({ db, adapter = null, funnelAnalysisSer
       jobs,
       drafts,
       selectedDraft,
-      funnelDiagnosis: compactDiagnosis(funnelAnalysis.getDashboard({ profileId: profile }))
+      funnelDiagnosis: compactDiagnosis(funnelAnalysis.getDashboard({ profileId: profile, planId: plan.id }))
     };
   }
 
@@ -234,7 +234,7 @@ function compactDiagnosis(value) {
   if (!value) return null;
   return {
     analysisSource: value.analysisSource || "",
-    strength: value.currentPool?.strength || "facts",
+    strength: value.currentRound?.strength || value.currentPool?.strength || "facts",
     headline: value.headline || "",
     priorityCheck: value.priorityCheck || ""
   };

@@ -1,5 +1,5 @@
 const assert = require("node:assert/strict");
-const { openDb } = require("../src/core/storage");
+const { openDb, ensureActiveFunnelStrategyRound } = require("../src/core/storage");
 const { createDashboardServer } = require("../src/dashboard/server");
 const { renderFunnelPage } = require("../src/dashboard/pages/funnel");
 
@@ -36,7 +36,8 @@ const logger = {
     assert.match(response.body, /<h1[^>]*>求职体检<\/h1>/);
     assert.match(response.body, /aria-current="page">求职体检<\/a>/);
     assert.match(response.body, />诊断<\/a>/, "technical diagnostics remains a separate destination");
-    assert.deepEqual(refreshCalls, [{ profileId: owner.profileId }], "the requested plan owns the analyzed profile");
+    assert.deepEqual(refreshCalls, [{ profileId: owner.profileId, planId: owner.planId }],
+      "the requested plan owns the analyzed profile and strategy rounds");
 
     assert.match(response.body, /30 个[^<]*初步观察/);
     assert.match(response.body, /50 个[^<]*阶段诊断/);
@@ -243,6 +244,11 @@ function dashboardFixture() {
 
 function seedRealFunnel(db, owner) {
   const startedAt = "2026-08-20T02:00:00.000Z";
+  const round = ensureActiveFunnelStrategyRound(db, {
+    profileId: owner.profileId,
+    planId: owner.planId,
+    startedAt
+  });
   const jobId = Number(db.prepare(`INSERT INTO jobs(
     source, source_id, title, first_seen_at, last_seen_at
   ) VALUES ('boss', 'dashboard-real-funnel', '真实服务岗位', ?, ?)`)
@@ -253,12 +259,12 @@ function seedRealFunnel(db, owner) {
   ) VALUES (?, ?, ?, 'boss', '', '', 'waiting_reply', '', NULL, ?, ?, ?)`)
     .run(owner.profileId, owner.planId, jobId, startedAt, startedAt, startedAt).lastInsertRowid);
   db.prepare(`INSERT INTO candidate_funnel_entries(
-    profile_id, job_id, card_id, cohort_id, plan_id, source_kind,
+    profile_id, job_id, card_id, cohort_id, plan_id, strategy_round_id, source_kind,
     started_at, mature_at, direction_key, decision_bucket,
     resume_version_id, greeting_key, created_at, updated_at
-  ) VALUES (?, ?, ?, NULL, ?, 'applied', ?, '2026-08-22T02:00:00.000Z',
+  ) VALUES (?, ?, ?, NULL, ?, ?, 'applied', ?, '2026-08-22T02:00:00.000Z',
     'AI 应用', 'apply', NULL, '', ?, ?)`)
-    .run(owner.profileId, jobId, cardId, owner.planId, startedAt, startedAt, startedAt);
+    .run(owner.profileId, jobId, cardId, owner.planId, round.id, startedAt, startedAt, startedAt);
   db.prepare(`INSERT INTO candidate_progress_events(
     card_id, idempotency_key, type, actor, summary, metadata_json, occurred_at, created_at
   ) VALUES (?, 'dashboard-real-funnel-read', 'outbound_read_observed', 'system', '',
