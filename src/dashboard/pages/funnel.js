@@ -19,8 +19,15 @@ const STAGES = Object.freeze([
 const STRENGTH_LABELS = Object.freeze({
   facts: "样本不足",
   preliminary: "初步观察",
-  comparable: "阶段诊断",
+  comparable: "可比较结论",
   formal: "正式诊断"
+});
+
+const CHANGE_LABELS = Object.freeze({
+  initial: "初始策略",
+  greeting: "招呼语",
+  resume: "定向简历",
+  strategy: "求职策略"
 });
 
 function renderFunnelPage({ plan = {}, dashboard = {} } = {}) {
@@ -28,18 +35,13 @@ function renderFunnelPage({ plan = {}, dashboard = {} } = {}) {
   const currentPath = `/funnel?planId=${encodeURIComponent(planId)}`;
   const todayPath = `/plan?planId=${encodeURIComponent(planId)}`;
   const policy = dashboard.policy || {};
-  const latest = dashboard.latestCohort || null;
-  const currentPool = dashboard.currentPool || {};
-  const analysisSource = String(dashboard.analysisSource || (latest ? "latest_cohort" : "current_pool"));
-  const currentIsActive = analysisSource === "current_pool";
-  const activePolicy = currentIsActive ? policy : cohortPolicy(latest, policy);
-  const diagnosticSample = currentIsActive
-    ? Number(currentPool.mature || 0)
-    : Number(latest?.sampleCount || 0);
-  const strength = String((currentIsActive ? currentPool.strength : latest?.strength) || "facts");
-  const unknown = Number((currentIsActive ? currentPool.unknown : latest?.unknown) || 0);
-  const waiting = Number(currentPool.waiting || 0);
-  const started = Number(currentPool.started || 0);
+  const currentRound = dashboard.currentRound || dashboard.currentPool || {};
+  const activePolicy = strategyRoundPolicy(currentRound, policy);
+  const diagnosticSample = Number(currentRound.mature || 0);
+  const strength = String(currentRound.strength || "facts");
+  const unknown = Number(currentRound.unknown || 0);
+  const waiting = Number(currentRound.waiting || 0);
+  const started = Number(currentRound.started || 0);
 
   return renderDashboardFrame({
     currentPath,
@@ -51,28 +53,38 @@ function renderFunnelPage({ plan = {}, dashboard = {} } = {}) {
       <section class="page-heading" aria-labelledby="funnel-title">
         <p class="eyebrow">阶段二 · 本地结果分析</p>
         <h1 id="funnel-title">求职体检</h1>
-        <p class="lede">把真实求职动作按 48 小时反馈窗口滚动积累，先判断证据够不够，再看当前最值得检查的环节。</p>
+        <p class="lede">每次招呼语、简历或求职策略调整都单独验证。先等真实反馈成熟，再比较调整前后发生了什么。</p>
         <div class="heading-meta"><span>${escapeHtml(plan.name || "当前筛选方案")}</span><span class="status ${strengthTone(strength)}">${escapeHtml(STRENGTH_LABELS[strength] || STRENGTH_LABELS.facts)}</span></div>
       </section>
+      ${renderCurrentRound(currentRound)}
       ${renderConclusion(dashboard, strength)}
       ${renderThresholdRuler(activePolicy, diagnosticSample, strength)}
       ${renderSampleMetrics({
         diagnosticSample,
-        currentMature: Number(currentPool.mature || 0),
         started,
         waiting,
-        unknown,
-        analysisSource,
-        latest
+        unknown
       })}
-      ${renderRollingPoolStatus(currentPool, policy, analysisSource)}
-      ${renderEarlyPositive(currentPool.earlyPositive || {})}
-      ${started || latest ? renderFunnelStages(dashboard.funnel || {}) : renderEmptyState()}
-      ${renderComparisons(dashboard.comparisons || {}, policy, strength)}
-      ${renderPreviousCohort(latest, analysisSource, policy)}
+      ${renderEarlyPositive(currentRound.earlyPositive || {})}
+      ${started ? renderFunnelStages(dashboard.funnel || {}) : renderEmptyState()}
+      ${renderComparisons(dashboard.comparisons || {}, activePolicy, strength)}
+      ${renderRoundComparison(dashboard.previousRound, dashboard.roundComparison)}
+      ${renderStrategyBoundary(planId, currentRound)}
       ${renderEvidenceNotes(dashboard.evidenceNotes || [])}
-    </main><p class="footer-note">本页只读取本地记录并更新本地样本批次，不访问 BOSS、不填写、不粘贴、不发送，也不自动调整岗位筛选或材料。</p>`
+    </main><p class="footer-note">本页只读取本地记录并更新本地策略轮次；不会访问 BOSS，不会填写、粘贴或发送，也不会替你修改外部招呼语或求职设置。</p>`
   });
+}
+
+function renderCurrentRound(round) {
+  const sequence = Math.max(1, Number(round.sequenceNumber || 1));
+  const labels = (Array.isArray(round.changeKinds) ? round.changeKinds : ["initial"])
+    .map((kind) => CHANGE_LABELS[kind]).filter(Boolean);
+  const changeNote = String(round.changeNote || "").trim();
+  return `<section class="card pad funnel-round" aria-labelledby="funnel-round-title">
+    <div class="funnel-round-mark" aria-hidden="true">${sequence}</div>
+    <div><p class="section-label">当前策略轮次</p><h2 id="funnel-round-title">第 ${sequence} 轮</h2><p>${escapeHtml(changeNote || "继续验证当前招呼语、简历和求职策略。")}</p></div>
+    <div class="funnel-round-change"><span>本轮从 ${escapeHtml(formatLocalTime(round.startedAt))} 开始</span><strong>${escapeHtml(labels.join(" + ") || "初始策略")}</strong></div>
+  </section>`;
 }
 
 function renderConclusion(dashboard, strength) {
@@ -93,30 +105,20 @@ function renderThresholdRuler(policy, mature, strength) {
       <span class="funnel-ruler-fill" aria-hidden="true"></span>
       <ol>
         <li style="--funnel-mark:${escapeAttr(((preliminary / formal) * 100).toFixed(2))}%"><strong>${preliminary} 个成熟样本 · 初步观察</strong><span>可以提出待验证的主要卡点</span></li>
-        <li style="--funnel-mark:${escapeAttr(((comparable / formal) * 100).toFixed(2))}%"><strong>${comparable} 个成熟样本 · 阶段诊断</strong><span>可以比较方向和材料分组</span></li>
-        <li style="--funnel-mark:100%"><strong>${formal} 个成熟样本 · 正式诊断</strong><span>冻结本批全部成熟样本</span></li>
+        <li style="--funnel-mark:${escapeAttr(((comparable / formal) * 100).toFixed(2))}%"><strong>${comparable} 个成熟样本 · 可比较结论</strong><span>可以比较方向、材料和前后轮次</span></li>
+        <li style="--funnel-mark:100%"><strong>${formal} 个成熟样本 · 正式诊断</strong><span>结论强度充分，本轮仍继续积累</span></li>
       </ol>
     </div>
   </section>`;
 }
 
-function renderSampleMetrics({ diagnosticSample, currentMature, started, waiting, unknown, analysisSource, latest }) {
-  const frozenActive = analysisSource === "latest_cohort" && latest;
+function renderSampleMetrics({ diagnosticSample, started, waiting, unknown }) {
   return `<section class="metric-grid funnel-metrics" aria-label="求职样本状态">
-    <div class="metric"><span class="metric-label">当前诊断样本</span><strong class="metric-value">${diagnosticSample}</strong><span class="metric-note">${frozenActive ? "最新冻结批次" : "当前滚动样本池"}</span></div>
-    <div class="metric"><span class="metric-label">${frozenActive ? "下一批已成熟" : "当前池已进入"}</span><strong class="metric-value">${frozenActive ? currentMature : started}</strong><span class="metric-note">${frozenActive ? `共进入 ${started} 个` : "含成熟与等待反馈"}</span></div>
+    <div class="metric"><span class="metric-label">本轮成熟样本</span><strong class="metric-value">${diagnosticSample}</strong><span class="metric-note">只统计当前策略</span></div>
+    <div class="metric"><span class="metric-label">本轮已进入</span><strong class="metric-value">${started}</strong><span class="metric-note">含成熟与等待反馈</span></div>
     <div class="metric"><span class="metric-label">等待 48 小时</span><strong class="metric-value">${waiting}</strong><span class="metric-note">暂不作为失败</span></div>
     <div class="metric"><span class="metric-label">状态未知</span><strong class="metric-value">${unknown}</strong><span class="metric-note">不当作失败</span></div>
   </section>`;
-}
-
-function renderRollingPoolStatus(currentPool, policy, analysisSource) {
-  if (analysisSource !== "latest_cohort") return "";
-  const mature = Math.max(0, Number(currentPool.mature || 0));
-  const waiting = Math.max(0, Number(currentPool.waiting || 0));
-  const preliminary = positiveNumber(policy.preliminarySampleTarget, DEFAULT_PRELIMINARY_SAMPLE_TARGET);
-  const remaining = Math.max(0, preliminary - mature);
-  return `<section class="card pad funnel-rolling" aria-labelledby="funnel-rolling-title"><p class="section-label">下一批滚动样本</p><h2 id="funnel-rolling-title">已有 ${mature} 个成熟样本</h2><p>距离新的初步观察还差 ${remaining} 个；另有 ${waiting} 个仍在 48 小时反馈窗口内。达到当前设置的 ${preliminary} 个后，页面会切换到新一批结论。</p></section>`;
 }
 
 function renderEarlyPositive(counts) {
@@ -148,7 +150,7 @@ function renderStage(label, value) {
 }
 
 function renderEmptyState() {
-  return `<section class="card pad funnel-empty" aria-labelledby="funnel-empty-title"><p class="section-label">开始积累</p><h2 id="funnel-empty-title">还没有可统计的求职动作</h2><p>确认已投、已验证发起沟通或确认已发送回复后，RoleFlow 才把岗位放进滚动样本池；仅收藏、稍后处理或查看岗位不会计数。</p></section>`;
+  return `<section class="card pad funnel-empty" aria-labelledby="funnel-empty-title"><p class="section-label">开始积累</p><h2 id="funnel-empty-title">还没有可统计的求职动作</h2><p>确认已投、已验证发起沟通或确认已发送回复后，RoleFlow 才把岗位放进当前策略轮次；仅收藏、稍后处理或查看岗位不会计数。</p></section>`;
 }
 
 function renderComparisons(comparisons, policy, strength) {
@@ -156,8 +158,7 @@ function renderComparisons(comparisons, policy, strength) {
   const sections = [
     ["direction", "岗位方向", (item) => item.label || item.key],
     ["decisionBucket", "推荐档位", (item) => item.label || decisionLabel(item.key)],
-    ["resumeVersion", "简历版本", (item, index) => item.label || `简历版本 ${index + 1}`],
-    ["greeting", "招呼语版本", (item, index) => item.label || `招呼语版本 ${index + 1}`]
+    ["resumeVersion", "简历版本", (item, index) => item.label || `简历版本 ${index + 1}`]
   ].map(([key, label, labelFor]) => renderComparisonGroup(label, comparisons[key] || [], labelFor)).filter(Boolean);
   if (!sections.length) return "";
   const minimum = Math.max(10, Math.floor(positiveNumber(policy.preliminarySampleTarget, DEFAULT_PRELIMINARY_SAMPLE_TARGET) / 2));
@@ -180,28 +181,56 @@ function renderMetricRows(item) {
     .join("");
 }
 
-function renderPreviousCohort(latest, analysisSource, policy) {
-  if (!latest || analysisSource !== "current_pool") return "";
-  const strength = String(latest.strength || "formal");
-  const preliminary = positiveNumber(policy.preliminarySampleTarget, DEFAULT_PRELIMINARY_SAMPLE_TARGET);
-  return `<section class="card pad funnel-previous" aria-labelledby="funnel-previous-title"><div><p class="section-label">上一批冻结结论 · ${escapeHtml(STRENGTH_LABELS[strength] || STRENGTH_LABELS.formal)}</p><h2 id="funnel-previous-title">${escapeHtml(latest.headline || "上一批结果已保留。")}</h2></div><p><strong>${Math.max(0, Number(latest.sampleCount || 0))}</strong> 个成熟样本；新一批达到当前设置的 ${preliminary} 个后已切换为当前诊断，上一批不会覆盖新反馈。</p></section>`;
-}
-
-function cohortPolicy(cohort, fallback) {
+function strategyRoundPolicy(round, fallback) {
+  const thresholds = round?.thresholds || {};
   return {
     preliminarySampleTarget: positiveNumber(
-      cohort?.preliminarySampleTarget,
+      thresholds.preliminary,
       positiveNumber(fallback.preliminarySampleTarget, DEFAULT_PRELIMINARY_SAMPLE_TARGET)
     ),
     comparableSampleTarget: positiveNumber(
-      cohort?.comparableSampleTarget,
+      thresholds.comparable,
       positiveNumber(fallback.comparableSampleTarget, DEFAULT_COMPARABLE_SAMPLE_TARGET)
     ),
     formalSampleTarget: positiveNumber(
-      cohort?.formalSampleTarget,
+      thresholds.formal,
       positiveNumber(fallback.formalSampleTarget, DEFAULT_FORMAL_SAMPLE_TARGET)
     )
   };
+}
+
+function renderRoundComparison(previous, comparison = {}) {
+  if (!previous || comparison.status === "none") return "";
+  const previousNumber = Math.max(1, Number(previous.sequenceNumber || 1));
+  const note = String(comparison.note || "前后轮次暂时不能比较。");
+  const metrics = comparison.status === "ready"
+    ? `<div class="funnel-round-comparison-grid">${[
+      ["read", "招聘方已读"],
+      ["replied", "招聘方回复"],
+      ["effectiveConversation", "有效沟通"],
+      ["interviewInvited", "面试邀请"]
+    ].map(([key, label]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(metricText(comparison.before?.stages?.[key]))}</strong><i aria-hidden="true">→</i><strong>${escapeHtml(metricText(comparison.after?.stages?.[key]))}</strong></div>`).join("")}</div>`
+    : "";
+  return `<section class="card pad funnel-round-comparison" aria-labelledby="funnel-round-comparison-title">
+    <div class="funnel-section-head"><div><p class="section-label">上一策略轮次 · 第 ${previousNumber} 轮</p><h2 id="funnel-round-comparison-title">调整前后对照</h2></div><p class="muted">${escapeHtml(note)}</p></div>
+    ${metrics}
+    ${comparison.status === "ready" ? '<p class="funnel-round-comparison-legend"><span>上一轮</span><span>当前轮</span></p>' : `<p>${escapeHtml(previous.headline || "上一轮结果已保留，迟到反馈仍会继续更新。")}</p>`}
+  </section>`;
+}
+
+function renderStrategyBoundary(planId, currentRound) {
+  const roundId = Number(currentRound.id || 0);
+  if (!roundId) return "";
+  return `<section class="card pad funnel-round-boundary" aria-labelledby="funnel-round-boundary-title">
+    <div><p class="section-label">我已经完成外部调整</p><h2 id="funnel-round-boundary-title">从下一次求职动作开始验证新方案</h2><p>先在外部完成修改，再在这里记录边界。旧岗位继续留在第 ${Math.max(1, Number(currentRound.sequenceNumber || 1))} 轮，新岗位进入下一轮。</p></div>
+    <form method="post" action="/api/funnel/strategy-round">
+      <input type="hidden" name="planId" value="${escapeAttr(planId)}">
+      <input type="hidden" name="fromRoundId" value="${escapeAttr(roundId)}">
+      <fieldset><legend>这次调整了什么？</legend><label><input type="checkbox" name="changeKinds" value="greeting"> 招呼语</label><label><input type="checkbox" name="changeKinds" value="strategy"> 求职方向或投递策略</label></fieldset>
+      <label>调整说明（可选）<textarea name="changeNote" maxlength="300" rows="3" placeholder="例如：缩短招呼语，突出 RAG 项目经验"></textarea></label>
+      <button type="submit">修改完成，开始验证新方案</button>
+    </form>
+  </section>`;
 }
 
 function renderEvidenceNotes(notes) {
@@ -221,9 +250,21 @@ function formatPercent(rate) {
 
 function distanceToNext(mature, strength, policy) {
   if (strength === "facts") return `距离初步观察还差 ${Math.max(0, policy.preliminary - mature)} 个。`;
-  if (strength === "preliminary") return `距离阶段诊断还差 ${Math.max(0, policy.comparable - mature)} 个。`;
+  if (strength === "preliminary") return `距离可比较结论还差 ${Math.max(0, policy.comparable - mature)} 个。`;
   if (strength === "comparable") return `距离正式诊断还差 ${Math.max(0, policy.formal - mature)} 个。`;
-  return "已达到正式诊断强度；新动作进入下一批滚动样本。";
+  return "已达到正式诊断强度；本轮继续积累，直到策略发生变化。";
+}
+
+function formatLocalTime(value) {
+  const timestamp = Date.parse(String(value || ""));
+  if (!Number.isFinite(timestamp)) return "本轮记录时";
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(new Date(timestamp));
 }
 
 function strengthTone(strength) {

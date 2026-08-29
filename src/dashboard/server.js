@@ -1102,6 +1102,9 @@ function createDashboardServer({
       if (req.method === "POST" && url.pathname === "/api/message-reply-draft") return handleMessageReplyDraft(req, res, replyLearning);
       if (req.method === "POST" && url.pathname === "/api/communication-profile") return handleCommunicationProfile(req, res, replyLearning);
       if (req.method === "POST" && url.pathname === "/api/progress") return handleProgress(req, res, db, messageDiscovery, replyLearning);
+      if (req.method === "POST" && url.pathname === "/api/funnel/strategy-round") {
+        return await handleFunnelStrategyRound(req, res, { db, funnelAnalysis });
+      }
       if (req.method === "POST" && url.pathname === "/api/resume-optimization") return handleResumeOptimizationCreate(req, res, {
         db,
         resumeOptimization: getResumeOptimizationService()
@@ -5308,6 +5311,40 @@ function renderFunnelDashboardPage({ db, searchParams, funnelAnalysis }) {
   if (!plan) return renderErrorPage("找不到这份筛选方案，请从今日任务重新进入求职体检。", "/plan");
   const dashboard = funnelAnalysis.refresh({ profileId: plan.profileId, planId: plan.id });
   return renderPage("求职体检", renderFunnelPage({ plan, dashboard }));
+}
+
+async function handleFunnelStrategyRound(req, res, { db, funnelAnalysis }) {
+  const params = parseBody(await readBody(req), req.headers["content-type"] || "");
+  const plan = getSearchPlan(db, Number(params.planId));
+  if (!plan) throw appError("FUNNEL_PLAN_NOT_FOUND", "筛选方案不存在。", { statusCode: 404 });
+  const fromRoundId = Number(params.fromRoundId);
+  if (!Number.isInteger(fromRoundId) || fromRoundId <= 0) {
+    throw appError("FUNNEL_ROUND_REQUIRED", "当前策略轮次无效，请刷新页面后重试。", { statusCode: 400 });
+  }
+  const changeKinds = [...new Set(arrayValue(params.changeKinds)
+    .map((value) => String(value || "").trim()).filter(Boolean))];
+  if (!changeKinds.length || changeKinds.some((kind) => !["greeting", "strategy"].includes(kind))) {
+    throw appError("FUNNEL_CHANGE_KIND_INVALID", "请选择本次调整了招呼语还是求职策略。", { statusCode: 400 });
+  }
+  try {
+    funnelAnalysis.startStrategyRound({
+      profileId: plan.profileId,
+      planId: plan.id,
+      fromRoundId,
+      sourceKey: `manual:${fromRoundId}`,
+      changeKinds,
+      changeNote: String(params.changeNote || "").trim().slice(0, 300)
+    });
+  } catch (error) {
+    if (error?.code === "FUNNEL_ROUND_STALE") {
+      throw appError("FUNNEL_ROUND_STALE", "当前策略轮次已经变化，请刷新页面后再提交。", {
+        statusCode: 409,
+        cause: error
+      });
+    }
+    throw error;
+  }
+  redirect(res, `/funnel?planId=${encodeURIComponent(plan.id)}`);
 }
 
 function renderResumeOptimizationDashboardPage({ db, searchParams, resumeOptimization, modelReady }) {

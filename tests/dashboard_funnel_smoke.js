@@ -13,10 +13,17 @@ const logger = {
   const db = openDb(":memory:");
   const owner = createOwner(db);
   const refreshCalls = [];
+  const strategyRoundCalls = [];
+  let strategyRoundError = null;
   const funnelAnalysisService = {
     refresh(input) {
       refreshCalls.push(input);
       return dashboardFixture();
+    },
+    startStrategyRound(input) {
+      strategyRoundCalls.push(input);
+      if (strategyRoundError) throw strategyRoundError;
+      return { id: 43, sequenceNumber: 3 };
     }
   };
   const server = createDashboardServer({
@@ -40,11 +47,16 @@ const logger = {
       "the requested plan owns the analyzed profile and strategy rounds");
 
     assert.match(response.body, /30 个[^<]*初步观察/);
-    assert.match(response.body, /50 个[^<]*阶段诊断/);
+    assert.match(response.body, /50 个[^<]*可比较结论/);
     assert.match(response.body, /70 个[^<]*正式诊断/);
+    assert.match(response.body, /当前策略轮次/);
+    assert.match(response.body, /第 2 轮/);
+    assert.match(response.body, /修改完成，开始验证新方案/);
+    assert.doesNotMatch(response.body, /下一批滚动样本|冻结本批/);
+    assert.doesNotMatch(response.body, /岗位卡片.*已读|岗位卡片.*送达/);
     assert.match(response.body, /当前 35 个成熟样本/);
     assert.match(response.body, /初步观察/);
-    assert.match(response.body, /距离阶段诊断还差 15 个/);
+    assert.match(response.body, /距离可比较结论还差 15 个/);
     assert.match(response.body, /每个岗位至少经过 48 小时/);
     assert.match(response.body, /跨周末顺延到周一/);
     assert.match(response.body, /等待和未知状态不进入失败分母/);
@@ -56,7 +68,8 @@ const logger = {
       "preliminary observations must not render comparison groups");
     assert.doesNotMatch(response.body, /sha256:|resume:77/, "internal material identifiers never reach the page");
     assert.doesNotMatch(response.body, /证明|导致|准确率/);
-    assert.doesNotMatch(response.body, /<form|method="post"|自动投递|自动发送/, "the checkup is read-only and local");
+    assert.match(response.body, /action="\/api\/funnel\/strategy-round"/);
+    assert.doesNotMatch(response.body, /自动投递|自动发送/, "the local boundary does not create an external action");
     assert.strictEqual((response.body.match(/class="app-shell"/g) || []).length, 1);
     assert.strictEqual((response.body.match(/<main(?:\s|>)/g) || []).length, 1);
 
@@ -64,6 +77,45 @@ const logger = {
     assert.equal(missing.status, 200);
     assert.match(missing.body, /找不到这份筛选方案/);
     assert.equal(refreshCalls.length, 1, "an unknown plan cannot fall through to another candidate");
+
+    const boundaryForm = {
+      planId: owner.planId,
+      fromRoundId: 42,
+      changeKinds: "greeting",
+      changeNote: "已经修改招呼语"
+    };
+    const firstBoundary = await postForm(baseUrl, "/api/funnel/strategy-round", boundaryForm);
+    const repeatedBoundary = await postForm(baseUrl, "/api/funnel/strategy-round", boundaryForm);
+    assert.equal(firstBoundary.status, 303);
+    assert.equal(repeatedBoundary.status, 303);
+    assert.equal(firstBoundary.location, `/funnel?planId=${owner.planId}`);
+    assert.equal(repeatedBoundary.location, `/funnel?planId=${owner.planId}`);
+    assert.deepEqual(strategyRoundCalls, [
+      {
+        profileId: owner.profileId,
+        planId: owner.planId,
+        fromRoundId: 42,
+        sourceKey: "manual:42",
+        changeKinds: ["greeting"],
+        changeNote: "已经修改招呼语"
+      },
+      {
+        profileId: owner.profileId,
+        planId: owner.planId,
+        fromRoundId: 42,
+        sourceKey: "manual:42",
+        changeKinds: ["greeting"],
+        changeNote: "已经修改招呼语"
+      }
+    ]);
+
+    strategyRoundError = Object.assign(new Error("stale"), { code: "FUNNEL_ROUND_STALE" });
+    const staleBoundary = await postForm(baseUrl, "/api/funnel/strategy-round", {
+      ...boundaryForm,
+      fromRoundId: 41
+    });
+    assert.equal(staleBoundary.status, 409);
+    assert.match(staleBoundary.body, /刷新页面/);
   } finally {
     await close(server);
     db.close();
@@ -76,7 +128,7 @@ const logger = {
       currentPool: { started: 0, mature: 0, waiting: 0, unknown: 0, strength: "facts", nextTarget: 30 },
       latestCohort: null,
       funnel: emptyFunnel(),
-      comparisons: { direction: [], decisionBucket: [], resumeVersion: [], greeting: [] },
+      comparisons: { direction: [], decisionBucket: [], resumeVersion: [] },
       headline: "当前还没有进入统计的求职动作。",
       priorityCheck: "确认已投、已发起沟通或已发送回复后，RoleFlow 会自动开始等待反馈。",
       evidenceNotes: []
@@ -86,14 +138,14 @@ const logger = {
   assert.match(empty, /确认已投、已验证发起沟通或确认已发送回复/);
 
   const comparableDashboard = dashboardFixture();
-  comparableDashboard.currentPool = {
-    ...comparableDashboard.currentPool,
+  comparableDashboard.currentRound = {
+    ...comparableDashboard.currentRound,
     mature: 55,
     strength: "comparable",
     nextTarget: 70
   };
+  comparableDashboard.currentPool = comparableDashboard.currentRound;
   comparableDashboard.comparisons.resumeVersion[0].label = "后端定向简历";
-  comparableDashboard.comparisons.greeting[0].label = "招呼语版本 a1b2c3d4";
   const comparable = renderFunnelPage({
     plan: { id: 9, name: "可比较方案", profileId: 5 },
     dashboard: comparableDashboard
@@ -102,65 +154,41 @@ const logger = {
   assert.doesNotMatch(comparable, /AI <应用>/);
   assert.match(comparable, /Java 后端/);
   assert.match(comparable, /后端定向简历/);
-  assert.match(comparable, /招呼语版本 a1b2c3d4/);
   assert.doesNotMatch(comparable, /sha256:|resume:77/);
 
-  const rollingDashboard = {
+  const readyDashboard = {
     ...comparableDashboard,
-    latestCohort: {
-      id: 3,
-      sampleCount: 83,
-      strength: "formal",
-      headline: "正式诊断：上一批主要卡在已读到回复。"
+    roundComparison: {
+      status: "ready",
+      note: "前后轮次均达到可比较样本量，仅展示观察到的变化",
+      before: { stages: { read: stage(30, 50, 0, 0), replied: stage(10, 30, 0, 0), effectiveConversation: stage(5, 10, 0, 0), interviewInvited: stage(2, 5, 0, 0) } },
+      after: { stages: { read: stage(40, 55, 0, 0), replied: stage(20, 40, 0, 0), effectiveConversation: stage(8, 20, 0, 0), interviewInvited: stage(4, 8, 0, 0) } }
     }
   };
-  const rolling = renderFunnelPage({
-    plan: { id: 9, name: "滚动方案", profileId: 5 },
-    dashboard: rollingDashboard
+  const readyComparison = renderFunnelPage({
+    plan: { id: 9, name: "前后对照方案", profileId: 5 },
+    dashboard: readyDashboard
   });
-  assert.match(rolling, /当前 55 个成熟样本/);
-  assert.match(rolling, /上一批冻结结论/);
-  assert.match(rolling, /<strong>83<\/strong> 个成熟样本/);
-  assert.match(rolling, /上一批主要卡在已读到回复/);
+  assert.match(readyComparison, /上一策略轮次 · 第 1 轮/);
+  assert.match(readyComparison, /调整前后对照/);
+  assert.match(readyComparison, /30 \/ 50/);
+  assert.match(readyComparison, /40 \/ 55/);
 
-  const historicalPolicyDashboard = {
+  const confoundedDashboard = {
     ...dashboardFixture(),
-    analysisSource: "latest_cohort",
-    policy: { preliminarySampleTarget: 40, comparableSampleTarget: 60, formalSampleTarget: 80 },
-    currentPool: {
-      started: 22,
-      mature: 20,
-      waiting: 2,
-      unknown: 1,
-      strength: "facts",
-      nextTarget: 40,
-      earlyPositive: {}
-    },
-    latestCohort: {
-      id: 4,
-      sampleCount: 83,
-      preliminarySampleTarget: 30,
-      comparableSampleTarget: 50,
-      formalSampleTarget: 70,
-      strength: "formal",
-      unknown: 0,
-      headline: "正式诊断：冻结策略保持 30/50/70。"
-    },
-    headline: "正式诊断：冻结策略保持 30/50/70。",
-    priorityCheck: "沿用上一批结论，同时积累下一批。"
+    roundComparison: {
+      status: "confounded",
+      note: "多项调整共同发生，无法区分单项影响",
+      before: null,
+      after: null
+    }
   };
-  const historicalPolicy = renderFunnelPage({
-    plan: { id: 9, name: "策略变更方案", profileId: 5 },
-    dashboard: historicalPolicyDashboard
+  const confounded = renderFunnelPage({
+    plan: { id: 9, name: "多项调整方案", profileId: 5 },
+    dashboard: confoundedDashboard
   });
-  assert.match(historicalPolicy, /当前 83 个成熟样本/);
-  assert.match(historicalPolicy, /70 个成熟样本 · 正式诊断/,
-    "a frozen conclusion uses its frozen thresholds");
-  assert.doesNotMatch(historicalPolicy, /80 个成熟样本 · 正式诊断/);
-  assert.match(historicalPolicy, /下一批滚动样本/);
-  assert.match(historicalPolicy, /已有 20 个成熟样本/);
-  assert.match(historicalPolicy, /距离新的初步观察还差 20 个/);
-  assert.match(historicalPolicy, /达到当前设置的 40 个后/);
+  assert.match(confounded, /多项调整共同发生，无法区分单项影响/);
+  assert.doesNotMatch(confounded, /下一批滚动样本|冻结本批/);
 
   const realDb = openDb(":memory:");
   const realOwner = createOwner(realDb);
@@ -201,17 +229,38 @@ function createOwner(db) {
 }
 
 function dashboardFixture() {
+  const currentRound = {
+    id: 42,
+    sequenceNumber: 2,
+    status: "active",
+    changeKinds: ["greeting"],
+    changeNote: "缩短招呼语，突出项目经验",
+    startedAt: "2026-08-28T02:00:00.000Z",
+    thresholds: { preliminary: 30, comparable: 50, formal: 70 },
+    started: 38,
+    mature: 35,
+    waiting: 3,
+    unknown: 3,
+    strength: "preliminary",
+    nextTarget: 50,
+    earlyPositive: { replied: 2, resumeRequested: 1, interviewInvited: 1 }
+  };
   return {
     analysisSource: "current_pool",
     policy: { preliminarySampleTarget: 30, comparableSampleTarget: 50, formalSampleTarget: 70 },
-    currentPool: {
-      started: 38,
-      mature: 35,
-      waiting: 3,
-      unknown: 3,
-      strength: "preliminary",
-      nextTarget: 50,
-      earlyPositive: { replied: 2, resumeRequested: 1, interviewInvited: 1 }
+    currentRound,
+    currentPool: currentRound,
+    previousRound: {
+      id: 41,
+      sequenceNumber: 1,
+      mature: 50,
+      headline: "上一轮主要卡在已读到回复。"
+    },
+    roundComparison: {
+      status: "insufficient",
+      note: "前后轮次都达到可比较样本量后再展示变化",
+      before: null,
+      after: null
     },
     latestCohort: null,
     funnel: {
@@ -229,8 +278,7 @@ function dashboardFixture() {
         comparison("Java 后端", 15, 2, 14)
       ],
       decisionBucket: [],
-      resumeVersion: [comparison("resume:77", 18, 7, 17)],
-      greeting: [comparison("sha256:private-digest", 20, 8, 19)]
+      resumeVersion: [comparison("resume:77", 18, 7, 17)]
     },
     headline: "初步观察：当前主要卡在“已读到回复”。",
     priorityCheck: "优先检查岗位匹配和开场表达，不必立即重写简历。",
@@ -297,6 +345,20 @@ function emptyFunnel() {
 async function listen(server) {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   return `http://127.0.0.1:${server.address().port}`;
+}
+
+async function postForm(baseUrl, pathname, values) {
+  const response = await fetch(`${baseUrl}${pathname}`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams(Object.entries(values).map(([key, value]) => [key, String(value)])),
+    redirect: "manual"
+  });
+  return {
+    status: response.status,
+    location: response.headers.get("location"),
+    body: await response.text()
+  };
 }
 
 async function close(server) {

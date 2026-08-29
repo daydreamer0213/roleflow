@@ -392,7 +392,7 @@ git commit -m "feat: isolate funnel diagnosis by strategy round"
 - Consumes: `funnelAnalysis.startStrategyRound` and the round-based dashboard object from Task 3.
 - Produces: `POST /api/funnel/strategy-round` with fields `planId`, `fromRoundId`, `changeKinds`, and `changeNote`.
 
-- [ ] **Step 1: Write failing Dashboard and endpoint assertions**
+- [x] **Step 1: Write failing Dashboard and endpoint assertions**
 
 Update `tests/dashboard_funnel_smoke.js` to assert:
 
@@ -409,7 +409,7 @@ assert.doesNotMatch(page.body, /岗位卡片.*已读|岗位卡片.*送达/);
 
 POST the same form twice with `fromRoundId=A`; assert both responses redirect to `/funnel?planId=...` and the service receives the same deterministic `sourceKey: manual:A` without creating a third round. Add a stale `fromRoundId` service error fixture and assert the response explains that the page must be refreshed rather than silently starting another round.
 
-- [ ] **Step 2: Run the Dashboard test and verify failure**
+- [x] **Step 2: Run the Dashboard test and verify failure**
 
 ```powershell
 node tests/dashboard_funnel_smoke.js
@@ -417,7 +417,7 @@ node tests/dashboard_funnel_smoke.js
 
 Expected: failure on round copy and the missing endpoint.
 
-- [ ] **Step 3: Add the local POST handler**
+- [x] **Step 3: Add the local POST handler**
 
 Register:
 
@@ -429,7 +429,7 @@ if (req.method === "POST" && url.pathname === "/api/funnel/strategy-round") {
 
 The handler owns `planId`, passes `sourceKey: manual:${fromRoundId}`, accepts only `greeting` and `strategy` from this form, trims `changeNote` to 300 characters, and redirects after success. It never calls a browser or external service.
 
-- [ ] **Step 4: Render the current round and comparison**
+- [x] **Step 4: Render the current round and comparison**
 
 Replace rolling/frozen-cohort copy in `src/dashboard/pages/funnel.js` with:
 
@@ -441,11 +441,11 @@ Replace rolling/frozen-cohort copy in `src/dashboard/pages/funnel.js` with:
 
 The form sends the visible current round ID. Escape every plan, note, direction, and strategy label. Keep the footer explicitly local and read-only with respect to BOSS.
 
-- [ ] **Step 5: Add minimal responsive styles**
+- [x] **Step 5: Add minimal responsive styles**
 
 Add only selectors needed for `.funnel-round`, `.funnel-round-change`, `.funnel-round-comparison`, and `.funnel-round-boundary`. Reuse current cards, metrics, buttons, colors, and mobile breakpoint; do not create a new visual system.
 
-- [ ] **Step 6: Run Dashboard and server regressions**
+- [x] **Step 6: Run Dashboard and server regressions**
 
 ```powershell
 node tests/dashboard_funnel_smoke.js
@@ -455,7 +455,7 @@ node tests/dashboard_shell_smoke.js
 
 Expected: all pass; no browser-readiness probe is called by the funnel page or POST.
 
-- [ ] **Step 7: Commit the user flow**
+- [x] **Step 7: Commit the user flow**
 
 ```powershell
 git add src/dashboard/server.js src/dashboard/pages/funnel.js src/dashboard/assets/roleflow.css tests/dashboard_funnel_smoke.js
