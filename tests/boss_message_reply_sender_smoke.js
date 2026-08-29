@@ -93,7 +93,9 @@ function fakeBrowser({
   verifyState = "ready",
   outgoingText = null,
   outgoingFailed = false,
-  clearRows = null
+  clearRows = null,
+  focusRows = null,
+  readbackRows = null
 } = {}) {
   const calls = [];
   let insertedText = "";
@@ -107,7 +109,9 @@ function fakeBrowser({
   const evaluateReplyExpression = (expression, phase) => {
     const phaseRows = phase === "dispatch" && dispatchState === "target_mismatch"
       ? [verifiedRow({ conversationKey: safeDigest(["conversation", "id:dispatch-drift"]) })]
-      : phase === "clear" && clearRows ? clearRows : rows;
+      : phase === "focus" && focusRows ? focusRows
+        : phase === "readback" && readbackRows ? readbackRows
+          : phase === "clear" && (clearRows || readbackRows) ? clearRows || readbackRows : rows;
     const phaseSnapshot = snapshot({ rows: phaseRows, messages: detailMessages, selectedJobId });
     let editorValue = phase === "preflight" || phase === "focus"
       ? editorText
@@ -304,6 +308,28 @@ function setup(options = {}) {
     (error) => error.code === "BOSS_MESSAGE_REPLY_READBACK_MISMATCH"
   );
   assert.strictEqual(readbackMismatch.browser.calls.filter((call) => call[0] === "clickAt").length, 0);
+
+  const focusDrift = setup({
+    focusRows: [verifiedRow({ conversationKey: safeDigest(["conversation", "id:other-focus-target"]) })]
+  });
+  const focusDriftInspection = await focusDrift.sender.inspectReplyTarget(item);
+  await assert.rejects(
+    () => focusDrift.sender.fillReply(focusDriftInspection, item.replyText),
+    (error) => error.code === "BOSS_MESSAGE_REPLY_TARGET_MISMATCH"
+  );
+  assert.strictEqual(focusDrift.browser.calls.filter((call) => call[0] === "cdp" && call[2] === "Input.insertText").length, 0,
+    "conversation drift before focus must stop before inserting text");
+
+  const readbackDrift = setup({
+    readbackRows: [verifiedRow({ conversationKey: safeDigest(["conversation", "id:other-readback-target"]) })]
+  });
+  const readbackDriftInspection = await readbackDrift.sender.inspectReplyTarget(item);
+  await assert.rejects(
+    () => readbackDrift.sender.fillReply(readbackDriftInspection, item.replyText),
+    (error) => error.code === "BOSS_MESSAGE_REPLY_TARGET_MISMATCH"
+  );
+  assert.strictEqual(readbackDrift.browser.calls.filter((call) => call[0] === "clickAt").length, 0,
+    "conversation drift before read-back must stop without clicking send");
 
   const dispatchDrift = setup({ dispatchState: "target_mismatch" });
   const driftInspection = await dispatchDrift.sender.inspectReplyTarget(item);

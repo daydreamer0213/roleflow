@@ -76,8 +76,12 @@ function createBossMessageReplySender({ browser, reader, sleepFn = sleep } = {})
       await reader.assertActiveBindings();
       await browser.cdp(inspected.tabId, "Emulation.setFocusEmulationEnabled", { enabled: true });
       try {
-        const focus = await browser.evalValue(inspected.tabId, buildEditorFocusExpression());
-        if (focus?.state !== "focused") {
+        const focus = normalizeProbe(await browser.evalValue(
+          inspected.tabId,
+          buildEditorFocusExpression(inspected.item)
+        ));
+        assertReadyProbe(focus);
+        if (focus.focused !== true) {
           throw senderError("BOSS_MESSAGE_REPLY_EDITOR_INVALID", "reply editor could not be focused safely");
         }
         throwIfAborted(signal);
@@ -90,9 +94,10 @@ function createBossMessageReplySender({ browser, reader, sleepFn = sleep } = {})
       await reader.assertActiveBindings();
       const readback = normalizeProbe(await browser.evalValue(
         inspected.tabId,
-        buildEditorReadbackExpression()
+        buildEditorReadbackExpression(inspected.item)
       ));
-      if (readback.state !== "ready" || replyDigest(readback.editorText) !== inspected.item.replyDigest) {
+      assertReadyProbe(readback);
+      if (replyDigest(readback.editorText) !== inspected.item.replyDigest) {
         throw senderError("BOSS_MESSAGE_REPLY_READBACK_MISMATCH", "reply editor read-back did not match the confirmed text");
       }
     } catch (error) {
@@ -260,27 +265,27 @@ function buildEditorPreflightExpression(item) {
   `);
 }
 
-function buildEditorFocusExpression() {
-  return String.raw`(() => {
-    const operation = "__roleflowReplyEditorFocus";
+function buildEditorFocusExpression(item) {
+  return buildPageExpression("__roleflowReplyEditorFocus", item, String.raw`
     const editors = Array.from(document.querySelectorAll("#chat-input"));
-    if (location.pathname !== "/web/geek/chat" || editors.length !== 1) return { state: "editor_invalid", operation };
+    if (editors.length !== 1) return { state: "editor_invalid", operation };
     const editor = editors[0];
     const editable = editor.isContentEditable === true || ["", "true"].includes(String(editor.getAttribute("contenteditable")));
-    if (!editable || String(editor.innerText || editor.textContent || "").replace(/\s+/g, " ").trim()) return { state: "editor_invalid", operation };
+    if (!editable || !visible(editor) || fold(editor.innerText || editor.textContent)) return { state: "editor_invalid", operation };
     editor.focus({ preventScroll: true });
-    return { state: document.activeElement === editor ? "focused" : "editor_invalid", operation };
-  })()`;
+    return { state: "ready", operation, focused: document.activeElement === editor };
+  `);
 }
 
-function buildEditorReadbackExpression() {
-  return String.raw`(() => {
-    const operation = "__roleflowReplyEditorReadback";
+function buildEditorReadbackExpression(item) {
+  return buildPageExpression("__roleflowReplyEditorReadback", item, String.raw`
     const editors = Array.from(document.querySelectorAll("#chat-input"));
-    if (location.pathname !== "/web/geek/chat" || editors.length !== 1) return { state: "editor_invalid", operation };
+    if (editors.length !== 1) return { state: "editor_invalid", operation };
     const editor = editors[0];
+    const editable = editor.isContentEditable === true || ["", "true"].includes(String(editor.getAttribute("contenteditable")));
+    if (!editable || !visible(editor)) return { state: "editor_invalid", operation };
     return { state: "ready", operation, editorText: String(editor.innerText || editor.textContent || "") };
-  })()`;
+  `);
 }
 
 function buildClearExpression(item) {
