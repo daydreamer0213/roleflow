@@ -15,9 +15,9 @@ function renderMockInterviewPage({ dashboard = {}, modelReady = true } = {}) {
     brandHref: todayPath,
     content: `<main id="main-content" class="interview-main">
       <section class="page-heading interview-heading" aria-labelledby="interview-title">
-        <p class="eyebrow">阶段四 · 岗位上下文训练</p>
+        <p class="eyebrow">阶段四 · 简历通用训练优先</p>
         <h1 id="interview-title">模拟面试训练</h1>
-        <p class="lede">无需面试邀请：选择一个资料完整的岗位和当前简历，逐题回答。追问会承接你的上一条回答，结束后再做具体到题号的复盘和重练。</p>
+        <p class="lede">无需面试邀请：默认直接基于当前简历练习每位面试官都可能追问的内容；有合适岗位时，也可以切换到岗位专项面试。追问会承接你的上一条回答，结束后再做具体到题号的复盘和重练。</p>
         <div class="heading-meta"><span>${escapeHtml(plan.name || "当前筛选方案")}</span><span>本地文字练习</span><span>不会写入候选人事实</span></div>
       </section>
       ${renderStartPanel(dashboard, modelReady)}
@@ -32,28 +32,37 @@ function renderStartPanel(dashboard, modelReady) {
   const jobs = dashboard.jobs || [];
   const activeResume = resumes.find((resume) => resume.isActive) || resumes[0] || null;
   return `<section class="card pad interview-start" aria-labelledby="interview-start-title">
-    <div class="interview-section-head"><div><p class="section-label">开始一轮训练</p><h2 id="interview-start-title">冻结岗位、简历与训练设置</h2></div><span class="status ${modelReady ? "good" : "waiting"}">${modelReady ? "深度分析可用" : "模型待配置"}</span></div>
+    <div class="interview-section-head"><div><p class="section-label">开始一轮训练</p><h2 id="interview-start-title">选择训练范围、简历与设置</h2></div><span class="status ${modelReady ? "good" : "waiting"}">${modelReady ? "深度分析可用" : "模型待配置"}</span></div>
     ${modelReady ? "" : '<p class="alert">当前深度分析模型不可用。<a href="/settings">前往模型设置</a>完成连接后再开始。</p>'}
     <form class="interview-start-form" method="post" action="/api/interview/start" data-interview-submit>
       <input type="hidden" name="planId" value="${escapeAttr(plan.id || "")}">
-      <label>目标岗位<select name="jobId" required>${jobs.map((job) => `<option value="${escapeAttr(job.id)}">${escapeHtml(job.title || "未命名岗位")} · ${escapeHtml(job.company || "公司未记录")}</option>`).join("")}</select></label>
+      <fieldset class="interview-mode-picker"><legend>训练范围</legend>
+        <label><input type="radio" name="sessionKind" value="resume_general" checked><span><strong>简历通用面试</strong><small>推荐 · 不需要面试邀请，只围绕简历中的真实经历训练。</small></span></label>
+        <label><input type="radio" name="sessionKind" value="job_specific"${jobs.length ? "" : " disabled"}><span><strong>岗位专项面试</strong><small>${jobs.length ? "可选 · 在简历训练上补充完整 JD 可能涉及的问题。" : "暂无资料完整的岗位，暂时不能选择。"}</small></span></label>
+      </fieldset>
+      <div class="interview-job-panel" data-interview-job-panel hidden><label>目标岗位<select name="jobId" disabled>${jobs.map((job) => `<option value="${escapeAttr(job.id)}">${escapeHtml(job.title || "未命名岗位")} · ${escapeHtml(job.company || "公司未记录")}</option>`).join("")}</select></label></div>
       <label>简历版本<select name="resumeVersionId" required>${resumes.map((resume) => `<option value="${escapeAttr(resume.id)}"${activeResume?.id === resume.id ? " selected" : ""}>${escapeHtml(resume.name || "简历版本")}${resume.isActive ? " · 当前使用" : ""}</option>`).join("")}</select></label>
       <label>面试类型<select name="type"><option value="mixed">综合面试</option><option value="technical">技术 / 业务</option><option value="behavioral">行为问题</option><option value="general">通用沟通</option></select></label>
       <label>难度<select name="difficulty"><option value="standard">标准</option><option value="warmup">热身</option><option value="challenging">高压追问</option></select></label>
       <label>计划题数<select name="plannedQuestions"><option value="3">3 题 · 快速练习</option><option value="5" selected>5 题 · 推荐</option><option value="8">8 题 · 完整练习</option><option value="12">12 题 · 深入练习</option></select></label>
-      <div class="button-row"><button${!modelReady || !jobs.length || !resumes.length ? " disabled" : ""}>开始模拟面试</button><span class="hint">岗位和简历会冻结在本轮记录中，后续更新不会悄悄切换上下文。</span></div>
+      <div class="button-row"><button${!modelReady || !resumes.length ? " disabled" : ""}>开始模拟面试</button><span class="hint">训练范围和简历会冻结在本轮记录中，后续更新不会悄悄切换上下文。</span></div>
     </form>
   </section>`;
 }
 
 function renderEmptyState() {
-  return `<section class="card pad interview-empty"><p class="section-label">还没有训练记录</p><h2>先从上方开始一轮</h2><p>首题会使用当前岗位和简历；从第二题起，问题会继续承接你刚刚写下的回答。</p></section>`;
+  return `<section class="card pad interview-empty"><p class="section-label">还没有训练记录</p><h2>先从上方开始一轮</h2><p>通用训练的首题会直接使用当前简历；从第二题起，问题会继续承接你刚刚写下的回答。</p></section>`;
 }
 
 function renderSession(dashboard, session) {
   const completed = session.status === "completed";
+  const general = sessionKind(session) === "resume_general";
+  const title = general ? "简历通用面试" : session.context?.job?.title || "岗位专项面试";
+  const subtitle = general
+    ? `基于 ${session.context?.resume?.name || `简历版本 ${session.resumeVersionId}`} 的通用训练`
+    : session.context?.job?.company || "公司未记录";
   return `<section class="interview-workspace" aria-labelledby="interview-session-title">
-    <div class="interview-session-head"><div><p class="section-label">${completed ? "本轮训练已完成" : "训练进行中"}</p><h2 id="interview-session-title">${escapeHtml(session.context?.job?.title || "模拟面试")}</h2><p>${escapeHtml(session.context?.job?.company || "公司未记录")}</p></div><span class="status ${completed ? "good" : "waiting"}">${completed ? "可复盘和重练" : `第 ${(session.turns || []).length} / ${escapeHtml(session.settings?.plannedQuestions || "-")} 题`}</span></div>
+    <div class="interview-session-head"><div><p class="section-label">${completed ? "本轮训练已完成" : "训练进行中"}</p><h2 id="interview-session-title">${escapeHtml(title)}</h2><p>${escapeHtml(subtitle)}</p></div><span class="status ${completed ? "good" : "waiting"}">${completed ? "可复盘和重练" : `第 ${(session.turns || []).length} / ${escapeHtml(session.settings?.plannedQuestions || "-")} 题`}</span></div>
     ${renderBinding(session)}
     ${completed ? renderReport(session) : renderCurrentQuestion(dashboard, session)}
     ${renderTranscript(dashboard, session)}
@@ -62,7 +71,11 @@ function renderSession(dashboard, session) {
 }
 
 function renderBinding(session) {
-  return `<dl class="interview-binding"><div><dt>冻结岗位</dt><dd>${escapeHtml(`${session.context?.job?.title || "岗位"} · ${session.context?.job?.company || "公司未记录"}`)}</dd></div><div><dt>冻结简历</dt><dd>${escapeHtml(session.context?.resume?.name || `简历版本 ${session.resumeVersionId}`)}</dd></div><div><dt>训练设置</dt><dd>${escapeHtml(`${typeLabel(session.settings?.type)} · ${difficultyLabel(session.settings?.difficulty)} · ${session.settings?.plannedQuestions || "-"} 题`)}</dd></div></dl>`;
+  const general = sessionKind(session) === "resume_general";
+  const scope = general
+    ? "通用训练 · 不绑定岗位"
+    : `${session.context?.job?.title || "岗位"} · ${session.context?.job?.company || "公司未记录"}`;
+  return `<dl class="interview-binding"><div><dt>${general ? "训练范围" : "冻结岗位"}</dt><dd>${escapeHtml(scope)}</dd></div><div><dt>冻结简历</dt><dd>${escapeHtml(session.context?.resume?.name || `简历版本 ${session.resumeVersionId}`)}</dd></div><div><dt>训练设置</dt><dd>${escapeHtml(`${typeLabel(session.settings?.type)} · ${difficultyLabel(session.settings?.difficulty)} · ${session.settings?.plannedQuestions || "-"} 题`)}</dd></div></dl>`;
 }
 
 function renderCurrentQuestion(dashboard, session) {
@@ -76,7 +89,7 @@ function renderCurrentQuestion(dashboard, session) {
   }
   return `<section class="interview-current" aria-labelledby="interview-current-question">
     <div class="interview-question-number">Q${escapeHtml(current.turnNumber)}</div>
-    <div><p class="section-label">当前问题 · ${escapeHtml(focusLabel(current.questionFocus))}</p><h3 id="interview-current-question">${escapeHtml(current.questionText)}</h3>${current.basedOnTurnNumber ? `<p class="interview-followup">这是一道承接第 ${escapeHtml(current.basedOnTurnNumber)} 题回答的追问。</p>` : ""}
+    <div><p class="section-label">当前问题 · ${escapeHtml(focusLabel(current.questionFocus))}</p><h3 id="interview-current-question">${escapeHtml(current.questionText)}</h3>${renderQuestionEvidence(session, current)}${current.basedOnTurnNumber ? `<p class="interview-followup">这是一道承接第 ${escapeHtml(current.basedOnTurnNumber)} 题回答的追问。</p>` : ""}
       <form method="post" action="/api/interview/answer" data-interview-submit><input type="hidden" name="planId" value="${escapeAttr(planId)}"><input type="hidden" name="sessionId" value="${escapeAttr(session.id)}"><input type="hidden" name="turnNumber" value="${escapeAttr(current.turnNumber)}"><label>我的回答<textarea name="answerText" rows="8" maxlength="20000" required autofocus></textarea><small>按真实经历作答。提交后会直接保存并生成下一题，不会再二次确认。</small></label><button>提交回答并继续</button></form>
     </div>
   </section>`;
@@ -95,7 +108,7 @@ function renderTranscript(dashboard, session) {
   const turns = session.turns || [];
   const planId = dashboard.plan?.id || "";
   if (!turns.length) return "";
-  return `<section class="interview-transcript" aria-labelledby="interview-transcript-title"><div class="interview-section-head"><div><p class="section-label">逐题记录</p><h3 id="interview-transcript-title">问题、原回答与复盘</h3></div><span>${turns.filter((turn) => turn.answerText).length} 题已答</span></div><div class="interview-turn-list">${turns.map((turn) => `<article class="interview-turn"><header><span>Q${escapeHtml(turn.turnNumber)}</span><div><p>${escapeHtml(focusLabel(turn.questionFocus))}</p><h4>${escapeHtml(turn.questionText)}</h4></div></header>${turn.answerText ? `<div class="interview-answer"><strong>原回答</strong><p>${escapeHtml(turn.answerText)}</p></div>${renderAnswerReview(turn.answerReview)}` : '<p class="muted">等待回答</p>'}${renderRetries(turn.retries)}${session.status === "completed" && turn.answerText ? `<form class="interview-retry-form" method="post" action="/api/interview/retry" data-interview-submit><input type="hidden" name="planId" value="${escapeAttr(planId)}"><input type="hidden" name="sessionId" value="${escapeAttr(session.id)}"><input type="hidden" name="turnNumber" value="${escapeAttr(turn.turnNumber)}"><label>重答这题<textarea name="answerText" rows="5" maxlength="20000" required></textarea><small>新回答会与原回答并列保存，不覆盖历史。</small></label><button class="secondary">保存重答并比较</button></form>` : ""}</article>`).join("")}</div></section>`;
+  return `<section class="interview-transcript" aria-labelledby="interview-transcript-title"><div class="interview-section-head"><div><p class="section-label">逐题记录</p><h3 id="interview-transcript-title">问题、原回答与复盘</h3></div><span>${turns.filter((turn) => turn.answerText).length} 题已答</span></div><div class="interview-turn-list">${turns.map((turn) => `<article class="interview-turn"><header><span>Q${escapeHtml(turn.turnNumber)}</span><div><p>${escapeHtml(focusLabel(turn.questionFocus))}</p><h4>${escapeHtml(turn.questionText)}</h4>${renderQuestionEvidence(session, turn)}</div></header>${turn.answerText ? `<div class="interview-answer"><strong>原回答</strong><p>${escapeHtml(turn.answerText)}</p></div>${renderAnswerReview(turn.answerReview)}` : '<p class="muted">等待回答</p>'}${renderRetries(turn.retries)}${session.status === "completed" && turn.answerText ? `<form class="interview-retry-form" method="post" action="/api/interview/retry" data-interview-submit><input type="hidden" name="planId" value="${escapeAttr(planId)}"><input type="hidden" name="sessionId" value="${escapeAttr(session.id)}"><input type="hidden" name="turnNumber" value="${escapeAttr(turn.turnNumber)}"><label>重答这题<textarea name="answerText" rows="5" maxlength="20000" required></textarea><small>新回答会与原回答并列保存，不覆盖历史。</small></label><button class="secondary">保存重答并比较</button></form>` : ""}</article>`).join("")}</div></section>`;
 }
 
 function renderAnswerReview(review) {
@@ -108,11 +121,28 @@ function renderRetries(retries = []) {
   return `<div class="interview-retries"><strong>重答对比</strong>${retries.map((retry) => `<section><span>第 ${escapeHtml(retry.retryIndex)} 次重答</span><p>${escapeHtml(retry.answerText)}</p><small>${escapeHtml(retry.review?.conclusion || "已保存重答")}</small>${renderTextList(retry.review?.remainingImprovements)}</section>`).join("")}</div>`;
 }
 
+function renderQuestionEvidence(session, turn) {
+  const catalog = new Map((session.context?.resumeEvidenceCatalog || [])
+    .map((item) => [String(item?.id || ""), item]));
+  const evidence = (turn.resumeEvidenceIds || []).map((id) => catalog.get(String(id))).filter(Boolean);
+  if (!evidence.length) return "";
+  return `<div class="interview-question-evidence"><strong>这道题来自简历</strong><ul>${evidence.map((item) => `<li>${escapeHtml(compactEvidence(item.text))}</li>`).join("")}</ul></div>`;
+}
+
+function compactEvidence(value) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  return text.length > 360 ? `${text.slice(0, 357)}…` : text;
+}
+
+function sessionKind(session) {
+  return session.sessionKind || session.context?.sessionKind || "job_specific";
+}
+
 function renderHistory(dashboard, selected) {
   const planId = dashboard.plan?.id || "";
   const history = (dashboard.sessions || []).filter((session) => Number(session.id) !== Number(selected.id));
   if (!history.length) return "";
-  return `<section class="card pad interview-history"><p class="section-label">历史训练</p><h3>继续或复盘以前的会话</h3><ul>${history.map((session) => `<li><a href="/interview?planId=${escapeAttr(planId)}&amp;sessionId=${escapeAttr(session.id)}">${escapeHtml(session.context?.job?.title || `模拟面试 ${session.id}`)}</a><span>${session.status === "completed" ? "已完成" : "进行中"}</span></li>`).join("")}</ul></section>`;
+  return `<section class="card pad interview-history"><p class="section-label">历史训练</p><h3>继续或复盘以前的会话</h3><ul>${history.map((session) => `<li><a href="/interview?planId=${escapeAttr(planId)}&amp;sessionId=${escapeAttr(session.id)}">${escapeHtml(sessionKind(session) === "resume_general" ? "简历通用面试" : session.context?.job?.title || `岗位专项面试 ${session.id}`)}</a><span>${session.status === "completed" ? "已完成" : "进行中"}</span></li>`).join("")}</ul></section>`;
 }
 
 function renderTextList(items = []) {
@@ -139,6 +169,6 @@ function focusLabel(value) {
   return { intro: "自我介绍", motivation: "岗位动机", project: "项目深挖", technical: "技术 / 业务", behavioral: "行为问题", pressure: "压力追问", questions: "反问" }[value] || value || "岗位问题";
 }
 
-const MOCK_INTERVIEW_SCRIPT = `<script>(()=>{for(const form of document.querySelectorAll('[data-interview-submit]')){form.addEventListener('submit',()=>{const button=form.querySelector('button');if(button){button.disabled=true;button.textContent='处理中…';}});}})();</script>`;
+const MOCK_INTERVIEW_SCRIPT = `<script>(()=>{const start=document.querySelector('.interview-start-form');if(start){const panel=start.querySelector('[data-interview-job-panel]');const job=panel&&panel.querySelector('select[name="jobId"]');const sync=()=>{const selected=start.querySelector('input[name="sessionKind"]:checked');const specific=selected&&selected.value==='job_specific';if(panel)panel.hidden=!specific;if(job){job.disabled=!specific;job.required=!!specific;}};for(const radio of start.querySelectorAll('input[name="sessionKind"]'))radio.addEventListener('change',sync);sync();}for(const form of document.querySelectorAll('[data-interview-submit]')){form.addEventListener('submit',()=>{const button=form.querySelector('button');if(button){button.disabled=true;button.textContent='处理中…';}});}})();</script>`;
 
 module.exports = { renderMockInterviewPage, MOCK_INTERVIEW_SCRIPT };

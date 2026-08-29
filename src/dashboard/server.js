@@ -5423,10 +5423,12 @@ function renderMockInterviewDashboardPage({ db, searchParams, mockInterview, mod
 async function handleMockInterviewStart(req, res, { db, mockInterview }) {
   const params = parseBody(await readBody(req), req.headers["content-type"] || "");
   const plan = requiredMockInterviewPlan(db, params.planId);
+  const sessionKind = params.sessionKind || "resume_general";
   const session = await mockInterview.startSession({
     profileId: plan.profileId,
     planId: plan.id,
-    jobId: Number(params.jobId),
+    sessionKind,
+    jobId: sessionKind === "job_specific" ? Number(params.jobId) : null,
     resumeVersionId: Number(params.resumeVersionId),
     settings: {
       type: params.type,

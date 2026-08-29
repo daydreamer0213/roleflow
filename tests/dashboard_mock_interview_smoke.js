@@ -29,11 +29,14 @@ const logger = {
   const selectedSession = {
     id: 51,
     profileId: owner.profileId,
-    jobId: 71,
+    sessionKind: "resume_general",
+    jobId: null,
     resumeVersionId: owner.resumeVersionId,
     context: {
-      job: { id: 71, title: "AI <应用> 工程师", company: "示例科技", description: "完整 JD" },
-      resume: { versionId: owner.resumeVersionId, name: "基础简历", text: "参与知识库开发" }
+      sessionKind: "resume_general",
+      job: null,
+      resume: { versionId: owner.resumeVersionId, name: "基础简历", text: "参与知识库开发" },
+      resumeEvidenceCatalog: [{ id: "R1", kind: "resume", text: "参与知识库开发" }]
     },
     settings: { type: "mixed", difficulty: "standard", plannedQuestions: 3 },
     status: "completed",
@@ -46,6 +49,7 @@ const logger = {
     },
     turns: [{
       id: 61, turnNumber: 1, questionText: "请介绍相关项目。", questionFocus: "project",
+      resumeEvidenceIds: ["R1"],
       basedOnTurnNumber: null, answerText: "我参与了 <script>alert(1)</script> 知识库开发。",
       answerReview: { conclusion: "相关", strengths: ["直接"], improvements: ["补充贡献"], turnNumbers: [1] },
       retries: [{
@@ -89,6 +93,11 @@ const logger = {
     assert.match(page.body, /<title>模拟面试训练<\/title>/);
     assert.match(page.body, /aria-current="page">模拟面试<\/a>/);
     assert.match(page.body, /无需面试邀请/);
+    assert.match(page.body, /简历通用面试/);
+    assert.match(page.body, /岗位专项面试/);
+    assert.match(page.body, /value="resume_general" checked/);
+    assert.match(page.body, /这道题来自简历/);
+    assert.match(page.body, /参与知识库开发/);
     assert.deepEqual(calls.dashboard, [{ profileId: owner.profileId, planId: owner.planId, sessionId: 51 }]);
     assert.match(page.body, /基础简历/);
     assert.match(page.body, /AI &lt;应用&gt; 工程师/);
@@ -105,14 +114,28 @@ const logger = {
     const start = await request(baseUrl, "/api/interview/start", {
       method: "POST",
       body: new URLSearchParams({
-        planId: String(owner.planId), jobId: "71", resumeVersionId: String(owner.resumeVersionId),
+        planId: String(owner.planId), sessionKind: "resume_general", resumeVersionId: String(owner.resumeVersionId),
         type: "mixed", difficulty: "standard", plannedQuestions: "5"
       }).toString()
     });
     assert.equal(start.status, 303);
     assert.equal(start.headers.location, `/interview?planId=${owner.planId}&sessionId=52`);
     assert.deepEqual(calls.start[0], {
-      profileId: owner.profileId, planId: owner.planId, jobId: 71,
+      profileId: owner.profileId, planId: owner.planId, sessionKind: "resume_general", jobId: null,
+      resumeVersionId: owner.resumeVersionId,
+      settings: { type: "mixed", difficulty: "standard", plannedQuestions: 5 }
+    });
+
+    const specificStart = await request(baseUrl, "/api/interview/start", {
+      method: "POST",
+      body: new URLSearchParams({
+        planId: String(owner.planId), sessionKind: "job_specific", jobId: "71",
+        resumeVersionId: String(owner.resumeVersionId), type: "mixed", difficulty: "standard", plannedQuestions: "5"
+      }).toString()
+    });
+    assert.equal(specificStart.status, 303);
+    assert.deepEqual(calls.start[1], {
+      profileId: owner.profileId, planId: owner.planId, sessionKind: "job_specific", jobId: 71,
       resumeVersionId: owner.resumeVersionId,
       settings: { type: "mixed", difficulty: "standard", plannedQuestions: 5 }
     });
@@ -175,10 +198,15 @@ async function verifyDefaultServiceConcurrency() {
     analysis: { provider: "mock", model: "offline", semanticStatus: "complete", recommendation: "apply" }
   }, batch);
   const session = storage.createMockInterviewSession(db, {
-    profileId: owner.profileId, planId: owner.planId, jobId, resumeVersionId: owner.resumeVersionId,
-    context: { job: { id: jobId, title: "AI 应用工程师" }, resume: { versionId: owner.resumeVersionId } },
+    profileId: owner.profileId, planId: owner.planId, sessionKind: "job_specific", jobId, resumeVersionId: owner.resumeVersionId,
+    context: {
+      sessionKind: "job_specific",
+      job: { id: jobId, title: "AI 应用工程师" },
+      resume: { versionId: owner.resumeVersionId, text: "参与企业知识库开发" },
+      resumeEvidenceCatalog: [{ id: "R1", kind: "resume", text: "参与企业知识库开发" }]
+    },
     settings: { type: "mixed", difficulty: "standard", plannedQuestions: 3 },
-    initialQuestion: { text: "第一题", focus: "intro", basedOnTurnNumber: null, answerEvidence: "" }
+    initialQuestion: { text: "第一题", focus: "intro", resumeEvidenceIds: ["R1"], basedOnTurnNumber: null, answerEvidence: "" }
   });
   const answers = ["第一题回答", "第二题回答", "第三题回答"];
   for (let index = 0; index < answers.length; index += 1) {
@@ -189,6 +217,7 @@ async function verifyDefaultServiceConcurrency() {
       answerReview: { conclusion: "已复盘", strengths: [], improvements: [], turnNumbers: [turnNumber] },
       nextQuestion: turnNumber < 3 ? {
         text: `你提到“${answers[index]}”，请继续。`, focus: "project",
+        resumeEvidenceIds: ["R1"],
         basedOnTurnNumber: turnNumber, answerEvidence: answers[index]
       } : null
     });
