@@ -63,7 +63,7 @@
 - Produces discovery counters `{ visible, newReplies, currentRead, currentDelivered, unbound }`.
 - Keeps `scanConversationRows()` and `openQueuedConversation(target)` as the read-only browser interface consumed by later tasks.
 
-- [ ] **Step 1: Extend the real-structure fixture and write failing DOM/reader assertions**
+- [x] **Step 1: Extend the real-structure fixture and write failing DOM/reader assertions**
 
 Add a `source` object to each fixture `boss-item` Vue component and assert the wished-for normalized row shape:
 
@@ -81,7 +81,7 @@ assert.equal(snapshot.rows[2].lastMessageStatus, "read");
 
 Assert that a mismatch between Vue `lastMsgStatus` and the visible `.status-read` / `.status-delivery` class returns `BOSS_MESSAGE_STRUCTURE_CHANGED` before any guarded click.
 
-- [ ] **Step 2: Run the row tests and verify RED**
+- [x] **Step 2: Run the row tests and verify RED**
 
 Run:
 
@@ -92,7 +92,7 @@ node tests/boss_message_reader_smoke.js
 
 Expected: failure because the five new row fields do not exist and the current conversation digest still falls back to the visible title.
 
-- [ ] **Step 3: Implement the smallest verified row projection**
+- [x] **Step 3: Implement the smallest verified row projection**
 
 Inside `BOSS_MESSAGE_PAGE_HELPERS_EXPRESSION`, read `row.__vue__?.source` or `row.__vue__?.$props?.source`; require a non-empty `uniqueId`, a safe `encryptJobId`, and a 15-digit `lastMsgId` for `identityVerified: true`. Derive:
 
@@ -110,7 +110,7 @@ const conversationKey = source.uniqueId
 
 Keep the legacy digest only for read-only discovery compatibility and set `identityVerified: false`; later send code must reject it.
 
-- [ ] **Step 4: Write failing discovery/funnel assertions**
+- [x] **Step 4: Write failing discovery/funnel assertions**
 
 Add cases proving:
 
@@ -128,7 +128,7 @@ assert.deepStrictEqual(status.counters, {
 
 In `funnel_message_observation_smoke.js`, create a card with no `thread_key` but a job whose `source_id` equals the row `sourceJobId`; expect the row to bind the thread and record `outbound_read_observed`. Repeating the same message/status must remain idempotent, while the same message changing delivered to read must record the second state.
 
-- [ ] **Step 5: Run the discovery tests and verify RED**
+- [x] **Step 5: Run the discovery tests and verify RED**
 
 Run:
 
@@ -140,13 +140,13 @@ node tests/message_discovery_smoke.js
 
 Expected: the first incoming row is currently baselined, source-job mapping is unavailable, and discovery has no counters.
 
-- [ ] **Step 6: Implement first-run incoming, direct job binding, and counters**
+- [x] **Step 6: Implement first-run incoming, direct job binding, and counters**
 
 Make `planMessageDiscoveryQueue()` queue a verified first-run friend row as `initial_incoming`; continue baselining first-run self-read/self-delivered rows. In `recordFunnelRowObservations()`, resolve exactly one card by `(profile_id, jobs.source='boss', jobs.source_id=row.sourceJobId)` before the existing thread fallback, bind an empty thread with `bindProgressCardThread()`, and skip conflicting/multiple mappings.
 
 Count the visible row snapshot in `runBossMessageDiscovery()` and increment `newReplies` only after a previously unprocessed HR group is recorded. Return the counters from running, completed, stopped, public-safe, and durable status without returning row text or recruiter labels.
 
-- [ ] **Step 7: Run the focused tests and commit**
+- [x] **Step 7: Run the focused tests and commit**
 
 Run:
 
@@ -182,7 +182,7 @@ git commit -m "feat: classify visible message outcomes"
 - Produces `createMessageReplySendBatch`, `getMessageReplySendBatch`, `listMessageReplySendItems`, `transitionMessageReplySendBatch`, `transitionMessageReplySendItem`, and `stopPendingMessageReplySendItems`.
 - Migration version is exactly `22`, named `message_reply_sending_v1`.
 
-- [ ] **Step 1: Write the failing migration and storage contract**
+- [x] **Step 1: Write the failing migration and storage contract**
 
 Add version 22 to the expected migration ledger and assert the fresh schema contains these tables:
 
@@ -239,7 +239,7 @@ CREATE TABLE message_reply_send_items (
 
 Add a partial unique index preventing one draft from appearing in two nonterminal items.
 
-- [ ] **Step 2: Run migration/storage tests and verify RED**
+- [x] **Step 2: Run migration/storage tests and verify RED**
 
 Run:
 
@@ -250,7 +250,7 @@ node tests/message_reply_send_store_smoke.js
 
 Expected: schema version remains 21 and the new store module/tables do not exist.
 
-- [ ] **Step 3: Implement migration 22 and the store owner**
+- [x] **Step 3: Implement migration 22 and the store owner**
 
 Use one `MESSAGE_REPLY_SENDING_SCHEMA` constant in `src/core/storage.js`, append migration 22, and keep all SQL row mapping/transition compare-and-set logic in `src/storage/message_reply_send_store.js`.
 
@@ -263,7 +263,7 @@ Validate inbound display entries to only allow:
 
 Validate every digest, 15-digit message ID, positive owner ID, draft revision, reply length, state edge, and `click_count` invariant. Store error/evidence values only after length-limiting and JSON normalization.
 
-- [ ] **Step 4: Prove immutable batch rows and privacy behavior**
+- [x] **Step 4: Prove immutable batch rows and privacy behavior**
 
 Create two open drafts plus inbound contexts, call:
 
@@ -280,11 +280,11 @@ const batch = createMessageReplySendBatch(db, {
 
 Assert order, frozen text/digests/targets, duplicate-open rejection, revision conflict, terminal transition release, compare-and-set conflicts, click count never exceeding one, and that list/get mappers do not expose raw inbound display context.
 
-- [ ] **Step 5: Export the exact store facade and register the test**
+- [x] **Step 5: Export the exact store facade and register the test**
 
 Expose the ten interfaces listed above through `src/core/storage.js`. Update the existing storage facade contract to the new exact export set rather than weakening it to a lower-bound assertion. Add `message_reply_send_store_smoke.js` to `tests/run_all.js` beside the existing message learning store check.
 
-- [ ] **Step 6: Run focused tests and commit**
+- [x] **Step 6: Run focused tests and commit**
 
 Run:
 
@@ -322,7 +322,7 @@ git commit -m "feat: persist authorized reply batches"
 - Public `/api/message-discovery-status` continues to omit `inboundMessages` and all draft text.
 - Draft completion/dismissal deletes inbound context when no open draft in that message group remains.
 
-- [ ] **Step 1: Write failing privacy and rendering assertions**
+- [x] **Step 1: Write failing privacy and rendering assertions**
 
 Assert a normal HR group renders its exact text under “HR 消息”, while a verified resume card renders only `HR 邀请你发送简历`. Assert the current safe `messageSummary` remains deterministic and the original text is absent from:
 
@@ -339,7 +339,7 @@ In the server smoke test, obtain `diagnosticsResponseBody` by calling the existi
 
 Refresh the page through `controller.pageState(profileId)` and expect the inbound content to remain until its last draft is completed or dismissed.
 
-- [ ] **Step 2: Run the message/card tests and verify RED**
+- [x] **Step 2: Run the message/card tests and verify RED**
 
 Run:
 
@@ -351,7 +351,7 @@ node tests/dashboard_message_discovery_smoke.js
 
 Expected: current discovery clears the HR text before durable storage and the view has no HR-message section.
 
-- [ ] **Step 3: Save a narrow display projection before clearing model input**
+- [x] **Step 3: Save a narrow display projection before clearing model input**
 
 Immediately before the existing `finally` block clears selected message text, build:
 
@@ -367,11 +367,11 @@ for (const action of incoming.manualActions) {
 
 Save it with the canonical conversation key, BOSS source job ID, last incoming message ID, classification, and safe manual actions. Do not save recruiter label, security ID, preview text, or platform card raw text.
 
-- [ ] **Step 4: Load and purge contexts with open drafts**
+- [x] **Step 4: Load and purge contexts with open drafts**
 
 Make `durableStatus()` merge `listMessageInboundContexts()` with open drafts and the existing job projection. After `completeDraft()` closes a message group, call a store helper inside the same completion transaction to delete the context only when no open sibling draft remains. Make discovery dismiss delete the displayed contexts it closes.
 
-- [ ] **Step 5: Render original, job analysis, and send-ready controls**
+- [x] **Step 5: Render original, job analysis, and send-ready controls**
 
 Update each HR result card to this order:
 
@@ -383,7 +383,7 @@ Update each HR result card to this order:
 
 Show explicit JD-backed work-schedule text if the existing analysis supplies it; otherwise show `工作安排未确认`. Add `data-send-single`, `data-send-select`, and `data-draft-revision` attributes only for editable, non-manual-only drafts. Keep copy and manual-sent buttons.
 
-- [ ] **Step 6: Run focused tests and commit**
+- [x] **Step 6: Run focused tests and commit**
 
 Run:
 
@@ -420,7 +420,7 @@ git commit -m "feat: show pending HR message context"
 - `stop({profileId,batchId})` stops only undispatched items.
 - `completeVerifiedItem({batchId,itemId})` completes learning with the frozen reply and `completionKind:'sent'`.
 
-- [ ] **Step 1: Write the failing service contract**
+- [x] **Step 1: Write the failing service contract**
 
 Create two open drafts and assert:
 
@@ -435,7 +435,7 @@ assert(!JSON.stringify(service.status({ profileId, batchId: confirmed.batch.id }
 
 Add rejection checks for closed drafts, another profile, stale revision, missing inbound context, missing verified row identity, empty text, duplicate draft, and more than 50 items.
 
-- [ ] **Step 2: Run the service tests and verify RED**
+- [x] **Step 2: Run the service tests and verify RED**
 
 Run:
 
@@ -445,21 +445,21 @@ node tests/message_reply_send_service_smoke.js
 
 Expected: application service and batch state owner do not exist.
 
-- [ ] **Step 3: Implement state edges and immutable confirmation**
+- [x] **Step 3: Implement state edges and immutable confirmation**
 
 Define explicit state edges in `message_reply_send_batches.js`; reject every unlisted edge. `confirmBatch()` accepts only IDs/revisions, loads current text and target context server-side, creates one transactionally frozen batch, and invokes `executeBatch(batch.id)` only after commit. It must not accept client-supplied reply text, conversation key, source job ID, or last message ID.
 
-- [ ] **Step 4: Compose verified success with current learning semantics**
+- [x] **Step 4: Compose verified success with current learning semantics**
 
 Expose a transaction-capable path from the learning service so `completeVerifiedItem()` uses the frozen text and runs all three local mutations in its existing `afterComplete` SQLite transaction: record the same confirmed-sent progress event used by the manual path with idempotency key `message-reply-send:${batch.id}:${item.id}`; move this exact item from `click_dispatched` to `succeeded`; query the open drafts for the same message group and call `deleteMessageInboundContext()` only when none remain. Pass the concrete `batch.id`, `item.id`, `item.cardId`, `item.draftId`, `batch.profileId`, and completion timestamp to those current store functions—do not introduce a second progress-event implementation.
 
 If fact extraction fails, preserve the existing behavior: the complete user answer is retained, extraction status is reported, and the verified external send is not rolled back or retried.
 
-- [ ] **Step 5: Prove idempotency and atomicity**
+- [x] **Step 5: Prove idempotency and atomicity**
 
 Assert duplicate `completeVerifiedItem()` returns the existing success without a second memory/progress event. Inject a failure in `afterComplete` and assert the local draft, memory, progress event, and item success all roll back while the item remains non-retryable.
 
-- [ ] **Step 6: Run focused tests and commit**
+- [x] **Step 6: Run focused tests and commit**
 
 Run:
 
@@ -494,13 +494,13 @@ git commit -m "feat: authorize immutable message replies"
 - `verifyReplyResult(preparation, signal)` returns `{state:'succeeded'|'target_mismatch'|'platform_rejected'|'ambiguous', evidence}`.
 - `clearPreparedReply(preparation)` clears only text proven to have been inserted by this preparation and only before click dispatch.
 
-- [ ] **Step 1: Write a fake-browser RED suite around the desired sender API**
+- [x] **Step 1: Write a fake-browser RED suite around the desired sender API**
 
 Cover exact conversation/job/last-message matching, selected detail matching, empty editor requirement, contenteditable availability, no `Page.bringToFront`, exact whitespace-folded read-back, one click, new outgoing 15-digit message ID, and matching reply digest.
 
 Assert the production change that makes each check fail: removing the identity recheck, changing the text after fill, clicking twice, accepting the old message ID, or using the wrong conversation must make the test fail.
 
-- [ ] **Step 2: Run the sender test and verify RED**
+- [x] **Step 2: Run the sender test and verify RED**
 
 Run:
 
@@ -510,7 +510,7 @@ node tests/boss_message_reply_sender_smoke.js
 
 Expected: module not found.
 
-- [ ] **Step 3: Add a guarded reply-target selector without widening discovery clicks**
+- [x] **Step 3: Add a guarded reply-target selector without widening discovery clicks**
 
 Reuse `scanConversationRows()` and the reader's provenance set. Match exactly one verified row by all of:
 
@@ -524,19 +524,19 @@ row.identityVerified === true
 
 Call `openQueuedConversation({ conversationKey: row.conversationKey, sourceJobId: row.sourceJobId, lastMessageId: row.lastMessageId, rowIndex: row.rowIndex, operation: 'authorized_reply' })`, then confirm the selected detail source job and last HR message again.
 
-- [ ] **Step 4: Fill through CDP without foreground activation**
+- [x] **Step 4: Fill through CDP without foreground activation**
 
 Require `browser.cdp` and `browser.clickAt`. Use `Emulation.setFocusEmulationEnabled`, focus only `#chat-input`, call `Input.insertText`, then immediately disable focus emulation. Read back `innerText`, normalize with the existing folded-whitespace digest, and return no public raw text.
 
 Do not use `Page.bringToFront`, clipboard paste, keyboard shortcuts, or direct Vue method calls.
 
-- [ ] **Step 5: Guard the single click and verify DOM success**
+- [x] **Step 5: Guard the single click and verify DOM success**
 
 `dispatchReply()` must re-evaluate selected conversation identity, expected last HR message, editor digest, editor visibility, send-button uniqueness, and risk/login state, then return a click point. The method calls `browser.clickAt()` exactly once.
 
 `verifyReplyResult()` accepts success only when the same selected conversation contains a new `.message-item.item-myself` with a new 15-digit `data-mid` and a folded-whitespace digest equal to the authorized reply. Without this proof return `ambiguous`; do not guess a network endpoint.
 
-- [ ] **Step 6: Run focused tests and commit**
+- [x] **Step 6: Run focused tests and commit**
 
 Run:
 
@@ -569,7 +569,7 @@ git commit -m "feat: add guarded background reply sender"
 - Uses the Task 4 batch/item state owner and Task 5 sender interfaces exactly.
 - Returns public-safe batch summary; never returns reply text.
 
-- [ ] **Step 1: Write executor RED cases**
+- [x] **Step 1: Write executor RED cases**
 
 Cover:
 
@@ -581,7 +581,7 @@ and assert fixed order, one reservation per item, random inter-item wait, user s
 
 For every post-click failure assert later items remain undispatched and the current item is never returned to `pending`.
 
-- [ ] **Step 2: Run executor tests and verify RED**
+- [x] **Step 2: Run executor tests and verify RED**
 
 Run:
 
@@ -592,17 +592,17 @@ node tests/site_access_budget_smoke.js
 
 Expected: executor and the reply-send access action do not exist.
 
-- [ ] **Step 3: Implement the serial state machine**
+- [x] **Step 3: Implement the serial state machine**
 
 Reserve a dedicated `message_reply_send` action through the existing BOSS access controller. Before every read, fill, state transition, and click, re-read batch control and abort state. Persist `click_dispatched` and `click_count=1` before calling `sender.dispatchReply()`.
 
 Stop the whole batch on target mismatch, platform rejection, ambiguous result, risk, login, browser/page loss, structure change, or verified-success local failure. Pending/fill-before-click items become `stopped`; click-dispatched items become or remain `ambiguous`.
 
-- [ ] **Step 4: Reuse current communication pacing instead of adding a scheduler**
+- [x] **Step 4: Reuse current communication pacing instead of adding a scheduler**
 
 Add only the access action definition needed for budgets and use `PRODUCT_POLICY.operations.bossCommunication.delayMs` for inter-item delay. Reuse the shared BOSS pacing checkpoint owner; do not create a reply-specific timer service or poller.
 
-- [ ] **Step 5: Run focused tests and commit**
+- [x] **Step 5: Run focused tests and commit**
 
 Run:
 
@@ -639,7 +639,7 @@ git commit -m "feat: execute confirmed replies serially"
 - HTTP `GET /api/message-reply-send-status?profileId=&batchId=` returns local public-safe state.
 - HTTP `POST /api/message-reply-send-control` accepts only `{profileId,batchId,action:'stop'}`.
 
-- [ ] **Step 1: Write failing API and UI assertions**
+- [x] **Step 1: Write failing API and UI assertions**
 
 Assert action-token enforcement, JSON shape/ownership validation, at most one active batch per profile, and public status without reply or HR text. Render two editable cards and assert:
 
@@ -651,7 +651,7 @@ Assert action-token enforcement, JSON shape/ownership validation, at most one ac
 
 Assert read/delivered appear only in the top counts and never render `.message-result` cards.
 
-- [ ] **Step 2: Run Dashboard tests and verify RED**
+- [x] **Step 2: Run Dashboard tests and verify RED**
 
 Run:
 
@@ -662,15 +662,15 @@ node tests/dashboard_message_discovery_smoke.js
 
 Expected: routes, controller, send controls, counts, and batch polling do not exist.
 
-- [ ] **Step 3: Compose the in-process controller**
+- [x] **Step 3: Compose the in-process controller**
 
 Follow the existing message discovery controller lifetime pattern: keep one promise/abort controller per active batch, build a fresh fixed-tab browser binding for the run, and clear only local runtime references after terminal status. On server close, abort and wait for active runs; never auto-resume a historical `click_dispatched` item.
 
-- [ ] **Step 4: Add strict local APIs**
+- [x] **Step 4: Add strict local APIs**
 
 Parse only the fields in the interfaces above, cap batches at 50, require the local action token on POSTs, return `409` for stale revisions/active batch/conflicts, and return `202` after a confirmed batch starts. Keep all browser and frozen target values server-owned.
 
-- [ ] **Step 5: Serialize current text before confirmation**
+- [x] **Step 5: Serialize current text before confirmation**
 
 Extend the existing `draftWrites` queue. Single and batch handlers must:
 
@@ -685,11 +685,11 @@ await postReplyBatch(items);
 
 Use the revision returned by each save response before posting the batch. Disable selected editors and send controls once the server confirms the immutable batch; do not display a second confirmation dialog.
 
-- [ ] **Step 6: Poll local state and keep fallback flows**
+- [x] **Step 6: Poll local state and keep fallback flows**
 
 Poll only `/api/message-reply-send-status`; update each card's local status and the batch bar. Stop polling at completed/stopped/interrupted. Keep copy and manual-sent handlers unchanged for drafts not owned by an active batch.
 
-- [ ] **Step 7: Run focused Dashboard tests and commit**
+- [x] **Step 7: Run focused Dashboard tests and commit**
 
 Run:
 
@@ -722,7 +722,7 @@ git commit -m "feat: confirm replies from message cards"
 - Produces one exact feature SHA with fresh focused and full offline evidence.
 - Records that real BOSS was read only during calibration and that no real reply send was executed.
 
-- [ ] **Step 1: Run the complete focused gate**
+- [x] **Step 1: Run the complete focused gate**
 
 Run:
 
@@ -745,11 +745,11 @@ node tests/dashboard_communication_profile_smoke.js
 
 Expected: every listed test exits 0 and none opens BOSS.
 
-- [ ] **Step 2: Run local visual acceptance without a real platform write**
+- [x] **Step 2: Run local visual acceptance without a real platform write**
 
 Start the Dashboard against a temporary database and fake-browser fixture. Check 1440px and 390px views for HR message, job analysis, editable draft, checked count, single/batch buttons, running status, stopped/ambiguous result, keyboard focus, and absence of horizontal overflow. Record console errors and external network calls; both must be zero.
 
-- [ ] **Step 3: Perform a read-only correctness and simplicity review**
+- [x] **Step 3: Perform a read-only correctness and simplicity review**
 
 Review one normal two-item batch, one stale-target counterexample, and one post-click ambiguous failure across storage, service, browser sender, executor, and UI. Confirm:
 
@@ -760,7 +760,7 @@ Review one normal two-item batch, one stale-target counterexample, and one post-
 
 Write only concrete findings and resolutions to the review report.
 
-- [ ] **Step 4: Run the fresh full offline gate**
+- [x] **Step 4: Run the fresh full offline gate**
 
 Run:
 
@@ -770,11 +770,11 @@ npm test
 
 Expected: exit 0 and the final line reports the fresh registered test total; do not reuse the earlier 124-check result.
 
-- [ ] **Step 5: Update authoritative docs and plan checkboxes**
+- [x] **Step 5: Update authoritative docs and plan checkboxes**
 
 Document the user-visible flow, schema version 22, selectors backed by current DOM, immutable authorization, no-real-send boundary, actual test total, and remaining single-message live-acceptance prerequisite. Do not describe résumé acceptance, application, or real bulk sending as completed.
 
-- [ ] **Step 6: Check and commit the final documentation**
+- [x] **Step 6: Check and commit the final documentation**
 
 Run:
 
@@ -790,7 +790,7 @@ git add docs/PROJECT_HANDOFF.md docs/NEXT_PHASE.md docs/resume_and_feedback_work
 git commit -m "docs: close confirmed reply sending"
 ```
 
-- [ ] **Step 7: Verify the exact final SHA**
+- [x] **Step 7: Verify the exact final SHA**
 
 Run at the final commit:
 
