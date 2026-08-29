@@ -1,6 +1,6 @@
 const { listUnresolvedMessageDiscoveryItems } = require("../core/message_preview_state");
 
-function renderMessageDiscoveryPage({ db, searchParams, controller, helpers }) {
+function renderMessageDiscoveryPage({ db, searchParams, controller, messageReplyActionToken = "", helpers }) {
   const {
     getCandidateProfile,
     renderErrorPage,
@@ -68,9 +68,9 @@ function renderMessageDiscoveryPage({ db, searchParams, controller, helpers }) {
         ? `<form method="post" action="/api/progress" data-sent-draft="${id}"><input type="hidden" name="cardId" value="${result.cardId}"><input type="hidden" name="draftId" value="${draft.id}"><input type="hidden" name="finalText" value=""><input type="hidden" name="idempotencyKey" value="${escapeAttr(newProgressRequestKey())}"><input type="hidden" name="action" value="reply_confirmed_sent"><button>已手动发送</button></form>`
         : "";
       const send = editable
-        ? `<label><input type="checkbox" data-send-select="${draft.id}">加入批量发送</label><button type="button" data-send-single="${draft.id}">确认发送</button>`
+        ? `<div class="message-draft-actions"><label class="message-send-choice"><input type="checkbox" data-send-select="${draft.id}" checked>加入本次发送</label><button type="button" data-send-single="${draft.id}">确认发送</button></div><p class="message-send-status" data-send-status="${draft.id}" role="status">等待确认</p>`
         : "";
-      return `<section class="message-draft"><label for="${id}">草稿 ${messageIndex + 1}</label><textarea id="${id}"${editable ? ` data-draft-text data-draft-id="${draft.id}" data-revision="${draft.revision}" data-draft-revision="${draft.revision}"` : " readonly"}>${escapeHtml(draft.text)}</textarea><button type="button" data-copy-draft="${id}"${editable ? "" : " data-copy-only"}>复制到本机剪贴板</button>${send}${sent}</section>`;
+      return `<section class="message-draft" data-draft-card="${draft.id}"><label for="${id}">草稿 ${messageIndex + 1}</label><textarea id="${id}"${editable ? ` data-draft-text data-draft-id="${draft.id}" data-revision="${draft.revision}" data-draft-revision="${draft.revision}"` : " readonly"}>${escapeHtml(draft.text)}</textarea><button type="button" data-copy-draft="${id}"${editable ? "" : " data-copy-only"}>复制到本机剪贴板</button>${send}${sent}</section>`;
     }).join("");
     const inboundMessages = Array.isArray(result.inboundMessages) ? result.inboundMessages : [];
     const inboundSection = inboundMessages.length
@@ -114,18 +114,30 @@ function renderMessageDiscoveryPage({ db, searchParams, controller, helpers }) {
     <form data-discovery-form method="post" action="/api/message-discovery"><input type="hidden" name="action" value="stop"><input type="hidden" name="profileId" value="${profileId}"><button class="secondary"${status.status === "running" ? "" : " disabled"}>安全停止</button></form>
     <form data-discovery-form method="post" action="/api/message-discovery"><input type="hidden" name="action" value="dismiss"><input type="hidden" name="profileId" value="${profileId}"><button class="secondary"${status.status !== "running" && status.results.length ? "" : " disabled"}>清除本次结果</button></form>
   </section>`;
+  const sendableDraftCount = status.results.reduce((count, result) => count
+    + (Array.isArray(result.drafts) ? result.drafts.filter((draft) => Number(draft?.id) > 0).length : 0), 0);
+  const sendBatchPanel = sendableDraftCount > 0 ? `<section class="message-send-batch" data-send-batch-panel data-state="idle" aria-label="确认发送">
+    <div><strong data-send-batch-title>已选择 ${sendableDraftCount} 条草稿</strong><span data-send-batch-status>逐条确认目标后在后台串行发送</span></div>
+    <div class="button-row"><button type="button" data-send-batch>确认并串行发送 ${sendableDraftCount} 条</button><button type="button" class="secondary" data-send-stop hidden disabled>停止后续发送</button></div>
+  </section>` : "";
   const unresolvedSections = durableUnresolved.map((item) =>
     renderUnresolvedItem(db, item, { profileId, escapeHtml, escapeAttr })
   ).join("");
-  const scriptState = JSON.stringify({ profileId, status: status.status, recoveryMessages });
+  const counters = status.counters || {};
+  const scriptState = JSON.stringify({
+    profileId,
+    status: status.status,
+    recoveryMessages,
+    messageReplyActionToken: String(messageReplyActionToken || "")
+  });
   return renderFramedPage({
-    title: "BOSS 消息只读发现",
+    title: "BOSS 消息发现与回复",
     currentPath,
     todayPath: plan?.id ? `/plan?planId=${plan.id}` : "/onboarding",
     planId: plan?.id || "",
     stage: "消息",
     brandHref: plan?.id ? `/plan?planId=${plan.id}` : "/onboarding",
-    content: `<main id="main-content" class="message-layout"><header class="page-heading"><p class="eyebrow">只读发现</p><h1>BOSS 消息只读发现</h1><p class="lede">只读取未读会话，在本机理解对应岗位并准备安全的推荐回复草稿。请复制草稿后到平台人工粘贴；本页不会填写、粘贴或发送平台消息。</p></header>${controls}<p class="message-feedback" data-discovery-feedback role="status" aria-live="polite" aria-busy="false"></p><section class="panel message-state"><h2>${escapeHtml(statusLabel)}</h2><p class="line">排队 ${status.queued} · 已处理 ${status.processed} · 未解决 ${Math.max(0, Number(status.unresolved) || 0)}</p>${phaseNotice ? `<p class="line">${escapeHtml(phaseNotice)}</p>` : ""}${reason ? `<p class="risk-text">${escapeHtml(reason)}</p>` : ""}</section>${unresolvedSections}${resultSections || (!unresolvedSections ? '<section class="panel"><p class="line">当前没有岗位处理结果。</p></section>' : "")}<p class="button-row"><a class="button-link secondary" data-flush-drafts href="/communication-profile?profileId=${encodeURIComponent(profileId)}">管理我的沟通资料</a><a class="button-link secondary" data-flush-drafts href="${escapeAttr(manualPath)}">返回人工粘贴流程</a></p></main>`,
+    content: `<main id="main-content" class="message-layout"><header class="page-heading"><p class="eyebrow">消息工作台</p><h1>BOSS 消息发现与回复</h1><p class="lede">先在后台只读发现 HR 新消息并准备草稿。你修改后点击“确认发送”，系统才会在固定消息页逐条核对、填入并发送；也可以继续复制后人工处理。</p></header>${controls}<p class="message-feedback" data-discovery-feedback role="status" aria-live="polite" aria-busy="false"></p><section class="panel message-state"><h2>${escapeHtml(statusLabel)}</h2><p class="line">可见 ${Math.max(0, Number(counters.visible) || 0)} · HR 新回复 ${Math.max(0, Number(counters.newReplies) || 0)} · 已读 ${Math.max(0, Number(counters.currentRead) || 0)} · 送达 ${Math.max(0, Number(counters.currentDelivered) || 0)}</p><p class="line">排队 ${status.queued} · 已处理 ${status.processed} · 未解决 ${Math.max(0, Number(status.unresolved) || 0)}</p>${phaseNotice ? `<p class="line">${escapeHtml(phaseNotice)}</p>` : ""}${reason ? `<p class="risk-text">${escapeHtml(reason)}</p>` : ""}</section>${unresolvedSections}${resultSections || (!unresolvedSections ? '<section class="panel"><p class="line">当前没有岗位处理结果。</p></section>' : "")}${sendBatchPanel}<p class="button-row"><a class="button-link secondary" data-flush-drafts href="/communication-profile?profileId=${encodeURIComponent(profileId)}">管理我的沟通资料</a><a class="button-link secondary" data-flush-drafts href="${escapeAttr(manualPath)}">返回人工粘贴流程</a></p></main>`,
     scripts: [messageDiscoveryClientScript(scriptState)]
   });
 }
@@ -156,11 +168,48 @@ function messageDiscoveryClientScript(scriptState) {
     for(const form of forms)form.addEventListener("submit",async(event)=>{event.preventDefault();if(actionPending||reloadPending)return;actionPending=true;actionVersion+=1;setPending(true);let succeeded=false;try{const response=await fetch(form.getAttribute("action"),{method:"POST",headers:{"content-type":"application/x-www-form-urlencoded"},body:new URLSearchParams(new FormData(form))});const parsed=await read(response);if(accepted(response,parsed,postStatuses)){succeeded=true;requestReload();return;}show(rejectedCode(parsed));}catch{show("MESSAGE_DISCOVERY_BROWSER_UNAVAILABLE");}finally{actionPending=false;setPending(false);if(!reloadPending&&!succeeded&&currentStatus==="running")schedulePoll();}});
     const cancelDraftSave=(field)=>{const timer=draftTimers.get(field);if(timer!==undefined){clearTimeout(timer);draftTimers.delete(field);}};
     const postDraft=async(field,text,action,completionKind="")=>{const response=await fetch("/api/message-reply-draft",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action,profileId:initial.profileId,draftId:Number(field.dataset.draftId),text,completionKind})});const parsed=await read(response);if(!response.ok||!parsed.json||!parsed.body?.ok)throw new Error(rejectedCode(parsed));return parsed.body;};
-    const queueDraftWrite=(field,action,completionKind="",text=field.value)=>{const previous=draftWrites.get(field)||Promise.resolve();const pending=previous.catch(()=>undefined).then(()=>postDraft(field,text,action,completionKind));draftWrites.set(field,pending);const clear=()=>{if(draftWrites.get(field)===pending)draftWrites.delete(field);};pending.then(clear,clear);return pending;};
+    const queueDraftWrite=(field,action,completionKind="",text=field.value)=>{const previous=draftWrites.get(field)||Promise.resolve();const pending=previous.catch(()=>undefined).then(()=>postDraft(field,text,action,completionKind));draftWrites.set(field,pending);const clear=()=>{if(draftWrites.get(field)===pending)draftWrites.delete(field);};pending.then((result)=>{const revision=Number(result?.revision);if(Number.isSafeInteger(revision)&&revision>=0){field.dataset.revision=String(revision);field.dataset.draftRevision=String(revision);}clear();},clear);return pending;};
     const saveDraft=async(field)=>{cancelDraftSave(field);return queueDraftWrite(field,"save");};
     for(const field of document.querySelectorAll("[data-draft-text]"))field.addEventListener("input",()=>{cancelDraftSave(field);draftTimers.set(field,setTimeout(async()=>{draftTimers.delete(field);try{await queueDraftWrite(field,"save");}catch{feedback.textContent="本次修改还没有保存，请稍后重试。";}},600));});
     for(const button of document.querySelectorAll("[data-copy-draft]"))button.addEventListener("click",async()=>{const field=document.getElementById(button.dataset.copyDraft);if(!field)return;const text=field.value;try{await navigator.clipboard.writeText(text);}catch{feedback.textContent="复制失败，请重试。";return;}if("copyOnly" in button.dataset){feedback.textContent="草稿已复制。";return;}cancelDraftSave(field);try{const result=await queueDraftWrite(field,"complete","copied",text);feedback.textContent=result.changed?"已记住你这次修改的回答":"草稿已复制。";}catch{feedback.textContent="已复制；这次修改暂未保存，请稍后重试";}});
     for(const form of document.querySelectorAll("[data-sent-draft]"))form.addEventListener("submit",()=>{const field=document.getElementById(form.dataset.sentDraft);if(!field)return;cancelDraftSave(field);const hidden=form.querySelector('[name="finalText"]');if(hidden)hidden.value=field.value;});
+    const sendPanel=document.querySelector("[data-send-batch-panel]");
+    const sendBatchButton=document.querySelector("[data-send-batch]");
+    const sendStopButton=document.querySelector("[data-send-stop]");
+    const sendBatchTitle=document.querySelector("[data-send-batch-title]");
+    const sendBatchStatus=document.querySelector("[data-send-batch-status]");
+    const sendChoices=Array.from(document.querySelectorAll("[data-send-select]"));
+    const terminalBatchStatuses=new Set(["completed","stopped","interrupted"]);
+    let activeBatchId=0;
+    let sendPending=false;
+    let sendPollTimer=null;
+    const ownedDraftCards=new WeakSet();
+    const sendMessage=(code)=>({
+      MESSAGE_REPLY_SEND_PROFILE_BUSY:"已有一批消息正在发送，请等待完成或停止后续发送。",
+      MESSAGE_REPLY_SEND_LEASE_BUSY:"BOSS 正在执行另一项任务，请等待完成后再发送。",
+      MESSAGE_REPLY_SEND_REVISION_CONFLICT:"草稿刚刚发生变化，请刷新页面后重新确认。",
+      MESSAGE_REPLY_SEND_DRAFT_BUSY:"这条草稿已经属于另一批发送任务。",
+      MESSAGE_REPLY_SEND_CONTEXT_REQUIRED:"这条草稿缺少可验证的 HR 消息上下文，未发送。",
+      MESSAGE_REPLY_SEND_ACTION_REQUIRED:"请从当前消息页面重新点击确认发送。"
+    }[String(code||"")]||"发送没有开始，请刷新页面后重试。");
+    const fieldForDraft=(draftId)=>document.querySelector('[data-draft-text][data-draft-id="'+Number(draftId)+'"]');
+    const selectedFields=()=>sendChoices.filter((choice)=>choice.checked&&!choice.disabled).map((choice)=>fieldForDraft(choice.dataset.sendSelect)).filter(Boolean);
+    const updateSelection=()=>{if(!sendBatchButton)return;const count=selectedFields().length;sendBatchButton.disabled=sendPending||count===0||activeBatchId>0;sendBatchButton.textContent="确认并串行发送 "+count+" 条";if(sendBatchTitle&&!activeBatchId)sendBatchTitle.textContent="已选择 "+count+" 条草稿";};
+    const setDiscoveryLocked=(locked)=>{for(const form of forms)for(const button of form.querySelectorAll("button")){if(!("sendBaseDisabled" in button.dataset))button.dataset.sendBaseDisabled=String(button.disabled);button.disabled=locked||button.dataset.sendBaseDisabled==="true";}};
+    const setDraftPending=(fields,locked)=>{for(const field of fields){const card=field.closest("[data-draft-card]");if(!card||ownedDraftCards.has(card))continue;for(const control of card.querySelectorAll("button,input,textarea")){if(!("sendPendingBaseDisabled" in control.dataset))control.dataset.sendPendingBaseDisabled=String(control.disabled);control.disabled=locked||control.dataset.sendPendingBaseDisabled==="true";}}};
+    const setOwned=(fields)=>{for(const field of fields){field.disabled=true;const card=field.closest("[data-draft-card]");if(!card)continue;ownedDraftCards.add(card);for(const control of card.querySelectorAll("button,input,textarea"))control.disabled=true;}};
+    const sendStatusLabel=(status)=>({pending:"等待发送",selecting:"正在核对会话",verified:"目标已核对",filled:"草稿已填入",click_dispatched:"正在确认发送结果",succeeded:"已发送并记住本次修改",target_mismatch:"岗位或会话已变化，未发送",platform_rejected:"平台未接受本次发送",ambiguous:"发送结果不确定，请到 BOSS 消息页核对",stopped:"已停止，未发送"}[status]||"等待处理");
+    const applySendState=(state)=>{if(!state?.batch||!Array.isArray(state.items))return;activeBatchId=Number(state.batch.id)||activeBatchId;const terminal=terminalBatchStatuses.has(state.batch.status);let finished=0;for(const item of state.items){const node=document.querySelector('[data-send-status="'+Number(item.draftId)+'"]');if(node){node.textContent=sendStatusLabel(item.status);node.dataset.state=item.status;}const field=fieldForDraft(item.draftId);if(field)setOwned([field]);if(["succeeded","target_mismatch","platform_rejected","ambiguous","stopped"].includes(item.status))finished+=1;}if(sendPanel)sendPanel.dataset.state=state.batch.status;if(sendBatchTitle)sendBatchTitle.textContent="发送进度 "+finished+" / "+state.items.length;if(sendBatchStatus)sendBatchStatus.textContent=terminal?(state.batch.status==="completed"?"本批次已全部发送":"本批次已停止，未继续发送后续消息"):"正在后台逐条核对并发送，请不要关闭 RoleFlow";if(sendStopButton){sendStopButton.hidden=terminal;sendStopButton.disabled=terminal;}setDiscoveryLocked(!terminal);if(terminal){sendPending=false;if(sendPollTimer!==null)clearTimeout(sendPollTimer);sendPollTimer=null;}else scheduleSendPoll();updateSelection();};
+    const readSendResponse=async(response)=>{const parsed=await read(response);if(!response.ok||!parsed.json||!parsed.body?.batch)throw new Error(parsed.body?.errorCode||"MESSAGE_REPLY_SEND_FAILED");return parsed.body;};
+    const postSendBatch=async(items)=>readSendResponse(await fetch("/api/message-reply-send-batch",{method:"POST",headers:{"content-type":"application/json","x-roleflow-action":initial.messageReplyActionToken},body:JSON.stringify({profileId:initial.profileId,items})}));
+    const scheduleSendPoll=()=>{if(activeBatchId>0&&sendPollTimer===null)sendPollTimer=setTimeout(pollSend,1200);};
+    const pollSend=async()=>{sendPollTimer=null;if(!activeBatchId)return;try{const state=await readSendResponse(await fetch("/api/message-reply-send-status?profileId="+encodeURIComponent(initial.profileId)+"&batchId="+encodeURIComponent(activeBatchId)));applySendState(state);}catch(error){feedback.textContent=sendMessage(error.message);}};
+    const startSend=async(fields)=>{if(sendPending||activeBatchId||!fields.length)return;sendPending=true;setDraftPending(fields,true);setDiscoveryLocked(true);updateSelection();feedback.textContent="正在保存你确认的草稿。";try{const saved=await Promise.all(fields.map(saveDraft));const items=saved.map((result)=>({draftId:Number(result.draftId),revision:Number(result.revision)}));const state=await postSendBatch(items);setOwned(fields);applySendState(state);feedback.textContent="已确认，正在后台串行发送。";}catch(error){sendPending=false;setDraftPending(fields,false);setDiscoveryLocked(false);feedback.textContent=sendMessage(error.message);updateSelection();}};
+    for(const choice of sendChoices)choice.addEventListener("change",updateSelection);
+    for(const button of document.querySelectorAll("[data-send-single]"))button.addEventListener("click",()=>{const field=fieldForDraft(button.dataset.sendSingle);if(field)startSend([field]);});
+    sendBatchButton?.addEventListener("click",()=>startSend(selectedFields()));
+    sendStopButton?.addEventListener("click",async()=>{if(!activeBatchId||sendStopButton.disabled)return;sendStopButton.disabled=true;try{const state=await readSendResponse(await fetch("/api/message-reply-send-control",{method:"POST",headers:{"content-type":"application/json","x-roleflow-action":initial.messageReplyActionToken},body:JSON.stringify({profileId:initial.profileId,batchId:activeBatchId,action:"stop"})}));applySendState(state);feedback.textContent="已停止后续发送。";}catch(error){sendStopButton.disabled=false;feedback.textContent=sendMessage(error.message);}});
+    updateSelection();
     for(const link of document.querySelectorAll("[data-flush-drafts]"))link.addEventListener("click",async(event)=>{const fields=Array.from(document.querySelectorAll("[data-draft-text]"));if(!fields.length)return;event.preventDefault();await Promise.allSettled(fields.map(saveDraft));location.href=link.href;});
     const poll=async()=>{pollTimer=null;if(reloadPending||pollPending||actionPending)return;pollPending=true;const version=actionVersion;try{const response=await fetch("/api/message-discovery-status?profileId="+encodeURIComponent(initial.profileId));const parsed=await read(response);if(reloadPending||actionPending||version!==actionVersion)return;if(!accepted(response,parsed,pollStatuses)){show(rejectedCode(parsed));return;}currentStatus=parsed.body.status;if(currentStatus==="running")schedulePoll();else requestReload();}catch{if(!reloadPending&&!actionPending&&version===actionVersion)show("MESSAGE_DISCOVERY_BROWSER_UNAVAILABLE");}finally{pollPending=false;if(!reloadPending&&!actionPending&&version!==actionVersion&&currentStatus==="running")schedulePoll();}};
     if(currentStatus==="running")schedulePoll();

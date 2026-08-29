@@ -289,6 +289,7 @@ const {
 const { EdgeControlAdapter } = require("../adapters/browser/edge_control");
 const { CdpBrowserAdapter } = require("../adapters/browser/cdp");
 const { createMessageDiscoveryController } = require("./message_discovery_controller");
+const { createMessageReplySendController } = require("./message_reply_send_controller");
 const { renderMessageDiscoveryPage } = require("./message_discovery_view");
 const { renderCommunicationProfilePage } = require("./communication_profile_view");
 const { createMessageReplyLearningService } = require("../application/message_learning");
@@ -507,6 +508,7 @@ function createDashboardServer({
   workflowControlGraceMs = PRODUCT_POLICY.operations.modelAnalysis.taskLeaseTtlMs,
   analysisRetryRunnerFactory = null,
   messageDiscoveryDependencies = {},
+  messageReplySendDependencies = {},
   messageReplyLearningService = null,
   communicationAmbiguityReader = null,
   browserFactory = createDashboardBrowser,
@@ -522,6 +524,7 @@ function createDashboardServer({
   applicationVersion = require("../../package.json").version,
   launchSessionId = randomUUID(),
   diagnosticsActionToken = randomUUID(),
+  messageReplyActionToken = randomUUID(),
   openLogsFolder = openLocalFolder
 }) {
   const frozenBrowserAuthority = normalizeDashboardBrowserAuthority(browserAuthority);
@@ -760,6 +763,16 @@ function createDashboardServer({
     }),
     ...messageDiscoveryDependencies
   });
+  const messageReplySend = createMessageReplySendController({
+    db,
+    logger,
+    learningService: replyLearning,
+    browserFactory: () => browserFactory({
+      browserMode: frozenBrowserAuthority.browserMode,
+      cdpPort: frozenBrowserAuthority.cdpPort
+    }),
+    ...messageReplySendDependencies
+  });
   let workspaceRuntime = publicWorkspaceRuntimeSnapshot();
   const runtimeLogDir = resolveRuntimeLogDir({ dataRoot, logger });
   const runtimeDiagnostics = () => buildRuntimeDiagnostics({
@@ -914,6 +927,7 @@ function createDashboardServer({
         db,
         searchParams: url.searchParams,
         controller: messageDiscovery,
+        messageReplyActionToken,
         helpers: messageDiscoveryViewHelpers()
       }));
       if (req.method === "GET" && url.pathname === "/communication-profile") return sendHtml(res, renderCommunicationProfilePage({
@@ -1064,6 +1078,18 @@ function createDashboardServer({
       }
       if (req.method === "GET" && url.pathname === "/api/communication-status") return handleCommunicationStatus(res, db, url.searchParams.get("batchId"));
       if (req.method === "GET" && url.pathname === "/api/message-discovery-status") return handleMessageDiscoveryStatus(res, messageDiscovery, url.searchParams.get("profileId"));
+      if (req.method === "GET" && url.pathname === "/api/message-reply-send-status") {
+        return handleMessageReplySendStatus(res, messageReplySend, url.searchParams);
+      }
+      if (req.method === "POST" && url.pathname === "/api/message-reply-send-batch") {
+        requireMessageReplyAction(req, messageReplyActionToken);
+        await ensureManagedWorkspaceReady("message_reply_send");
+        return handleMessageReplySendBatch(req, res, messageReplySend);
+      }
+      if (req.method === "POST" && url.pathname === "/api/message-reply-send-control") {
+        requireMessageReplyAction(req, messageReplyActionToken);
+        return handleMessageReplySendControl(req, res, messageReplySend);
+      }
       if (req.method === "POST" && url.pathname === "/api/communication-batch") return handleCommunicationBatch(req, res, { db, browserAuthority: frozenBrowserAuthority });
       if (req.method === "POST" && url.pathname === "/api/communication-control") return handleCommunicationControl(req, res, { db, root, dataRoot, dbPath, logger, requestId, spawnProcess, communicationAmbiguityReader, browserFactory, communicationBrowserRebinder, browserAuthority: frozenBrowserAuthority, assertBrowserRuntimeReady });
       if (req.method === "POST" && url.pathname === "/api/communication-rebind") return handleCommunicationRebind(req, res, { db, logger, browserFactory, communicationBrowserRebinder, browserAuthority: frozenBrowserAuthority, assertBrowserRuntimeReady });
@@ -1163,6 +1189,7 @@ function createDashboardServer({
     stopWorkspaceLoginMonitor();
     const cleanups = [
       Promise.resolve().then(() => messageDiscovery.close()),
+      Promise.resolve().then(() => messageReplySend.close()),
       Promise.resolve().then(() => browserSupervisor?.close?.())
     ];
     return closeHttpServer((serverError) => {
@@ -3586,6 +3613,117 @@ function handleMessageDiscoveryStatus(res, controller, profileIdValue) {
       errorCode: error?.code || "MESSAGE_DISCOVERY_FAILED"
     });
   }
+}
+
+function requireMessageReplyAction(req, expectedToken) {
+  if (String(req.headers["x-roleflow-action"] || "") !== String(expectedToken || "")) {
+    throw appError(
+      "MESSAGE_REPLY_SEND_ACTION_REQUIRED",
+      "请从当前 RoleFlow 消息页面确认发送。",
+      { statusCode: 403 }
+    );
+  }
+}
+
+async function handleMessageReplySendBatch(req, res, controller) {
+  try {
+    const params = await readStrictJsonObject(req);
+    assertExactKeys(params, ["profileId", "items"]);
+    if (!Array.isArray(params.items) || params.items.length < 1 || params.items.length > 50) {
+      throw Object.assign(new TypeError("items must contain 1 to 50 entries"), {
+        code: "MESSAGE_REPLY_SEND_ITEMS_INVALID"
+      });
+    }
+    for (const item of params.items) assertExactKeys(item, ["draftId", "revision"]);
+    const result = controller.confirm({ profileId: params.profileId, items: params.items });
+    return sendJson(res, 202, result);
+  } catch (error) {
+    return sendMessageReplySendError(res, error);
+  }
+}
+
+function handleMessageReplySendStatus(res, controller, searchParams) {
+  try {
+    return sendJson(res, 200, controller.status({
+      profileId: searchParams.get("profileId"),
+      batchId: searchParams.get("batchId")
+    }));
+  } catch (error) {
+    return sendMessageReplySendError(res, error);
+  }
+}
+
+async function handleMessageReplySendControl(req, res, controller) {
+  try {
+    const params = await readStrictJsonObject(req);
+    assertExactKeys(params, ["profileId", "batchId", "action"]);
+    if (params.action !== "stop") {
+      throw Object.assign(new TypeError("only stop is supported"), {
+        code: "MESSAGE_REPLY_SEND_CONTROL_INVALID"
+      });
+    }
+    return sendJson(res, 200, controller.stop({
+      profileId: params.profileId,
+      batchId: params.batchId
+    }));
+  } catch (error) {
+    return sendMessageReplySendError(res, error);
+  }
+}
+
+async function readStrictJsonObject(req) {
+  if (!/^application\/json(?:\s*;|$)/i.test(String(req.headers["content-type"] || ""))) {
+    throw Object.assign(new TypeError("application/json is required"), {
+      code: "MESSAGE_REPLY_SEND_JSON_REQUIRED"
+    });
+  }
+  const value = parseBody(await readBody(req), req.headers["content-type"] || "");
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw Object.assign(new TypeError("JSON object is required"), {
+      code: "MESSAGE_REPLY_SEND_INPUT_INVALID"
+    });
+  }
+  return value;
+}
+
+function assertExactKeys(value, allowed) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw Object.assign(new TypeError("request object is invalid"), {
+      code: "MESSAGE_REPLY_SEND_INPUT_INVALID"
+    });
+  }
+  const expected = new Set(allowed);
+  const keys = Object.keys(value);
+  if (keys.length !== expected.size || keys.some((key) => !expected.has(key))) {
+    throw Object.assign(new TypeError("request fields are invalid"), {
+      code: "MESSAGE_REPLY_SEND_INPUT_INVALID"
+    });
+  }
+}
+
+function sendMessageReplySendError(res, error) {
+  const code = String(error?.code || "MESSAGE_REPLY_SEND_FAILED");
+  const conflictCodes = new Set([
+    "MESSAGE_REPLY_SEND_PROFILE_BUSY",
+    "MESSAGE_REPLY_SEND_LEASE_BUSY",
+    "MESSAGE_REPLY_SEND_DRAFT_BUSY",
+    "MESSAGE_REPLY_SEND_REVISION_CONFLICT",
+    "MESSAGE_REPLY_SEND_DRAFT_CLOSED",
+    "MESSAGE_REPLY_SEND_CONTEXT_REQUIRED",
+    "MESSAGE_REPLY_SEND_BATCH_CONFLICT",
+    "MESSAGE_REPLY_SEND_ITEM_CONFLICT"
+  ]);
+  const statusCode = Number(error?.statusCode)
+    || (code.endsWith("_NOT_FOUND") ? 404
+      : conflictCodes.has(code) ? 409
+        : error instanceof TypeError || code.endsWith("_INVALID") || code.endsWith("_REQUIRED") ? 400
+          : 500);
+  const message = statusCode === 403 ? "请从当前 RoleFlow 消息页面确认发送。"
+    : statusCode === 404 ? "没有找到这次发送任务。"
+      : statusCode === 409 ? "草稿或发送任务已经变化，请刷新页面后重试。"
+        : statusCode === 400 ? "发送请求无效，请刷新页面后重试。"
+          : "发送任务暂时无法处理，未继续发送后续消息。";
+  return sendJson(res, statusCode, { error: message, errorCode: code });
 }
 
 function messageDiscoveryPublicError(error) {

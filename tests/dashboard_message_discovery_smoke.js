@@ -371,6 +371,7 @@ async function main() {
     drafts: [PRIVATE_DRAFT],
     durableDrafts: [renderedDraft],
     inboundMessages: [{ kind: "text", text: OPEN_HR_TEXT }],
+    counters: { visible: 52, newReplies: 1, currentRead: 31, currentDelivered: 20, unbound: 0 },
     callModel: true
   }));
   response = await postJson(base, "/api/message-discovery", {
@@ -382,6 +383,7 @@ async function main() {
   assert.strictEqual(cleanupTimers.activeCount(), 1);
   assert.strictEqual(cleanupTimers.latest().delay, 30 * 60 * 1000);
   assert.deepStrictEqual(Object.keys(status).sort(), [
+    "counters",
     "expiresAt",
     "phase",
     "processed",
@@ -395,6 +397,13 @@ async function main() {
     "updatedAt",
     "waitUntil"
   ]);
+  assert.deepStrictEqual(status.counters, {
+    visible: 52,
+    newReplies: 1,
+    currentRead: 31,
+    currentDelivered: 20,
+    unbound: 0
+  });
   assert.deepStrictEqual(Object.keys(status.results[0]).sort(), [
     "cardId",
     "jobId",
@@ -414,6 +423,7 @@ async function main() {
   assert(completedPage.body.includes(PRIVATE_DRAFT));
   assert(completedPage.body.includes("HR 消息"));
   assert(completedPage.body.includes(OPEN_HR_TEXT));
+  assert(completedPage.body.includes("可见 52 · HR 新回复 1 · 已读 31 · 送达 20"));
   assert(!completedPage.body.includes("工作安排：工作安排未确认"));
   assert.match(completedPage.body, new RegExp(`data-send-single="${renderedDraft.id}"`));
   assert.match(completedPage.body, new RegExp(`data-send-select="${renderedDraft.id}"`));
@@ -1464,6 +1474,7 @@ function completedRun({
   messageIntent = "information_request",
   messageCategory = "qualification",
   messageSummary = "对方正在确认候选人的任职资格。",
+  counters = {},
   additionalResults = []
 }) {
   return async ({ classifyMessageGroup, onStatus }) => {
@@ -1471,6 +1482,7 @@ function completedRun({
       status: "running",
       queued: 1 + additionalResults.length,
       processed: 0,
+      counters,
       reasonCode: "",
       results: []
     });
@@ -1495,6 +1507,7 @@ function completedRun({
       status: "completed",
       queued: 1 + additionalResults.length,
       processed: 1 + additionalResults.length,
+      counters,
       reasonCode: "",
       privateBody: PRIVATE_BODY,
       results: [{

@@ -121,6 +121,7 @@ function createMessageDiscoveryController(deps = {}) {
       queued: 0,
       processed: 0,
       unresolved: 0,
+      counters: emptyCounters(),
       reasonCode: "",
       results: [],
       phase: "starting",
@@ -212,6 +213,7 @@ function createMessageDiscoveryController(deps = {}) {
         queued: run.queued,
         processed: run.processed,
         unresolved: run.unresolved,
+        counters: run.counters,
         reasonCode: code,
         results: run.results
       });
@@ -351,6 +353,7 @@ function createMessageDiscoveryController(deps = {}) {
     run.queued = Math.max(0, Number(statusValue.queued) || 0);
     run.processed = Math.max(0, Number(statusValue.processed) || 0);
     run.unresolved = Math.max(0, Number(statusValue.unresolved) || 0);
+    if (statusValue.counters !== undefined) run.counters = safeCounters(statusValue.counters);
     run.reasonCode = safeCode(statusValue.reasonCode);
     if (statusValue.phase !== undefined) run.phase = safePhase(statusValue.phase) || run.phase;
     if (statusValue.waitUntil !== undefined) run.waitUntil = safeTimestamp(statusValue.waitUntil);
@@ -434,6 +437,7 @@ function createMessageDiscoveryController(deps = {}) {
       queued: run.queued,
       processed: run.processed,
       unresolved: run.unresolved,
+      counters: safeCounters(run.counters),
       reasonCode: run.reasonCode,
       results: sanitizeResults(run.results).map((item) => ({
         cardId: item.cardId,
@@ -457,6 +461,7 @@ function createMessageDiscoveryController(deps = {}) {
       queued: run.queued,
       processed: run.processed,
       unresolved: run.unresolved,
+      counters: safeCounters(run.counters),
       reasonCode: run.reasonCode,
       results: sanitizeResults(run.results),
       phase: safePhase(run.phase),
@@ -474,6 +479,7 @@ function createMessageDiscoveryController(deps = {}) {
       queued: 0,
       processed: 0,
       unresolved: 0,
+      counters: emptyCounters(),
       reasonCode: "",
       results: [],
       phase: "idle",
@@ -482,6 +488,18 @@ function createMessageDiscoveryController(deps = {}) {
       updatedAt: "",
       expiresAt: ""
     };
+  }
+
+  function emptyCounters() {
+    return { visible: 0, newReplies: 0, currentRead: 0, currentDelivered: 0, unbound: 0 };
+  }
+
+  function safeCounters(value) {
+    const input = value && typeof value === "object" ? value : {};
+    return Object.fromEntries(Object.keys(emptyCounters()).map((key) => [
+      key,
+      Math.max(0, Number(input[key]) || 0)
+    ]));
   }
 
   function durableStatus(profileId) {
