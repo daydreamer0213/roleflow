@@ -1941,11 +1941,11 @@ function requestKey(sequence) {
 function assertMessageDiscoveryProductFrame(markup, fixture) {
   assert.match(markup, /class="app-shell"/, "message discovery must use the shared dashboard frame");
   assert.match(markup, /class="primary-nav"/, "message discovery must have one shared primary navigation");
-  assert.match(markup, /href="\/messages\?profileId=\d+" aria-current="page">消息发现<\/a>/, "message discovery must be the active navigation destination");
+  assert.match(markup, /href="\/messages\?profileId=\d+"[^>]*aria-current="page"[^>]*>消息与回复<\/a>/, "message discovery must be the active navigation destination");
   assert.strictEqual((markup.match(/<nav\b/g) || []).length, 1, "message discovery must not render a competing inner navigation");
   assert.strictEqual((markup.match(/<style>/g) || []).length, 0, "message discovery styles must come from the shared stylesheet");
   assert.match(markup, /data-discovery-feedback[^>]*role="status"[^>]*aria-live="polite"/, "action feedback must be announced in a live status region");
-  assert.match(markup, new RegExp(`href="/messages\\?profileId=${fixture.profileId}" aria-current="page">消息发现`));
+  assert.match(markup, new RegExp(`href="/messages\\?profileId=${fixture.profileId}"[^>]*aria-current="page"[^>]*>消息与回复`));
 }
 
 function assertManualProgressRemainsOrdinary(markup) {

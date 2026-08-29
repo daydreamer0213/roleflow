@@ -43,7 +43,7 @@ const logger = {
     assert.match(response.body, /<title>求职体检<\/title>/);
     assert.match(response.body, /<h1[^>]*>求职体检<\/h1>/);
     assert.match(response.body, /aria-current="page">求职体检<\/a>/);
-    assert.match(response.body, />诊断<\/a>/, "technical diagnostics remains a separate destination");
+    assert.match(response.body, />运行诊断<\/a>/, "technical diagnostics remains a separate destination");
     assert.deepEqual(refreshCalls, [{ profileId: owner.profileId, planId: owner.planId }],
       "the requested plan owns the analyzed profile and strategy rounds");
 

@@ -6,31 +6,51 @@ function renderNavigation({ currentPath = "", todayPath = "", planId = "" } = {}
   const resolvedPlanId = String(planId || planIdFromPath(todayPath) || planIdFromPath(current) || "");
   if (resolvedPlanId) {
     const encodedPlanId = encodeURIComponent(resolvedPlanId);
-    const links = [
-      navigationLink("/onboarding", "简历", currentRoute === "/onboarding"),
-      navigationLink(todayPath || `/plan?planId=${encodedPlanId}`, "今日任务", currentRoute === "/plan"),
-      navigationLink(`/queue?planId=${encodedPlanId}`, "当前岗位", currentRoute === "/queue"),
-      navigationLink(`/communication/new?planId=${encodedPlanId}`, "批量沟通清单", currentRoute === "/communication/new"),
-      navigationLink(`/communication?planId=${encodedPlanId}`, "自动沟通", currentRoute === "/communication"),
-      navigationLink(currentRoute === "/messages" ? current : `/messages?planId=${encodedPlanId}`, "消息发现", currentRoute === "/messages"),
-      navigationLink(`/funnel?planId=${encodedPlanId}`, "求职体检", currentRoute === "/funnel"),
-      navigationLink(`/resume-optimization?planId=${encodedPlanId}`, "定向简历", currentRoute === "/resume-optimization"),
-      navigationLink(`/interview?planId=${encodedPlanId}`, "模拟面试", currentRoute === "/interview"),
-      navigationLink("/settings", "模型设置", currentRoute === "/settings"),
-      navigationLink("/diagnostics", "诊断", currentRoute === "/diagnostics")
-    ];
-    if (currentRoute === "/workflow") links.push(navigationLink(current, "本轮", true));
-    if (currentRoute === "/jobs") links.push(navigationLink(current, "岗位列表", true));
-    return links.join("");
+    const planHref = currentRoute === "/plan" ? current : (todayPath || `/plan?planId=${encodedPlanId}`);
+    const workflowHref = currentRoute === "/workflow" ? current : `${planHref}#today-discovery`;
+    const jobsHref = ["/queue", "/jobs"].includes(currentRoute) ? current : `/queue?planId=${encodedPlanId}`;
+    const communicationHref = ["/communication", "/communication/new"].includes(currentRoute)
+      ? current
+      : `/communication/new?planId=${encodedPlanId}`;
+    const messagesHref = currentRoute === "/messages" ? current : `/messages?planId=${encodedPlanId}`;
+    const resumeRoutes = ["/resume-optimization", "/profile", "/resumes", "/onboarding"];
+    const resumeHref = resumeRoutes.includes(currentRoute) ? current : `/resume-optimization?planId=${encodedPlanId}`;
+    return [
+      navigationGroup("工作台", [
+        navigationLink(planHref, "今日任务", currentRoute === "/plan")
+      ]),
+      navigationGroup("求职", [
+        navigationLink(workflowHref, "发现岗位", currentRoute === "/workflow"),
+        navigationLink(jobsHref, "岗位记录", ["/queue", "/jobs"].includes(currentRoute)),
+        navigationLink(`/funnel?planId=${encodedPlanId}`, "求职体检", currentRoute === "/funnel")
+      ]),
+      navigationGroup("沟通", [
+        navigationLink(messagesHref, "消息与回复", currentRoute === "/messages"),
+        navigationLink(communicationHref, "发送记录", ["/communication", "/communication/new"].includes(currentRoute))
+      ]),
+      navigationGroup("成长", [
+        navigationLink(resumeHref, "简历工作室", resumeRoutes.includes(currentRoute)),
+        navigationLink(`/interview?planId=${encodedPlanId}`, "面试训练", currentRoute === "/interview")
+      ]),
+      navigationGroup("", [
+        navigationLink("/settings", "模型与设置", currentRoute === "/settings"),
+        navigationLink("/diagnostics", "运行诊断", currentRoute === "/diagnostics")
+      ], "sidebar-utility")
+    ].join("");
   }
-  const links = [
-    navigationLink("/onboarding", "简历", currentRoute === "/onboarding"),
-    navigationLink(todayPath || "/", "筛选方案", currentRoute === "/plan"),
-    navigationLink("/settings", "模型设置", currentRoute === "/settings"),
-    navigationLink("/diagnostics", "诊断", currentRoute === "/diagnostics")
-  ];
-  if (currentRoute === "/messages") links.push(navigationLink(current, "消息发现", true));
-  return links.join("");
+  const resumeHref = currentRoute === "/onboarding" ? current : "/onboarding";
+  return [
+    navigationGroup("工作台", [
+      navigationLink(todayPath || "/", "今日任务", currentRoute === "/plan")
+    ]),
+    navigationGroup("成长", [
+      navigationLink(resumeHref, "简历工作室", currentRoute === "/onboarding")
+    ]),
+    navigationGroup("", [
+      navigationLink("/settings", "模型与设置", currentRoute === "/settings"),
+      navigationLink("/diagnostics", "运行诊断", currentRoute === "/diagnostics")
+    ], "sidebar-utility")
+  ].join("");
 }
 
 function planIdFromPath(value) {
@@ -50,7 +70,12 @@ function routePath(value) {
 }
 
 function navigationLink(href, label, current = false) {
-  return `<a href="${escapeAttr(href)}"${current ? ' aria-current="page"' : ""}>${escapeHtml(label)}</a>`;
+  return `<a class="nav-item" href="${escapeAttr(href)}"${current ? ' aria-current="page"' : ""}>${escapeHtml(label)}</a>`;
+}
+
+function navigationGroup(label, links, extraClass = "") {
+  const className = ["nav-group", extraClass].filter(Boolean).join(" ");
+  return `<section class="${className}">${label ? `<span class="nav-group-label">${escapeHtml(label)}</span>` : ""}<div class="nav-group-items">${links.join("")}</div></section>`;
 }
 
 module.exports = { renderNavigation };

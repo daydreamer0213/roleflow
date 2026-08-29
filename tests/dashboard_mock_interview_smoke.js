@@ -94,7 +94,7 @@ const logger = {
     const page = await request(baseUrl, `/interview?planId=${owner.planId}&sessionId=51`);
     assert.equal(page.status, 200);
     assert.match(page.body, /<title>模拟面试训练<\/title>/);
-    assert.match(page.body, /aria-current="page">模拟面试<\/a>/);
+    assert.match(page.body, /aria-current="page">面试训练<\/a>/);
     assert.match(page.body, /无需面试邀请/);
     assert.match(page.body, /简历通用面试/);
     assert.match(page.body, /岗位专项面试/);

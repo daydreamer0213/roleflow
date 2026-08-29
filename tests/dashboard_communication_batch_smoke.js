@@ -521,7 +521,7 @@ async function assertCommunicationClient() {
   const eligibilityQueue = await getText(baseUrl, `/queue?planId=${fixture.planId}&pool=primary`);
   assert.match(eligibilityQueue.body, /资格条件待确认/);
   assert.doesNotMatch(eligibilityQueue.body, />eligibility_review</);
-  assert.match(plan.body, /批量沟通清单/);
+  assert.match(plan.body, /发送记录/);
   assert.doesNotMatch(plan.body, />Resume</);
 
   await expectApiError(baseUrl, "/api/communication-batch", { planId: fixture.planId, jobIds: fixture.notRecommendedId, browserMode: "edge", title: "forged" }, "COMMUNICATION_JOB_INELIGIBLE");

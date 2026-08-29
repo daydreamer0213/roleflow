@@ -114,7 +114,7 @@ const logger = {
     const page = await request(baseUrl, `/resume-optimization?planId=${owner.planId}&draftId=41`);
     assert.equal(page.status, 200);
     assert.match(page.body, /<title>定向简历优化<\/title>/);
-    assert.match(page.body, /aria-current="page">定向简历<\/a>/);
+    assert.match(page.body, /aria-current="page">简历工作室<\/a>/);
     assert.deepEqual(calls.dashboard, [{ profileId: owner.profileId, planId: owner.planId, draftId: 41 }]);
     assert.match(page.body, /基础简历/);
     assert.match(page.body, /目标投递方向/);
