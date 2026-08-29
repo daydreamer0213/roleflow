@@ -269,7 +269,8 @@ class MockModelAdapter {
         originalText,
         proposedText: `相关经历：${originalText}`,
         reason: "只调整表达层级，不增加候选人事实",
-        evidenceIds: [resumeEvidence.id]
+        evidenceIds: [resumeEvidence.id],
+        editingPrinciple: "structure"
       }]
     };
   }

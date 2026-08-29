@@ -1,6 +1,14 @@
 const MAX_SUGGESTIONS = 12;
 const SUPPORTED_OPERATIONS = new Set(["replace", "remove", "insert_after"]);
 const SUPPORTED_DECISIONS = new Set(["pending", "accepted", "edited", "ignored"]);
+const EDITING_PRINCIPLES = new Set([
+  "relevance_order",
+  "contribution_clarity",
+  "result_visibility",
+  "jd_vocabulary",
+  "concision",
+  "structure"
+]);
 const STRONG_ROLE_MARKERS = ["主导", "牵头", "独立负责", "全权负责", "从零搭建", "第一负责人"];
 
 function cleanText(value, maxLength, label, { required = true } = {}) {
@@ -89,6 +97,8 @@ function validateResumeOptimizationDraft(raw, context = {}) {
     const proposedText = cleanText(value.proposedText, 10_000, "建议文字", { required: operation === "remove" ? false : true });
     if (operation === "remove" && proposedText) throw new Error("删除操作不能同时提供替换文字");
     const reason = cleanText(value.reason, 1_000, "修改理由");
+    const editingPrinciple = cleanText(value.editingPrinciple, 40, "修改原则");
+    if (!EDITING_PRINCIPLES.has(editingPrinciple)) throw new Error(`不支持的修改原则：${editingPrinciple}`);
     if (!Array.isArray(value.evidenceIds) || value.evidenceIds.length < 1 || value.evidenceIds.length > 8) {
       throw new Error("每条建议必须引用 1-8 条证据");
     }
@@ -101,7 +111,7 @@ function validateResumeOptimizationDraft(raw, context = {}) {
     ranges.push({ ...range, id });
     validateGrounding({ proposedText }, citedText);
 
-    return { id, operation, originalText, proposedText, reason, evidenceIds, decision: "pending", userText: "" };
+    return { id, operation, originalText, proposedText, reason, evidenceIds, editingPrinciple, decision: "accepted", userText: "" };
   });
 
   ranges.sort((left, right) => left.start - right.start || left.end - right.end);

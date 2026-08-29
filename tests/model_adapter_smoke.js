@@ -193,7 +193,7 @@ server.listen(0, "127.0.0.1", async () => {
       { headline: "fixture", suggestions: [] }
     );
     assert.strictEqual(resumeInput, resumeFixtureInput);
-    for (const phrase of ["最多 12 条", "originalText", "evidenceIds", "不得编造数字", "不得改成主导", "只输出 JSON"]) {
+    for (const phrase of ["最多 12 条", "originalText", "evidenceIds", "editingPrinciple", "jd_vocabulary", "RoleFlow 会自动应用", "不得编造数字", "不得改成主导", "只输出 JSON"]) {
       assert(resumePrompt.includes(phrase), `resume optimization prompt must include ${phrase}`);
     }
     const mockResumeDraft = await new MockModelAdapter().generateResumeOptimization({
@@ -201,6 +201,7 @@ server.listen(0, "127.0.0.1", async () => {
     });
     assert.strictEqual(mockResumeDraft.suggestions[0].originalText, "参与知识库开发");
     assert.deepStrictEqual(mockResumeDraft.suggestions[0].evidenceIds, ["R1"]);
+    assert.strictEqual(mockResumeDraft.suggestions[0].editingPrinciple, "structure");
 
     const interviewAdapter = new OpenAICompatibleAdapter({
       baseUrl: "https://example.invalid",
