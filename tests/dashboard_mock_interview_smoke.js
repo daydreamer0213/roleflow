@@ -59,6 +59,7 @@ const logger = {
       }]
     }]
   };
+  let answerFailure = null;
   const service = {
     dashboard(input) {
       calls.dashboard.push(input);
@@ -72,7 +73,7 @@ const logger = {
       };
     },
     async startSession(input) { calls.start.push(input); return { id: 52 }; },
-    async answerTurn(input) { calls.answer.push(input); return selectedSession; },
+    async answerTurn(input) { calls.answer.push(input); if (answerFailure) throw answerFailure; return selectedSession; },
     async finishSession(input) { calls.finish.push(input); return selectedSession; },
     async retryTurn(input) { calls.retry.push(input); return selectedSession.turns[0].retries[0]; }
   };
@@ -160,6 +161,25 @@ const logger = {
     assert.equal(retry.status, 303);
     assert.deepEqual(calls.retry[0], { profileId: owner.profileId, planId: owner.planId, sessionId: 51, turnNumber: 1, answerText: "我的重答" });
     assert.equal(readinessCalls, 0, "local interview workflow must not inspect browser readiness");
+
+    answerFailure = new Error("simulated interview model failure");
+    const unhandled = [];
+    const recordUnhandled = (error) => unhandled.push(error);
+    process.on("unhandledRejection", recordUnhandled);
+    try {
+      const failedAnswer = await request(baseUrl, "/api/interview/answer", {
+        method: "POST",
+        timeoutMs: 1_000,
+        body: new URLSearchParams({ planId: String(owner.planId), sessionId: "51", turnNumber: "1", answerText: "失败时保留" }).toString()
+      });
+      assert.equal(failedAnswer.status, 500, "async interview failures must reach the dashboard error boundary");
+      assert.match(failedAnswer.body, /requestId|请求|错误编号/);
+      const health = await request(baseUrl, `/interview?planId=${owner.planId}&sessionId=51`);
+      assert.equal(health.status, 200, "dashboard must remain available after an interview workflow failure");
+    } finally {
+      process.off("unhandledRejection", recordUnhandled);
+    }
+    assert.equal(unhandled.length, 0, "interview failure must not become an unhandled rejection");
     await verifyDefaultServiceConcurrency();
 
     console.log("dashboard_mock_interview_smoke ok");
@@ -273,11 +293,20 @@ function close(server) {
 }
 
 async function request(baseUrl, pathname, options = {}) {
-  const response = await fetch(`${baseUrl}${pathname}`, {
-    method: options.method || "GET",
-    headers: options.method === "POST" ? { "content-type": "application/x-www-form-urlencoded" } : undefined,
-    body: options.body,
-    redirect: "manual"
-  });
+  const controller = options.timeoutMs ? new AbortController() : null;
+  const timeout = controller ? setTimeout(() => controller.abort(), options.timeoutMs) : null;
+  if (timeout && typeof timeout.unref === "function") timeout.unref();
+  let response;
+  try {
+    response = await fetch(`${baseUrl}${pathname}`, {
+      method: options.method || "GET",
+      headers: options.method === "POST" ? { "content-type": "application/x-www-form-urlencoded" } : undefined,
+      body: options.body,
+      redirect: "manual",
+      signal: controller?.signal
+    });
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
   return { status: response.status, headers: Object.fromEntries(response.headers.entries()), body: await response.text() };
 }

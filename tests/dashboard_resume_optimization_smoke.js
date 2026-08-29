@@ -65,6 +65,7 @@ const logger = {
     createdAt: "2026-08-29T04:00:00.000Z",
     updatedAt: "2026-08-29T04:00:00.000Z"
   };
+  let createFailure = null;
   const service = {
     dashboard(input) {
       calls.dashboard.push(input);
@@ -82,6 +83,7 @@ const logger = {
     },
     async createDraft(input) {
       calls.create.push(input);
+      if (createFailure) throw createFailure;
       return selectedDraft;
     },
     getDraft() { return selectedDraft; },
@@ -181,6 +183,29 @@ const logger = {
       finalText: "自动保存中的旧文字"
     });
 
+    createFailure = new Error("simulated resume model failure");
+    const unhandled = [];
+    const recordUnhandled = (error) => unhandled.push(error);
+    process.on("unhandledRejection", recordUnhandled);
+    try {
+      const failedCreate = await request(baseUrl, "/api/resume-optimization", {
+        method: "POST",
+        timeoutMs: 1_000,
+        body: new URLSearchParams([
+          ["planId", String(owner.planId)],
+          ["sourceResumeVersionId", String(owner.resumeVersionId)],
+          ["targetDirection", "AI 应用工程师"]
+        ]).toString()
+      });
+      assert.equal(failedCreate.status, 500, "async resume failures must reach the dashboard error boundary");
+      assert.match(failedCreate.body, /requestId|请求|错误编号/);
+      const health = await request(baseUrl, `/resume-optimization?planId=${owner.planId}`);
+      assert.equal(health.status, 200, "dashboard must remain available after a resume workflow failure");
+    } finally {
+      process.off("unhandledRejection", recordUnhandled);
+    }
+    assert.equal(unhandled.length, 0, "resume failure must not become an unhandled rejection");
+
     console.log("dashboard_resume_optimization_smoke ok");
   } finally {
     await close(server);
@@ -203,12 +228,21 @@ function close(server) {
 }
 
 async function request(baseUrl, pathname, options = {}) {
-  const response = await fetch(`${baseUrl}${pathname}`, {
-    method: options.method || "GET",
-    headers: options.method === "POST" ? { "content-type": options.contentType || "application/x-www-form-urlencoded" } : undefined,
-    body: options.body,
-    redirect: "manual"
-  });
+  const controller = options.timeoutMs ? new AbortController() : null;
+  const timeout = controller ? setTimeout(() => controller.abort(), options.timeoutMs) : null;
+  if (timeout && typeof timeout.unref === "function") timeout.unref();
+  let response;
+  try {
+    response = await fetch(`${baseUrl}${pathname}`, {
+      method: options.method || "GET",
+      headers: options.method === "POST" ? { "content-type": options.contentType || "application/x-www-form-urlencoded" } : undefined,
+      body: options.body,
+      redirect: "manual",
+      signal: controller?.signal
+    });
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
   return {
     status: response.status,
     headers: Object.fromEntries(response.headers.entries()),

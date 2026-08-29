@@ -1105,31 +1105,31 @@ function createDashboardServer({
       if (req.method === "POST" && url.pathname === "/api/funnel/strategy-round") {
         return await handleFunnelStrategyRound(req, res, { db, funnelAnalysis });
       }
-      if (req.method === "POST" && url.pathname === "/api/resume-optimization") return handleResumeOptimizationCreate(req, res, {
+      if (req.method === "POST" && url.pathname === "/api/resume-optimization") return await handleResumeOptimizationCreate(req, res, {
         db,
         resumeOptimization: getResumeOptimizationService()
       });
-      if (req.method === "POST" && url.pathname === "/api/resume-optimization/save") return handleResumeOptimizationSave(req, res, {
+      if (req.method === "POST" && url.pathname === "/api/resume-optimization/save") return await handleResumeOptimizationSave(req, res, {
         db,
         resumeOptimization: getResumeOptimizationService()
       });
-      if (req.method === "POST" && url.pathname === "/api/resume-optimization/activate") return handleResumeOptimizationActivate(req, res, {
+      if (req.method === "POST" && url.pathname === "/api/resume-optimization/activate") return await handleResumeOptimizationActivate(req, res, {
         db,
         resumeOptimization: getResumeOptimizationService()
       });
-      if (req.method === "POST" && url.pathname === "/api/interview/start") return handleMockInterviewStart(req, res, {
+      if (req.method === "POST" && url.pathname === "/api/interview/start") return await handleMockInterviewStart(req, res, {
         db,
         mockInterview: getMockInterviewService()
       });
-      if (req.method === "POST" && url.pathname === "/api/interview/answer") return handleMockInterviewAnswer(req, res, {
+      if (req.method === "POST" && url.pathname === "/api/interview/answer") return await handleMockInterviewAnswer(req, res, {
         db,
         mockInterview: getMockInterviewService()
       });
-      if (req.method === "POST" && url.pathname === "/api/interview/finish") return handleMockInterviewFinish(req, res, {
+      if (req.method === "POST" && url.pathname === "/api/interview/finish") return await handleMockInterviewFinish(req, res, {
         db,
         mockInterview: getMockInterviewService()
       });
-      if (req.method === "POST" && url.pathname === "/api/interview/retry") return handleMockInterviewRetry(req, res, {
+      if (req.method === "POST" && url.pathname === "/api/interview/retry") return await handleMockInterviewRetry(req, res, {
         db,
         mockInterview: getMockInterviewService()
       });
