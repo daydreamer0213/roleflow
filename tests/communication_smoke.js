@@ -107,7 +107,7 @@ let server;
     });
     const progressQueueHtml = await (await fetch(`${base}/queue?planId=${saved.planId}&pool=needs_user_action`)).text();
     assert(progressQueueHtml.includes("回复草稿已就绪"));
-    assert(progressQueueHtml.includes("已手动发送"));
+    assert(progressQueueHtml.includes("我已在 BOSS 手动发送"));
 
     const sent = await post(base, "/api/progress", {
       cardId: progressCard.id,

@@ -5895,7 +5895,7 @@ function renderProgressPanel(card) {
   const stageAction = card.stage === "reply_ready"
     ? card.hasOpenMessageDraft
       ? `<a href="/messages?profileId=${escapeAttr(card.profileId)}">到消息页处理草稿</a>`
-      : actionButton("reply_confirmed_sent", "已手动发送")
+      : actionButton("reply_confirmed_sent", "我已在 BOSS 手动发送")
     : card.stage === "interview_invited"
       ? `<form class="follow" method="post" action="/api/progress">${context}${requestKey()}<input type="hidden" name="action" value="mark_interview_scheduled"><input name="summary" placeholder="你确认的面试安排" required><input type="datetime-local" name="scheduledAt" required><button>标记已安排面试</button></form>`
       : "";

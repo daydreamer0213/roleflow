@@ -455,6 +455,7 @@ function createMessageDiscoveryController(deps = {}) {
   }
 
   function pageRun(run) {
+    const results = sanitizeResults(run.results);
     return {
       profileId: run.profileId,
       status: run.status,
@@ -463,13 +464,33 @@ function createMessageDiscoveryController(deps = {}) {
       unresolved: run.unresolved,
       counters: safeCounters(run.counters),
       reasonCode: run.reasonCode,
-      results: sanitizeResults(run.results),
+      results: run.status === "running" ? results : overlayOpenDrafts(run.profileId, results),
       phase: safePhase(run.phase),
       waitUntil: safeTimestamp(run.waitUntil),
       startedAt: run.startedAt,
       updatedAt: run.updatedAt,
       expiresAt: run.expiresAt
     };
+  }
+
+  function overlayOpenDrafts(profileId, results) {
+    const byCard = new Map();
+    const persistedDraft = db.prepare("SELECT 1 AS found FROM message_reply_drafts WHERE id = ? AND profile_id = ?");
+    for (const draft of listOpenMessageReplyDrafts(db, { profileId, limit: 500 })) {
+      const values = byCard.get(draft.cardId) || [];
+      values.push(draft);
+      byCard.set(draft.cardId, values);
+    }
+    return results.map((result) => {
+      if (!result.drafts.length) return result;
+      const openDrafts = byCard.get(result.cardId) || [];
+      if (!openDrafts.length && !result.drafts.some((draft) => persistedDraft.get(draft.id, profileId))) return result;
+      const drafts = openDrafts
+        .sort((left, right) => left.draftIndex - right.draftIndex)
+        .slice(0, 2)
+        .map((draft) => ({ id: draft.id, text: draft.currentText, revision: draft.revision }));
+      return { ...result, drafts, messages: drafts.map((draft) => draft.text) };
+    });
   }
 
   function emptyStatus(profileId) {

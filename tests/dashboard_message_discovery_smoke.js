@@ -428,8 +428,32 @@ async function main() {
   assert.match(completedPage.body, new RegExp(`data-send-single="${renderedDraft.id}"`));
   assert.match(completedPage.body, new RegExp(`data-send-select="${renderedDraft.id}"`));
   assert.match(completedPage.body, new RegExp(`data-draft-revision="${renderedDraft.revision}"`));
+  assert.match(completedPage.body, new RegExp(`data-draft-save-status="${renderedDraft.id}"`));
+  assert.match(completedPage.body, /我已在 BOSS 手动发送/);
   assertManualProgressRemainsOrdinary(completedPage.body);
   assertNoPrivateData(completedPage.body);
+
+  const editedDraftText = "这是用户刷新前已经自动保存的新草稿。";
+  const editedDraft = await postJson(base, "/api/message-reply-draft", {
+    action: "save",
+    profileId: fixture.profileId,
+    draftId: renderedDraft.id,
+    text: editedDraftText
+  });
+  assert.strictEqual(editedDraft.status, 200);
+  const editedPage = await request(base, `/messages?profileId=${fixture.profileId}`);
+  assert(editedPage.body.includes(editedDraftText), "terminal discovery pages must render the latest SQLite draft text");
+  assert(!editedPage.body.includes(PRIVATE_DRAFT), "the completed run snapshot must not overwrite a saved edit");
+  assert.match(editedPage.body, new RegExp(`data-draft-revision="${renderedDraft.revision + 1}"`));
+
+  closeMessageReplyDrafts(db, {
+    profileId: fixture.profileId,
+    cardId: fixture.card.id,
+    closedAt: "2026-07-31T01:05:00.000Z"
+  });
+  const closedDraftPage = await request(base, `/messages?profileId=${fixture.profileId}`);
+  assert(!closedDraftPage.body.includes(`data-draft-id="${renderedDraft.id}"`), "closed drafts must not reappear from the completed run snapshot");
+  assert(!closedDraftPage.body.includes(editedDraftText));
   const diagnosticsResponse = await request(base, "/api/runtime-diagnostics");
   assert.strictEqual(diagnosticsResponse.status, 200);
   assert(!diagnosticsResponse.body.includes(OPEN_HR_TEXT), "HR display text must stay out of runtime diagnostics");
@@ -478,7 +502,7 @@ async function main() {
   const understoodPage = await request(base, `/messages?profileId=${fixture.profileId}`);
   assert(understoodPage.body.includes("AI 应用开发工程师"));
   for (const expected of [
-    "结论",
+    "沟通结论",
     "需要你补充信息",
     "正式面试邀约",
     "这份机会",
@@ -486,9 +510,9 @@ async function main() {
     "对方正在确认候选人的任职资格。",
     "岗位主要做什么",
     "把企业知识转成可追溯的智能问答能力",
-    "公司做什么",
+    "公司业务",
     "JD 显示该岗位服务于企业知识管理。",
-    "匹配度",
+    "匹配与安排",
     "中",
     "薪资",
     "15-25K·13薪",
@@ -500,7 +524,7 @@ async function main() {
     "HR 消息",
     OPEN_HR_TEXT,
     RESUME_REQUEST_SUMMARY,
-    "岗位理解",
+    "岗位与资料详情",
     "工作安排：双休",
     "您好，感谢邀请，请问面试时间和形式如何安排？",
     "JD 暂未说明公司的具体业务。"
@@ -512,15 +536,15 @@ async function main() {
   );
   assertHeadingsInOrder(understoodPage.body, [
     "<h3>HR 消息</h3>",
-    "<h3>岗位理解</h3>",
-    "<h3>结论</h3>",
-    "<h3>这份机会</h3>",
-    "<h3>岗位主要做什么</h3>",
-    "<h3>公司做什么</h3>",
-    "<h3>匹配度</h3>",
-    "<h3>薪资</h3>",
+    "沟通结论",
+    "这份机会",
+    "岗位主要做什么",
+    "匹配与安排",
+    "岗位与资料详情",
     "<h3>下一步</h3>"
   ]);
+  assert.match(understoodPage.body, /<details class="message-job-details">/);
+  assert.doesNotMatch(understoodPage.body, /<h3>岗位理解<\/h3>[\s\S]*?<h3>结论<\/h3>/, "compact cards must not repeat adjacent generic headings");
   assert(
     understoodPage.body.indexOf('class="message-inbound"')
       < understoodPage.body.indexOf('class="message-job-understanding"'),

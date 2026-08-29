@@ -332,9 +332,14 @@ async function editableDraftClientSmoke(markup, draftId) {
   const fieldHandlers = new Map();
   const copyHandlers = new Map();
   const sentHandlers = new Map();
+  const saveStatus = { textContent: "已自动保存" };
+  const draftCard = {
+    querySelector(selector) { return selector === "[data-draft-save-status]" ? saveStatus : null; }
+  };
   const field = {
     value: "第一次修改",
     dataset: { draftId: String(draftId) },
+    closest(selector) { return selector === "[data-draft-card]" ? draftCard : null; },
     addEventListener(type, handler) { fieldHandlers.set(type, handler); }
   };
   const copyButton = {
@@ -392,12 +397,14 @@ async function editableDraftClientSmoke(markup, draftId) {
   vm.runInNewContext(script, context);
 
   fieldHandlers.get("input")();
+  assert.strictEqual(saveStatus.textContent, "有修改待保存");
   field.value = "最后一次修改";
   fieldHandlers.get("input")();
   assert.strictEqual(timers.size, 1, "rapid edits keep one pending save");
   const pending = [...timers.values()][0];
   assert.strictEqual(pending.delay, 600);
   await pending.callback();
+  assert.strictEqual(saveStatus.textContent, "已自动保存");
   assert.strictEqual(requests.filter((item) => item.body.action === "save").length, 1);
   assert.strictEqual(requests.at(-1).body.text, "最后一次修改");
 

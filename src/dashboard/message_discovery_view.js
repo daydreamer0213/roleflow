@@ -66,7 +66,7 @@ function renderMessageDiscoveryPage({ db, searchParams, controller, replySendCon
       const id = draft.id > 0 ? `message-draft-${draft.id}` : `message-draft-${resultIndex}-${messageIndex}`;
       const editable = draft.id > 0;
       const sent = editable
-        ? `<form method="post" action="/api/progress" data-sent-draft="${id}"><input type="hidden" name="cardId" value="${result.cardId}"><input type="hidden" name="draftId" value="${draft.id}"><input type="hidden" name="finalText" value=""><input type="hidden" name="idempotencyKey" value="${escapeAttr(newProgressRequestKey())}"><input type="hidden" name="action" value="reply_confirmed_sent"><button>已手动发送</button></form>`
+        ? `<form method="post" action="/api/progress" data-sent-draft="${id}"><input type="hidden" name="cardId" value="${result.cardId}"><input type="hidden" name="draftId" value="${draft.id}"><input type="hidden" name="finalText" value=""><input type="hidden" name="idempotencyKey" value="${escapeAttr(newProgressRequestKey())}"><input type="hidden" name="action" value="reply_confirmed_sent"><button class="secondary">我已在 BOSS 手动发送</button></form>`
         : "";
       const alternativeSelector = draftItems.length > 1
         ? `<input type="radio" name="message-send-choice-${Number(result.cardId)}" data-send-select="${draft.id}"${messageIndex === 0 ? " checked" : ""}>选择这版回复`
@@ -74,7 +74,10 @@ function renderMessageDiscoveryPage({ db, searchParams, controller, replySendCon
       const send = editable
         ? `<div class="message-draft-actions"><label class="message-send-choice">${alternativeSelector}</label><button type="button" data-send-single="${draft.id}">确认发送</button></div><p class="message-send-status" data-send-status="${draft.id}" role="status">等待确认</p>`
         : "";
-      return `<section class="message-draft" data-draft-card="${draft.id}"><label for="${id}">草稿 ${messageIndex + 1}</label><textarea id="${id}"${editable ? ` data-draft-text data-draft-id="${draft.id}" data-revision="${draft.revision}" data-draft-revision="${draft.revision}"` : " readonly"}>${escapeHtml(draft.text)}</textarea><button type="button" data-copy-draft="${id}"${editable ? "" : " data-copy-only"}>复制到本机剪贴板</button>${send}${sent}</section>`;
+      const saveStatus = editable
+        ? `<p class="message-draft-save-status" data-draft-save-status="${draft.id}" role="status">已自动保存</p>`
+        : "";
+      return `<section class="message-draft" data-draft-card="${draft.id}"><label for="${id}">草稿 ${messageIndex + 1}</label><textarea id="${id}"${editable ? ` data-draft-text data-draft-id="${draft.id}" data-revision="${draft.revision}" data-draft-revision="${draft.revision}"` : " readonly"}>${escapeHtml(draft.text)}</textarea>${saveStatus}<button type="button" data-copy-draft="${id}"${editable ? "" : " data-copy-only"}>复制到本机剪贴板</button>${send}${sent}</section>`;
     }).join("");
     const inboundMessages = Array.isArray(result.inboundMessages) ? result.inboundMessages : [];
     const inboundSection = inboundMessages.length
@@ -86,30 +89,24 @@ function renderMessageDiscoveryPage({ db, searchParams, controller, replySendCon
         ? "本次后台只读岗位详情"
         : "岗位资料来源待确认";
     const decisionCard = `<section class="message-job-understanding">
-      <h3>岗位理解</h3>
-      <h3>结论</h3>
-      <p class="line"><strong>${escapeHtml(messageIntentLabel(result.messageIntent))}</strong>${result.messageSummary ? ` · ${escapeHtml(result.messageSummary)}` : ""}</p>
-      <h3>这份机会</h3>
-      <p class="line"><strong>${escapeHtml(job.opportunityVerdict || "信息不足，暂时无法判断")}</strong>${job.opportunitySummary ? ` · ${escapeHtml(job.opportunitySummary)}` : ""}</p>
-      <p class="line">资料来源：${escapeHtml(source)}</p>
-      <h3>岗位主要做什么</h3>
-      <p class="line">${escapeHtml(job.roleSummary || "岗位职责分析尚未完成。")}</p>
-      <h3>公司做什么</h3>
-      <p class="line">${escapeHtml(job.companyBusiness || "JD 暂未说明公司的具体业务。")}</p>
-      <h3>匹配度</h3>
-      <p class="line"><strong>${escapeHtml(job.fitLabel || "待确认")}</strong>${job.fitSummary ? ` · ${escapeHtml(job.fitSummary)}` : ""}</p>
-      <p class="line">${job.workSchedule && job.workSchedule !== "工作安排未确认"
+      <p class="line"><strong>沟通结论：</strong>${escapeHtml(messageIntentLabel(result.messageIntent))}${result.messageSummary ? ` · ${escapeHtml(result.messageSummary)}` : ""}</p>
+      <p class="line"><strong>这份机会：</strong>${escapeHtml(job.opportunityVerdict || "信息不足，暂时无法判断")}${job.opportunitySummary ? ` · ${escapeHtml(job.opportunitySummary)}` : ""}</p>
+      <p class="line"><strong>岗位主要做什么：</strong>${escapeHtml(job.roleSummary || "岗位职责分析尚未完成。")}</p>
+      <p class="line"><strong>匹配与安排：</strong>${escapeHtml(job.fitLabel || "待确认")}${job.fitSummary ? ` · ${escapeHtml(job.fitSummary)}` : ""} · ${job.workSchedule && job.workSchedule !== "工作安排未确认"
         ? `工作安排：${escapeHtml(job.workSchedule)}`
         : "工作安排未确认"}</p>
-      <h3>薪资</h3>
-      <p class="line">${escapeHtml(job.salary || "薪资未说明")}</p>
+      <details class="message-job-details"><summary>岗位与资料详情</summary>
+        <p class="line"><strong>公司业务：</strong>${escapeHtml(job.companyBusiness || "JD 暂未说明公司的具体业务。")}</p>
+        <p class="line"><strong>资料来源：</strong>${escapeHtml(source)}</p>
+        <p class="line"><strong>薪资：</strong>${escapeHtml(job.salary || "薪资未说明")}</p>
+      </details>
     </section>`;
     const manualSection = manualActions.map((action) => `<div class="message-manual-action"><h4>${escapeHtml(action.title)}</h4><p class="risk-text">${escapeHtml(action.instruction)}</p></div>`).join("");
     const replySection = drafts ? `<h3>回复草稿</h3><h4>推荐回复</h4>${drafts}` : "";
     const nextSection = `${manualSection}${replySection}`
       || `<p class="risk-text">${escapeHtml(messageDiscoveryManualActionText(result))}</p>`;
     const sentForm = drafts && !durableDrafts.length
-      ? `<form method="post" action="/api/progress"><input type="hidden" name="cardId" value="${result.cardId}"><input type="hidden" name="idempotencyKey" value="${escapeAttr(newProgressRequestKey())}"><input type="hidden" name="action" value="reply_confirmed_sent"><button>已手动发送</button></form>`
+      ? `<form method="post" action="/api/progress"><input type="hidden" name="cardId" value="${result.cardId}"><input type="hidden" name="idempotencyKey" value="${escapeAttr(newProgressRequestKey())}"><input type="hidden" name="action" value="reply_confirmed_sent"><button class="secondary">我已在 BOSS 手动发送</button></form>`
       : "";
     return `<section class="panel message-result"><h2>${escapeHtml(job.title || "岗位处理结果")}</h2><p class="line">${escapeHtml(job.company || "公司待确认")} · 阶段：${escapeHtml(progressStageLabel(result.stage))}</p>${inboundSection}${decisionCard}<h3>下一步</h3>${nextSection}${sentForm}</section>`;
   }).join("");
@@ -175,9 +172,11 @@ function messageDiscoveryClientScript(scriptState) {
     for(const form of forms)form.addEventListener("submit",async(event)=>{event.preventDefault();if(actionPending||reloadPending)return;actionPending=true;actionVersion+=1;setPending(true);let succeeded=false;try{const response=await fetch(form.getAttribute("action"),{method:"POST",headers:{"content-type":"application/x-www-form-urlencoded"},body:new URLSearchParams(new FormData(form))});const parsed=await read(response);if(accepted(response,parsed,postStatuses)){succeeded=true;requestReload();return;}show(rejectedCode(parsed));}catch{show("MESSAGE_DISCOVERY_BROWSER_UNAVAILABLE");}finally{actionPending=false;setPending(false);if(!reloadPending&&!succeeded&&currentStatus==="running")schedulePoll();}});
     const cancelDraftSave=(field)=>{const timer=draftTimers.get(field);if(timer!==undefined){clearTimeout(timer);draftTimers.delete(field);}};
     const postDraft=async(field,text,action,completionKind="")=>{const response=await fetch("/api/message-reply-draft",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action,profileId:initial.profileId,draftId:Number(field.dataset.draftId),text,completionKind})});const parsed=await read(response);if(!response.ok||!parsed.json||!parsed.body?.ok)throw new Error(rejectedCode(parsed));return parsed.body;};
-    const queueDraftWrite=(field,action,completionKind="",text=field.value)=>{const previous=draftWrites.get(field)||Promise.resolve();const pending=previous.catch(()=>undefined).then(()=>postDraft(field,text,action,completionKind));draftWrites.set(field,pending);const clear=()=>{if(draftWrites.get(field)===pending)draftWrites.delete(field);};pending.then((result)=>{const revision=Number(result?.revision);if(Number.isSafeInteger(revision)&&revision>=0){field.dataset.revision=String(revision);field.dataset.draftRevision=String(revision);}clear();},clear);return pending;};
+    const draftSaveStatus=(field)=>field.closest("[data-draft-card]")?.querySelector("[data-draft-save-status]");
+    const setDraftSaveStatus=(field,text)=>{const status=draftSaveStatus(field);if(status)status.textContent=text;};
+    const queueDraftWrite=(field,action,completionKind="",text=field.value)=>{const previous=draftWrites.get(field)||Promise.resolve();const pending=previous.catch(()=>undefined).then(()=>{setDraftSaveStatus(field,"正在保存…");return postDraft(field,text,action,completionKind);});draftWrites.set(field,pending);const clear=()=>{if(draftWrites.get(field)===pending)draftWrites.delete(field);};pending.then((result)=>{const revision=Number(result?.revision);if(Number.isSafeInteger(revision)&&revision>=0){field.dataset.revision=String(revision);field.dataset.draftRevision=String(revision);}setDraftSaveStatus(field,field.value===text?"已自动保存":"有修改待保存");clear();},()=>{setDraftSaveStatus(field,field.value===text?"保存失败，请重试":"有修改待保存");clear();});return pending;};
     const saveDraft=async(field)=>{cancelDraftSave(field);return queueDraftWrite(field,"save");};
-    for(const field of document.querySelectorAll("[data-draft-text]"))field.addEventListener("input",()=>{cancelDraftSave(field);draftTimers.set(field,setTimeout(async()=>{draftTimers.delete(field);try{await queueDraftWrite(field,"save");}catch{feedback.textContent="本次修改还没有保存，请稍后重试。";}},600));});
+    for(const field of document.querySelectorAll("[data-draft-text]"))field.addEventListener("input",()=>{setDraftSaveStatus(field,"有修改待保存");cancelDraftSave(field);draftTimers.set(field,setTimeout(async()=>{draftTimers.delete(field);try{await queueDraftWrite(field,"save");}catch{feedback.textContent="本次修改还没有保存，请稍后重试。";}},600));});
     for(const button of document.querySelectorAll("[data-copy-draft]"))button.addEventListener("click",async()=>{const field=document.getElementById(button.dataset.copyDraft);if(!field)return;const text=field.value;try{await navigator.clipboard.writeText(text);}catch{feedback.textContent="复制失败，请重试。";return;}if("copyOnly" in button.dataset){feedback.textContent="草稿已复制。";return;}cancelDraftSave(field);try{const result=await queueDraftWrite(field,"complete","copied",text);feedback.textContent=result.changed?"已记住你这次修改的回答":"草稿已复制。";}catch{feedback.textContent="已复制；这次修改暂未保存，请稍后重试";}});
     for(const form of document.querySelectorAll("[data-sent-draft]"))form.addEventListener("submit",()=>{const field=document.getElementById(form.dataset.sentDraft);if(!field)return;cancelDraftSave(field);const hidden=form.querySelector('[name="finalText"]');if(hidden)hidden.value=field.value;});
     const sendPanel=document.querySelector("[data-send-batch-panel]");
