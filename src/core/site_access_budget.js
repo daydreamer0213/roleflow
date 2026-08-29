@@ -7,6 +7,7 @@ const DEFAULT_POLICY = Object.freeze({
 });
 const DAY_MS = 24 * 60 * 60_000;
 const CHINA_OFFSET_MS = 8 * 60 * 60_000;
+const COMMUNICATION_ACTIONS = new Set(["communication_visit", "message_reply_send"]);
 
 function createSiteAccessController({
   db,
@@ -46,8 +47,8 @@ function createSiteAccessController({
             throw accessActionUnconfiguredError({ site, action: normalizedAction, mode });
           }
           const usage = readUsage(db, { site, action: normalizedAction, nowMs, policy });
-          const existing = normalizedAction === "communication_visit"
-            ? existingCommunicationReservation(db, { site, details: sanitizedDetails, nowMs, policy })
+          const existing = COMMUNICATION_ACTIONS.has(normalizedAction)
+            ? existingCommunicationReservation(db, { site, action: normalizedAction, details: sanitizedDetails, nowMs, policy })
             : null;
           if (existing) {
             db.exec("COMMIT");
@@ -55,6 +56,7 @@ function createSiteAccessController({
             let auditEvent = null;
             if (auditDb !== db && !existingCommunicationReservation(auditDb, {
               site,
+              action: normalizedAction,
               details: sanitizedDetails,
               nowMs,
               policy
@@ -180,7 +182,7 @@ function sanitizeReservationDetails(action, details) {
     const kind = String(details?.kind || "").trim().toLowerCase();
     return kind ? { kind } : {};
   }
-  if (normalizedAction === "communication_visit") {
+  if (COMMUNICATION_ACTIONS.has(normalizedAction)) {
     return Object.fromEntries(["batchId", "itemId", "jobId"]
       .map((field) => [field, positiveInteger(details?.[field])])
       .filter(([, value]) => value !== null)
@@ -194,7 +196,7 @@ function positiveInteger(value) {
   return Number.isInteger(number) && number > 0 ? number : null;
 }
 
-function existingCommunicationReservation(db, { site, details, nowMs, policy }) {
+function existingCommunicationReservation(db, { site, action, details, nowMs, policy }) {
   const batchId = Number(details?.batchId);
   const itemId = Number(details?.itemId);
   const recoveryAttempt = details?.recoveryAttempt === 1 ? 1 : 0;
@@ -204,12 +206,12 @@ function existingCommunicationReservation(db, { site, details, nowMs, policy }) 
     WHERE event_type = 'site_access'
       AND created_at > ?
       AND json_extract(payload_json, '$.site') = ?
-      AND json_extract(payload_json, '$.action') = 'communication_visit'
+       AND json_extract(payload_json, '$.action') = ?
       AND json_extract(payload_json, '$.batchId') = ?
       AND json_extract(payload_json, '$.itemId') = ?
       AND COALESCE(json_extract(payload_json, '$.recoveryAttempt'), 0) = ?
     ORDER BY created_at DESC, id DESC LIMIT 1`)
-    .get(new Date(nowMs - windowMs).toISOString(), String(site), batchId, itemId, recoveryAttempt) || null;
+    .get(new Date(nowMs - windowMs).toISOString(), String(site), String(action), batchId, itemId, recoveryAttempt) || null;
 }
 
 function resolveAccessMode(db, { site, nowMs, policy = DEFAULT_POLICY }) {
@@ -273,12 +275,12 @@ function chinaDayStartMs(value) {
 }
 
 function actionsForWindow(action, window, policy) {
-  if (action !== "communication_visit") return [action];
+  if (!COMMUNICATION_ACTIONS.has(action)) return [action];
   return policy.combinedUsage?.[window] || [action];
 }
 
 function accessBudgetError({ site, action, mode, window, limit, retryAtMs, usage }) {
-  const label = action === "communication_visit"
+  const label = COMMUNICATION_ACTIONS.has(action)
     ? "岗位沟通"
     : { pane_detail_read: "右栏详情", job_detail_fetch: "岗位详情", detail_open: "岗位详情", list_navigation: "搜索页", list_scroll: "列表滚动" }[action] || action;
   const retryAt = new Date(retryAtMs).toISOString();

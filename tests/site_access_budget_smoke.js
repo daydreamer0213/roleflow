@@ -686,6 +686,46 @@ async function communicationReservationIsIdempotentSmoke() {
   db.close();
 }
 
+async function messageReplySendReservationSmoke() {
+  const db = openDb(":memory:");
+  const now = Date.parse("2026-07-21T12:00:00+08:00");
+  const controller = createSiteAccessController({ db, site: "boss", nowFn: () => now, sleepFn: async () => {} });
+  const details = { batchId: 17, itemId: 91, jobId: 44, replyText: "must not persist" };
+  const first = await controller.reserve("message_reply_send", details);
+  const second = await controller.reserve("message_reply_send", details);
+  assert.equal(first.reused, false);
+  assert.equal(second.reused, true);
+  assert.equal(second.usage["24h"], 1);
+  const events = listSiteAccessEvents(db, { site: "boss", action: "message_reply_send" });
+  assert.equal(events.length, 1);
+  assert.deepStrictEqual(events[0].details, {
+    site: "boss", action: "message_reply_send", runId: "",
+    batchId: 17, itemId: 91, jobId: 44, recoveryAttempt: 0
+  });
+  db.close();
+}
+
+async function messageReplySendSharesCommunicationBudgetSmoke() {
+  const db = openDb(":memory:");
+  let now = Date.parse("2026-07-21T12:00:00+08:00");
+  for (let index = 0; index < 30; index += 1) {
+    recordSiteAccessEvent(db, {
+      site: "boss",
+      action: "communication_visit",
+      createdAt: new Date(now - 9 * 60_000 + index).toISOString()
+    });
+  }
+  const sleeps = [];
+  const controller = createSiteAccessController({
+    db, site: "boss", nowFn: () => now, randomFn: () => 0,
+    sleepFn: async (ms) => { sleeps.push(ms); now += ms; }
+  });
+  const result = await controller.reserve("message_reply_send", { batchId: 18, itemId: 92, jobId: 45 });
+  assert.equal(sleeps.length, 1, "reply sends must share the communication rolling window");
+  assert.equal(result.usage["10m"], 1);
+  db.close();
+}
+
 async function transactionBoundarySmoke() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-access-transaction-"));
   const dbPath = path.join(root, "jobs.sqlite");
@@ -825,6 +865,8 @@ Promise.resolve()
   .then(communicationUsesControllerPolicySmoke)
   .then(communicationDailyBudgetSmoke)
   .then(communicationReservationIsIdempotentSmoke)
+  .then(messageReplySendReservationSmoke)
+  .then(messageReplySendSharesCommunicationBudgetSmoke)
   .then(transactionBoundarySmoke)
   .then(filteredLedgerLimitSmoke)
   .then(() => console.log("site_access_budget_smoke ok"))

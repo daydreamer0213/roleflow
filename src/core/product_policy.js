@@ -3,6 +3,7 @@ const MIN_CARDS_PER_TARGET = 10;
 const BOSS_PANE_DETAIL_DELAY_MS = Object.freeze([8000, 14000]);
 const BOSS_PANE_DETAIL_NORMAL_LIMITS = Object.freeze({ "3m": 12, "10m": 45, "1h": 240, "24h": 360 });
 const BOSS_PANE_DETAIL_RECOVERY_LIMITS = Object.freeze({ "3m": 5, "10m": 20, "1h": 80, "24h": 120 });
+const BOSS_COMMUNICATION_LIMITS = Object.freeze({ "10m": 30, "30m": 60, "24h": 150 });
 
 const PRODUCT_POLICY = Object.freeze({
   searchPlan: Object.freeze({
@@ -112,7 +113,8 @@ const PRODUCT_POLICY = Object.freeze({
           pane_detail_read: BOSS_PANE_DETAIL_RECOVERY_LIMITS,
           job_detail_fetch: BOSS_PANE_DETAIL_RECOVERY_LIMITS,
           detail_open: Object.freeze({ "10m": 5, "1h": 15, "24h": 30 }),
-          communication_visit: Object.freeze({ "10m": 30, "30m": 60, "24h": 150 }),
+          communication_visit: BOSS_COMMUNICATION_LIMITS,
+          message_reply_send: BOSS_COMMUNICATION_LIMITS,
           list_navigation: Object.freeze({ "24h": 8 }),
           list_scroll: Object.freeze({ "24h": 60 })
         }),
@@ -120,7 +122,8 @@ const PRODUCT_POLICY = Object.freeze({
           pane_detail_read: BOSS_PANE_DETAIL_NORMAL_LIMITS,
           job_detail_fetch: BOSS_PANE_DETAIL_NORMAL_LIMITS,
           detail_open: Object.freeze({ "10m": 8, "1h": 25, "24h": 60 }),
-          communication_visit: Object.freeze({ "10m": 30, "30m": 60, "24h": 150 }),
+          communication_visit: BOSS_COMMUNICATION_LIMITS,
+          message_reply_send: BOSS_COMMUNICATION_LIMITS,
           list_navigation: Object.freeze({ "24h": 16 }),
           list_scroll: Object.freeze({ "24h": 120 })
         })
@@ -137,9 +140,9 @@ const PRODUCT_POLICY = Object.freeze({
       delayMs: Object.freeze([15000, 20000]),
       limits: Object.freeze({ "10m": 30, "30m": 60, "24h": 150 }),
       combinedUsage: Object.freeze({
-        "10m": Object.freeze(["detail_open", "communication_visit"]),
-        "30m": Object.freeze(["detail_open", "communication_visit"]),
-        "24h": Object.freeze(["communication_visit"])
+        "10m": Object.freeze(["detail_open", "communication_visit", "message_reply_send"]),
+        "30m": Object.freeze(["detail_open", "communication_visit", "message_reply_send"]),
+        "24h": Object.freeze(["communication_visit", "message_reply_send"])
       })
     })
   }),
