@@ -354,7 +354,7 @@ async function interviewDraftClientSmoke(markup) {
   const error = { textContent: "" };
   const form = {
     action: "/api/interview/answer",
-    dataset: { interviewDraft: "answer" },
+    dataset: { interviewDraft: "answer", interviewSuccessTarget: "interview-active-step" },
     elements: {
       planId: { value: "1" }, sessionId: { value: "51" }, turnNumber: { value: "2" }, answerText: field
     },
@@ -381,19 +381,33 @@ async function interviewDraftClientSmoke(markup) {
   }
   let response = { ok: false, url: "", async text() { return JSON.stringify({ error: "模型暂时不可用，请稍后重试。" }); } };
   const navigations = [];
+  let reloads = 0;
+  let revealedTarget = "";
+  const activeTarget = { scrollIntoView() { revealedTarget = "interview-active-step"; } };
+  const location = {
+    href: "http://127.0.0.1/interview?planId=1&sessionId=51#interview-active-step",
+    hash: "#interview-active-step",
+    assign(url) { navigations.push(url); },
+    reload() { reloads += 1; }
+  };
   const context = {
     document: {
+      readyState: "complete",
       querySelector(selector) { return selector === ".interview-start-form" ? null : null; },
-      querySelectorAll(selector) { return selector === "[data-interview-submit]" ? [form] : []; }
+      querySelectorAll(selector) { return selector === "[data-interview-submit]" ? [form] : []; },
+      getElementById(id) { return id === "interview-active-step" ? activeTarget : null; }
     },
     localStorage: storage,
     FormData: FakeFormData,
     URLSearchParams,
     fetch: async () => response,
-    location: { assign(url) { navigations.push(url); } },
+    location,
+    setTimeout,
     console
   };
   vm.runInNewContext(script, context);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(revealedTarget, "interview-active-step", "a reloaded interview step must be scrolled into view");
   assert.equal(field.value, "刷新后恢复的回答");
   field.value = "失败后仍要保留的回答";
   fieldHandlers.get("input")();
@@ -405,8 +419,10 @@ async function interviewDraftClientSmoke(markup) {
   assert.equal(button.disabled, false);
   assert.equal(button.textContent, "提交回答并继续");
 
-  response = { ok: true, url: "http://127.0.0.1/interview?planId=1&sessionId=51#interview-active-step", async text() { return ""; } };
+  response = { ok: true, url: "http://127.0.0.1/interview?planId=1&sessionId=51", async text() { return ""; } };
   await handlers.get("submit")({ preventDefault() {}, submitter: button });
   assert.equal(values.has("roleflow:interview-draft:51:2:answer"), false, "successful submission must clear only the submitted local draft");
-  assert.deepEqual(navigations, [response.url]);
+  assert.deepEqual(navigations, []);
+  assert.equal(location.hash, "interview-active-step");
+  assert.equal(reloads, 1, "a same-session result must reload so the next question or report replaces the old DOM");
 }

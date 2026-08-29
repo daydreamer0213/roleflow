@@ -272,14 +272,22 @@ async function resumeSubmitClientSmoke(markup) {
     readOnly: false,
     addEventListener(type, handler) { fieldHandlers.set(type, handler); }
   };
-  const button = { disabled: false, textContent: "启用为新版本", formAction: "/api/resume-optimization/activate" };
+  const button = {
+    disabled: false,
+    textContent: "启用为新版本",
+    formAction: "/api/resume-optimization/activate",
+    dataset: { resumeSuccessTarget: "resume-opt-activated" },
+    getAttribute(name) { return name === "formaction" ? "/api/resume-optimization/activate" : null; }
+  };
   const form = {
     action: "/api/resume-optimization/save",
+    dataset: { resumeSuccessTarget: "resume-opt-draft-title" },
     elements: { planId: { value: "1" }, draftId: { value: "41" }, finalText: editor },
     querySelector(selector) {
       if (selector === "[data-resume-save-status]" || selector === "[data-resume-error]") return status;
       return null;
     },
+    getAttribute(name) { return name === "action" ? "/api/resume-optimization/save" : null; },
     addEventListener(type, handler) { formHandlers.set(type, handler); }
   };
   class FakeFormData {
@@ -290,33 +298,51 @@ async function resumeSubmitClientSmoke(markup) {
   }
   let response = { ok: false, url: "", async text() { return JSON.stringify({ error: "模型生成失败，请直接重试。" }); } };
   const navigations = [];
+  let reloads = 0;
+  let revealedTarget = "";
+  const activatedTarget = { scrollIntoView() { revealedTarget = "resume-opt-activated"; } };
+  const location = {
+    href: "http://127.0.0.1/resume-optimization?planId=1&draftId=41#resume-opt-activated",
+    hash: "#resume-opt-activated",
+    assign(url) { navigations.push(url); },
+    reload() { reloads += 1; }
+  };
   const context = {
     document: {
+      readyState: "complete",
       querySelector(selector) {
         if (selector === "[data-resume-editor]") return form;
         if (selector === "[data-copy-resume]") return null;
         return null;
       },
       querySelectorAll(selector) { return selector === "[data-resume-submit]" ? [form] : []; },
-      getElementById(id) { return id === "resume-opt-final-text" ? editor : null; }
+      getElementById(id) {
+        if (id === "resume-opt-final-text") return editor;
+        if (id === "resume-opt-activated") return activatedTarget;
+        return null;
+      }
     },
     navigator: { clipboard: { async writeText() {} } },
     FormData: FakeFormData,
     URLSearchParams,
     fetch: async () => response,
-    location: { assign(url) { navigations.push(url); } },
+    location,
     setTimeout,
     clearTimeout,
     console
   };
   vm.runInNewContext(script, context);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(revealedTarget, "resume-opt-activated", "a reloaded workflow result must be scrolled into view");
   await formHandlers.get("submit")({ preventDefault() {}, submitter: button });
   assert.equal(editor.value, "失败后仍应保留的简历全文");
   assert.match(status.textContent, /模型生成失败/);
   assert.equal(button.disabled, false);
   assert.equal(button.textContent, "启用为新版本");
 
-  response = { ok: true, url: "http://127.0.0.1/resume-optimization?planId=1&draftId=41#resume-opt-activated", async text() { return ""; } };
+  response = { ok: true, url: "http://127.0.0.1/resume-optimization?planId=1&draftId=41", async text() { return ""; } };
   await formHandlers.get("submit")({ preventDefault() {}, submitter: button });
-  assert.deepEqual(navigations, [response.url]);
+  assert.deepEqual(navigations, []);
+  assert.equal(location.hash, "resume-opt-activated");
+  assert.equal(reloads, 1, "same-draft activation must reload so the activated state replaces the old DOM");
 }

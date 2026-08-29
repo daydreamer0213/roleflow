@@ -221,17 +221,22 @@ async function clientSavesBeforeConfirmSmoke(html, drafts) {
   }));
   const singleButtons = drafts.map((draft) => element({ dataset: { sendSingle: String(draft.id) } }));
   const statuses = drafts.map((draft) => element({ dataset: { sendStatus: String(draft.id) } }));
+  const draftSaveStatuses = drafts.map((draft) => element({ dataset: { draftSaveStatus: String(draft.id) } }));
   const batchButton = element();
   const stopButton = element({ hidden: true, disabled: true });
   const batchPanel = element({ dataset: { state: "idle" } });
   const batchTitle = element();
   const batchStatus = element();
   const feedback = element();
-  const cards = fields.map((field) => ({
-    querySelectorAll() { return [field, choices[fields.indexOf(field)], singleButtons[fields.indexOf(field)]]; }
-  }));
+  const cards = fields.map((field) => {
+    const index = fields.indexOf(field);
+    return {
+      querySelector(selector) { return selector === "[data-draft-save-status]" ? draftSaveStatuses[index] : null; },
+      querySelectorAll() { return [field, choices[index], singleButtons[index]]; }
+    };
+  });
   fields.forEach((field, index) => { field.closest = () => cards[index]; });
-  controls.push(...fields, ...choices, ...singleButtons, ...statuses, batchButton, stopButton);
+  controls.push(...fields, ...choices, ...singleButtons, ...statuses, ...draftSaveStatuses, batchButton, stopButton);
   const document = {
     querySelector(selector) {
       if (selector === "[data-discovery-feedback]") return feedback;
