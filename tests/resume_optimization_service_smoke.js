@@ -73,15 +73,22 @@ try {
     searchPlanId: owner.planId
   });
   const validJobId = storage.upsertJob(db, job("resume-service-valid"), ownerBatch);
+  const representativeJobIds = [validJobId];
+  for (const [index, company] of ["示例科技", "甲公司", "乙公司", "丙公司", "丁公司"].entries()) {
+    representativeJobIds.push(storage.upsertJob(db, job(`resume-service-${index + 2}`, {
+      company,
+      analysis: {
+        ...job("analysis-template").analysis,
+        recommendation: index === 0 ? "primary" : index === 1 ? "caution" : "apply",
+        realRoleType: "AI 应用工程师",
+        businessScenario: `企业知识库场景 ${index + 2}`
+      }
+    }), ownerBatch));
+  }
   const incompleteJobId = storage.upsertJob(db, job("resume-service-incomplete", {
     description: "",
     analysis: { semanticStatus: "failed", errorCode: "MODEL_TIMEOUT" }
   }), ownerBatch);
-  const otherBatch = storage.createBatch(db, "boss", "后端", "other profile", {
-    profileId: other.profileId,
-    searchPlanId: other.planId
-  });
-  const otherJobId = storage.upsertJob(db, job("resume-service-other", { company: "其他公司" }), otherBatch);
 
   storage.saveCandidateFact(db, {
     profileId: owner.profileId,
@@ -130,7 +137,8 @@ try {
           originalText: "参与企业知识库开发",
           proposedText: "参与 Node.js 企业知识库开发",
           reason: "补充简历中已有且岗位需要的技术栈",
-          evidenceIds: ["R3", "R4", "J1"]
+          evidenceIds: ["R3", "R4", "J1"],
+          editingPrinciple: "jd_vocabulary"
         }]
       };
     }
@@ -141,14 +149,14 @@ try {
     profileId: owner.profileId,
     planId: owner.planId,
     sourceResumeVersionId: owner.resumeVersionId,
-    jobIds: [otherJobId]
-  }), (error) => error.code === "RESUME_OPTIMIZATION_JOB_NOT_OWNED");
+    targetDirection: "后端工程师"
+  }), (error) => error.code === "RESUME_OPTIMIZATION_DIRECTION_NOT_OWNED");
   assert.rejects(() => service.createDraft({
-    profileId: owner.profileId,
-    planId: owner.planId,
-    sourceResumeVersionId: owner.resumeVersionId,
-    jobIds: [incompleteJobId]
-  }), (error) => error.code === "RESUME_OPTIMIZATION_JOB_INCOMPLETE");
+    profileId: other.profileId,
+    planId: other.planId,
+    sourceResumeVersionId: other.resumeVersionId,
+    targetDirection: "后端工程师"
+  }), (error) => error.code === "RESUME_OPTIMIZATION_NO_COMPLETE_JD");
 
   const rowsBeforeMalformed = db.prepare("SELECT count(*) AS n FROM resume_optimizations").get().n;
   const malformedService = createResumeOptimizationService({
@@ -163,7 +171,8 @@ try {
           originalText: "不存在的原文",
           proposedText: "改写",
           reason: "错误",
-          evidenceIds: ["R1"]
+          evidenceIds: ["R1"],
+          editingPrinciple: "concision"
         }] };
       }
     }
@@ -172,7 +181,7 @@ try {
     profileId: owner.profileId,
     planId: owner.planId,
     sourceResumeVersionId: owner.resumeVersionId,
-    jobIds: [validJobId]
+    targetDirection: "AI 应用工程师"
   }), /原文/);
   assert.strictEqual(db.prepare("SELECT count(*) AS n FROM resume_optimizations").get().n, rowsBeforeMalformed);
 
@@ -180,29 +189,42 @@ try {
     profileId: owner.profileId,
     planId: owner.planId,
     sourceResumeVersionId: owner.resumeVersionId,
-    jobIds: [validJobId]
+    targetDirection: "AI 应用工程师"
   });
   assert.strictEqual(calls.length, 1);
   assert.strictEqual(calls[0].sourceResume.id, owner.resumeVersionId);
   assert(calls[0].sourceResume.text.includes("参与企业知识库开发"));
   assert(!calls[0].sourceResume.text.includes("候选人甲"), "model input must redact the candidate identity");
-  assert.deepStrictEqual(calls[0].jobs.map((item) => item.id), [validJobId]);
-  assert.strictEqual(calls[0].jobs[0].description, job("expected").description);
-  assert.strictEqual(calls[0].jobs[0].analysis.semanticStatus, "complete");
+  assert(draft.targetJobIds.length >= 3 && draft.targetJobIds.length <= 5);
+  assert(!draft.targetJobIds.includes(incompleteJobId));
+  const selectedJobs = calls[0].jobs;
+  assert.strictEqual(new Set(selectedJobs.map((item) => item.company)).size, selectedJobs.length);
+  assert(selectedJobs.every((item) => representativeJobIds.includes(item.id)));
+  assert(selectedJobs.every((item) => item.description === job("expected").description));
+  assert(selectedJobs.every((item) => item.analysis.semanticStatus === "complete"));
   assert(calls[0].evidenceCatalog.some((item) => item.kind === "fact" && item.text.includes("两周内到岗")));
   assert(calls[0].evidenceCatalog.some((item) => item.kind === "answer" && item.text.includes("两周内可以到岗")));
-  assert.strictEqual(draft.suggestions[0].decision, "pending");
+  assert.strictEqual(draft.targetDirection, "AI 应用工程师");
+  assert.match(draft.generatedText, /Node\.js 企业知识库/);
+  assert.strictEqual(draft.finalText, draft.generatedText);
+  assert.strictEqual(draft.changeLedger[0].editingPrinciple, "jd_vocabulary");
+  assert.strictEqual(draft.suggestions[0].decision, "accepted");
   assert.strictEqual(draft.modelIdentity.provider, "scripted");
 
   const saved = service.saveDraft({
     profileId: owner.profileId,
     draftId: draft.id,
-    decisions: { S1: { decision: "edited", userText: "参与 Node.js 知识库应用开发" } }
+    finalText: `${draft.finalText}\n用户补充：已校对`
   });
-  assert(saved.finalText.includes("参与 Node.js 知识库应用开发"));
+  assert(saved.finalText.includes("用户补充：已校对"));
   assert(!saved.finalText.includes("参与企业知识库开发"));
 
-  const activated = service.activateDraft({ profileId: owner.profileId, draftId: draft.id });
+  const activated = service.activateDraft({
+    profileId: owner.profileId,
+    planId: owner.planId,
+    draftId: draft.id,
+    finalText: saved.finalText
+  });
   assert.strictEqual(activated.status, "activated");
   assert(storage.listCandidateResumeVersions(db, owner.profileId).some((version) => version.id === activated.resultResumeVersionId));
 
@@ -211,12 +233,14 @@ try {
   assert(dashboard.resumes.some((resume) => resume.id === activated.resultResumeVersionId));
   assert(dashboard.jobs.some((item) => item.id === validJobId));
   assert(!dashboard.jobs.some((item) => item.id === incompleteJobId));
+  assert.deepStrictEqual(dashboard.directions, ["AI 应用工程师"]);
+  assert.deepStrictEqual(new Set(dashboard.selectedJobs.map((item) => item.id)), new Set(draft.targetJobIds));
 
   const mockDraft = await createResumeOptimizationService({ db, adapter: new MockModelAdapter() }).createDraft({
     profileId: owner.profileId,
     planId: owner.planId,
     sourceResumeVersionId: owner.resumeVersionId,
-    jobIds: [validJobId]
+    targetDirection: "AI 应用工程师"
   });
   assert.strictEqual(mockDraft.suggestions[0].originalText, "参与企业知识库开发");
 

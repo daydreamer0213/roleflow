@@ -175,9 +175,61 @@ function renderOptimizedResume(sourceText, suggestions) {
   return result;
 }
 
+function selectRepresentativeResumeJobs(jobs, { targetDirection, limit = 5 } = {}) {
+  const direction = String(targetDirection ?? "").trim().toLocaleLowerCase("zh-CN");
+  if (!direction) throw new Error("目标投递方向不能为空");
+  const tokens = [...new Set(direction.split(/[\s/|、，,;；]+/).map((item) => item.trim()).filter(Boolean))];
+  const recommendationRanks = new Map([["primary", 0], ["apply", 1], ["caution", 2]]);
+  const ranked = (Array.isArray(jobs) ? jobs : []).map((job) => {
+    const analysis = job?.analysis || {};
+    const roleText = [
+      job?.title,
+      job?.keyword,
+      analysis.realRoleType,
+      analysis.businessScenario,
+      analysis.roleSummary,
+      analysis.jobUnderstanding?.realRoleType,
+      analysis.jobUnderstanding?.businessScenario,
+      analysis.jobUnderstanding?.roleSummary
+    ].map((value) => String(value || "").toLocaleLowerCase("zh-CN")).join(" ");
+    return {
+      job,
+      directionScore: tokens.filter((token) => roleText.includes(token)).length,
+      recommendationRank: recommendationRanks.get(String(analysis.recommendation || "").toLowerCase()) ?? 3,
+      lastSeenAt: String(job?.lastSeenAt || ""),
+      id: Number(job?.id || 0)
+    };
+  }).filter((item) => item.directionScore > 0);
+
+  ranked.sort((left, right) => right.directionScore - left.directionScore
+    || left.recommendationRank - right.recommendationRank
+    || right.lastSeenAt.localeCompare(left.lastSeenAt)
+    || right.id - left.id);
+
+  const boundedLimit = Math.max(1, Math.min(5, Number(limit) || 5));
+  const selected = [];
+  const selectedIds = new Set();
+  const companies = new Set();
+  for (const item of ranked) {
+    const company = String(item.job?.company || "").trim().toLocaleLowerCase("zh-CN");
+    if (!company || companies.has(company)) continue;
+    selected.push(item.job);
+    selectedIds.add(item.id);
+    companies.add(company);
+    if (selected.length >= boundedLimit) return selected;
+  }
+  for (const item of ranked) {
+    if (selectedIds.has(item.id)) continue;
+    selected.push(item.job);
+    if (selected.length >= boundedLimit) break;
+  }
+  return selected;
+}
+
 module.exports = {
   buildResumeEvidenceCatalog,
   validateResumeOptimizationDraft,
   normalizeResumeSuggestionDecisions,
-  renderOptimizedResume
+  renderOptimizedResume,
+  selectRepresentativeResumeJobs
 };

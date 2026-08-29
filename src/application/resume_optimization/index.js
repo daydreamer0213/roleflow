@@ -15,8 +15,8 @@ const { prepareResumeTextForModel } = require("../../core/resume_privacy");
 const {
   buildResumeEvidenceCatalog,
   validateResumeOptimizationDraft,
-  normalizeResumeSuggestionDecisions,
-  renderOptimizedResume
+  renderOptimizedResume,
+  selectRepresentativeResumeJobs
 } = require("../../core/resume_optimization");
 const { createFunnelAnalysisService } = require("../funnel_analysis");
 
@@ -37,7 +37,14 @@ function createResumeOptimizationService({ db, adapter = null, funnelAnalysisSer
     const profileId = requiredId(input.profileId, "profileId");
     const plan = ownedPlan(profileId, input.planId);
     const source = ownedSource(profileId, input.sourceResumeVersionId);
-    const jobs = ownedCompleteJobs(plan, input.jobIds);
+    const targetDirection = ownedDirection(plan, input.targetDirection);
+    const jobs = selectRepresentativeResumeJobs(
+      listDecisionPool(db, { planId: plan.id }).filter(isCompleteJob),
+      { targetDirection, limit: 5 }
+    );
+    if (!jobs.length) {
+      throw serviceError("RESUME_OPTIMIZATION_NO_COMPLETE_JD", "当前方向还没有可核验的完整岗位信息，暂时不能生成定向简历");
+    }
     if (!adapter || typeof adapter.generateResumeOptimization !== "function") {
       throw serviceError("RESUME_OPTIMIZATION_MODEL_UNAVAILABLE", "当前深度分析模型不可用，请先检查模型设置");
     }
@@ -72,6 +79,7 @@ function createResumeOptimizationService({ db, adapter = null, funnelAnalysisSer
         contentHash: source.contentHash,
         text: prepared.text
       },
+      targetDirection,
       jobs: jobs.map(modelJob),
       candidateFacts: facts,
       answerMemories: answers,
@@ -83,13 +91,16 @@ function createResumeOptimizationService({ db, adapter = null, funnelAnalysisSer
       sourceText: source.text,
       evidenceCatalog
     });
+    const generatedText = renderOptimizedResume(source.text, validated.suggestions);
     return createResumeOptimization(db, {
       profileId,
       sourceResumeVersionId: source.id,
+      targetDirection,
       targetJobIds: jobs.map((job) => job.id),
       evidenceCatalog,
       headline: validated.headline,
       suggestions: validated.suggestions,
+      generatedText,
       modelIdentity: {
         provider: String(adapter.provider || "unknown"),
         model: String(adapter.model || "")
@@ -108,28 +119,28 @@ function createResumeOptimizationService({ db, adapter = null, funnelAnalysisSer
     return listResumeOptimizations(db, requiredId(profileId, "profileId"), limit);
   }
 
-  function saveDraft({ profileId, draftId, optimizationId, decisions = {} } = {}) {
+  function saveDraft({ profileId, draftId, optimizationId, finalText } = {}) {
     const owned = getDraft({ profileId, draftId: draftId || optimizationId });
     if (!owned) throw serviceError("RESUME_OPTIMIZATION_NOT_FOUND", "定向简历草稿不存在");
     if (owned.status !== "draft") throw serviceError("RESUME_OPTIMIZATION_CLOSED", "已启用的定向简历不能继续修改");
-    const suggestions = normalizeResumeSuggestionDecisions(owned.suggestions, decisions);
-    const finalText = renderOptimizedResume(owned.sourceText, suggestions);
     return saveResumeOptimizationDraft(db, {
       profileId: owned.profileId,
       optimizationId: owned.id,
-      suggestions,
       finalText
     });
   }
 
-  function activateDraft({ profileId, draftId, optimizationId } = {}) {
+  function activateDraft({ profileId, planId, draftId, optimizationId, finalText } = {}) {
     const owned = getDraft({ profileId, draftId: draftId || optimizationId });
     if (!owned) throw serviceError("RESUME_OPTIMIZATION_NOT_FOUND", "定向简历草稿不存在");
+    const plan = ownedPlan(owned.profileId, planId);
     const jobs = rowsForJobIds(owned.targetJobIds);
     const titles = [...new Set(jobs.map((job) => String(job.title || "").trim()).filter(Boolean))];
     return activateResumeOptimization(db, {
       profileId: owned.profileId,
+      planId: plan.id,
       optimizationId: owned.id,
+      finalText,
       version: {
         name: titles.length === 1 ? `${titles[0]}定向版` : "定向简历",
         targetRoles: titles,
@@ -151,8 +162,10 @@ function createResumeOptimizationService({ db, adapter = null, funnelAnalysisSer
       plan,
       resumes: listCandidateResumeVersions(db, profile),
       jobs,
+      directions: Array.isArray(plan.plan?.directions) ? plan.plan.directions : [],
       drafts,
       selectedDraft,
+      selectedJobs: selectedDraft ? rowsForJobIds(selectedDraft.targetJobIds) : [],
       funnelDiagnosis: compactDiagnosis(funnelAnalysis.getDashboard({ profileId: profile, planId: plan.id }))
     };
   }
@@ -183,23 +196,23 @@ function createResumeOptimizationService({ db, adapter = null, funnelAnalysisSer
     };
   }
 
-  function ownedCompleteJobs(plan, values) {
-    const ids = [...new Set((Array.isArray(values) ? values : []).map((value) => requiredId(value, "jobId")))];
-    if (ids.length < 1 || ids.length > 5) throw new Error("请选择 1-5 个目标岗位");
-    const pool = new Map(listDecisionPool(db, { planId: plan.id }).map((job) => [Number(job.id), job]));
-    const jobs = ids.map((id) => {
-      const selected = pool.get(id);
-      if (!selected) throw serviceError("RESUME_OPTIMIZATION_JOB_NOT_OWNED", "目标岗位不存在或不属于当前搜索计划");
-      if (!isCompleteJob(selected)) throw serviceError("RESUME_OPTIMIZATION_JOB_INCOMPLETE", "目标岗位缺少完整 JD 或岗位分析");
-      return selected;
-    });
-    return jobs;
+  function ownedDirection(plan, value) {
+    const direction = String(value || "").trim();
+    const directions = Array.isArray(plan.plan?.directions)
+      ? plan.plan.directions.map((item) => String(item || "").trim()).filter(Boolean)
+      : [];
+    if (!direction || !directions.includes(direction)) {
+      throw serviceError("RESUME_OPTIMIZATION_DIRECTION_NOT_OWNED", "目标投递方向不属于当前搜索计划");
+    }
+    return direction;
   }
 
   function rowsForJobIds(ids) {
     if (!ids.length) return [];
     const placeholders = ids.map(() => "?").join(",");
-    return db.prepare(`SELECT id, title, company FROM jobs WHERE id IN (${placeholders})`).all(...ids);
+    const rows = new Map(db.prepare(`SELECT id, title, company FROM jobs WHERE id IN (${placeholders})`)
+      .all(...ids).map((row) => [Number(row.id), { ...row, id: Number(row.id) }]));
+    return ids.map((id) => rows.get(Number(id))).filter(Boolean);
   }
 }
 
