@@ -336,7 +336,7 @@ let server;
   assert.match(gatedPlanPage.body, /id="browser-readiness-status"/);
   assert.match(gatedPlanPage.body, /\/api\/browser-readiness/);
   assert.match(gatedPlanPage.body, /5000/);
-  assert.match(gatedPlanPage.body, /disabled[^>]*>执行一轮/);
+  assert.match(gatedPlanPage.body, /disabled[^>]*>开始一轮岗位发现/);
   assert.match(gatedPlanPage.body, /name="browserMode" value="edge"/);
   assert.doesNotMatch(gatedPlanPage.body, /value="portable"/);
   const inheritedPreview = await getJson(baseUrl, `/api/acquisition-preview?planId=${saved.planId}`);

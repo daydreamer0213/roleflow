@@ -100,3 +100,39 @@ h2{font-size:19px;font-weight:600}
   .app-workspace{padding:12px 16px 42px}
   .app-workspace>main{padding-top:12px}
 }
+
+/* Today: one clear daily action, then progress and cross-day feedback. */
+.today-priority{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:28px;margin-bottom:18px;padding:22px 24px;background:var(--rf-ink);border:0;border-left:5px solid var(--rf-orange);border-radius:var(--rf-radius);box-shadow:none}
+.today-priority h2{margin:0;color:#fff;font-size:24px}
+.today-priority .section-label{color:#bcd0ca}
+.today-priority .muted{max-width:620px;margin:7px 0 0;color:#d7e1de}
+.today-priority .button-row{justify-content:flex-end;margin:0}
+.today-priority .button.quiet{color:#fff;background:transparent;border-color:#6d7c77}
+.today-priority .workflow-budget{color:#bdcac6;text-align:right}
+.today-overview{display:grid;grid-template-columns:minmax(0,1.08fr) minmax(280px,.72fr);gap:28px;margin:22px 0 26px}
+.today-cycle,.today-feedback-summary{min-width:0;padding-top:15px;border-top:2px solid var(--rf-ink)}
+.today-section-head{display:flex;align-items:baseline;justify-content:space-between;gap:18px;margin-bottom:14px}
+.today-section-head h2,.today-feedback-summary h2{margin:0}
+.today-cycle .metric-grid{margin:0;background:var(--rf-rule);border:1px solid var(--rf-rule);border-radius:var(--rf-radius);box-shadow:none;overflow:hidden}
+.today-cycle .metric{padding:17px 16px;background:var(--rf-surface);border:0}
+.today-cycle .metric-value{font-size:25px}
+.today-cycle .metric-note{font-size:11px}
+.today-feedback-summary{display:flex;align-items:flex-start;flex-direction:column;border-top-color:var(--rf-teal)}
+.today-feedback-summary p:not(.section-label){max-width:340px;margin:9px 0 17px;color:var(--rf-ink-soft);line-height:1.6}
+.today-feedback-summary .button{margin-top:auto}
+.today-context{margin:0 0 18px;border-top:1px solid var(--rf-rule);border-bottom:1px solid var(--rf-rule)}
+.today-context>summary{display:flex;align-items:center;min-height:48px;color:var(--rf-ink-soft);font-size:13px;font-weight:600;cursor:pointer}
+.today-context>summary:hover{color:var(--rf-teal)}
+.today-context-grid{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(280px,.65fr);gap:18px;padding:0 0 18px}
+.today-context-grid>.aside,.today-context-grid .card{height:100%}
+@media(max-width:860px){
+  .today-priority,.today-overview,.today-context-grid{grid-template-columns:1fr}
+  .today-priority .button-row{justify-content:flex-start}
+  .today-priority .workflow-budget{text-align:left}
+}
+@media(max-width:620px){
+  .today-priority{padding:18px}
+  .today-priority .button-row,.today-priority .button-row>*{width:100%}
+  .today-section-head{align-items:flex-start;flex-direction:column}
+  .today-cycle .metric-grid{grid-template-columns:1fr}
+}

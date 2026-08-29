@@ -156,6 +156,11 @@ function assertRendererIsPureAndEscapesHtml() {
   assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/, "today page must prefer the local display name");
   assert.doesNotMatch(html, /<script>bad\(\)<\/script>/);
   assert.strictEqual((html.match(/data-today-primary="true"/g) || []).length, 1, "a standalone renderer must emit one primary CTA without a DB or browser");
+  assert.match(html, /class="[^"]*today-priority/);
+  assert.match(html, /class="[^"]*today-cycle/);
+  assert.match(html, /class="[^"]*today-feedback-summary/);
+  assert.match(html, /id="today-discovery"/);
+  assert.doesNotMatch(html, /不阻塞继续投递/);
   assert.strictEqual((html.match(/class="metric"/g) || []).length, 3, "first screen must keep only three result metrics");
   assert.doesNotMatch(html, /class="action-meta"/, "primary action must not repeat the same metrics");
   assert.doesNotMatch(html, /当前数据安全/, "no-blocker state must not render a reassurance card");
@@ -271,6 +276,10 @@ async function assertReadyTodayPage(baseUrl, saved, privateFileNameContacts) {
   }
   assert.match(page.body, /简历文件\.txt/);
   assert.match(page.body, /<h1[^>]*>今天先把高质量机会推进到人工确认。<\/h1>/);
+  assert.match(page.body, />今日工作台<\/p>/);
+  assert.match(page.body, /class="[^"]*today-priority/);
+  assert.match(page.body, /class="[^"]*today-cycle/);
+  assert.match(page.body, /class="[^"]*today-feedback-summary/);
   assert.match(page.body, /aria-current="page">今日任务<\/a>/);
   assert.match(page.body, /data-today-primary="true"[^>]*name="action"[^>]*value="start"/);
   assert.match(page.body, /name="planId" value="\d+"/);
@@ -362,6 +371,7 @@ async function assertActiveTodayPage(baseUrl, saved) {
   const page = await getText(baseUrl, `/plan?planId=${saved.planId}`);
   assert.strictEqual(page.status, 200);
   assert.match(page.body, /data-today-primary="true"[^>]*href="\/workflow\?runId=today-active-workflow"[^>]*>继续本轮/);
+  assert.match(page.body, /继续查看本轮进度和已完成岗位/);
   assert.doesNotMatch(page.body, /name="action" value="start"/);
   assert.strictEqual((page.body.match(/data-today-primary="true"/g) || []).length, 1);
   assert.match(page.body, /当前任务条件已锁定/);

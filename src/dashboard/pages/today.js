@@ -3,19 +3,16 @@ const { renderDashboardFrame } = require("../ui/shell");
 
 function renderTodayPage(vm) {
   const page = vm.page || {};
-  const plan = vm.form?.plan || {};
   return renderDashboardFrame({ currentPath: page.todayPath, todayPath: page.todayPath, planId: page.planId, stage: "今日任务", brandHref: page.todayPath, content: `<main id="main-content" class="today-main">
   <section class="page-heading" aria-labelledby="today-title"><p class="eyebrow">${escapeHtml(vm.heading?.eyebrow || "")}</p><h1 id="today-title">${escapeHtml(vm.heading?.title || "今日任务")}</h1><p class="lede">${escapeHtml(vm.heading?.lede || "")}</p><div class="heading-meta"><span>${escapeHtml(vm.heading?.meta?.[0] || "")}</span><span>${escapeHtml(vm.heading?.meta?.[1] || "")}</span><span class="status ${vm.heading?.status === "方案可用" ? "good" : "waiting"}">${escapeHtml(vm.heading?.status || "")}</span></div></section>
   ${renderPrimaryPanel(vm)}
-  ${renderMetrics(vm.metrics)}
   ${vm.confirmation ? `<p class="notice" role="status">${escapeHtml(vm.confirmation)}</p>` : ""}
-  <div class="today-grid">
-    <div class="stack">
-      ${(vm.blockers || []).length ? renderBlockers(vm.blockers) : ""}
-      ${renderPlanSummary(vm)}
-    </div>
-    <aside class="stack" aria-label="候选人摘要">${renderCandidateSummary(vm.profile || {})}</aside>
+  ${(vm.blockers || []).length ? renderBlockers(vm.blockers) : ""}
+  <div class="today-overview">
+    <section class="today-cycle" aria-labelledby="today-cycle-title"><div class="today-section-head"><div><p class="section-label">今日进度</p><h2 id="today-cycle-title">今日岗位</h2></div><a class="inline-link" href="/queue?planId=${escapeAttr(page.planId)}">查看岗位记录</a></div>${renderMetrics(vm.metrics)}</section>
+    <aside class="today-feedback-summary" aria-labelledby="today-feedback-title"><p class="section-label">跨天反馈</p><h2 id="today-feedback-title">本轮反馈</h2><p>查看达到观察期的岗位反馈，以及当前策略是否需要调整。</p><a class="button secondary" href="/funnel?planId=${escapeAttr(page.planId)}">查看求职体检</a></aside>
   </div>
+  <details class="today-context"><summary>求职方向与资料</summary><div class="today-context-grid"><div>${renderPlanSummary(vm)}</div><aside aria-label="候选人摘要">${renderCandidateSummary(vm.profile || {})}</aside></div></details>
   ${renderPlanSettings(vm)}
   ${renderAdvancedScan(vm)}
 </main><p class="footer-note">本页只展示本地保存的任务状态。扫描仍遵守固定标签页、随机等待、预算和风控即停；不会自动沟通或投递。</p>` }) + renderClientScripts(vm.run?.state, vm.primary?.type === "form", vm.runtime || {});
@@ -23,14 +20,14 @@ function renderTodayPage(vm) {
 
 function renderPrimaryPanel(vm) {
   const primary = vm.primary || {};
-  return `<section class="action-panel" aria-labelledby="next-action-title"><div><p class="section-label">现在做什么</p><h2 id="next-action-title">${escapeHtml(primary.status || "当前任务")}</h2><p class="muted">${escapeHtml(primary.detail || "")}</p></div><div class="button-row">${renderPrimaryAction(primary, vm.page || {}, vm.runtime || {})}<a class="button quiet" href="/queue?planId=${escapeAttr(vm.page?.planId)}">查看待处理岗位</a></div></section>`;
+  return `<section id="today-discovery" class="action-panel today-priority" aria-labelledby="next-action-title"><div><p class="section-label">下一步</p><h2 id="next-action-title">${escapeHtml(primary.status || "当前任务")}</h2><p class="muted">${escapeHtml(primary.detail || "")}</p></div><div class="button-row">${renderPrimaryAction(primary, vm.page || {}, vm.runtime || {})}<a class="button quiet" href="/queue?planId=${escapeAttr(vm.page?.planId)}">查看待处理岗位</a></div></section>`;
 }
 
 function renderPrimaryAction(primary, page, runtime) {
   if (primary.type === "link") return `<a class="button" data-today-primary="true" href="${escapeAttr(primary.href)}">${escapeHtml(primary.label)}</a>`;
   if (primary.type === "notice") return `<p class="primary-notice" role="status">${escapeHtml(primary.label)}</p>`;
   const browserLabel = browserAuthorityLabel(runtime);
-  return `<form class="workflow-start" method="post" action="/api/workflow-run"><input type="hidden" name="planId" value="${escapeAttr(page.planId)}">${browserInputs(runtime)}<button class="button" data-today-primary="true" name="action" value="start" data-browser-readiness-button data-browser-base-disabled="${runtime.workflowStartDisabled ? "true" : "false"}" disabled>${escapeHtml(primary.label || "执行一轮")}</button></form><div class="workflow-budget">当前浏览器：${escapeHtml(browserLabel)}</div><div id="browser-readiness-status" class="workflow-budget" role="status">正在检查${escapeHtml(browserLabel)}与固定 BOSS 页面状态…</div>`;
+  return `<form class="workflow-start" method="post" action="/api/workflow-run"><input type="hidden" name="planId" value="${escapeAttr(page.planId)}">${browserInputs(runtime)}<button class="button" data-today-primary="true" name="action" value="start" data-browser-readiness-button data-browser-base-disabled="${runtime.workflowStartDisabled ? "true" : "false"}" disabled>${escapeHtml(primary.label || "开始一轮岗位发现")}</button></form><div class="workflow-budget">当前浏览器：${escapeHtml(browserLabel)}</div><div id="browser-readiness-status" class="workflow-budget" role="status">正在检查${escapeHtml(browserLabel)}与固定 BOSS 页面状态…</div>`;
 }
 
 function renderMetrics(metrics) {

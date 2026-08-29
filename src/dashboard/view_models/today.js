@@ -47,7 +47,7 @@ function buildTodayViewModel(input = {}) {
   return {
     page: { title: "今日任务", profileId, planId, todayPath: `/plan?profileId=${profileId}&planId=${planId}` },
     heading: {
-      eyebrow: "01 / 准备与筛选",
+      eyebrow: "今日工作台",
       title: "今天先把高质量机会推进到人工确认。",
       lede: "RoleFlow 会保留完整 JD 与匹配证据；只有你确认清单后才会进入沟通。",
       meta: [`本地筛选方案 #${planId}`, plan.name || "未命名方案"],
@@ -119,12 +119,12 @@ function buildTodayViewModel(input = {}) {
 }
 
 function buildPrimaryAction({ activeRun, nextPlan, dependency, runtimeBlock, profileId, planId, startBlocked }) {
-  if (activeRun) return { type: "link", label: "继续本轮", href: `/workflow?runId=${encodeURIComponent(activeRun.id)}`, status: workflowStatusLabel(activeRun.status), detail: "本轮已经建立，继续在本轮执行页查看进度与恢复状态。" };
+  if (activeRun) return { type: "link", label: "继续本轮", href: `/workflow?runId=${encodeURIComponent(activeRun.id)}`, status: workflowStatusLabel(activeRun.status), detail: "继续查看本轮进度和已完成岗位。" };
   if (dependency.matchingCardRequired) return { type: "link", label: "确认匹配偏好卡", href: `/match-card?profileId=${profileId}${dependency.draftCardId ? `&cardId=${dependency.draftCardId}` : ""}`, status: "扫描前需要确认", detail: "确认当前草稿后，才会启用扫描和岗位匹配。" };
   if (dependency.stale) return { type: "link", label: "重新确认筛选条件", href: `/plan?profileId=${profileId}&planId=${planId}#plan-settings`, status: "方案需要重新确认", detail: "画像已更新；保存现有条件即可重新绑定，不会覆盖人工设置。" };
   if (runtimeBlock) return { type: "link", label: "查看恢复说明", href: "/diagnostics", status: "BOSS 安全暂停中", detail: `已采集的数据安全保留。${runtimeBlock.blockedUntil ? `恢复时间 ${runtimeBlock.blockedUntil}` : "请等待风控恢复。"}` };
   if (nextPlan?.errorCode) return { type: "notice", label: "今日任务暂不能继续", status: workflowBlockedMessage(nextPlan.errorCode, nextPlan), detail: workflowShortfallLabel(nextPlan.shortfallReason || nextPlan.errorCode) };
-  return { type: "form", label: "执行一轮", status: startBlocked ? "等待前置条件恢复" : "可以开始新一轮", detail: "使用已保存的采集方式、关键词和预算；不会自动发送消息或投递。", disabled: Boolean(startBlocked) };
+  return { type: "form", label: "开始一轮岗位发现", status: startBlocked ? "等待前置条件恢复" : "可以开始新一轮", detail: "使用已保存条件发现一批岗位。", disabled: Boolean(startBlocked) };
 }
 
 function buildBlockers({ dependency, runtimeBlock, validation, nextPlan, profileId }) {
