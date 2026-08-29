@@ -73,7 +73,7 @@ assert.equal(snapshot.rows[0].lastMessageId, "378917037748737");
 assert.equal(snapshot.rows[0].lastMessageDirection, "friend");
 assert.equal(snapshot.rows[0].lastMessageStatus, "unknown");
 assert.equal(snapshot.rows[0].identityVerified, true);
-assert.match(snapshot.rows[0].conversationKey, /^boss:/);
+assert.match(snapshot.rows[0].conversationKey, /^sha256:[a-f0-9]{64}$/);
 assert.equal(snapshot.rows[1].lastMessageDirection, "myself");
 assert.equal(snapshot.rows[1].lastMessageStatus, "delivered");
 assert.equal(snapshot.rows[2].lastMessageStatus, "read");
