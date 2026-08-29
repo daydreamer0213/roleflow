@@ -174,16 +174,22 @@ function ensureFunnelEntry(db, input = {}) {
     const card = optionalCard(db, input.cardId, { profileId, jobId });
     const planId = resolvePlanId(db, input.planId || card?.plan_id, profileId);
     const context = contactContext(db, { profileId, planId, jobId, startedAt });
+    const strategyRound = ensureActiveFunnelStrategyRound(db, {
+      profileId,
+      planId,
+      startedAt
+    });
     const result = db.prepare(`INSERT OR IGNORE INTO candidate_funnel_entries(
-      profile_id, job_id, card_id, cohort_id, plan_id, source_kind,
+      profile_id, job_id, card_id, cohort_id, plan_id, strategy_round_id, source_kind,
       started_at, mature_at, direction_key, decision_bucket,
       resume_version_id, greeting_key, created_at, updated_at
-    ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(
         profileId,
         jobId,
         card ? Number(card.id) : null,
         planId,
+        strategyRound.id,
         sourceKind,
         startedAt,
         feedbackMaturesAt(startedAt),
@@ -210,9 +216,31 @@ function getFunnelEntry(db, { profileId, jobId } = {}) {
     WHERE profile_id = ? AND job_id = ?`).get(profile, job));
 }
 
-function listFunnelEntries(db, { profileId, cohortId, unassignedOnly = false } = {}) {
+function listFunnelEntries(db, {
+  profileId,
+  planId,
+  strategyRoundId,
+  cohortId,
+  unassignedOnly = false
+} = {}) {
   const clauses = ["profile_id = ?"];
-  const params = [positiveInteger(profileId, "profileId")];
+  const profile = ownedProfile(db, profileId);
+  const params = [profile];
+  let plan = null;
+  if (planId !== undefined && planId !== null && planId !== "") {
+    plan = ownedPlan(db, { profileId: profile, planId });
+    clauses.push("plan_id = ?");
+    params.push(plan.id);
+  }
+  if (strategyRoundId !== undefined && strategyRoundId !== null && strategyRoundId !== "") {
+    if (!plan) throw new Error("planId is required with strategyRoundId");
+    const roundId = positiveInteger(strategyRoundId, "strategyRoundId");
+    if (!getFunnelStrategyRound(db, { profileId: profile, planId: plan.id, roundId })) {
+      throw storageError("FUNNEL_ROUND_NOT_OWNED", "strategy round does not belong to the profile and plan");
+    }
+    clauses.push("strategy_round_id = ?");
+    params.push(roundId);
+  }
   if (cohortId !== undefined && cohortId !== null && cohortId !== "") {
     clauses.push("cohort_id = ?");
     params.push(positiveInteger(cohortId, "cohortId"));
@@ -358,8 +386,12 @@ function optionalCard(db, cardId, { profileId, jobId }) {
 }
 
 function resolvePlanId(db, value, profileId) {
-  if (value === undefined || value === null || value === "") return null;
-  const planId = positiveInteger(value, "planId");
+  const fallback = value === undefined || value === null || value === ""
+    ? db.prepare(`SELECT id FROM search_plans
+      WHERE profile_id = ? AND is_active = 1
+      ORDER BY updated_at DESC, id DESC LIMIT 1`).get(profileId)
+    : null;
+  const planId = positiveInteger(fallback?.id || value, "planId");
   const plan = db.prepare("SELECT profile_id FROM search_plans WHERE id = ?").get(planId);
   if (!plan || Number(plan.profile_id) !== profileId) throw new Error("funnel plan does not belong to the profile");
   return planId;
@@ -406,6 +438,7 @@ function mapEntry(row) {
     cardId: Number(row.card_id || 0) || null,
     cohortId: Number(row.cohort_id || 0) || null,
     planId: Number(row.plan_id || 0) || null,
+    strategyRoundId: Number(row.strategy_round_id || 0) || null,
     sourceKind: row.source_kind,
     startedAt: row.started_at,
     matureAt: row.mature_at,

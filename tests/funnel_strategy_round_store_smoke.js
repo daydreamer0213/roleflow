@@ -29,6 +29,16 @@ try {
   assert.deepEqual(initial.changeKinds, ["initial"]);
   assert.deepEqual(initial.strategySnapshot.directions, ["AI 应用工程师"]);
 
+  const jobA = addJob(db, { profileId, planId, sourceId: "round-a" });
+  const entryA = storage.ensureFunnelEntry(db, {
+    profileId,
+    planId,
+    jobId: jobA,
+    sourceKind: "applied",
+    startedAt: "2026-08-20T03:00:00.000Z"
+  });
+  assert.equal(entryA.strategyRoundId, initial.id);
+
   const next = storage.startFunnelStrategyRound(db, {
     profileId,
     planId,
@@ -47,6 +57,24 @@ try {
     roundId: initial.id
   }).status, "closed");
 
+  const jobB = addJob(db, { profileId, planId, sourceId: "round-b" });
+  const entryB = storage.ensureFunnelEntry(db, {
+    profileId,
+    planId,
+    jobId: jobB,
+    sourceKind: "communication",
+    startedAt: "2026-08-29T02:30:00.000Z"
+  });
+  assert.equal(entryB.strategyRoundId, next.id);
+  assert.deepEqual(
+    storage.listFunnelEntries(db, { profileId, planId, strategyRoundId: initial.id }).map((entry) => entry.id),
+    [entryA.id]
+  );
+  assert.deepEqual(
+    storage.listFunnelEntries(db, { profileId, planId, strategyRoundId: next.id }).map((entry) => entry.id),
+    [entryB.id]
+  );
+
   const retried = storage.startFunnelStrategyRound(db, {
     profileId,
     planId,
@@ -58,6 +86,27 @@ try {
   });
   assert.equal(retried.id, next.id);
   assert.equal(storage.listFunnelStrategyRounds(db, { profileId, planId }).length, 2);
+
+  const repeatedEntryA = storage.ensureFunnelEntry(db, {
+    profileId,
+    planId,
+    jobId: jobA,
+    sourceKind: "reply_sent",
+    startedAt: "2026-08-29T04:00:00.000Z"
+  });
+  assert.equal(repeatedEntryA.strategyRoundId, initial.id, "later activity must not rebind the original job");
+  storage.recordCandidateJobEvent(db, {
+    profileId,
+    planId,
+    jobId: jobA,
+    eventType: "interview",
+    payload: { source: "late_reply" }
+  });
+  assert.equal(
+    storage.getFunnelEntry(db, { profileId, jobId: jobA }).strategyRoundId,
+    initial.id,
+    "late outcomes stay with the strategy round where contact began"
+  );
 
   assert.throws(() => storage.startFunnelStrategyRound(db, {
     profileId,
@@ -73,6 +122,20 @@ try {
   console.log("funnel_strategy_round_store_smoke: ok");
 } finally {
   db.close();
+}
+
+function addJob(db, { profileId, planId, sourceId }) {
+  const batchId = storage.createBatch(db, "boss", "AI 应用工程师", "round membership fixture", {
+    profileId,
+    searchPlanId: planId
+  });
+  return storage.upsertJob(db, {
+    source: "boss",
+    sourceId,
+    keyword: "AI 应用工程师",
+    title: `Job ${sourceId}`,
+    company: "Fixture Co"
+  }, batchId);
 }
 
 function verifyLegacyBackfill() {

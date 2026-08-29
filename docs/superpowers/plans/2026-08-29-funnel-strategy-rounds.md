@@ -215,7 +215,7 @@ git commit -m "feat: add funnel strategy rounds"
 - Consumes: `ensureActiveFunnelStrategyRound(db, { profileId, planId, startedAt })` from Task 1.
 - Produces: `ensureFunnelEntry` rows with a stable `strategyRoundId`; late events continue to project through the existing `listFunnelProgressEvents` path.
 
-- [ ] **Step 1: Add failing entry-membership cases**
+- [x] **Step 1: Add failing entry-membership cases**
 
 Extend the tests with this sequence:
 
@@ -240,7 +240,7 @@ assert.equal(storage.getFunnelEntry(db, { profileId, jobId: jobA }).strategyRoun
 
 Record a late reply for `jobA` after B starts and assert its entry remains in A.
 
-- [ ] **Step 2: Run the focused tests and verify failure**
+- [x] **Step 2: Run the focused tests and verify failure**
 
 ```powershell
 node tests/funnel_strategy_round_store_smoke.js
@@ -249,7 +249,7 @@ node tests/job_search_funnel_smoke.js
 
 Expected: the new `strategyRoundId` assertions fail.
 
-- [ ] **Step 3: Bind inside the existing entry transaction**
+- [x] **Step 3: Bind inside the existing entry transaction**
 
 In `ensureFunnelEntry`, require the resolved owned `planId` for new plan-scoped entries, call `ensureActiveFunnelStrategyRound` after resolving contact context, and insert `strategy_round_id` with the round ID. Preserve the existing `(profile_id, job_id)` idempotency: a repeated real action returns the original entry and never rebinds it to a newer round.
 
@@ -261,7 +261,7 @@ strategyRoundId: Number(row.strategy_round_id || 0) || null
 
 Add an optional `strategyRoundId` filter to `listFunnelEntries`; the filter must combine with `profileId` and `planId`, not replace ownership checks.
 
-- [ ] **Step 4: Run entry and maturity regression checks**
+- [x] **Step 4: Run entry and maturity regression checks**
 
 ```powershell
 node tests/funnel_strategy_round_store_smoke.js
@@ -272,7 +272,7 @@ node tests/funnel_message_observation_smoke.js
 
 Expected: all pass; the existing 48-hour/weekend calculations remain unchanged.
 
-- [ ] **Step 5: Commit immutable membership**
+- [x] **Step 5: Commit immutable membership**
 
 ```powershell
 git add src/storage/funnel_store.js tests/funnel_strategy_round_store_smoke.js tests/job_search_funnel_smoke.js
