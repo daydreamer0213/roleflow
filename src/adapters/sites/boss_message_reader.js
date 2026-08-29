@@ -11,6 +11,7 @@ const {
 
 const CHAT_PATH = "/web/geek/chat";
 const GUARDED_OPERATION = "__bossGuardedMessageConversationClick";
+const ALLOWED_OPERATIONS = new Set(["unread", "preview_changed", "durable_unresolved", "authorized_reply"]);
 const SELECTED_IDENTITY_ATTEMPTS = 3;
 const SELECTED_CONTENT_ATTEMPTS = 21;
 const SELECTED_CONTENT_INTERVAL_MS = 250;
@@ -158,11 +159,15 @@ function assertSafeSnapshot(snapshot) {
 }
 
 function buildGuardedConversationClickExpression(target) {
+  const requestedOperation = String(target?.operation || "unread");
+  if (!ALLOWED_OPERATIONS.has(requestedOperation)) {
+    throw codedError("BOSS_MESSAGE_OPERATION_INVALID", "message conversation operation is invalid");
+  }
   const expected = JSON.stringify({
     rowIndex: target.rowIndex,
     transientSignature: target.transientSignature,
     conversationKey: target.conversationKey,
-    operation: target.operation || "unread",
+    operation: requestedOperation,
     previewDigest: target.previewDigest || "",
     sourceJobId: target.sourceJobId || "",
     lastMessageId: target.lastMessageId || "",

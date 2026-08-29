@@ -622,6 +622,19 @@ function runGuardedExpression(expression, { innerText, unread = true, snapshotRe
   assert.strictEqual(provenanceBrowser.guardedDomClicks, 0);
   assert.strictEqual(provenanceBrowser.calls.filter(([name]) => name === "evalValue").length, 2);
 
+  const invalidOperationBrowser = fakeBrowser({ snapshots: [snapshot()] });
+  const invalidOperationReader = createBossMessageReader({ browser: invalidOperationBrowser, sleepFn: async () => {} });
+  const invalidOperationScan = await invalidOperationReader.scanConversationRows();
+  await assert.rejects(
+    () => invalidOperationReader.openQueuedConversation({
+      ...invalidOperationScan.rows[0],
+      tabId: invalidOperationScan.tabId,
+      operation: "untrusted_write"
+    }),
+    (error) => error.code === "BOSS_MESSAGE_OPERATION_INVALID"
+  );
+  assert.strictEqual(invalidOperationBrowser.guardedDomClicks, 0);
+
   console.log("boss_message_reader_smoke ok");
 })().catch((error) => {
   console.error(error.stack || error.message);
