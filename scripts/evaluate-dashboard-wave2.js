@@ -16,6 +16,9 @@ const PAGE_SPECS = Object.freeze([
   { id: "jobs-latest", family: "jobs", state: "latest-batch", primaryPolicy: "none-expected", primaryRationale: "Jobs filters and local record actions intentionally have no page-level primary.", interaction: "details-toggle", interactionPolicy: "exercised", path: ({ planId }) => `/jobs?planId=${planId}&batch=latest` },
   { id: "communication-review", family: "communication", state: "confirmed-offline", primaryPolicy: "required", primarySelector: "[data-page-primary]", interaction: "none", interactionPolicy: "safety-not-executed", path: ({ communicationBatchId }) => `/communication?batchId=${communicationBatchId}` },
   { id: "messages-unresolved", family: "messages", state: "inbound-opportunity", primaryPolicy: "required", primarySelector: "[data-page-primary]", interaction: "none", interactionPolicy: "safety-not-executed", path: ({ profileId }) => `/messages?profileId=${profileId}` },
+  { id: "funnel-current", family: "funnel", state: "current-round", primaryPolicy: "none-expected", primaryRationale: "The checkup presents evidence and an optional local round boundary, not a required page action.", interaction: "none", interactionPolicy: "safety-not-executed", path: ({ planId }) => `/funnel?planId=${planId}` },
+  { id: "resume-draft", family: "resumeOptimization", state: "editable-draft", primaryPolicy: "none-expected", primaryRationale: "Editing autosaves and the user may save or activate; neither action is forced as the page primary.", interaction: "none", interactionPolicy: "safety-not-executed", path: ({ planId, resumeDraftId }) => `/resume-optimization?planId=${planId}&draftId=${resumeDraftId}` },
+  { id: "interview-active", family: "interview", state: "active-question", primaryPolicy: "none-expected", primaryRationale: "The answer remains user-authored and is never submitted by acceptance.", interaction: "none", interactionPolicy: "safety-not-executed", path: ({ planId, interviewSessionId }) => `/interview?planId=${planId}&sessionId=${interviewSessionId}` },
   { id: "settings", family: "settings", state: "default", primaryPolicy: "none-expected", primaryRationale: "Saving settings can test a model connection and is deliberately not promoted or executed by acceptance.", interaction: "none", interactionPolicy: "safety-not-executed", path: () => "/settings" },
   { id: "onboarding-existing", family: "onboarding", state: "existing-profile", primaryPolicy: "required", primarySelector: "[data-page-primary]", interaction: "none", interactionPolicy: "safety-not-executed", path: () => "/onboarding" },
   { id: "match-card", family: "matchCard", state: "confirmed-profile", primaryPolicy: "none-expected", primaryRationale: "Matching-card edits are persisted only after explicit review and are not exercised by acceptance.", interaction: "none", interactionPolicy: "safety-not-executed", path: ({ profileId, matchCardId }) => `/match-card?profileId=${profileId}&cardId=${matchCardId}` },
@@ -51,7 +54,14 @@ async function main() {
   try {
     db = storage.openDb(dbPath);
     const fixture = seedFixture({ storage, matchingCardFromProfile, createCommunicationBatch, recordUnresolvedMessageDiscoveryItem, db });
-    server = createDashboardServer({ db, root: options.targetRoot, dbPath, forceMock: true, logger: quietLogger(), browserAuthority: { browserMode: "edge", cdpPort: null, profilePath: "" }, browserReadinessProbe: async () => ({ status: "ready", ready: true, message: "offline fixture ready", checkedAt: "2099-01-01T00:00:00.000Z" }) });
+    server = createDashboardServer({
+      db, root: options.targetRoot, dbPath, forceMock: true, logger: quietLogger(),
+      browserAuthority: { browserMode: "edge", cdpPort: null, profilePath: "" },
+      browserReadinessProbe: async () => ({ status: "ready", ready: true, message: "offline fixture ready", checkedAt: "2099-01-01T00:00:00.000Z" }),
+      funnelAnalysisService: { refresh: () => fixture.funnelDashboard },
+      resumeOptimizationService: { dashboard: () => fixture.resumeDashboard },
+      mockInterviewService: { dashboard: () => fixture.interviewDashboard }
+    });
     await listen(server);
     const baseUrl = `http://127.0.0.1:${server.address().port}`;
     browser = await chromium.launch({ channel: options.browserChannel, headless: true });
@@ -96,8 +106,40 @@ function seedFixture({ storage, matchingCardFromProfile, createCommunicationBatc
     observedAt: "2099-01-01T00:00:00.000Z",
     identity: { positionTitle: "数据产品经理", company: "主动邀请示例公司", salary: "18-25K", city: "上海" }
   });
-  return { profileId: saved.profileId, matchCardId: card.id, planId: saved.planId, workflowId: workflow.id, communicationBatchId: communication.id };
+  const resumeDraftId = 701;
+  const interviewSessionId = 801;
+  const evidenceCatalog = [
+    { id: "R1", text: "参与 Python RAG 项目的接口开发与问题排查。" },
+    { id: "J1", text: "岗位需要 Python、RAG 与跨团队协作。" }
+  ];
+  const funnelDashboard = {
+    policy: { preliminarySampleTarget: 30, comparableSampleTarget: 50, formalSampleTarget: 70 },
+    currentRound: { id: 601, sequenceNumber: 2, changeKinds: ["greeting"], changeNote: "缩短招呼语并突出相关项目", startedAt: "2099-01-01T00:00:00.000Z", thresholds: { preliminary: 30, comparable: 50, formal: 70 }, started: 38, mature: 35, waiting: 3, unknown: 0, strength: "preliminary", earlyPositive: { replied: 2, resumeRequested: 1, interviewInvited: 0 } },
+    headline: "初步观察：当前主要卡在招聘方已读后的回复。",
+    priorityCheck: "优先检查岗位匹配和开场表达。",
+    funnel: Object.fromEntries(["started", "read", "replied", "effectiveConversation", "resumeRequested", "interviewInvited", "interviewConfirmed"].map((key, index) => [key, funnelStage(Math.max(1, 35 - index * 5), 35, 0, 3)])),
+    comparisons: { direction: [], decisionBucket: [], resumeVersion: [] },
+    previousRound: null,
+    roundComparison: { status: "none" },
+    evidenceNotes: ["每个岗位至少经过 48 小时；跨周末顺延到周一。", "等待和未知状态不进入失败分母。"]
+  };
+  const resumeDashboard = {
+    profile: { id: saved.profileId }, plan: { id: saved.planId, name: "Dashboard acceptance plan" },
+    resumes: [{ id: 301, name: "基础简历", isActive: true }], directions: ["AI 应用工程师"],
+    jobs: [{ id: jobId, title: "Offline dashboard role", company: "Fixture Co" }], selectedJobs: [{ id: jobId, title: "Offline dashboard role", company: "Fixture Co" }],
+    selectedDraft: { id: resumeDraftId, sourceResumeVersionId: 301, targetDirection: "AI 应用工程师", status: "draft", draftFormat: "whole_draft", headline: "突出与目标岗位相关的真实项目经验", generatedText: "个人总结\n参与 Python RAG 项目的接口开发与问题排查。", finalText: "个人总结\n参与 Python RAG 项目的接口开发与问题排查。", modelIdentity: { provider: "mock", model: "offline" }, evidenceCatalog, changeLedger: [{ id: "S1", editingPrinciple: "jd_vocabulary", reason: "让岗位相关经验更容易被看见", originalText: "参与知识库项目", proposedText: "参与 Python RAG 项目的接口开发与问题排查", evidenceIds: ["R1", "J1"] }] },
+    drafts: []
+  };
+  const interviewDashboard = {
+    profile: { id: saved.profileId }, plan: { id: saved.planId, name: "Dashboard acceptance plan" },
+    resumes: [{ id: 301, name: "基础简历", isActive: true }], jobs: [{ id: jobId, title: "Offline dashboard role", company: "Fixture Co" }],
+    selectedSession: { id: interviewSessionId, resumeVersionId: 301, sessionKind: "resume_general", status: "active", settings: { type: "mixed", difficulty: "standard", plannedQuestions: 5 }, context: { sessionKind: "resume_general", resume: { name: "基础简历" }, resumeEvidenceCatalog: evidenceCatalog }, turns: [{ id: 901, turnNumber: 1, questionText: "请介绍你参与 RAG 项目时实际承担的工作。", questionFocus: "project", resumeEvidenceIds: ["R1"], answerText: "", retries: [] }] },
+    sessions: []
+  };
+  return { profileId: saved.profileId, matchCardId: card.id, planId: saved.planId, workflowId: workflow.id, communicationBatchId: communication.id, resumeDraftId, interviewSessionId, funnelDashboard, resumeDashboard, interviewDashboard };
 }
+
+function funnelStage(numerator, denominator, unknown, waiting) { return { numerator, denominator, unknown, waiting }; }
 
 async function auditPage({ browser, baseUrl, spec, fixture, viewport, outputDir, label, revision }) {
   const context = await browser.newContext({ viewport, reducedMotion: "reduce" });

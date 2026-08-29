@@ -67,7 +67,7 @@ html,body{background:var(--rf-canvas)}
 .nav-group{display:grid;gap:3px;margin:0 0 16px;padding:0}
 .nav-group-label{padding:0 9px 5px;color:var(--rf-ink-soft);font-size:9px;letter-spacing:.13em}
 .nav-group-items{display:grid;gap:3px}
-.app-sidebar .nav-item{display:flex;align-items:center;justify-content:flex-start;min-height:34px;padding:7px 9px;color:#4d5a56;border:0;border-radius:7px;font-size:12px;text-decoration:none}
+.app-sidebar .nav-item{display:flex;align-items:center;justify-content:flex-start;min-height:44px;padding:7px 9px;color:#4d5a56;border:0;border-radius:7px;font-size:12px;text-decoration:none}
 .app-sidebar .nav-item:hover{color:var(--rf-ink);background:rgba(255,255,255,.55);border:0}
 .app-sidebar .nav-item[aria-current=page]{color:var(--rf-ink);background:#fff;border:0;box-shadow:0 1px 2px rgba(23,36,33,.08)}
 .sidebar-utility{margin-top:auto;margin-bottom:0;padding-top:13px;border-top:1px solid var(--rf-rule)}
