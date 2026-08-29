@@ -1012,16 +1012,21 @@ CREATE TABLE IF NOT EXISTS resume_optimizations (
   source_resume_document_id INTEGER NOT NULL,
   source_content_hash TEXT NOT NULL,
   source_text TEXT NOT NULL,
+  target_direction TEXT NOT NULL DEFAULT '',
   target_job_ids_json TEXT NOT NULL DEFAULT '[]',
   context_hash TEXT NOT NULL,
   evidence_json TEXT NOT NULL DEFAULT '[]',
   headline TEXT NOT NULL DEFAULT '',
   suggestions_json TEXT NOT NULL DEFAULT '[]',
+  generated_text TEXT NOT NULL DEFAULT '',
   final_text TEXT NOT NULL DEFAULT '',
+  draft_format TEXT NOT NULL DEFAULT 'legacy_suggestions',
+  user_edited_at TEXT,
   status TEXT NOT NULL CHECK(status IN ('draft', 'activated')),
   result_resume_document_id INTEGER,
   result_resume_version_id INTEGER,
   model_identity_json TEXT NOT NULL DEFAULT '{}',
+  strategy_round_id INTEGER,
   activated_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -1029,7 +1034,8 @@ CREATE TABLE IF NOT EXISTS resume_optimizations (
   FOREIGN KEY(source_resume_version_id) REFERENCES candidate_resume_versions(id),
   FOREIGN KEY(source_resume_document_id) REFERENCES resume_documents(id),
   FOREIGN KEY(result_resume_document_id) REFERENCES resume_documents(id),
-  FOREIGN KEY(result_resume_version_id) REFERENCES candidate_resume_versions(id)
+  FOREIGN KEY(result_resume_version_id) REFERENCES candidate_resume_versions(id),
+  FOREIGN KEY(strategy_round_id) REFERENCES candidate_funnel_strategy_rounds(id)
 );
 CREATE INDEX IF NOT EXISTS idx_resume_optimizations_profile
   ON resume_optimizations(profile_id, status, updated_at DESC, id DESC);
@@ -1302,8 +1308,34 @@ const MIGRATIONS = [
     apply(db) {
       migrateFunnelStrategyRounds(db);
     }
+  },
+  {
+    version: 24,
+    name: "resume_optimization_whole_draft_v2",
+    apply(db) {
+      migrateResumeOptimizationWholeDraft(db);
+    }
   }
 ];
+
+function migrateResumeOptimizationWholeDraft(db) {
+  db.exec(RESUME_OPTIMIZATION_SCHEMA);
+  const columns = new Set(db.prepare("PRAGMA table_info(resume_optimizations)")
+    .all().map((column) => column.name));
+  const additions = [
+    ["target_direction", "TEXT NOT NULL DEFAULT ''"],
+    ["generated_text", "TEXT NOT NULL DEFAULT ''"],
+    ["draft_format", "TEXT NOT NULL DEFAULT 'legacy_suggestions'"],
+    ["user_edited_at", "TEXT"],
+    ["strategy_round_id", "INTEGER REFERENCES candidate_funnel_strategy_rounds(id)"]
+  ];
+  for (const [name, definition] of additions) {
+    if (!columns.has(name)) db.exec(`ALTER TABLE resume_optimizations ADD COLUMN ${name} ${definition}`);
+  }
+  db.exec(`UPDATE resume_optimizations
+    SET generated_text = final_text
+    WHERE status = 'activated' AND generated_text = '' AND final_text <> ''`);
+}
 
 function migrateFunnelStrategyRounds(db) {
   db.exec(JOB_SEARCH_FUNNEL_SCHEMA);

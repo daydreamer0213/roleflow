@@ -10,7 +10,8 @@ const {
   saveSearchPlan,
   saveProfileAnalysis,
   createBatch,
-  upsertJob
+  upsertJob,
+  getResumeOptimization
 } = require("../src/core/storage");
 const MATCHING_CARD_VERSION = 5;
 const DURABLE_WORKFLOW_VERSION = 6;
@@ -31,6 +32,7 @@ const MOCK_INTERVIEW_VERSION = 20;
 const MOCK_INTERVIEW_PLAN_BINDING_VERSION = 21;
 const MESSAGE_REPLY_SENDING_VERSION = 22;
 const FUNNEL_STRATEGY_ROUNDS_VERSION = 23;
+const RESUME_OPTIMIZATION_WHOLE_DRAFT_VERSION = 24;
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-migration-"));
 let db;
@@ -65,10 +67,11 @@ try {
       { version: MOCK_INTERVIEW_VERSION, name: "mock_interview_v1", backup_path: null },
       { version: MOCK_INTERVIEW_PLAN_BINDING_VERSION, name: "mock_interview_plan_binding_v2", backup_path: null },
       { version: MESSAGE_REPLY_SENDING_VERSION, name: "message_reply_sending_v1", backup_path: null },
-      { version: FUNNEL_STRATEGY_ROUNDS_VERSION, name: "funnel_strategy_rounds_v2", backup_path: null }
+      { version: FUNNEL_STRATEGY_ROUNDS_VERSION, name: "funnel_strategy_rounds_v2", backup_path: null },
+      { version: RESUME_OPTIMIZATION_WHOLE_DRAFT_VERSION, name: "resume_optimization_whole_draft_v2", backup_path: null }
     ]
   );
-  assert.strictEqual(freshMigrations[freshMigrations.length - 1].name, "funnel_strategy_rounds_v2");
+  assert.strictEqual(freshMigrations[freshMigrations.length - 1].name, "resume_optimization_whole_draft_v2");
   assert.strictEqual(freshMigrations[freshMigrations.length - 1].version, SCHEMA_VERSION);
   assert(db.prepare("PRAGMA table_info(communication_batches)").all()
     .some((column) => column.name === "runtime_json"));
@@ -143,6 +146,10 @@ try {
     1,
     "resume_optimizations must exist after stage-three migration"
   );
+  for (const column of ["target_direction", "generated_text", "draft_format", "user_edited_at", "strategy_round_id"]) {
+    assert(db.prepare("PRAGMA table_info(resume_optimizations)").all()
+      .some((item) => item.name === column), `resume_optimizations must include ${column}`);
+  }
   for (const table of ["mock_interview_sessions", "mock_interview_turns", "mock_interview_retries"]) {
     assert.strictEqual(
       db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name = ?").get(table).n,
@@ -203,7 +210,7 @@ try {
   assert(SCHEMA_VERSION >= 3);
   assert.strictEqual(SHARED_BOSS_PACING_VERSION, 16);
   assert.strictEqual(MESSAGE_REPLY_LEARNING_VERSION, 17);
-  assert.strictEqual(SCHEMA_VERSION, FUNNEL_STRATEGY_ROUNDS_VERSION);
+  assert.strictEqual(SCHEMA_VERSION, RESUME_OPTIMIZATION_WHOLE_DRAFT_VERSION);
   assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
   const planNow = "2026-08-16T00:00:00.000Z";
   const planProfileId = Number(db.prepare(`INSERT INTO candidate_profiles(
@@ -245,6 +252,61 @@ try {
   db.close();
   assert.strictEqual(fs.existsSync(path.join(root, "backups")), false, "new databases must not create upgrade backups");
 
+  const resumeV23Path = path.join(root, "resume-optimization", "v23.sqlite");
+  fs.mkdirSync(path.dirname(resumeV23Path), { recursive: true });
+  db = new DatabaseSync(resumeV23Path);
+  db.exec(`
+    CREATE TABLE schema_migrations (
+      version INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      applied_at TEXT NOT NULL,
+      backup_path TEXT
+    );
+    CREATE TABLE resume_optimizations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      profile_id INTEGER NOT NULL,
+      source_resume_version_id INTEGER NOT NULL,
+      source_resume_document_id INTEGER NOT NULL,
+      source_content_hash TEXT NOT NULL,
+      source_text TEXT NOT NULL,
+      target_job_ids_json TEXT NOT NULL DEFAULT '[]',
+      context_hash TEXT NOT NULL,
+      evidence_json TEXT NOT NULL DEFAULT '[]',
+      headline TEXT NOT NULL DEFAULT '',
+      suggestions_json TEXT NOT NULL DEFAULT '[]',
+      final_text TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL CHECK(status IN ('draft', 'activated')),
+      result_resume_document_id INTEGER,
+      result_resume_version_id INTEGER,
+      model_identity_json TEXT NOT NULL DEFAULT '{}',
+      activated_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    INSERT INTO resume_optimizations(
+      profile_id, source_resume_version_id, source_resume_document_id,
+      source_content_hash, source_text, target_job_ids_json, context_hash,
+      evidence_json, headline, suggestions_json, final_text, status,
+      model_identity_json, activated_at, created_at, updated_at
+    ) VALUES (
+      1, 2, 3, 'legacy-hash', '旧源简历', '[7]', 'legacy-context',
+      '[{"id":"R1","kind":"resume","text":"旧源简历"}]', '旧建议',
+      '[{"id":"S1","decision":"accepted"}]', '旧最终简历', 'activated',
+      '{}', '2026-08-28T10:00:00.000Z', '2026-08-28T09:00:00.000Z', '2026-08-28T10:00:00.000Z'
+    );
+    PRAGMA user_version = ${FUNNEL_STRATEGY_ROUNDS_VERSION};
+  `);
+  db.close();
+  db = openDb(resumeV23Path);
+  const migratedResume = getResumeOptimization(db, { profileId: 1, optimizationId: 1 });
+  assert.strictEqual(migratedResume.draftFormat, "legacy_suggestions");
+  assert.strictEqual(migratedResume.generatedText, "旧最终简历");
+  assert.strictEqual(migratedResume.finalText, "旧最终简历");
+  assert.deepStrictEqual(migratedResume.changeLedger, [{ id: "S1", decision: "accepted" }]);
+  assert.deepStrictEqual(migratedResume.suggestions, migratedResume.changeLedger);
+  assert.strictEqual(migratedResume.sourceText, "旧源简历");
+  db.close();
+
   const mockInterviewV19Path = path.join(root, "mock-interview", "v19.sqlite");
   db = openDb(mockInterviewV19Path);
   const mockInterviewMigrationNow = "2026-08-29T00:00:00.000Z";
@@ -261,7 +323,7 @@ try {
   `);
   db.close();
   db = openDb(mockInterviewV19Path);
-  assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, FUNNEL_STRATEGY_ROUNDS_VERSION);
+  assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, RESUME_OPTIMIZATION_WHOLE_DRAFT_VERSION);
   assert.strictEqual(
     db.prepare("SELECT display_name FROM candidate_profiles WHERE id = ?").get(preservedProfileId).display_name,
     "Mock interview v19 migration",
@@ -376,7 +438,7 @@ try {
   db.close();
 
   db = openDb(mockInterviewV20Path);
-  assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, FUNNEL_STRATEGY_ROUNDS_VERSION);
+  assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, RESUME_OPTIMIZATION_WHOLE_DRAFT_VERSION);
   assert.strictEqual(
     db.prepare("SELECT plan_id FROM mock_interview_sessions WHERE id = ?").get(uniqueSessionId).plan_id,
     v20Owner.planId,
@@ -555,7 +617,8 @@ try {
       { version: MOCK_INTERVIEW_VERSION, name: "mock_interview_v1" },
       { version: MOCK_INTERVIEW_PLAN_BINDING_VERSION, name: "mock_interview_plan_binding_v2" },
       { version: MESSAGE_REPLY_SENDING_VERSION, name: "message_reply_sending_v1" },
-      { version: FUNNEL_STRATEGY_ROUNDS_VERSION, name: "funnel_strategy_rounds_v2" }
+      { version: FUNNEL_STRATEGY_ROUNDS_VERSION, name: "funnel_strategy_rounds_v2" },
+      { version: RESUME_OPTIMIZATION_WHOLE_DRAFT_VERSION, name: "resume_optimization_whole_draft_v2" }
     ]
   );
   assert.strictEqual(db.prepare("SELECT source FROM keyword_sources WHERE keyword = 'v1-preserved'").get().source, "migration-smoke");

@@ -23,6 +23,17 @@ function jobIds(value) {
   return ids;
 }
 
+function boundedText(value, maxLength, label) {
+  const text = String(value ?? "");
+  if (!text.trim()) throw new Error(`${label}不能为空`);
+  if (text.length > maxLength) throw new Error(`${label}过长`);
+  return text;
+}
+
+function comparableText(value) {
+  return String(value ?? "").replace(/\r\n/g, "\n").trim();
+}
+
 function optimizationRow(row) {
   if (!row) return null;
   return {
@@ -32,16 +43,22 @@ function optimizationRow(row) {
     sourceResumeDocumentId: Number(row.source_resume_document_id),
     sourceContentHash: row.source_content_hash,
     sourceText: row.source_text,
+    targetDirection: row.target_direction || "",
     targetJobIds: parseJson(row.target_job_ids_json, []),
     contextHash: row.context_hash,
     evidenceCatalog: parseJson(row.evidence_json, []),
     headline: row.headline || "",
+    changeLedger: parseJson(row.suggestions_json, []),
     suggestions: parseJson(row.suggestions_json, []),
+    generatedText: row.generated_text || "",
     finalText: row.final_text || "",
+    draftFormat: row.draft_format || "legacy_suggestions",
+    userEditedAt: row.user_edited_at || null,
     status: row.status,
     resultResumeDocumentId: row.result_resume_document_id == null ? null : Number(row.result_resume_document_id),
     resultResumeVersionId: row.result_resume_version_id == null ? null : Number(row.result_resume_version_id),
     modelIdentity: parseJson(row.model_identity_json, {}),
+    strategyRoundId: row.strategy_round_id == null ? null : Number(row.strategy_round_id),
     activatedAt: row.activated_at || null,
     createdAt: row.created_at,
     updatedAt: row.updated_at
@@ -58,6 +75,8 @@ function createResumeOptimization(db, input = {}) {
   if (!source) throw storageError("RESUME_OPTIMIZATION_SOURCE_NOT_FOUND", "源简历不存在或不属于当前候选人");
 
   const targetJobIds = jobIds(input.targetJobIds);
+  const targetDirection = boundedText(input.targetDirection, 160, "目标投递方向").trim();
+  const generatedText = boundedText(input.generatedText, 200_000, "完整简历草稿");
   const evidenceCatalog = Array.isArray(input.evidenceCatalog) ? input.evidenceCatalog : [];
   const suggestions = Array.isArray(input.suggestions) ? input.suggestions : [];
   const sourceText = String(source.resume_text || "");
@@ -67,27 +86,31 @@ function createResumeOptimization(db, input = {}) {
     profileId,
     sourceResumeVersionId,
     sourceContentHash,
+    targetDirection,
     targetJobIds,
     evidenceCatalog
   }));
   const now = nowIso();
   const result = db.prepare(`INSERT INTO resume_optimizations(
     profile_id, source_resume_version_id, source_resume_document_id,
-    source_content_hash, source_text, target_job_ids_json, context_hash,
-    evidence_json, headline, suggestions_json, final_text, status,
+    source_content_hash, source_text, target_direction, target_job_ids_json, context_hash,
+    evidence_json, headline, suggestions_json, generated_text, final_text, draft_format, status,
     result_resume_document_id, result_resume_version_id, model_identity_json,
-    activated_at, created_at, updated_at
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 'draft', NULL, NULL, ?, NULL, ?, ?)`).run(
+    strategy_round_id, activated_at, created_at, updated_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'whole_draft', 'draft', NULL, NULL, ?, NULL, NULL, ?, ?)`).run(
     profileId,
     sourceResumeVersionId,
     Number(source.resume_document_id),
     sourceContentHash,
     sourceText,
+    targetDirection,
     JSON.stringify(targetJobIds),
     contextHash,
     JSON.stringify(evidenceCatalog),
     String(input.headline || "").trim().slice(0, 300),
     JSON.stringify(suggestions),
+    generatedText,
+    generatedText,
     JSON.stringify(input.modelIdentity || {}),
     now,
     now
@@ -112,20 +135,20 @@ function listResumeOptimizations(db, profileId, limit = 30) {
 function saveResumeOptimizationDraft(db, input = {}) {
   const profileId = positiveId(input.profileId, "profileId");
   const optimizationId = positiveId(input.optimizationId, "optimizationId");
-  if (!Array.isArray(input.suggestions)) throw new Error("修改建议格式无效");
-  const finalText = String(input.finalText || "");
-  if (!finalText.trim()) throw new Error("最终简历文字不能为空");
+  const finalText = boundedText(input.finalText, 200_000, "最终简历文字");
   return immediateTransaction(db, () => {
-    const existing = db.prepare("SELECT status FROM resume_optimizations WHERE id = ? AND profile_id = ?")
+    const existing = db.prepare("SELECT status, generated_text FROM resume_optimizations WHERE id = ? AND profile_id = ?")
       .get(optimizationId, profileId);
     if (!existing) throw storageError("RESUME_OPTIMIZATION_NOT_FOUND", "定向简历草稿不存在");
     if (existing.status !== "draft") throw storageError("RESUME_OPTIMIZATION_CLOSED", "已启用的定向简历不能继续保存");
+    const updatedAt = String(input.updatedAt || nowIso());
+    const userEditedAt = comparableText(finalText) === comparableText(existing.generated_text) ? null : updatedAt;
     db.prepare(`UPDATE resume_optimizations
-      SET suggestions_json = ?, final_text = ?, updated_at = ?
+      SET final_text = ?, user_edited_at = ?, updated_at = ?
       WHERE id = ? AND profile_id = ? AND status = 'draft'`).run(
-      JSON.stringify(input.suggestions),
       finalText,
-      nowIso(),
+      userEditedAt,
+      updatedAt,
       optimizationId,
       profileId
     );
@@ -136,19 +159,36 @@ function saveResumeOptimizationDraft(db, input = {}) {
 function activateResumeOptimization(db, input = {}) {
   const profileId = positiveId(input.profileId, "profileId");
   const optimizationId = positiveId(input.optimizationId, "optimizationId");
+  const requestedFinalText = boundedText(input.finalText, 200_000, "最终简历文字");
   return immediateTransaction(db, () => {
     const row = db.prepare("SELECT * FROM resume_optimizations WHERE id = ? AND profile_id = ?")
       .get(optimizationId, profileId);
     if (!row) throw storageError("RESUME_OPTIMIZATION_NOT_FOUND", "定向简历草稿不存在");
-    if (row.status === "activated") return optimizationRow(row);
+    if (row.status === "activated") {
+      if (row.final_text !== requestedFinalText) {
+        throw storageError("RESUME_OPTIMIZATION_CLOSED", "已启用的定向简历不能再修改");
+      }
+      return optimizationRow(row);
+    }
     if (row.status !== "draft") throw storageError("RESUME_OPTIMIZATION_CLOSED", "当前定向简历不能启用");
-    const finalText = String(row.final_text || "");
-    if (!finalText.trim()) throw new Error("请先保存最终简历文字");
+    const finalText = requestedFinalText;
 
     const sourceVersion = db.prepare("SELECT * FROM candidate_resume_versions WHERE id = ? AND profile_id = ?")
       .get(Number(row.source_resume_version_id), profileId);
     if (!sourceVersion) throw storageError("RESUME_OPTIMIZATION_SOURCE_NOT_FOUND", "冻结的源简历版本不存在");
     const now = nowIso();
+    const userEditedAt = comparableText(finalText) === comparableText(row.generated_text)
+      ? null
+      : (row.user_edited_at || now);
+    db.prepare(`UPDATE resume_optimizations
+      SET final_text = ?, user_edited_at = ?, updated_at = ?
+      WHERE id = ? AND profile_id = ? AND status = 'draft'`).run(
+      finalText,
+      userEditedAt,
+      now,
+      optimizationId,
+      profileId
+    );
     const documentId = Number(db.prepare(`INSERT INTO resume_documents(
       profile_id, original_file_name, format, content_hash, resume_text,
       text_truncated, diagnostics_json, stored_file_path, created_at
