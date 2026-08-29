@@ -38,23 +38,28 @@ const logger = {
     sourceResumeDocumentId: owner.resumeDocumentId,
     sourceContentHash: "dashboard-resume-source",
     sourceText: "个人总结\n参与知识库开发",
+    targetDirection: "AI 应用工程师",
     targetJobIds: [71],
     headline: "突出 <目标> 岗位相关经验",
     evidenceCatalog: [
       { id: "R1", kind: "resume", text: "参与知识库开发" },
       { id: "J1", kind: "job", text: "需要 Node.js <script>alert(1)</script>" }
     ],
-    suggestions: [{
+    changeLedger: [{
       id: "S1",
       operation: "replace",
       originalText: "参与知识库开发",
       proposedText: "参与 Node.js <知识库> 开发",
       reason: "让相关技术更清楚",
       evidenceIds: ["R1", "J1"],
-      decision: "pending",
+      editingPrinciple: "jd_vocabulary",
+      decision: "accepted",
       userText: ""
     }],
-    finalText: "个人总结\n参与知识库开发",
+    generatedText: "个人总结\n参与 Node.js <知识库> 开发",
+    finalText: "个人总结\n参与 Node.js <知识库> 开发\n用户已校对",
+    draftFormat: "whole_draft",
+    userEditedAt: "2026-08-29T04:05:00.000Z",
     status: "draft",
     modelIdentity: { provider: "mock", model: "offline" },
     createdAt: "2026-08-29T04:00:00.000Z",
@@ -65,9 +70,11 @@ const logger = {
       calls.dashboard.push(input);
       return {
         profile: { id: owner.profileId, displayName: "页面候选人" },
-        plan: { id: owner.planId, profileId: owner.profileId, name: "页面测试方案" },
+        plan: { id: owner.planId, profileId: owner.profileId, name: "页面测试方案", plan: { directions: ["AI 应用工程师"] } },
         resumes: [{ id: owner.resumeVersionId, name: "基础简历", isActive: true, resumeTextExcerpt: "个人总结\n参与知识库开发" }],
         jobs: [{ id: 71, title: "AI <应用> 工程师", company: "示例科技", description: "完整 JD", analysis: { semanticStatus: "complete" } }],
+        directions: ["AI 应用工程师"],
+        selectedJobs: [{ id: 71, title: "AI <应用> 工程师", company: "示例科技" }],
         drafts: [selectedDraft],
         selectedDraft,
         funnelDiagnosis: { strength: "facts", headline: "当前仅展示事实" }
@@ -78,8 +85,9 @@ const logger = {
       return selectedDraft;
     },
     getDraft() { return selectedDraft; },
-    saveDraft(input) {
+    async saveDraft(input) {
       calls.save.push(input);
+      if (saveGate) await saveGate;
       return { ...selectedDraft, finalText: "个人总结\n参与 Node.js 知识库开发" };
     },
     activateDraft(input) {
@@ -87,6 +95,8 @@ const logger = {
       return { ...selectedDraft, status: "activated", resultResumeVersionId: 88 };
     }
   };
+  let releaseSave;
+  let saveGate = null;
   const server = createDashboardServer({
     db,
     forceMock: true,
@@ -103,15 +113,19 @@ const logger = {
     assert.match(page.body, /aria-current="page">定向简历<\/a>/);
     assert.deepEqual(calls.dashboard, [{ profileId: owner.profileId, planId: owner.planId, draftId: 41 }]);
     assert.match(page.body, /基础简历/);
+    assert.match(page.body, /目标投递方向/);
+    assert.match(page.body, /本次参考岗位/);
+    assert.match(page.body, /完整简历草稿/);
+    assert.match(page.body, /name="finalText"/);
+    assert.match(page.body, /用户已修改/);
+    assert.match(page.body, /修改了什么/);
+    assert.match(page.body, /岗位用词对齐/);
     assert.match(page.body, /AI &lt;应用&gt; 工程师/);
     assert.doesNotMatch(page.body, /AI <应用> 工程师/);
     assert.match(page.body, /突出 &lt;目标&gt; 岗位相关经验/);
     assert.match(page.body, /参与 Node\.js &lt;知识库&gt; 开发/);
     assert.doesNotMatch(page.body, /<script>alert\(1\)<\/script>/);
-    assert.match(page.body, /name="decision_S1" value="accepted"/);
-    assert.match(page.body, /name="decision_S1" value="edited"/);
-    assert.match(page.body, /name="decision_S1" value="ignored"/);
-    assert.match(page.body, /name="userText_S1"/);
+    assert.doesNotMatch(page.body, /decision_S1|userText_S1|接受建议|忽略建议/);
     assert.match(page.body, /复制当前全文/);
     assert.match(page.body, /启用为新版本/);
     assert.doesNotMatch(page.body, /确认启用|二次确认/);
@@ -121,7 +135,7 @@ const logger = {
       body: new URLSearchParams([
         ["planId", String(owner.planId)],
         ["sourceResumeVersionId", String(owner.resumeVersionId)],
-        ["jobIds", "71"]
+        ["targetDirection", "AI 应用工程师"]
       ]).toString()
     });
     assert.equal(create.status, 303);
@@ -130,29 +144,42 @@ const logger = {
       profileId: owner.profileId,
       planId: owner.planId,
       sourceResumeVersionId: owner.resumeVersionId,
-      jobIds: [71]
+      targetDirection: "AI 应用工程师"
     }]);
 
-    const save = await request(baseUrl, "/api/resume-optimization/save", {
+    saveGate = new Promise((resolve) => { releaseSave = resolve; });
+    const savePromise = request(baseUrl, "/api/resume-optimization/save", {
+      method: "POST",
+      contentType: "application/json",
+      body: JSON.stringify({ planId: owner.planId, draftId: 41, finalText: "自动保存中的旧文字" })
+    });
+    await waitFor(() => calls.save.length === 1);
+
+    const activate = await request(baseUrl, "/api/resume-optimization/activate", {
       method: "POST",
       body: new URLSearchParams({
         planId: String(owner.planId),
         draftId: "41",
-        decision_S1: "edited",
-        userText_S1: "参与 Node.js 知识库开发"
+        finalText: "点击启用时更新的文字"
       }).toString()
-    });
-    assert.equal(save.status, 303);
-    assert.equal(calls.save.length, 1);
-    assert.deepEqual(calls.save[0].decisions, { S1: { decision: "edited", userText: "参与 Node.js 知识库开发" } });
-
-    const activate = await request(baseUrl, "/api/resume-optimization/activate", {
-      method: "POST",
-      body: new URLSearchParams({ planId: String(owner.planId), draftId: "41" }).toString()
     });
     assert.equal(activate.status, 303);
     assert.equal(calls.activate.length, 1, "activation must call the service exactly once without an intermediate confirmation page");
-    assert.deepEqual(calls.activate[0], { profileId: owner.profileId, draftId: 41 });
+    assert.deepEqual(calls.activate[0], {
+      profileId: owner.profileId,
+      planId: owner.planId,
+      draftId: 41,
+      finalText: "点击启用时更新的文字"
+    });
+    releaseSave();
+    const save = await savePromise;
+    assert.equal(save.status, 200);
+    assert.deepEqual(JSON.parse(save.body), { ok: true });
+    assert.deepEqual(calls.save[0], {
+      profileId: owner.profileId,
+      draftId: 41,
+      finalText: "自动保存中的旧文字"
+    });
 
     console.log("dashboard_resume_optimization_smoke ok");
   } finally {
@@ -178,7 +205,7 @@ function close(server) {
 async function request(baseUrl, pathname, options = {}) {
   const response = await fetch(`${baseUrl}${pathname}`, {
     method: options.method || "GET",
-    headers: options.method === "POST" ? { "content-type": "application/x-www-form-urlencoded" } : undefined,
+    headers: options.method === "POST" ? { "content-type": options.contentType || "application/x-www-form-urlencoded" } : undefined,
     body: options.body,
     redirect: "manual"
   });
@@ -187,4 +214,12 @@ async function request(baseUrl, pathname, options = {}) {
     headers: Object.fromEntries(response.headers.entries()),
     body: await response.text()
   };
+}
+
+async function waitFor(predicate) {
+  const deadline = Date.now() + 2_000;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error("timed out waiting for request");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 }

@@ -5366,22 +5366,26 @@ async function handleResumeOptimizationCreate(req, res, { db, resumeOptimization
     profileId: plan.profileId,
     planId: plan.id,
     sourceResumeVersionId: Number(params.sourceResumeVersionId),
-    jobIds: arrayValue(params.jobIds).map(Number)
+    targetDirection: String(params.targetDirection || "").trim()
   });
   redirect(res, `/resume-optimization?planId=${encodeURIComponent(plan.id)}&draftId=${encodeURIComponent(draft.id)}`);
 }
 
 async function handleResumeOptimizationSave(req, res, { db, resumeOptimization }) {
-  const params = parseBody(await readBody(req), req.headers["content-type"] || "");
+  const contentType = req.headers["content-type"] || "";
+  const params = parseBody(await readBody(req), contentType);
   const plan = requiredResumeOptimizationPlan(db, params.planId);
   const draftId = Number(params.draftId);
   const draft = resumeOptimization.getDraft({ profileId: plan.profileId, draftId });
   if (!draft) throw appError("RESUME_OPTIMIZATION_NOT_FOUND", "定向简历草稿不存在。", { statusCode: 404 });
-  const decisions = Object.fromEntries((draft.suggestions || []).map((suggestion) => [suggestion.id, {
-    decision: params[`decision_${suggestion.id}`] || suggestion.decision || "pending",
-    userText: params[`userText_${suggestion.id}`] || ""
-  }]));
-  resumeOptimization.saveDraft({ profileId: plan.profileId, draftId, decisions });
+  await Promise.resolve(resumeOptimization.saveDraft({
+    profileId: plan.profileId,
+    draftId,
+    finalText: String(params.finalText || "")
+  }));
+  if (contentType.includes("application/json") || String(req.headers.accept || "").includes("application/json")) {
+    return sendJson(res, 200, { ok: true });
+  }
   redirect(res, `/resume-optimization?planId=${encodeURIComponent(plan.id)}&draftId=${encodeURIComponent(draftId)}`);
 }
 
@@ -5389,7 +5393,12 @@ async function handleResumeOptimizationActivate(req, res, { db, resumeOptimizati
   const params = parseBody(await readBody(req), req.headers["content-type"] || "");
   const plan = requiredResumeOptimizationPlan(db, params.planId);
   const draftId = Number(params.draftId);
-  resumeOptimization.activateDraft({ profileId: plan.profileId, draftId });
+  await Promise.resolve(resumeOptimization.activateDraft({
+    profileId: plan.profileId,
+    planId: plan.id,
+    draftId,
+    finalText: String(params.finalText || "")
+  }));
   redirect(res, `/resume-optimization?planId=${encodeURIComponent(plan.id)}&draftId=${encodeURIComponent(draftId)}`);
 }
 
