@@ -82,12 +82,13 @@ async function runBossMessageDiscovery({
   if (!scan || !Array.isArray(scan.rows)) {
     return emitStopped("BOSS_MESSAGE_QUEUE_INVALID", 0, [], logger, onStatus, retained);
   }
-  recordFunnelRowObservations(db, {
+  const observationCounts = recordFunnelRowObservations(db, {
     profileId,
     platform: "boss",
     rows: scan.rows,
     observedAt: now()
   });
+  const counters = visibleCounters(scan.rows, observationCounts.unbound);
   const baselines = new Map(listPreviewStates(db, { profileId })
     .map((state) => [state.conversationKey, state]));
   const unresolvedByConversation = new Map(listUnresolvedMessageDiscoveryItems(db, { profileId })
@@ -108,12 +109,12 @@ async function runBossMessageDiscovery({
   let results = [];
   let processed = 0;
   let openedCount = 0;
-  emitStatus(safeStatus("running", { queued: queue.length, unresolved: retained.count, reasonCode: retained.reasonCode }), logger, onStatus);
+  emitStatus(safeStatus("running", { queued: queue.length, unresolved: retained.count, reasonCode: retained.reasonCode, counters }), logger, onStatus);
   for (let queueIndex = 0; queueIndex < queue.length; queueIndex += 1) {
     const target = queue[queueIndex];
     throwIfAborted(signal);
     if (target.previewKind === "unsupported") {
-      return emitStopped("BOSS_MESSAGE_CONTENT_UNSUPPORTED", queue.length, results, logger, onStatus, retained, processed);
+      return emitStopped("BOSS_MESSAGE_CONTENT_UNSUPPORTED", queue.length, results, logger, onStatus, retained, processed, counters);
     }
     let selected;
     try {
@@ -121,7 +122,7 @@ async function runBossMessageDiscovery({
       selected = await reader.openQueuedConversation(target, signal);
     } catch (error) {
       if (shouldInterrupt(error, signal)) throw error;
-      return emitStopped(errorCode(error), queue.length, results, logger, onStatus, retained, processed);
+      return emitStopped(errorCode(error), queue.length, results, logger, onStatus, retained, processed, counters);
     }
     if (selected?.skipped) {
       await paceBeforeNext({
@@ -182,10 +183,11 @@ async function runBossMessageDiscovery({
         processed,
         unresolved: retained.count,
         reasonCode: retained.reasonCode,
-        results
+        results,
+        counters
       }), logger, onStatus);
       if (contextStopCode) {
-        return emitStopped(contextStopCode, queue.length, results, logger, onStatus, retained, processed);
+        return emitStopped(contextStopCode, queue.length, results, logger, onStatus, retained, processed, counters);
       }
       await paceBeforeNext({
         queueIndex,
@@ -230,7 +232,7 @@ async function runBossMessageDiscovery({
         });
         continue;
       }
-      return emitStopped(incoming.reasonCode, queue.length, results, logger, onStatus, retained, processed);
+      return emitStopped(incoming.reasonCode, queue.length, results, logger, onStatus, retained, processed, counters);
     }
 
     let classification;
@@ -313,6 +315,7 @@ async function runBossMessageDiscovery({
     retained = unresolvedSummary(db, profileId);
     results = results.filter((item) => item.cardId !== card.id);
     processed += 1;
+    counters.newReplies += 1;
     results.push(safeResult(
       card,
       classification,
@@ -321,7 +324,7 @@ async function runBossMessageDiscovery({
       drafts
     ));
     emitStatus(
-      safeStatus("running", { queued: queue.length, processed, results, unresolved: retained.count, reasonCode: retained.reasonCode }),
+      safeStatus("running", { queued: queue.length, processed, results, unresolved: retained.count, reasonCode: retained.reasonCode, counters }),
       logger,
       onStatus
     );
@@ -340,7 +343,8 @@ async function runBossMessageDiscovery({
     processed,
     unresolved: retained.count,
     reasonCode: retained.reasonCode,
-    results
+    results,
+    counters
   });
   emitStatus(completed, logger, onStatus);
   return completed;
@@ -740,6 +744,7 @@ function safeStatus(status, value = {}) {
     processed: Number(value.processed || 0),
     unresolved: Number(value.unresolved || 0),
     reasonCode: String(value.reasonCode || ""),
+    counters: safeCounters(value.counters),
     results: Array.isArray(value.results)
       ? value.results.map((item) => ({
         ...item,
@@ -750,23 +755,45 @@ function safeStatus(status, value = {}) {
   };
 }
 
+function visibleCounters(rows, unbound) {
+  const values = Array.isArray(rows) ? rows : [];
+  return {
+    visible: values.length,
+    newReplies: 0,
+    currentRead: values.filter((row) => row?.previewKind === "self_read").length,
+    currentDelivered: values.filter((row) => row?.previewKind === "self_delivered").length,
+    unbound: Math.max(0, Number(unbound) || 0)
+  };
+}
+
+function safeCounters(value = {}) {
+  return {
+    visible: Math.max(0, Number(value.visible) || 0),
+    newReplies: Math.max(0, Number(value.newReplies) || 0),
+    currentRead: Math.max(0, Number(value.currentRead) || 0),
+    currentDelivered: Math.max(0, Number(value.currentDelivered) || 0),
+    unbound: Math.max(0, Number(value.unbound) || 0)
+  };
+}
+
 function unresolvedSummary(db, profileId) {
   const items = listUnresolvedMessageDiscoveryItems(db, { profileId });
   return { count: items.length, reasonCode: items[0]?.reasonCode || "" };
 }
 
-function stoppedSummary(reasonCode, queued, results, retained = {}, processed = 0) {
+function stoppedSummary(reasonCode, queued, results, retained = {}, processed = 0, counters = {}) {
   return safeStatus("needs_user_action", {
     reasonCode,
     queued,
     processed,
     unresolved: retained.count,
-    results
+    results,
+    counters
   });
 }
 
-function emitStopped(reasonCode, queued, results, logger, onStatus, retained, processed) {
-  const stopped = stoppedSummary(reasonCode, queued, results, retained, processed);
+function emitStopped(reasonCode, queued, results, logger, onStatus, retained, processed, counters) {
+  const stopped = stoppedSummary(reasonCode, queued, results, retained, processed, counters);
   emitStatus(stopped, logger, onStatus);
   return stopped;
 }

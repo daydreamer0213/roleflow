@@ -37,6 +37,7 @@ try {
     readObserved: 1,
     deliveredObserved: 1,
     inboundReplyObserved: 1,
+    unbound: 1,
     skipped: 2
   });
   assert.deepEqual(listProgressEvents(db, read.card.id).map((item) => item.type), ["outbound_read_observed"]);
@@ -58,6 +59,40 @@ try {
     observedAt: "2026-08-25T03:00:00.000Z"
   });
   assert.equal(listProgressEvents(db, read.card.id).length, 1, "the same safe preview observation is idempotent");
+
+  const direct = createUnboundCard(db, owner, "boss:direct-job", now);
+  const directThread = digest("direct-thread");
+  const directRow = row(directThread, "direct-message", "self_delivered", "sent text", "hidden recruiter", "boss:direct-job");
+  recordFunnelRowObservations(db, {
+    profileId: owner.profileId,
+    platform: "boss",
+    rows: [directRow],
+    observedAt: "2026-08-25T03:01:00.000Z"
+  });
+  assert.equal(
+    db.prepare("SELECT thread_key FROM candidate_progress_cards WHERE id = ?").get(direct.card.id).thread_key,
+    directThread,
+    "a verified source job must bind an empty progress thread"
+  );
+  assert.deepEqual(listProgressEvents(db, direct.card.id).map((item) => item.type), ["outbound_delivered_observed"]);
+  recordFunnelRowObservations(db, {
+    profileId: owner.profileId,
+    platform: "boss",
+    rows: [directRow],
+    observedAt: "2026-08-25T03:02:00.000Z"
+  });
+  assert.equal(listProgressEvents(db, direct.card.id).length, 1, "the same direct observation remains idempotent");
+  recordFunnelRowObservations(db, {
+    profileId: owner.profileId,
+    platform: "boss",
+    rows: [{ ...directRow, previewKind: "self_read" }],
+    observedAt: "2026-08-25T03:03:00.000Z"
+  });
+  assert.deepEqual(
+    listProgressEvents(db, direct.card.id).map((item) => item.type),
+    ["outbound_delivered_observed", "outbound_read_observed"],
+    "the same outgoing message may advance from delivered to read"
+  );
 
   recordFunnelRowObservations(db, {
     profileId: owner.profileId,
@@ -148,7 +183,20 @@ function createBoundCard(database, owner, suffix, now) {
   return { card, jobId, threadKey };
 }
 
-function row(conversationKey, preview, previewKind, previewText, recruiterLabel) {
+function createUnboundCard(database, owner, sourceJobId, now) {
+  const jobId = Number(database.prepare(`INSERT INTO jobs(
+    source, source_id, title, first_seen_at, last_seen_at
+  ) VALUES ('boss', ?, 'Direct observation', ?, ?)`).run(sourceJobId, now, now).lastInsertRowid);
+  const card = ensureProgressCard(database, {
+    ...owner,
+    jobId,
+    source: "boss",
+    now
+  });
+  return { card, jobId };
+}
+
+function row(conversationKey, preview, previewKind, previewText, recruiterLabel, sourceJobId = "") {
   return {
     rowIndex: 0,
     unread: false,
@@ -157,7 +205,8 @@ function row(conversationKey, preview, previewKind, previewText, recruiterLabel)
     previewDigest: digest(preview),
     previewKind,
     previewText,
-    recruiterLabel
+    recruiterLabel,
+    sourceJobId
   };
 }
 

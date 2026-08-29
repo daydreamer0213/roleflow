@@ -54,6 +54,7 @@ async function main() {
   factPolicySmoke();
   decisionCardProjectionSmoke();
   await uniqueCandidateAndPrivacySmoke();
+  await visibleCountersSmoke();
   await answerMemoryRefreshSmoke();
   await unsafeModelPersistenceSmoke();
   await identityStopsSmoke();
@@ -2090,6 +2091,149 @@ function selectedConversation({
 
 function message(direction, messageId, text, contentKind = "text") {
   return { direction, messageId, text, contentKind };
+}
+
+async function visibleCountersSmoke() {
+  const fixture = createFixture({ suffix: "visible-counters", title: "Visible Counter Engineer" });
+  const readFixture = createFixture({
+    suffix: "visible-read",
+    profileId: fixture.profileId,
+    planId: fixture.planId,
+    title: "Visible Read Engineer"
+  });
+  const deliveredFixture = createFixture({
+    suffix: "visible-delivered",
+    profileId: fixture.profileId,
+    planId: fixture.planId,
+    title: "Visible Delivered Engineer"
+  });
+  const sourceJobId = "boss:visible-counter-job";
+  db.prepare("UPDATE jobs SET source_id = ? WHERE id = ?").run(sourceJobId, fixture.jobId);
+  db.prepare("UPDATE jobs SET source_id = ? WHERE id = ?").run("boss:visible-read-job", readFixture.jobId);
+  db.prepare("UPDATE jobs SET source_id = ? WHERE id = ?").run("boss:visible-delivered-job", deliveredFixture.jobId);
+  const conversationKey = safeDigest(["conversation", "visible-counter"]);
+  const rows = Object.freeze([
+    visibleRow({
+      rowIndex: 0,
+      conversationKey,
+      previewKind: "possible_hr_reply",
+      sourceJobId,
+      lastMessageId: "378917037748741",
+      lastMessageDirection: "friend",
+      lastMessageStatus: "unknown"
+    }),
+    visibleRow({
+      rowIndex: 1,
+      conversationKey: safeDigest(["conversation", "visible-read"]),
+      previewKind: "self_read",
+      sourceJobId: "boss:visible-read-job",
+      lastMessageId: "378917037748742",
+      lastMessageDirection: "myself",
+      lastMessageStatus: "read"
+    }),
+    visibleRow({
+      rowIndex: 2,
+      conversationKey: safeDigest(["conversation", "visible-delivered"]),
+      previewKind: "self_delivered",
+      sourceJobId: "boss:visible-delivered-job",
+      lastMessageId: "378917037748743",
+      lastMessageDirection: "myself",
+      lastMessageStatus: "delivered"
+    })
+  ]);
+  let opened = 0;
+  const summary = await runBossMessageDiscovery({
+    db,
+    profileId: fixture.profileId,
+    reader: {
+      async scanConversationRows() {
+        return { tabId: "fake-tab", path: "/web/geek/chat", rows };
+      },
+      async openQueuedConversation(target) {
+        opened += 1;
+        assert.strictEqual(target.operation, "initial_incoming");
+        assert.strictEqual(target.sourceJobId, sourceJobId);
+        assert.strictEqual(target.lastMessageId, "378917037748741");
+        return selectedConversation({ title: fixture.title, messageId: "378917037748741" });
+      }
+    },
+    classifyMessageGroup: async () => classification({ messages: ["统计测试草稿"] }),
+    now: () => NOW,
+    sleepFn: async () => {}
+  });
+  assert.strictEqual(opened, 1);
+  assert.deepStrictEqual(summary.counters, {
+    visible: 3,
+    newReplies: 1,
+    currentRead: 1,
+    currentDelivered: 1,
+    unbound: 0
+  });
+
+  const unboundSummary = await runBossMessageDiscovery({
+    db,
+    profileId: fixture.profileId,
+    reader: {
+      async scanConversationRows() {
+        return {
+          tabId: "fake-tab",
+          path: "/web/geek/chat",
+          rows: [visibleRow({
+            rowIndex: 0,
+            conversationKey: safeDigest(["conversation", "visible-unbound"]),
+            previewKind: "self_read",
+            sourceJobId: "boss:missing-local-job",
+            lastMessageId: "378917037748744",
+            lastMessageDirection: "myself",
+            lastMessageStatus: "read"
+          })]
+        };
+      },
+      async openQueuedConversation() {
+        throw new Error("a first-run self status must not open the conversation");
+      }
+    },
+    classifyMessageGroup: async () => {
+      throw new Error("a first-run self status must not call the model");
+    },
+    now: () => NOW,
+    sleepFn: async () => {}
+  });
+  assert.deepStrictEqual(unboundSummary.counters, {
+    visible: 1,
+    newReplies: 0,
+    currentRead: 1,
+    currentDelivered: 0,
+    unbound: 1
+  });
+}
+
+function visibleRow({
+  rowIndex,
+  conversationKey,
+  previewKind,
+  sourceJobId,
+  lastMessageId,
+  lastMessageDirection,
+  lastMessageStatus
+}) {
+  return Object.freeze({
+    rowIndex,
+    unread: false,
+    selected: false,
+    recruiterLabel: "hidden recruiter",
+    previewText: "hidden preview",
+    recruiterKey: safeDigest(["recruiter", String(rowIndex)]),
+    conversationKey,
+    previewDigest: safeDigest(["preview", String(rowIndex)]),
+    previewKind,
+    transientSignature: safeDigest(["row", String(rowIndex)]),
+    sourceJobId,
+    lastMessageId,
+    lastMessageDirection,
+    lastMessageStatus,
+    identityVerified: true
+  });
 }
 
 async function answerMemoryRefreshSmoke() {

@@ -21,7 +21,19 @@ function operatorTabs() {
   ];
 }
 
-function row(rowIndex, { unread = false, selected = false, recruiterLabel, previewText } = {}) {
+function row(rowIndex, {
+  unread = false,
+  selected = false,
+  recruiterLabel,
+  previewText,
+  previewKind = "possible_hr_reply",
+  conversationId = "",
+  sourceJobId = "",
+  lastMessageId = "",
+  lastMessageDirection = "unknown",
+  lastMessageStatus = "unknown",
+  identityVerified = false
+} = {}) {
   const value = {
     rowIndex,
     unread,
@@ -32,9 +44,14 @@ function row(rowIndex, { unread = false, selected = false, recruiterLabel, previ
   return {
     ...value,
     recruiterKey: safeDigest(["recruiter", `label:${value.recruiterLabel}`]),
-    conversationKey: safeDigest(["conversation", `label:${value.recruiterLabel}`]),
+    conversationKey: safeDigest(["conversation", conversationId ? `id:${conversationId}` : `label:${value.recruiterLabel}`]),
     previewDigest: safeDigest(["preview", value.previewText]),
-    previewKind: "possible_hr_reply",
+    previewKind,
+    sourceJobId,
+    lastMessageId,
+    lastMessageDirection,
+    lastMessageStatus,
+    identityVerified,
     transientSignature: safeDigest([value.rowIndex, value.recruiterLabel, value.previewText, value.unread])
   };
 }
@@ -227,6 +244,42 @@ function runGuardedExpression(expression, { innerText, unread = true, snapshotRe
   assert.strictEqual(rowsScan.tabId, COMMUNICATION_TAB_ID);
   assert.strictEqual(rowsScan.path, "/web/geek/chat");
   assert.strictEqual(rowsScan.rows[0].conversationKey, initialSnapshot.rows[0].conversationKey);
+
+  const verifiedRow = row(0, {
+    unread: true,
+    conversationId: "conversation-a",
+    sourceJobId: "boss:encrypt-job-a",
+    lastMessageId: "378917037748737",
+    lastMessageDirection: "friend",
+    lastMessageStatus: "unknown",
+    identityVerified: true
+  });
+  const verifiedRowsReader = createBossMessageReader({
+    browser: fakeBrowser({ snapshots: [snapshot({ rows: [verifiedRow] })] })
+  });
+  const verifiedRowsScan = await verifiedRowsReader.scanConversationRows();
+  assert.strictEqual(verifiedRowsScan.rows[0].sourceJobId, "boss:encrypt-job-a");
+  assert.strictEqual(verifiedRowsScan.rows[0].lastMessageId, "378917037748737");
+  assert.strictEqual(verifiedRowsScan.rows[0].lastMessageDirection, "friend");
+  assert.strictEqual(verifiedRowsScan.rows[0].lastMessageStatus, "unknown");
+  assert.strictEqual(verifiedRowsScan.rows[0].identityVerified, true);
+
+  const mismatchedStatusRow = row(0, {
+    previewKind: "self_delivered",
+    conversationId: "conversation-b",
+    sourceJobId: "boss:encrypt-job-b",
+    lastMessageId: "378917037748738",
+    lastMessageDirection: "myself",
+    lastMessageStatus: "read",
+    identityVerified: true
+  });
+  await assert.rejects(
+    () => createBossMessageReader({
+      browser: fakeBrowser({ snapshots: [snapshot({ rows: [mismatchedStatusRow] })] })
+    }).scanConversationRows(),
+    (error) => error.code === "BOSS_MESSAGE_STRUCTURE_CHANGED",
+    "inconsistent Vue and visible statuses must stop before a guarded click"
+  );
 
   const previewChangedSnapshot = snapshot({ rows: [row(0, { unread: false, previewText: "Changed preview" })] });
   const previewBrowser = fakeBrowser({

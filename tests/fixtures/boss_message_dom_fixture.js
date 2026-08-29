@@ -1,11 +1,12 @@
 class FixtureElement {
-  constructor({ classes = [], innerText = "", textContent, attributes = {}, children = {}, tagName = "div" } = {}) {
+  constructor({ classes = [], innerText = "", textContent, attributes = {}, children = {}, tagName = "div", source = null } = {}) {
     this.tagName = tagName;
     this.classes = new Set(classes);
     this.innerText = innerText;
     this.textContent = textContent ?? innerText;
     this.attributes = attributes;
     this.children = children;
+    if (source) this.__vue__ = { source };
   }
 
   matches(selector) {
@@ -40,26 +41,48 @@ function createBossMessageDomFixture() {
         ".title-box": new FixtureElement({ textContent: "Alex Example" }),
         ".last-msg-text": new FixtureElement({ textContent: "Please share availability" })
       },
-      attributes: { "data-conversation-id": "conv-alex", "data-recruiter-id": "recruiter-alex" }
+      attributes: { "data-conversation-id": "conv-alex", "data-recruiter-id": "recruiter-alex" },
+      source: {
+        uniqueId: "conversation-a",
+        encryptJobId: "encrypt-job-a",
+        lastMsgId: "378917037748737",
+        lastIsSelf: false,
+        lastMsgStatus: 0
+      }
     }),
     new FixtureElement({
       classes: ["friend-content-warp", "selected"],
       innerText: "Blair Example\nThanks for the update",
       children: {
         ".title-box": new FixtureElement({ textContent: "Blair Example" }),
-        ".last-msg-text": new FixtureElement({ textContent: "Thanks for the update" })
+        ".last-msg-text": new FixtureElement({ textContent: "Thanks for the update" }),
+        ".status-delivery": new FixtureElement({ classes: ["status-delivery"] })
       },
-      attributes: { "data-conversation-id": "conv-blair", "data-recruiter-id": "recruiter-blair" }
+      attributes: { "data-conversation-id": "conv-blair", "data-recruiter-id": "recruiter-blair" },
+      source: {
+        uniqueId: "conversation-b",
+        encryptJobId: "encrypt-job-b",
+        lastMsgId: "378917037748738",
+        lastIsSelf: true,
+        lastMsgStatus: 1
+      }
     }),
     new FixtureElement({
       classes: ["friend-content-warp"],
       innerText: "Casey Example\nInterview details attached",
       children: {
-        ".notice-badge": new FixtureElement(),
         ".title-box": new FixtureElement({ textContent: "Casey Example" }),
-        ".last-msg-text": new FixtureElement({ textContent: "Interview details attached" })
+        ".last-msg-text": new FixtureElement({ textContent: "Interview details attached" }),
+        ".status-read": new FixtureElement({ classes: ["status-read"] })
       },
-      attributes: { "data-conversation-id": "conv-casey", "data-recruiter-id": "recruiter-casey" }
+      attributes: { "data-conversation-id": "conv-casey", "data-recruiter-id": "recruiter-casey" },
+      source: {
+        uniqueId: "conversation-c",
+        encryptJobId: "encrypt-job-c",
+        lastMsgId: "378917037748739",
+        lastIsSelf: true,
+        lastMsgStatus: 2
+      }
     })
   ];
   const messages = [

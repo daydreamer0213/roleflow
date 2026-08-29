@@ -65,7 +65,13 @@ function normalizeBrowserSnapshot(value) {
     requireSnapshotField(row.conversationKey, (entry) => /^sha256:[a-f0-9]{64}$/.test(entry));
     requireSnapshotField(row.previewDigest, (entry) => /^sha256:[a-f0-9]{64}$/.test(entry));
     requireSnapshotField(row.previewKind, (entry) => ["self_delivered", "self_read", "platform_notice", "possible_hr_reply", "unsupported", "unknown"].includes(entry));
+    requireSnapshotField(row.sourceJobId, (entry) => typeof entry === "string");
+    requireSnapshotField(row.lastMessageId, (entry) => typeof entry === "string");
+    requireSnapshotField(row.lastMessageDirection, (entry) => ["friend", "myself", "unknown"].includes(entry));
+    requireSnapshotField(row.lastMessageStatus, (entry) => ["read", "delivered", "unknown"].includes(entry));
+    requireSnapshotField(row.identityVerified, (entry) => typeof entry === "boolean");
     requireSnapshotField(row.transientSignature, (entry) => /^sha256:[a-f0-9]{64}$/.test(entry));
+    validateRowIdentity(row);
     const normalized = {
       rowIndex: row.rowIndex,
       unread: row.unread,
@@ -75,7 +81,12 @@ function normalizeBrowserSnapshot(value) {
       recruiterKey: row.recruiterKey,
       conversationKey: row.conversationKey,
       previewDigest: row.previewDigest,
-      previewKind: row.previewKind
+      previewKind: row.previewKind,
+      sourceJobId: row.sourceJobId,
+      lastMessageId: row.lastMessageId,
+      lastMessageDirection: row.lastMessageDirection,
+      lastMessageStatus: row.lastMessageStatus,
+      identityVerified: row.identityVerified
     };
     if (row.transientSignature !== conversationSignature(normalized)) {
       throw codedError("BOSS_MESSAGE_STRUCTURE_CHANGED", "message page structure changed");
@@ -121,6 +132,25 @@ function normalizeBrowserSnapshot(value) {
   };
 }
 
+function validateRowIdentity(row) {
+  if (row.identityVerified && (
+    !/^boss:[A-Za-z0-9_-]{6,160}$/.test(row.sourceJobId)
+    || !/^\d{15}$/.test(row.lastMessageId)
+    || row.lastMessageDirection === "unknown"
+  )) throw codedError("BOSS_MESSAGE_STRUCTURE_CHANGED", "message row identity is invalid");
+  if (row.lastMessageDirection === "friend" && (
+    row.lastMessageStatus !== "unknown"
+    || ["self_read", "self_delivered"].includes(row.previewKind)
+  )) throw codedError("BOSS_MESSAGE_STRUCTURE_CHANGED", "message row status is inconsistent");
+  if (row.lastMessageDirection !== "myself") return;
+  const expectedKind = row.lastMessageStatus === "read"
+    ? "self_read"
+    : row.lastMessageStatus === "delivered" ? "self_delivered" : "unknown";
+  if (row.previewKind !== expectedKind) {
+    throw codedError("BOSS_MESSAGE_STRUCTURE_CHANGED", "message row status is inconsistent");
+  }
+}
+
 function assertSafeSnapshot(snapshot) {
   if (snapshot.risk) throw codedError("BOSS_RISK_CONTROL", "BOSS requires security verification");
   if (snapshot.login) throw codedError("BOSS_LOGIN_REQUIRED", "BOSS login is required");
@@ -133,7 +163,11 @@ function buildGuardedConversationClickExpression(target) {
     transientSignature: target.transientSignature,
     conversationKey: target.conversationKey,
     operation: target.operation || "unread",
-    previewDigest: target.previewDigest || ""
+    previewDigest: target.previewDigest || "",
+    sourceJobId: target.sourceJobId || "",
+    lastMessageId: target.lastMessageId || "",
+    lastMessageDirection: target.lastMessageDirection || "unknown",
+    identityVerified: target.identityVerified === true
   });
   return `(() => {
     const operation = "${GUARDED_OPERATION}";
@@ -184,9 +218,17 @@ function buildGuardedConversationClickExpression(target) {
       const previewDigest = "sha256:" + sha256(canonical(["preview", preview]));
       if (previewDigest !== expected.previewDigest) return fail("preview_drifted");
     }
+    const source = row.__vue__?.source || row.__vue__?.$props?.source || {};
+    const uniqueId = String(source.uniqueId || "").trim();
     const conversationId = String(row.getAttribute("data-conversation-id") || row.getAttribute("data-encid") || "").trim();
-    const actualConversationKey = "sha256:" + sha256(canonical(["conversation", conversationId ? "id:" + conversationId : "label:" + rowTitle]));
+    const actualConversationKey = "sha256:" + sha256(canonical(["conversation", uniqueId ? "id:" + uniqueId : conversationId ? "id:" + conversationId : "label:" + rowTitle]));
     if (actualConversationKey !== expected.conversationKey) return fail("row_drifted");
+    if (expected.identityVerified) {
+      const sourceJobId = /^[A-Za-z0-9_-]{6,160}$/.test(String(source.encryptJobId || "")) ? "boss:" + source.encryptJobId : "";
+      const lastMessageId = /^\d{15}$/.test(String(source.lastMsgId || "")) ? String(source.lastMsgId) : "";
+      const lastMessageDirection = source.lastIsSelf === true ? "myself" : source.lastIsSelf === false ? "friend" : "unknown";
+      if (sourceJobId !== expected.sourceJobId || lastMessageId !== expected.lastMessageId || lastMessageDirection !== expected.lastMessageDirection) return fail("row_drifted");
+    }
     const clickTarget = row.querySelector(".friend-content") || row.querySelector(".friend-top") || row;
     const rect = clickTarget.getBoundingClientRect();
     const style = getComputedStyle(clickTarget);

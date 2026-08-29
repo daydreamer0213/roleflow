@@ -164,6 +164,13 @@ function planMessageDiscoveryQueue({ rows = [], baselines = new Map(), unresolve
     }
     const baseline = baselines.get(conversationKey);
     if (!baseline) {
+      if (row.identityVerified === true && row.lastMessageDirection === "friend") {
+        replaceHigherPriorityTarget(targets, conversationKey, {
+          priority: 1,
+          target: queueTarget("initial_incoming", row, conversationKey, previewDigest, previewKind)
+        });
+        continue;
+      }
       replaceHigherPriorityTarget(targets, conversationKey, {
         priority: 0,
         baseline: baselineWrite(conversationKey, previewDigest, previewKind)
@@ -210,7 +217,12 @@ function queueTarget(operation, row, conversationKey, previewDigest, previewKind
     conversationKey,
     previewDigest,
     previewKind,
-    transientSignature: row.transientSignature || ""
+    transientSignature: row.transientSignature || "",
+    sourceJobId: String(row.sourceJobId || ""),
+    lastMessageId: String(row.lastMessageId || ""),
+    lastMessageDirection: String(row.lastMessageDirection || "unknown"),
+    lastMessageStatus: String(row.lastMessageStatus || "unknown"),
+    identityVerified: row.identityVerified === true
   });
 }
 

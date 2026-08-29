@@ -44,6 +44,33 @@ function conversationKey(row, label) {
   return safeDigest(["conversation", id ? `id:${id}` : `label:${normalizedText(label)}`]);
 }
 
+function rowIdentity(row, label) {
+  const source = row?.__vue__?.source || row?.__vue__?.$props?.source || {};
+  const uniqueId = safeSourceValue(source.uniqueId, 256);
+  const encryptJobId = safeSourceValue(source.encryptJobId, 160, /^[A-Za-z0-9_-]{6,160}$/);
+  const lastMessageId = /^\d{15}$/.test(String(source.lastMsgId || "")) ? String(source.lastMsgId) : "";
+  const lastMessageDirection = source.lastIsSelf === true
+    ? "myself"
+    : source.lastIsSelf === false ? "friend" : "unknown";
+  const lastMessageStatus = lastMessageDirection !== "myself"
+    ? "unknown"
+    : Number(source.lastMsgStatus) === 2 ? "read"
+    : Number(source.lastMsgStatus) === 1 ? "delivered" : "unknown";
+  return {
+    conversationKey: uniqueId ? safeDigest(["conversation", `id:${uniqueId}`]) : conversationKey(row, label),
+    sourceJobId: encryptJobId ? `boss:${encryptJobId}` : "",
+    lastMessageId,
+    lastMessageDirection,
+    lastMessageStatus,
+    identityVerified: Boolean(uniqueId && encryptJobId && lastMessageId && lastMessageDirection !== "unknown")
+  };
+}
+
+function safeSourceValue(value, limit, pattern = /^\S+$/) {
+  const text = String(value == null ? "" : value).trim();
+  return text.length <= limit && pattern.test(text) ? text : "";
+}
+
 function previewKind(row, value) {
   if (row?.querySelector?.(".status-read")) return "self_read";
   if (row?.querySelector?.(".status-delivery")) return "self_delivered";
@@ -53,6 +80,27 @@ function previewKind(row, value) {
   if (/对方已同意|附件简历已发送|已投递成功/.test(text)) return "platform_notice";
   if (/\[语音\]|\[图片\]|\[文件\]/.test(text)) return "unsupported";
   return text ? "possible_hr_reply" : "unknown";
+}
+
+function verifiedPreviewKind(row, value, identity) {
+  const visibleKind = previewKind(row, value);
+  if (identity.lastMessageDirection === "friend") {
+    if (["self_read", "self_delivered"].includes(visibleKind)) {
+      throw codedError("BOSS_MESSAGE_STRUCTURE_CHANGED", "message row status disagrees with source data");
+    }
+    return visibleKind;
+  }
+  if (identity.lastMessageDirection !== "myself") return visibleKind;
+  const expectedKind = identity.lastMessageStatus === "read"
+    ? "self_read"
+    : identity.lastMessageStatus === "delivered" ? "self_delivered" : "unknown";
+  if (expectedKind !== "unknown" && visibleKind !== expectedKind) {
+    throw codedError("BOSS_MESSAGE_STRUCTURE_CHANGED", "message row status disagrees with source data");
+  }
+  if (expectedKind === "unknown" && ["self_read", "self_delivered"].includes(visibleKind)) {
+    throw codedError("BOSS_MESSAGE_STRUCTURE_CHANGED", "message row status disagrees with source data");
+  }
+  return expectedKind;
 }
 
 function messageContentKind(item) {
@@ -139,6 +187,7 @@ function snapshotBossMessagePage(documentLike, locationHref) {
       const lines = visibleLines(row.innerText);
       const recruiterLabel = normalizedText(row.querySelector(SELECTORS.rowTitle)?.textContent) || lines[0] || "";
       const previewText = normalizedText(row.querySelector(SELECTORS.lastMsg)?.textContent) || lines.at(-1) || "";
+      const identity = rowIdentity(row, recruiterLabel);
       const snapshotRow = {
         rowIndex,
         unread: Boolean(row.querySelector(SELECTORS.unread)),
@@ -146,9 +195,9 @@ function snapshotBossMessagePage(documentLike, locationHref) {
         recruiterLabel,
         previewText,
         recruiterKey: recruiterKey(row, recruiterLabel),
-        conversationKey: conversationKey(row, recruiterLabel),
+        ...identity,
         previewDigest: safeDigest(["preview", previewText]),
-        previewKind: previewKind(row, previewText)
+        previewKind: verifiedPreviewKind(row, previewText, identity)
       };
       return { ...snapshotRow, transientSignature: transientSignature(snapshotRow) };
     });
@@ -200,7 +249,12 @@ function buildUnreadConversationQueue(snapshot) {
     .map((row) => Object.freeze({
       rowIndex: row.rowIndex,
       transientSignature: transientSignature(row),
-      conversationKey: row.conversationKey
+      conversationKey: row.conversationKey,
+      sourceJobId: row.sourceJobId || "",
+      lastMessageId: row.lastMessageId || "",
+      lastMessageDirection: row.lastMessageDirection || "unknown",
+      lastMessageStatus: row.lastMessageStatus || "unknown",
+      identityVerified: row.identityVerified === true
     })));
 }
 
@@ -233,7 +287,21 @@ const BOSS_MESSAGE_PAGE_HELPERS_EXPRESSION = String.raw`(() => {
     }
     return hash.map((number) => number.toString(16).padStart(8, "0")).join("");
   };
-  const rowKey = (prefix, names, row, label) => { const id = String(names.map((name) => row.getAttribute(name)).find((value) => value != null && String(value).trim()) || "").trim(); return "sha256:" + sha256(canonical([prefix, id ? "id:" + id : "label:" + text(label)])); }; const recruiterKey = (row, label) => rowKey("recruiter", ["data-recruiter-id", "data-geek-id"], row, label); const conversationKey = (row, label) => rowKey("conversation", ["data-conversation-id", "data-encid"], row, label); const previewKind = (row, value) => { if (row && row.querySelector && row.querySelector(".status-read")) return "self_read"; if (row && row.querySelector && row.querySelector(".status-delivery")) return "self_delivered"; const textValue = text(value); if (/^\[送达\]/.test(textValue)) return "self_delivered"; if (/^\[已读\]/.test(textValue)) return "self_read"; if (/对方已同意|附件简历已发送|已投递成功/.test(textValue)) return "platform_notice"; if (/\[语音\]|\[图片\]|\[文件\]/.test(textValue)) return "unsupported"; return textValue ? "possible_hr_reply" : "unknown"; };
+  const rowKey = (prefix, names, row, label) => { const id = String(names.map((name) => row.getAttribute(name)).find((value) => value != null && String(value).trim()) || "").trim(); return "sha256:" + sha256(canonical([prefix, id ? "id:" + id : "label:" + text(label)])); };
+  const recruiterKey = (row, label) => rowKey("recruiter", ["data-recruiter-id", "data-geek-id"], row, label);
+  const legacyConversationKey = (row, label) => rowKey("conversation", ["data-conversation-id", "data-encid"], row, label);
+  const sourceValue = (value, limit, pattern = /^\S+$/) => { const normalized = String(value == null ? "" : value).trim(); return normalized.length <= limit && pattern.test(normalized) ? normalized : ""; };
+  const rowIdentity = (row, label) => {
+    const source = row?.__vue__?.source || row?.__vue__?.$props?.source || {};
+    const uniqueId = sourceValue(source.uniqueId, 256);
+    const encryptJobId = sourceValue(source.encryptJobId, 160, /^[A-Za-z0-9_-]{6,160}$/);
+    const lastMessageId = /^\d{15}$/.test(String(source.lastMsgId || "")) ? String(source.lastMsgId) : "";
+    const lastMessageDirection = source.lastIsSelf === true ? "myself" : source.lastIsSelf === false ? "friend" : "unknown";
+    const lastMessageStatus = lastMessageDirection !== "myself" ? "unknown" : Number(source.lastMsgStatus) === 2 ? "read" : Number(source.lastMsgStatus) === 1 ? "delivered" : "unknown";
+    return { conversationKey: uniqueId ? "sha256:" + sha256(canonical(["conversation", "id:" + uniqueId])) : legacyConversationKey(row, label), sourceJobId: encryptJobId ? "boss:" + encryptJobId : "", lastMessageId, lastMessageDirection, lastMessageStatus, identityVerified: Boolean(uniqueId && encryptJobId && lastMessageId && lastMessageDirection !== "unknown") };
+  };
+  const previewKind = (row, value) => { if (row && row.querySelector && row.querySelector(".status-read")) return "self_read"; if (row && row.querySelector && row.querySelector(".status-delivery")) return "self_delivered"; const textValue = text(value); if (/^\[送达\]/.test(textValue)) return "self_delivered"; if (/^\[已读\]/.test(textValue)) return "self_read"; if (/对方已同意|附件简历已发送|已投递成功/.test(textValue)) return "platform_notice"; if (/\[语音\]|\[图片\]|\[文件\]/.test(textValue)) return "unsupported"; return textValue ? "possible_hr_reply" : "unknown"; };
+  const verifiedPreviewKind = (row, value, identity) => { const visibleKind = previewKind(row, value); if (identity.lastMessageDirection === "friend") { if (["self_read", "self_delivered"].includes(visibleKind)) throw coded("BOSS_MESSAGE_STRUCTURE_CHANGED", "message row status disagrees with source data"); return visibleKind; } if (identity.lastMessageDirection !== "myself") return visibleKind; const expectedKind = identity.lastMessageStatus === "read" ? "self_read" : identity.lastMessageStatus === "delivered" ? "self_delivered" : "unknown"; if (expectedKind !== "unknown" && visibleKind !== expectedKind) throw coded("BOSS_MESSAGE_STRUCTURE_CHANGED", "message row status disagrees with source data"); if (expectedKind === "unknown" && ["self_read", "self_delivered"].includes(visibleKind)) throw coded("BOSS_MESSAGE_STRUCTURE_CHANGED", "message row status disagrees with source data"); return expectedKind; };
   const buttonTexts = (region) => region ? Array.from(region.querySelectorAll(".card-btn"), (button) => text(button.textContent)) : [];
   const resumeRequestCard = (card) => { const title = text(card.querySelector(".message-card-top-title.message-card-top-text")?.textContent); const actions = buttonTexts(card.querySelector(".message-card-buttons")); return card.matches(".boss-green") && Boolean(card.querySelector(".dialog-icon.resume")) && /附件简历/.test(title) && /是否同意/.test(title) && actions.length === 2 && actions[0] === "拒绝" && actions[1] === "同意"; };
   const competitionNoticeCard = (card) => { const title = text(card.querySelector(".message-card-top-title")?.textContent); const buttons = Array.from(card.querySelectorAll(".card-btn")); return card.matches(".blue") && !card.querySelector(".dialog-icon.resume") && /竞争/.test(title) && buttons.length === 1 && buttons[0].matches(".one-btn") && text(buttons[0].textContent) === "查看详细分析"; };
@@ -247,7 +315,7 @@ const BOSS_MESSAGE_PAGE_HELPERS_EXPRESSION = String.raw`(() => {
       const baseInfo = document.querySelector(".base-info"); const companySpan = baseInfo ? Array.from(baseInfo.children || []).find((child) => child.tagName === "SPAN" && !child.classList.contains("base-title")) : null; const companyName = companySpan ? text(companySpan.textContent) : text(document.querySelector(selectors.company)?.textContent); const bodyText = text(document.body.innerText).slice(0, 3000);
       const risk = /\/web\/passport\/zp\/(?:verify|403)/i.test(path) || new URLSearchParams(location.search).get("code") === "32" || /\u5b89\u5168\u9a8c\u8bc1|\u8bbf\u95ee\u5f02\u5e38|\u884c\u4e3a\u9a8c\u8bc1|\u8bbf\u95ee\u53d7\u9650/.test(document.title || "") || /\u8d26\u6237\u5b58\u5728\u5f02\u5e38\u884c\u4e3a|\u6682\u65f6\u65e0\u6cd5\u8bbf\u95ee\u6b64\u9875\u9762|\u8bf7\u52ff\u9891\u7e41\u63d0\u4ea4\u5237\u65b0\u8bf7\u6c42/.test(bodyText);
       const login = /\/web\/user\//i.test(path) || Array.from(document.querySelectorAll(".sign-form, .login-register, [class*='login-form']")).some(visible) || /\u6ca1\u6709\u66f4\u591a\u804c\u4f4d.{0,20}\u767b\u5f55\u67e5\u770b\u5168\u90e8\u804c\u4f4d|\u767b\u5f55\u540e\u53ef\u67e5\u770b/.test(bodyText);
-      const rows = Array.from(document.querySelectorAll(selectors.row)).map((row, rowIndex) => { const rowLines = lines(row.innerText); const recruiterLabel = text(row.querySelector(selectors.rowTitle)?.textContent) || rowLines[0] || ""; const previewText = text(row.querySelector(selectors.lastMsg)?.textContent) || rowLines.at(-1) || ""; const value = { rowIndex, unread: Boolean(row.querySelector(selectors.unread)), selected: row.matches(selectors.selected) || Boolean(row.querySelector(selectors.selected)), recruiterLabel, previewText, recruiterKey: recruiterKey(row, recruiterLabel), conversationKey: conversationKey(row, recruiterLabel), previewDigest: "sha256:" + sha256(canonical(["preview", previewText])), previewKind: previewKind(row, previewText) }; return { ...value, transientSignature: signature(value) }; });
+      const rows = Array.from(document.querySelectorAll(selectors.row)).map((row, rowIndex) => { const rowLines = lines(row.innerText); const recruiterLabel = text(row.querySelector(selectors.rowTitle)?.textContent) || rowLines[0] || ""; const previewText = text(row.querySelector(selectors.lastMsg)?.textContent) || rowLines.at(-1) || ""; const identity = rowIdentity(row, recruiterLabel); const value = { rowIndex, unread: Boolean(row.querySelector(selectors.unread)), selected: row.matches(selectors.selected) || Boolean(row.querySelector(selectors.selected)), recruiterLabel, previewText, recruiterKey: recruiterKey(row, recruiterLabel), ...identity, previewDigest: "sha256:" + sha256(canonical(["preview", previewText])), previewKind: verifiedPreviewKind(row, previewText, identity) }; return { ...value, transientSignature: signature(value) }; });
       const messages = Array.from(document.querySelectorAll(selectors.message)).map((item) => { const messageId = String(item.getAttribute("data-mid") == null ? "" : item.getAttribute("data-mid")); if (!/^\d{15}$/.test(messageId)) throw coded("BOSS_MESSAGE_ID_INVALID", "message id is invalid"); return { direction: item.matches(".item-friend") ? "friend" : item.matches(".item-myself") ? "myself" : "system", messageId, text: text(item.textContent), contentKind: contentKind(item) }; });
       return { path, rows, headerText: lines(document.querySelector(selectors.header)?.innerText)[0] || "", positionName: text(document.querySelector(selectors.position)?.textContent), companyName, salary: text(document.querySelector(selectors.salary)?.textContent), city: text(document.querySelector(selectors.city)?.textContent), risk, login, messages, writeTargetsPresent: { editor: Boolean(document.querySelector(selectors.editor)), send: Boolean(document.querySelector(selectors.send)) } };
     } catch (error) {

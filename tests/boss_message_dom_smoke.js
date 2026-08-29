@@ -21,25 +21,27 @@ const snapshot = snapshotBossMessagePage(documentLike, "https://www.zhipin.com/w
 
 assert.strictEqual(snapshot.path, "/web/geek/chat");
 assert.strictEqual(snapshot.companyName, "Fixture Company");
-assert.deepStrictEqual(snapshot.rows.map((row) => row.unread), [true, false, true]);
+assert.deepStrictEqual(snapshot.rows.map((row) => row.unread), [true, false, false]);
 assert.match(snapshot.rows[0].conversationKey, /^sha256:[a-f0-9]{64}$/);
 assert.strictEqual(snapshot.rows[0].previewKind, "possible_hr_reply");
+assert.strictEqual(snapshot.rows[0].sourceJobId, "boss:encrypt-job-a");
+assert.strictEqual(snapshot.rows[0].lastMessageId, "378917037748737");
+assert.strictEqual(snapshot.rows[0].lastMessageDirection, "friend");
+assert.strictEqual(snapshot.rows[0].lastMessageStatus, "unknown");
+assert.strictEqual(snapshot.rows[0].identityVerified, true);
+assert.strictEqual(snapshot.rows[0].conversationKey, safeDigest(["conversation", "id:conversation-a"]));
+assert.strictEqual(snapshot.rows[1].lastMessageDirection, "myself");
+assert.strictEqual(snapshot.rows[1].lastMessageStatus, "delivered");
+assert.strictEqual(snapshot.rows[1].previewKind, "self_delivered");
+assert.strictEqual(snapshot.rows[2].lastMessageStatus, "read");
+assert.strictEqual(snapshot.rows[2].previewKind, "self_read");
 
-const statusDocument = createBossMessageDomFixture();
-statusDocument.querySelectorAll(".friend-content-warp")[0].children[".status-read"] = new FixtureElement({ classes: ["status-read"] });
-const statusSnapshot = snapshotBossMessagePage(statusDocument, "https://www.zhipin.com/web/geek/chat");
-assert.strictEqual(
-  statusSnapshot.rows[0].previewKind,
-  "self_read",
-  "a live-calibrated .status-read row must classify as self_read"
-);
-const deliveredDocument = createBossMessageDomFixture();
-deliveredDocument.querySelectorAll(".friend-content-warp")[0].children[".status-delivery"] = new FixtureElement({ classes: ["status-delivery"] });
-const deliveredSnapshot = snapshotBossMessagePage(deliveredDocument, "https://www.zhipin.com/web/geek/chat");
-assert.strictEqual(
-  deliveredSnapshot.rows[0].previewKind,
-  "self_delivered",
-  "a live-calibrated .status-delivery row must classify as self_delivered"
+const mismatchedStatusDocument = createBossMessageDomFixture();
+mismatchedStatusDocument.querySelectorAll(".friend-content-warp")[1].__vue__.source.lastMsgStatus = 2;
+assert.throws(
+  () => snapshotBossMessagePage(mismatchedStatusDocument, "https://www.zhipin.com/web/geek/chat"),
+  (error) => error.code === "BOSS_MESSAGE_STRUCTURE_CHANGED",
+  "Vue and visible outgoing status disagreement must stop the snapshot"
 );
 
 const liveRowDocument = createBossMessageDomFixture();
@@ -47,6 +49,7 @@ const liveRow = liveRowDocument.querySelectorAll(".friend-content-warp")[0];
 liveRow.innerText = "10:30\nAlex Example\nPlease share availability";
 delete liveRow.attributes["data-conversation-id"];
 delete liveRow.attributes["data-recruiter-id"];
+delete liveRow.__vue__;
 const liveRowSnapshot = snapshotBossMessagePage(liveRowDocument, "https://www.zhipin.com/web/geek/chat");
 assert.strictEqual(
   liveRowSnapshot.rows[0].recruiterLabel,
@@ -66,7 +69,7 @@ assert.strictEqual(
 assert.deepStrictEqual(snapshot.rows.map((row) => row.transientSignature), [
   safeDigest([0, "Alex Example", "Please share availability", true]),
   safeDigest([1, "Blair Example", "Thanks for the update", false]),
-  safeDigest([2, "Casey Example", "Interview details attached", true])
+  safeDigest([2, "Casey Example", "Interview details attached", false])
 ]);
 assert.deepStrictEqual(snapshot.messages.map((item) => item.direction), ["friend", "myself", "system"]);
 assert.deepStrictEqual(snapshot.messages.map((item) => item.contentKind), ["text", "voice", "text"]);
@@ -74,7 +77,7 @@ assert(snapshot.messages.every((item) => /^\d{15}$/.test(item.messageId)));
 assert.deepStrictEqual(snapshot.writeTargetsPresent, { editor: true, send: true });
 
 const queue = buildUnreadConversationQueue(snapshot);
-assert.deepStrictEqual(queue.map((item) => item.rowIndex), [0, 2]);
+assert.deepStrictEqual(queue.map((item) => item.rowIndex), [0]);
 assert(Object.isFrozen(queue));
 assert(queue.every(Object.isFrozen));
 assert.throws(() => queue.push({}), TypeError);
@@ -83,9 +86,9 @@ const forgedQueue = buildUnreadConversationQueue({
 });
 assert.strictEqual(forgedQueue[0].transientSignature, safeDigest([0, "Alex Example", "Please share availability", true]));
 const staleQueue = buildUnreadConversationQueue({
-  rows: [{ ...snapshot.rows[2], previewText: "Changed preview", transientSignature: snapshot.rows[2].transientSignature }]
+  rows: [{ ...snapshot.rows[0], previewText: "Changed preview", transientSignature: snapshot.rows[0].transientSignature }]
 });
-assert.strictEqual(staleQueue[0].transientSignature, safeDigest([2, "Casey Example", "Changed preview", true]));
+assert.strictEqual(staleQueue[0].transientSignature, safeDigest([0, "Alex Example", "Changed preview", true]));
 assert.match(safeDigest([" fake ", "value"]), /^sha256:[a-f0-9]{64}$/);
 assert.strictEqual(
   safeDigest([0, false]),

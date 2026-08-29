@@ -1,6 +1,7 @@
 const {
   recordProgressEvent,
-  derivedProgressIdempotencyKey
+  derivedProgressIdempotencyKey,
+  bindProgressCardThread
 } = require("./candidate_progress");
 
 const OBSERVATION_TYPES = Object.freeze({
@@ -35,6 +36,7 @@ function recordFunnelRowObservations(db, {
     readObserved: 0,
     deliveredObserved: 0,
     inboundReplyObserved: 0,
+    unbound: 0,
     skipped: 0
   };
 
@@ -46,13 +48,18 @@ function recordFunnelRowObservations(db, {
       counts.skipped += 1;
       continue;
     }
-    const cards = db.prepare(`SELECT id FROM candidate_progress_cards
-      WHERE profile_id = ? AND thread_key = ? ORDER BY id`).all(profile, threadKey);
-    if (cards.length !== 1) {
+    const cardId = resolveObservationCard(db, {
+      profileId: profile,
+      platform: site,
+      sourceJobId: row?.sourceJobId,
+      threadKey,
+      observedAt: occurredAt
+    });
+    if (!cardId) {
+      counts.unbound += 1;
       counts.skipped += 1;
       continue;
     }
-    const cardId = Number(cards[0].id);
     recordProgressEvent(db, {
       cardId,
       idempotencyKey: derivedProgressIdempotencyKey([
@@ -75,6 +82,28 @@ function recordFunnelRowObservations(db, {
     counts[definition.countKey] += 1;
   }
   return counts;
+}
+
+function resolveObservationCard(db, { profileId, platform, sourceJobId, threadKey, observedAt }) {
+  const sourceId = String(sourceJobId || "").trim();
+  if (/^boss:[A-Za-z0-9_-]{6,160}$/.test(sourceId)) {
+    const direct = db.prepare(`SELECT cards.id, cards.thread_key
+      FROM candidate_progress_cards cards
+      JOIN jobs ON jobs.id = cards.job_id
+      WHERE cards.profile_id = ? AND jobs.source = ? AND jobs.source_id = ?
+      ORDER BY cards.id`).all(profileId, platform, sourceId);
+    if (direct.length > 1) return 0;
+    if (direct.length === 1) {
+      const currentThread = safeDigest(direct[0].thread_key);
+      if (currentThread && currentThread !== threadKey) return 0;
+      const cardId = Number(direct[0].id);
+      if (!currentThread) bindProgressCardThread(db, { cardId, threadKey, now: observedAt });
+      return cardId;
+    }
+  }
+  const fallback = db.prepare(`SELECT id FROM candidate_progress_cards
+    WHERE profile_id = ? AND thread_key = ? ORDER BY id`).all(profileId, threadKey);
+  return fallback.length === 1 ? Number(fallback[0].id) : 0;
 }
 
 function safeDigest(value) {
