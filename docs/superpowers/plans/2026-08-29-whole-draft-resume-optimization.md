@@ -50,7 +50,7 @@ validateResumeOptimizationDraft(raw, { sourceText, evidenceCatalog })
 renderOptimizedResume(sourceText, validatedSuggestions)
 ```
 
-- [ ] **Step 1: Add failing contract cases for editing principles and auto-application**
+- [x] **Step 1: Add failing contract cases for editing principles and auto-application**
 
 Extend `tests/resume_optimization_contract_smoke.js` with a valid change:
 
@@ -74,7 +74,7 @@ assert.match(renderOptimizedResume(sourceText, draft.suggestions), /Node\.js 企
 
 Reject an unknown principle, unsupported number, overlapping anchor, missing evidence, and responsibility escalation. Confirm a rejected model result leaves the database untouched in the service test from Task 3.
 
-- [ ] **Step 2: Run the contract tests and verify failure**
+- [x] **Step 2: Run the contract tests and verify failure**
 
 ```powershell
 node tests/resume_optimization_contract_smoke.js
@@ -83,7 +83,7 @@ node tests/model_adapter_smoke.js
 
 Expected: failure because `editingPrinciple` is neither required nor returned and suggestions default to `pending`.
 
-- [ ] **Step 3: Add the finite principle contract**
+- [x] **Step 3: Add the finite principle contract**
 
 In `src/core/resume_optimization.js`, add:
 
@@ -100,7 +100,7 @@ const EDITING_PRINCIPLES = new Set([
 
 Validate every `editingPrinciple` against this set and return validated suggestions with `decision: "accepted"`. Keep exact anchors, overlap rejection, cited-evidence checks, unsupported-number rejection, and strong-role-marker rejection unchanged. `renderOptimizedResume` must therefore produce the complete generated draft immediately.
 
-- [ ] **Step 4: Update real and mock adapter outputs**
+- [x] **Step 4: Update real and mock adapter outputs**
 
 Change the real prompt to require:
 
@@ -112,7 +112,7 @@ State the six exact principle values, keep the 12-change maximum as an internal 
 
 Make `MockModelAdapter.generateResumeOptimization` return `editingPrinciple: "structure"` for its deterministic change. Update `tests/model_adapter_smoke.js` to assert the new contract phrases and mock field.
 
-- [ ] **Step 5: Run the model and contract regressions**
+- [x] **Step 5: Run the model and contract regressions**
 
 ```powershell
 node tests/resume_optimization_contract_smoke.js
@@ -121,7 +121,7 @@ node tests/model_adapter_smoke.js
 
 Expected: both pass.
 
-- [ ] **Step 6: Commit the contract checkpoint**
+- [x] **Step 6: Commit the contract checkpoint**
 
 ```powershell
 git add src/core/resume_optimization.js src/adapters/models/openai_compatible.js src/adapters/models/mock.js tests/resume_optimization_contract_smoke.js tests/model_adapter_smoke.js
@@ -161,7 +161,7 @@ activateResumeOptimization(db, {
 
 Mapped rows add `targetDirection`, `generatedText`, `changeLedger`, `draftFormat`, `userEditedAt`, and `strategyRoundId`. Keep `suggestions` as a compatibility alias of `changeLedger` until all older code paths are migrated.
 
-- [ ] **Step 1: Write failing storage and migration assertions**
+- [x] **Step 1: Write failing storage and migration assertions**
 
 Update `tests/resume_optimization_store_smoke.js` so a new draft is created with:
 
@@ -175,7 +175,7 @@ assert.deepEqual(draft.changeLedger, changes);
 
 Save a full edited string and assert only `final_text`, `user_edited_at`, and `updated_at` change; `source_text`, `generated_text`, evidence, and change ledger remain frozen. Add a v23 migration fixture and assert older rows become `draftFormat: "legacy_suggestions"`, keep their old suggestions, and remain readable.
 
-- [ ] **Step 2: Run the store and migration tests and verify failure**
+- [x] **Step 2: Run the store and migration tests and verify failure**
 
 ```powershell
 node tests/resume_optimization_store_smoke.js
@@ -184,7 +184,7 @@ node tests/storage_migration_smoke.js
 
 Expected: failure because v24 columns and whole-draft semantics do not exist.
 
-- [ ] **Step 3: Add migration 24**
+- [x] **Step 3: Add migration 24**
 
 Add migration:
 
@@ -210,19 +210,19 @@ strategy_round_id INTEGER REFERENCES candidate_funnel_strategy_rounds(id)
 
 Update the fresh schema with the same columns. For existing activated rows, set `generated_text=final_text` when final text exists; do not rewrite source, final, evidence, or suggestions. New rows explicitly store `draft_format='whole_draft'`.
 
-- [ ] **Step 4: Implement immutable generated content and mutable user content**
+- [x] **Step 4: Implement immutable generated content and mutable user content**
 
 `createResumeOptimization` validates non-empty `targetDirection` (160 characters), `generatedText`, 1–5 target jobs, and stores generated text into both `generated_text` and initial `final_text`. Rename mapped `suggestions_json` to the user-facing `changeLedger` while retaining `suggestions` as the same parsed array for old callers.
 
 Change `saveResumeOptimizationDraft` to accept only the full `finalText` plus optional timestamp; reject blank or over-200,000-character text and closed drafts. Set `user_edited_at` only when normalized current text differs from `generated_text`.
 
-- [ ] **Step 5: Keep activation idempotent before adding the round boundary**
+- [x] **Step 5: Keep activation idempotent before adding the round boundary**
 
 Accept `finalText` in `activateResumeOptimization` and, inside its existing immediate transaction, save that exact current text before creating the document/version. If the row is already activated, return it only when the repeated `finalText` equals the persisted final text; reject a late different text with `RESUME_OPTIMIZATION_CLOSED`.
 
 Do not start a round in this step; Task 5 joins activation and round creation after the service/UI path is ready.
 
-- [ ] **Step 6: Run storage and migration regressions**
+- [x] **Step 6: Run storage and migration regressions**
 
 ```powershell
 node tests/resume_optimization_store_smoke.js
@@ -231,7 +231,7 @@ node tests/storage_migration_smoke.js
 
 Expected: pass with source preservation, full-text save, rollback, and retry idempotency.
 
-- [ ] **Step 7: Commit the storage checkpoint**
+- [x] **Step 7: Commit the storage checkpoint**
 
 ```powershell
 git add src/core/storage.js src/storage/resume_optimization_store.js tests/storage_migration_smoke.js tests/resume_optimization_store_smoke.js
@@ -260,7 +260,7 @@ service.saveDraft({ profileId, draftId, finalText })
 service.activateDraft({ profileId, planId, draftId, finalText })
 ```
 
-- [ ] **Step 1: Replace user-selected job fixtures with direction-selection fixtures**
+- [x] **Step 1: Replace user-selected job fixtures with direction-selection fixtures**
 
 In `tests/resume_optimization_service_smoke.js`, seed six complete jobs and one incomplete job across repeated and distinct companies. Assert:
 
@@ -277,7 +277,7 @@ assert.equal(draft.changeLedger[0].editingPrinciple, "jd_vocabulary");
 
 Assert incomplete JDs are never selected, a foreign direction is rejected, and no database row exists after model validation failure or when no complete matching JD is available.
 
-- [ ] **Step 2: Run the service test and verify failure**
+- [x] **Step 2: Run the service test and verify failure**
 
 ```powershell
 node tests/resume_optimization_service_smoke.js
@@ -285,7 +285,7 @@ node tests/resume_optimization_service_smoke.js
 
 Expected: failure because `createDraft` still requires explicit `jobIds` and leaves final text blank.
 
-- [ ] **Step 3: Implement deterministic representative selection**
+- [x] **Step 3: Implement deterministic representative selection**
 
 Export `selectRepresentativeResumeJobs` from `src/core/resume_optimization.js`. Normalize the chosen direction and score complete jobs by:
 
@@ -296,7 +296,7 @@ Export `selectRepresentativeResumeJobs` from `src/core/resume_optimization.js`. 
 
 Take the best job from each non-empty company first, then fill remaining slots by rank, capped at five. Require the direction to be one of `plan.plan.directions`; do not silently combine directions.
 
-- [ ] **Step 4: Auto-apply validated changes in the service**
+- [x] **Step 4: Auto-apply validated changes in the service**
 
 Change `createDraft` to accept `targetDirection`, select jobs internally, build the existing evidence catalog, call the adapter, validate the patches, and compute:
 
@@ -308,7 +308,7 @@ Persist `targetDirection`, selected IDs, immutable change ledger, `generatedText
 
 Change `saveDraft` to pass one full `finalText` to storage. Pass `planId` and current `finalText` through `activateDraft` for Task 5.
 
-- [ ] **Step 5: Expose directions and selected source jobs in the dashboard model**
+- [x] **Step 5: Expose directions and selected source jobs in the dashboard model**
 
 Return:
 
@@ -322,7 +322,7 @@ Return:
 
 Do not return raw contact data or a hidden model prompt.
 
-- [ ] **Step 6: Run the service and model regressions**
+- [x] **Step 6: Run the service and model regressions**
 
 ```powershell
 node tests/resume_optimization_service_smoke.js
@@ -332,7 +332,7 @@ node tests/model_adapter_smoke.js
 
 Expected: all pass.
 
-- [ ] **Step 7: Commit complete draft generation**
+- [x] **Step 7: Commit complete draft generation**
 
 ```powershell
 git add src/core/resume_optimization.js src/application/resume_optimization/index.js tests/resume_optimization_service_smoke.js
@@ -355,7 +355,7 @@ git commit -m "feat: generate complete targeted resumes"
 - Consumes: new service inputs and whole-draft row shape from Task 3.
 - Produces: direction-based create form, `POST /api/resume-optimization/save` JSON/form save, and activation submission containing the editor's current `finalText`.
 
-- [ ] **Step 1: Write failing page, route, and race assertions**
+- [x] **Step 1: Write failing page, route, and race assertions**
 
 Replace the old checkbox/radio assertions with:
 
@@ -371,7 +371,7 @@ assert.doesNotMatch(page.body, /decision_S1|userText_S1|接受建议|忽略建�
 
 POST create with `targetDirection` and no job IDs; assert the service receives the new signature. POST JSON autosave with `finalText`; assert `{ok:true}`. POST activation with text typed after the latest autosave started; assert `activateDraft` receives the activation form's newer text, proving the click cannot activate stale content.
 
-- [ ] **Step 2: Run the Dashboard test and verify failure**
+- [x] **Step 2: Run the Dashboard test and verify failure**
 
 ```powershell
 node tests/dashboard_resume_optimization_smoke.js
@@ -379,17 +379,17 @@ node tests/dashboard_resume_optimization_smoke.js
 
 Expected: failure on the old per-suggestion UI and old handler signatures.
 
-- [ ] **Step 3: Render source résumé plus direction selection**
+- [x] **Step 3: Render source résumé plus direction selection**
 
 Change the create form to show one source résumé selector and one required direction selector from `dashboard.directions`. Remove job checkboxes. Keep the no-model and no-complete-JD disabled states, with direct wording that a trusted complete JD is required.
 
-- [ ] **Step 4: Render the complete editor and read-only ledger**
+- [x] **Step 4: Render the complete editor and read-only ledger**
 
 For a `whole_draft` row, render one form containing the editable `textarea[name=finalText]`, explicit “保存草稿” fallback, a “复制当前全文” button, and an “启用为新版本” submit button using `formaction="/api/resume-optimization/activate"`. Resolve each change's `evidenceIds` against `evidenceCatalog` and render escaped excerpts plus the localized principle label. Show selected job title/company cards above the ledger. When `userEditedAt` is present, label the current full text “用户已修改”; keep the ledger explicitly tied to the system-generated baseline instead of inventing explanations for user edits.
 
 For `legacy_suggestions`, keep a read-only historical view; do not make users complete the retired per-item flow.
 
-- [ ] **Step 5: Add serialized 600 ms autosave**
+- [x] **Step 5: Add serialized 600 ms autosave**
 
 Replace per-suggestion JavaScript with one serialized write chain:
 
@@ -403,7 +403,7 @@ const save = (text) => fetch("/api/resume-optimization/save", {
 
 Debounce input by 600 ms, never run two saves concurrently, display saved/failed state, and leave the textarea content untouched after an error. The activation form submits its current textarea value directly; it does not wait for or trust an older autosave response.
 
-- [ ] **Step 6: Update handlers for full text**
+- [x] **Step 6: Update handlers for full text**
 
 Create handler input becomes:
 
@@ -418,11 +418,11 @@ Create handler input becomes:
 
 Save passes `{ profileId, draftId, finalText }`; return JSON for JSON requests and retain redirect fallback for normal forms. Activation passes `{ profileId, planId, draftId, finalText }`. Keep ownership checks and 404 behavior.
 
-- [ ] **Step 7: Add minimal existing-style layout rules**
+- [x] **Step 7: Add minimal existing-style layout rules**
 
 Reuse the current cards and typography. Add only full-editor, save-status, selected-job, and change-ledger rules; keep labels associated with controls, visible focus, and mobile single-column behavior.
 
-- [ ] **Step 8: Run Dashboard regressions**
+- [x] **Step 8: Run Dashboard regressions**
 
 ```powershell
 node tests/dashboard_resume_optimization_smoke.js
@@ -432,7 +432,7 @@ node tests/dashboard_shell_smoke.js
 
 Expected: all pass.
 
-- [ ] **Step 9: Commit the full-editor flow**
+- [x] **Step 9: Commit the full-editor flow**
 
 ```powershell
 git add src/dashboard/pages/resume_optimization.js src/dashboard/server.js src/dashboard/assets/roleflow.css tests/dashboard_resume_optimization_smoke.js
@@ -455,7 +455,7 @@ git commit -m "feat: edit complete resume drafts"
 - Consumes: `getActiveFunnelStrategyRound`, `startFunnelStrategyRound`, and transaction-aware round storage from stage two.
 - Produces: an activated optimization row whose `strategyRoundId` identifies the single round created by `sourceKey: resume_optimization:<optimizationId>`.
 
-- [ ] **Step 1: Add failing atomicity and idempotency tests**
+- [x] **Step 1: Add failing atomicity and idempotency tests**
 
 In the store test, activate with `planId` and current full text, then assert:
 
@@ -468,7 +468,7 @@ assert.equal(activeRound.sourceKey, `resume_optimization:${draft.id}`);
 
 Repeat activation and assert document/version/round counts do not change. Install a trigger that fails round insertion; assert document insertion, version insertion, optimization status, current full text, and previous active round closure all roll back together.
 
-- [ ] **Step 2: Run the focused tests and verify failure**
+- [x] **Step 2: Run the focused tests and verify failure**
 
 ```powershell
 node tests/resume_optimization_store_smoke.js
@@ -477,7 +477,7 @@ node tests/resume_optimization_service_smoke.js
 
 Expected: failure because activation does not yet create or store a strategy round.
 
-- [ ] **Step 3: Start the round inside the activation transaction**
+- [x] **Step 3: Start the round inside the activation transaction**
 
 After creating the new résumé version but before marking the optimization activated:
 
@@ -497,11 +497,11 @@ const strategyRound = startFunnelStrategyRound(db, {
 
 Persist `strategy_round_id` on the optimization update. Both round functions must detect `db.isTransaction` and avoid nesting `BEGIN`. If no previous active round exists, this becomes sequence 1 rather than creating an empty initial round first.
 
-- [ ] **Step 4: Pass the owned plan through the service**
+- [x] **Step 4: Pass the owned plan through the service**
 
 In `activateDraft`, validate the plan belongs to the profile and pass `planId` to storage. Name/target role metadata derives from frozen selected jobs and `targetDirection`; never recalculate target jobs during activation.
 
-- [ ] **Step 5: Run atomic activation regressions**
+- [x] **Step 5: Run atomic activation regressions**
 
 ```powershell
 node tests/resume_optimization_store_smoke.js
@@ -512,7 +512,7 @@ node tests/funnel_diagnosis_smoke.js
 
 Expected: all pass, including forced rollback and duplicate activation.
 
-- [ ] **Step 6: Commit the cross-stage boundary**
+- [x] **Step 6: Commit the cross-stage boundary**
 
 ```powershell
 git add src/storage/resume_optimization_store.js src/application/resume_optimization/index.js tests/resume_optimization_store_smoke.js tests/resume_optimization_service_smoke.js
@@ -534,7 +534,7 @@ git commit -m "feat: start funnel round on resume activation"
 - Consumes: all stage-three tasks.
 - Produces: verified whole-draft résumé checkpoint and explicit stage-four entry.
 
-- [ ] **Step 1: Run focused stage-three checks**
+- [x] **Step 1: Run focused stage-three checks**
 
 ```powershell
 node tests/storage_migration_smoke.js
@@ -549,7 +549,7 @@ node tests/funnel_diagnosis_smoke.js
 
 Expected: all pass.
 
-- [ ] **Step 2: Run the complete offline gate**
+- [x] **Step 2: Run the complete offline gate**
 
 ```powershell
 npm test
@@ -557,11 +557,11 @@ npm test
 
 Expected: a fresh `All <current count> offline checks passed.` result.
 
-- [ ] **Step 3: Update handoff and next-phase documents**
+- [x] **Step 3: Update handoff and next-phase documents**
 
 Record the complete draft/editor flow, selected JD evidence, immutable change ledger, activation/round transaction, actual test count, and that no real BOSS or user résumé was accessed. Set the next entry to résumé-general mock interview; do not claim it is implemented.
 
-- [ ] **Step 4: Check plan completion and repository hygiene**
+- [x] **Step 4: Check plan completion and repository hygiene**
 
 ```powershell
 rg -n "^- \[ \]" docs/superpowers/plans/2026-08-29-whole-draft-resume-optimization.md
@@ -571,14 +571,14 @@ git status --short
 
 Expected: no unchecked step or whitespace error and only intended documentation changes remain.
 
-- [ ] **Step 5: Commit the stage-three closeout**
+- [x] **Step 5: Commit the stage-three closeout**
 
 ```powershell
 git add docs/NEXT_PHASE.md docs/PROJECT_HANDOFF.md docs/superpowers/plans/2026-08-29-whole-draft-resume-optimization.md
 git commit -m "docs: close complete resume draft stage"
 ```
 
-- [ ] **Step 6: Verify the exact final commit**
+- [x] **Step 6: Verify the exact final commit**
 
 ```powershell
 node tests/resume_optimization_store_smoke.js
