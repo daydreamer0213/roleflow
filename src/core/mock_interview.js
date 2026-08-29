@@ -19,6 +19,39 @@ function buildResumeInterviewEvidenceCatalog(sourceText) {
   return lines.map((text, index) => ({ id: `R${index + 1}`, kind: "resume", text }));
 }
 
+function projectInterviewFacts({ factRevisions = [], answerMemories = [], allowedScopeKinds = [] } = {}) {
+  const allowedScopes = new Set(allowedScopeKinds.map((kind) => String(kind || "").trim()).filter(Boolean));
+  const memoriesById = new Map((Array.isArray(answerMemories) ? answerMemories : [])
+    .filter((memory) => memory && !memory.withdrawnAt)
+    .map((memory) => [Number(memory.id), memory]));
+  const newestByKey = new Map();
+
+  for (const revision of Array.isArray(factRevisions) ? factRevisions : []) {
+    if (!revision || revision.withdrawnAt) continue;
+    const factKey = String(revision.factKey || "").trim();
+    if (!factKey) continue;
+    const memoryId = Number(revision.answerMemoryId || 0);
+    const memory = memoryId ? memoriesById.get(memoryId) : null;
+    if (memoryId && (!memory || !allowedScopes.has(String(memory.scope?.kind || "")))) continue;
+    const rankedAt = Date.parse(memory ? memory.updatedAt : revision.createdAt);
+    const rank = Number.isFinite(rankedAt) ? rankedAt : 0;
+    const id = Number(revision.id || 0);
+    const current = newestByKey.get(factKey);
+    if (!current || rank > current.rank || (rank === current.rank && id > current.id)) {
+      newestByKey.set(factKey, { revision, rank, id });
+    }
+  }
+
+  return [...newestByKey.entries()]
+    .filter(([, selected]) => selected.revision.operation !== "delete")
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([factKey, selected]) => ({
+      factKey,
+      factValue: String(selected.revision.factValue ?? ""),
+      source: String(selected.revision.source || "")
+    }));
+}
+
 function normalizeInterviewSettings(input = {}) {
   const type = cleanText(input.type || "mixed", 30, "面试类型");
   if (!INTERVIEW_TYPES.has(type)) throw new Error(`不支持的面试类型：${type}`);
@@ -184,6 +217,7 @@ function validateRetryReview(raw, context = {}) {
 module.exports = {
   normalizeInterviewSettings,
   buildResumeInterviewEvidenceCatalog,
+  projectInterviewFacts,
   validateInterviewStep,
   validateInterviewReport,
   validateRetryReview

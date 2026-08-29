@@ -2,8 +2,8 @@ const {
   getCandidateProfile,
   getSearchPlan,
   listCandidateResumeVersions,
-  listCandidateFacts,
   listCandidateAnswerMemories,
+  listCandidateFactRevisions,
   listDecisionPool,
   createMockInterviewSession,
   getMockInterviewSession,
@@ -15,6 +15,8 @@ const {
 const { prepareResumeTextForModel } = require("../../core/resume_privacy");
 const {
   normalizeInterviewSettings,
+  buildResumeInterviewEvidenceCatalog,
+  projectInterviewFacts,
   validateInterviewStep,
   validateInterviewReport,
   validateRetryReview
@@ -38,16 +40,25 @@ function createMockInterviewService({ db, adapter = null } = {}) {
     requireAdapterMethod("generateMockInterviewStep");
     const profileId = requiredId(input.profileId, "profileId");
     const plan = ownedPlan(profileId, input.planId);
-    const job = ownedCompleteJob(plan, input.jobId);
+    const sessionKind = normalizeSessionKind(input.sessionKind);
+    if (sessionKind === "resume_general" && input.jobId !== undefined && input.jobId !== null && input.jobId !== "") {
+      throw serviceError("MOCK_INTERVIEW_GENERAL_JOB_FORBIDDEN", "简历通用面试不能绑定岗位");
+    }
+    const job = sessionKind === "job_specific" ? ownedCompleteJob(plan, input.jobId) : null;
     const resume = ownedResume(profileId, input.resumeVersionId);
     const settings = normalizeInterviewSettings(input.settings);
-    const context = buildFrozenContext(profileId, plan.id, job, resume);
+    const context = buildFrozenContext(profileId, plan.id, sessionKind, job, resume);
     const rawStep = await adapter.generateMockInterviewStep({ context, settings, turns: [] });
-    const step = validateInterviewStep(rawStep, { turns: [] });
+    const step = validateInterviewStep(rawStep, {
+      turns: [],
+      resumeEvidenceCatalog: context.resumeEvidenceCatalog,
+      sessionKind: context.sessionKind
+    });
     const session = createMockInterviewSession(db, {
       profileId,
       planId: plan.id,
-      jobId: job.id,
+      sessionKind,
+      jobId: job?.id ?? null,
       resumeVersionId: resume.id,
       context,
       settings,
@@ -85,7 +96,11 @@ function createMockInterviewService({ db, adapter = null } = {}) {
       settings: session.settings,
       turns
     });
-    const step = validateInterviewStep(rawStep, { turns });
+    const step = validateInterviewStep(rawStep, {
+      turns,
+      resumeEvidenceCatalog: session.context.resumeEvidenceCatalog,
+      sessionKind: session.context.sessionKind
+    });
     const plannedQuestions = Number(session.settings.plannedQuestions);
     if (turns.length < plannedQuestions && step.complete) {
       throw serviceError("MOCK_INTERVIEW_STEP_TOO_EARLY", "模型在达到计划题数前结束了面试，本次回答未保存");
@@ -171,25 +186,27 @@ function createMockInterviewService({ db, adapter = null } = {}) {
   }
 
   function getSession({ profileId, planId, sessionId } = {}) {
-    return getMockInterviewSession(db, {
+    return hydrateSessionContext(getMockInterviewSession(db, {
       profileId: requiredId(profileId, "profileId"),
       planId: requiredId(planId, "planId"),
       sessionId: requiredId(sessionId, "sessionId")
-    });
+    }));
   }
 
-  function listSessions({ profileId, planId, limit = 30 } = {}) {
+  function listSessions({ profileId, planId, sessionKind = "", limit = 30 } = {}) {
     return listMockInterviewSessions(db, {
       profileId: requiredId(profileId, "profileId"),
       planId: requiredId(planId, "planId"),
+      sessionKind,
       limit
-    });
+    }).map(hydrateSessionContext);
   }
 
   function dashboard({ profileId, planId, sessionId = null } = {}) {
     const profile = requiredId(profileId, "profileId");
     const plan = ownedPlan(profile, planId);
-    const sessions = listMockInterviewSessions(db, { profileId: profile, planId: plan.id, limit: 30 });
+    const sessions = listMockInterviewSessions(db, { profileId: profile, planId: plan.id, limit: 30 })
+      .map(hydrateSessionContext);
     return {
       profile: getCandidateProfile(db, profile),
       plan,
@@ -197,47 +214,81 @@ function createMockInterviewService({ db, adapter = null } = {}) {
       resumes: listCandidateResumeVersions(db, profile).filter((resume) => resume.isActive),
       sessions,
       selectedSession: sessionId
-        ? getMockInterviewSession(db, { profileId: profile, planId: plan.id, sessionId })
+        ? hydrateSessionContext(getMockInterviewSession(db, { profileId: profile, planId: plan.id, sessionId }))
         : sessions[0] || null
     };
   }
 
-  function buildFrozenContext(profileId, planId, job, resume) {
+  function buildFrozenContext(profileId, planId, sessionKind, job, resume) {
     const profile = getCandidateProfile(db, profileId);
     const names = [profile?.displayName, profile?.profile?.candidate?.name]
       .map((value) => String(value || "").trim()).filter(Boolean);
     const prepared = prepareResumeTextForModel(resume.text, {
       identity: { names }, originalFileName: resume.fileName, strict: true
     });
+    const allowedScopeKinds = sessionKind === "resume_general"
+      ? ["global", "experience"]
+      : ["global", "experience", "job", "company"];
     const activeAnswers = applicableAnswers(listCandidateAnswerMemories(db, {
       profileId,
       activeOnly: true,
       source: "user_edited_reply",
       limit: 100
-    }), job);
-    const priorWeaknesses = listMockInterviewSessions(db, { profileId, planId, limit: 10 })
+    }), { sessionKind, job });
+    const factMemories = listCandidateAnswerMemories(db, {
+      profileId,
+      activeOnly: false,
+      source: "user_edited_reply",
+      limit: 500
+    }).filter((memory) => !memory.withdrawnAt);
+    const historyQuery = sessionKind === "resume_general"
+      ? { profileId, sessionKind, limit: 30 }
+      : { profileId, planId, sessionKind, limit: 30 };
+    const priorWeaknesses = listMockInterviewSessions(db, historyQuery)
       .filter((session) => session.status === "completed" && session.report)
       .flatMap((session) => [
         ...(session.report.improvements || []),
         ...(session.report.retryRecommendations || []).map((item) => item.reason)
       ]).filter(Boolean).slice(0, 8);
     return {
-      job: {
+      sessionKind,
+      job: job ? {
         id: Number(job.id),
         title: String(job.title || ""),
         company: String(job.company || ""),
         description: String(job.description || ""),
         analysis: job.analysis || {}
-      },
+      } : null,
       resume: {
         versionId: resume.id,
         name: resume.name,
         contentHash: resume.contentHash,
         text: prepared.text
       },
-      candidateFacts: listCandidateFacts(db, profileId),
+      resumeEvidenceCatalog: buildResumeInterviewEvidenceCatalog(prepared.text),
+      candidateFacts: projectInterviewFacts({
+        factRevisions: listCandidateFactRevisions(db, { profileId, limit: 2000 }),
+        answerMemories: factMemories,
+        allowedScopeKinds
+      }),
       answerMemories: activeAnswers,
       priorWeaknesses
+    };
+  }
+
+  function hydrateSessionContext(session) {
+    if (!session) return null;
+    const context = session.context && typeof session.context === "object" ? session.context : {};
+    const resumeEvidenceCatalog = Array.isArray(context.resumeEvidenceCatalog) && context.resumeEvidenceCatalog.length
+      ? context.resumeEvidenceCatalog
+      : buildResumeInterviewEvidenceCatalog(context.resume?.text);
+    return {
+      ...session,
+      context: {
+        ...context,
+        sessionKind: context.sessionKind || session.sessionKind,
+        resumeEvidenceCatalog
+      }
     };
   }
 
@@ -273,7 +324,7 @@ function createMockInterviewService({ db, adapter = null } = {}) {
   }
 
   function ownedActiveSession(profileId, planId, sessionId) {
-    const session = getMockInterviewSession(db, { profileId, planId, sessionId });
+    const session = hydrateSessionContext(getMockInterviewSession(db, { profileId, planId, sessionId }));
     if (!session) throw serviceError("MOCK_INTERVIEW_NOT_FOUND", "面试会话不存在");
     if (session.status !== "active") throw serviceError("MOCK_INTERVIEW_COMPLETED", "面试已经结束");
     return session;
@@ -296,14 +347,23 @@ function modelTurns(turns) {
   }));
 }
 
-function applicableAnswers(answers, job) {
+function applicableAnswers(answers, { sessionKind, job }) {
   return answers.filter((answer) => {
     const scope = answer.scope || { kind: "global", key: "" };
     if (["global", "experience"].includes(scope.kind)) return true;
+    if (sessionKind === "resume_general" || !job) return false;
     if (scope.kind === "job") return String(scope.key || "") === String(job.id);
     if (scope.kind === "company") return String(scope.key || "").trim() === String(job.company || "").trim();
     return false;
   });
+}
+
+function normalizeSessionKind(value) {
+  const kind = String(value || "resume_general").trim();
+  if (!["resume_general", "job_specific"].includes(kind)) {
+    throw new Error(`不支持的面试场景：${kind}`);
+  }
+  return kind;
 }
 
 function isCompleteJob(job) {
