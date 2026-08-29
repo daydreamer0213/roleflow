@@ -187,3 +187,13 @@ h2{font-size:19px;font-weight:600}
   .message-list>h2{grid-column:1/-1}
   .message-list-item{border-right:1px solid var(--rf-rule)}
 }
+
+/* Funnel: conclusion first, evidence second, mechanics on demand. */
+.funnel-focus{display:grid;gap:14px;margin-bottom:18px}
+.funnel-focus .funnel-evidence{margin:0}
+.funnel-focus .funnel-conclusion{margin:0}
+.funnel-sample-details{margin:12px 0 18px;border-top:1px solid var(--rf-rule);border-bottom:1px solid var(--rf-rule)}
+.funnel-sample-details>summary{display:flex;align-items:center;min-height:46px;color:var(--rf-ink-soft);font-size:13px;font-weight:600;cursor:pointer}
+.funnel-sample-details .funnel-metrics{margin:0 0 16px}
+.funnel-flow{margin-top:18px;border-top:4px solid var(--rf-teal)}
+.funnel-round-compare{border-left:4px solid var(--rf-orange)}

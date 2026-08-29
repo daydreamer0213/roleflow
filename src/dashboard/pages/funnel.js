@@ -56,15 +56,14 @@ function renderFunnelPage({ plan = {}, dashboard = {} } = {}) {
         <p class="lede">每次招呼语、简历或求职策略调整都单独验证。先等真实反馈成熟，再比较调整前后发生了什么。</p>
         <div class="heading-meta"><span>${escapeHtml(plan.name || "当前筛选方案")}</span><span class="status ${strengthTone(strength)}">${escapeHtml(STRENGTH_LABELS[strength] || STRENGTH_LABELS.facts)}</span></div>
       </section>
+      <section class="funnel-focus" aria-label="当前诊断与证据强度">${renderConclusion(dashboard, strength)}${renderThresholdRuler(activePolicy, diagnosticSample, strength)}</section>
       ${renderCurrentRound(currentRound)}
-      ${renderConclusion(dashboard, strength)}
-      ${renderThresholdRuler(activePolicy, diagnosticSample, strength)}
-      ${renderSampleMetrics({
+      <details class="funnel-sample-details"><summary>查看本轮样本与等待情况</summary>${renderSampleMetrics({
         diagnosticSample,
         started,
         waiting,
         unknown
-      })}
+      })}</details>
       ${renderEarlyPositive(currentRound.earlyPositive || {})}
       ${started ? renderFunnelStages(dashboard.funnel || {}) : renderEmptyState()}
       ${renderComparisons(dashboard.comparisons || {}, activePolicy, strength)}
@@ -136,7 +135,7 @@ function renderEarlyPositive(counts) {
 
 function renderFunnelStages(funnel) {
   const rows = STAGES.map(([key, label]) => renderStage(label, funnel[key] || {})).join("");
-  return `<section class="card pad funnel-stages" aria-labelledby="funnel-stages-title"><div class="funnel-section-head"><div><p class="section-label">成熟样本漏斗</p><h2 id="funnel-stages-title">反馈走到了哪一步</h2></div><p class="muted">分母只使用已到达上一环节、且本环节状态明确的成熟样本；等待单列。</p></div><div class="funnel-stage-list">${rows}</div></section>`;
+  return `<section class="card pad funnel-stages funnel-flow" aria-labelledby="funnel-stages-title"><div class="funnel-section-head"><div><p class="section-label">成熟样本漏斗</p><h2 id="funnel-stages-title">反馈走到了哪一步</h2></div><p class="muted">分母只使用已到达上一环节、且本环节状态明确的成熟样本；等待单列。</p></div><div class="funnel-stage-list">${rows}</div></section>`;
 }
 
 function renderStage(label, value) {
@@ -211,7 +210,7 @@ function renderRoundComparison(previous, comparison = {}) {
       ["interviewInvited", "面试邀请"]
     ].map(([key, label]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(metricText(comparison.before?.stages?.[key]))}</strong><i aria-hidden="true">→</i><strong>${escapeHtml(metricText(comparison.after?.stages?.[key]))}</strong></div>`).join("")}</div>`
     : "";
-  return `<section class="card pad funnel-round-comparison" aria-labelledby="funnel-round-comparison-title">
+  return `<section class="card pad funnel-round-comparison funnel-round-compare" aria-labelledby="funnel-round-comparison-title">
     <div class="funnel-section-head"><div><p class="section-label">上一策略轮次 · 第 ${previousNumber} 轮</p><h2 id="funnel-round-comparison-title">调整前后对照</h2></div><p class="muted">${escapeHtml(note)}</p></div>
     ${metrics}
     ${comparison.status === "ready" ? '<p class="funnel-round-comparison-legend"><span>上一轮</span><span>当前轮</span></p>' : `<p>${escapeHtml(previous.headline || "上一轮结果已保留，迟到反馈仍会继续更新。")}</p>`}
