@@ -477,7 +477,7 @@ git commit -m "feat: expose funnel strategy rounds"
 - Consumes: all stage-two implementation tasks.
 - Produces: verified stage-two checkpoint and an explicit stage-three entry.
 
-- [ ] **Step 1: Run the focused stage-two gate**
+- [x] **Step 1: Run the focused stage-two gate**
 
 ```powershell
 node tests/storage_migration_smoke.js
@@ -491,7 +491,7 @@ node tests/dashboard_funnel_smoke.js
 
 Expected: every process exits 0.
 
-- [ ] **Step 2: Run the complete offline gate**
+- [x] **Step 2: Run the complete offline gate**
 
 ```powershell
 npm test
@@ -499,7 +499,7 @@ npm test
 
 Expected: `All <current count> offline checks passed.` Record the actual count in `docs/PROJECT_HANDOFF.md`; do not reuse an older number.
 
-- [ ] **Step 3: Update user-facing project documents**
+- [x] **Step 3: Update user-facing project documents**
 
 In `docs/NEXT_PHASE.md` and `docs/PROJECT_HANDOFF.md`, record:
 
@@ -512,7 +512,7 @@ In `docs/NEXT_PHASE.md` and `docs/PROJECT_HANDOFF.md`, record:
 
 Do not describe stage three or four as implemented.
 
-- [ ] **Step 4: Self-review the completed plan checkboxes and diff**
+- [x] **Step 4: Self-review the completed plan checkboxes and diff**
 
 ```powershell
 rg -n "^- \[ \]" docs/superpowers/plans/2026-08-29-funnel-strategy-rounds.md
@@ -522,14 +522,14 @@ git status --short
 
 Expected: no unchecked implementation step, no whitespace error, and only intended files changed.
 
-- [ ] **Step 5: Commit the stage-two closeout**
+- [x] **Step 5: Commit the stage-two closeout**
 
 ```powershell
 git add docs/NEXT_PHASE.md docs/PROJECT_HANDOFF.md docs/superpowers/plans/2026-08-29-funnel-strategy-rounds.md
 git commit -m "docs: close funnel strategy round stage"
 ```
 
-- [ ] **Step 6: Verify the exact final commit**
+- [x] **Step 6: Verify the exact final commit**
 
 ```powershell
 node tests/funnel_strategy_round_store_smoke.js
