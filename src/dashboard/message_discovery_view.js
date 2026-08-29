@@ -1,6 +1,6 @@
 const { listUnresolvedMessageDiscoveryItems } = require("../core/message_preview_state");
 
-function renderMessageDiscoveryPage({ db, searchParams, controller, messageReplyActionToken = "", helpers }) {
+function renderMessageDiscoveryPage({ db, searchParams, controller, replySendController = null, messageReplyActionToken = "", helpers }) {
   const {
     getCandidateProfile,
     renderErrorPage,
@@ -25,6 +25,7 @@ function renderMessageDiscoveryPage({ db, searchParams, controller, messageReply
   }
   const profile = getCandidateProfile(db, profileId);
   if (!profile) return renderErrorPage("候选人画像不存在。", "/onboarding", { code: "MESSAGE_DISCOVERY_PROFILE_NOT_FOUND" });
+  const initialReplySend = replySendController?.latest?.({ profileId }) || null;
   const pageState = controller.pageState(profileId);
   const durableUnresolved = listUnresolvedMessageDiscoveryItems(db, { profileId });
   const status = durableUnresolved.length
@@ -67,8 +68,11 @@ function renderMessageDiscoveryPage({ db, searchParams, controller, messageReply
       const sent = editable
         ? `<form method="post" action="/api/progress" data-sent-draft="${id}"><input type="hidden" name="cardId" value="${result.cardId}"><input type="hidden" name="draftId" value="${draft.id}"><input type="hidden" name="finalText" value=""><input type="hidden" name="idempotencyKey" value="${escapeAttr(newProgressRequestKey())}"><input type="hidden" name="action" value="reply_confirmed_sent"><button>已手动发送</button></form>`
         : "";
+      const alternativeSelector = draftItems.length > 1
+        ? `<input type="radio" name="message-send-choice-${Number(result.cardId)}" data-send-select="${draft.id}"${messageIndex === 0 ? " checked" : ""}>选择这版回复`
+        : `<input type="checkbox" data-send-select="${draft.id}" checked>加入本次发送`;
       const send = editable
-        ? `<div class="message-draft-actions"><label class="message-send-choice"><input type="checkbox" data-send-select="${draft.id}" checked>加入本次发送</label><button type="button" data-send-single="${draft.id}">确认发送</button></div><p class="message-send-status" data-send-status="${draft.id}" role="status">等待确认</p>`
+        ? `<div class="message-draft-actions"><label class="message-send-choice">${alternativeSelector}</label><button type="button" data-send-single="${draft.id}">确认发送</button></div><p class="message-send-status" data-send-status="${draft.id}" role="status">等待确认</p>`
         : "";
       return `<section class="message-draft" data-draft-card="${draft.id}"><label for="${id}">草稿 ${messageIndex + 1}</label><textarea id="${id}"${editable ? ` data-draft-text data-draft-id="${draft.id}" data-revision="${draft.revision}" data-draft-revision="${draft.revision}"` : " readonly"}>${escapeHtml(draft.text)}</textarea><button type="button" data-copy-draft="${id}"${editable ? "" : " data-copy-only"}>复制到本机剪贴板</button>${send}${sent}</section>`;
     }).join("");
@@ -116,9 +120,11 @@ function renderMessageDiscoveryPage({ db, searchParams, controller, messageReply
   </section>`;
   const sendableDraftCount = status.results.reduce((count, result) => count
     + (Array.isArray(result.drafts) ? result.drafts.filter((draft) => Number(draft?.id) > 0).length : 0), 0);
+  const selectedDraftCount = status.results.reduce((count, result) => count
+    + (Array.isArray(result.drafts) && result.drafts.some((draft) => Number(draft?.id) > 0) ? 1 : 0), 0);
   const sendBatchPanel = sendableDraftCount > 0 ? `<section class="message-send-batch" data-send-batch-panel data-state="idle" aria-label="确认发送">
-    <div><strong data-send-batch-title>已选择 ${sendableDraftCount} 条草稿</strong><span data-send-batch-status>逐条确认目标后在后台串行发送</span></div>
-    <div class="button-row"><button type="button" data-send-batch>确认并串行发送 ${sendableDraftCount} 条</button><button type="button" class="secondary" data-send-stop hidden disabled>停止后续发送</button></div>
+    <div><strong data-send-batch-title>已选择 ${selectedDraftCount} 条草稿</strong><span data-send-batch-status>逐条确认目标后在后台串行发送</span></div>
+    <div class="button-row"><button type="button" data-send-batch>确认并串行发送 ${selectedDraftCount} 条</button><button type="button" class="secondary" data-send-stop hidden disabled>停止后续发送</button></div>
   </section>` : "";
   const unresolvedSections = durableUnresolved.map((item) =>
     renderUnresolvedItem(db, item, { profileId, escapeHtml, escapeAttr })
@@ -128,6 +134,7 @@ function renderMessageDiscoveryPage({ db, searchParams, controller, messageReply
     profileId,
     status: status.status,
     recoveryMessages,
+    initialReplySend,
     messageReplyActionToken: String(messageReplyActionToken || "")
   });
   return renderFramedPage({
@@ -189,6 +196,7 @@ function messageDiscoveryClientScript(scriptState) {
       MESSAGE_REPLY_SEND_LEASE_BUSY:"BOSS 正在执行另一项任务，请等待完成后再发送。",
       MESSAGE_REPLY_SEND_REVISION_CONFLICT:"草稿刚刚发生变化，请刷新页面后重新确认。",
       MESSAGE_REPLY_SEND_DRAFT_BUSY:"这条草稿已经属于另一批发送任务。",
+      MESSAGE_REPLY_SEND_CONVERSATION_DUPLICATE:"同一条 HR 会话只能选择一个回复版本。",
       MESSAGE_REPLY_SEND_CONTEXT_REQUIRED:"这条草稿缺少可验证的 HR 消息上下文，未发送。",
       MESSAGE_REPLY_SEND_ACTION_REQUIRED:"请从当前消息页面重新点击确认发送。"
     }[String(code||"")]||"发送没有开始，请刷新页面后重试。");
@@ -197,9 +205,10 @@ function messageDiscoveryClientScript(scriptState) {
     const updateSelection=()=>{if(!sendBatchButton)return;const count=selectedFields().length;sendBatchButton.disabled=sendPending||count===0||activeBatchId>0;sendBatchButton.textContent="确认并串行发送 "+count+" 条";if(sendBatchTitle&&!activeBatchId)sendBatchTitle.textContent="已选择 "+count+" 条草稿";};
     const setDiscoveryLocked=(locked)=>{for(const form of forms)for(const button of form.querySelectorAll("button")){if(!("sendBaseDisabled" in button.dataset))button.dataset.sendBaseDisabled=String(button.disabled);button.disabled=locked||button.dataset.sendBaseDisabled==="true";}};
     const setDraftPending=(fields,locked)=>{for(const field of fields){const card=field.closest("[data-draft-card]");if(!card||ownedDraftCards.has(card))continue;for(const control of card.querySelectorAll("button,input,textarea")){if(!("sendPendingBaseDisabled" in control.dataset))control.dataset.sendPendingBaseDisabled=String(control.disabled);control.disabled=locked||control.dataset.sendPendingBaseDisabled==="true";}}};
-    const setOwned=(fields)=>{for(const field of fields){field.disabled=true;const card=field.closest("[data-draft-card]");if(!card)continue;ownedDraftCards.add(card);for(const control of card.querySelectorAll("button,input,textarea"))control.disabled=true;}};
+    const setOwned=(fields)=>{for(const field of fields){field.disabled=true;const card=field.closest("[data-draft-card]");if(!card)continue;ownedDraftCards.add(card);for(const control of card.querySelectorAll("button,input,textarea")){if(!("sendPendingBaseDisabled" in control.dataset))control.dataset.sendPendingBaseDisabled=String(control.disabled);control.disabled=true;}}};
+    const releaseOwned=(field)=>{const card=field?.closest("[data-draft-card]");if(!card)return;ownedDraftCards.delete(card);for(const control of card.querySelectorAll("button,input,textarea"))control.disabled=control.dataset.sendPendingBaseDisabled==="true";};
     const sendStatusLabel=(status)=>({pending:"等待发送",selecting:"正在核对会话",verified:"目标已核对",filled:"草稿已填入",click_dispatched:"正在确认发送结果",succeeded:"已发送并记住本次修改",target_mismatch:"岗位或会话已变化，未发送",platform_rejected:"平台未接受本次发送",ambiguous:"发送结果不确定，请到 BOSS 消息页核对",stopped:"已停止，未发送"}[status]||"等待处理");
-    const applySendState=(state)=>{if(!state?.batch||!Array.isArray(state.items))return;activeBatchId=Number(state.batch.id)||activeBatchId;const terminal=terminalBatchStatuses.has(state.batch.status);let finished=0;for(const item of state.items){const node=document.querySelector('[data-send-status="'+Number(item.draftId)+'"]');if(node){node.textContent=sendStatusLabel(item.status);node.dataset.state=item.status;}const field=fieldForDraft(item.draftId);if(field)setOwned([field]);if(["succeeded","target_mismatch","platform_rejected","ambiguous","stopped"].includes(item.status))finished+=1;}if(sendPanel)sendPanel.dataset.state=state.batch.status;if(sendBatchTitle)sendBatchTitle.textContent="发送进度 "+finished+" / "+state.items.length;if(sendBatchStatus)sendBatchStatus.textContent=terminal?(state.batch.status==="completed"?"本批次已全部发送":"本批次已停止，未继续发送后续消息"):"正在后台逐条核对并发送，请不要关闭 RoleFlow";if(sendStopButton){sendStopButton.hidden=terminal;sendStopButton.disabled=terminal;}setDiscoveryLocked(!terminal);if(terminal){sendPending=false;if(sendPollTimer!==null)clearTimeout(sendPollTimer);sendPollTimer=null;}else scheduleSendPoll();updateSelection();};
+    const applySendState=(state)=>{if(!state?.batch||!Array.isArray(state.items))return;activeBatchId=Number(state.batch.id)||activeBatchId;const terminal=terminalBatchStatuses.has(state.batch.status);let finished=0;for(const item of state.items){const node=document.querySelector('[data-send-status="'+Number(item.draftId)+'"]');if(node){node.textContent=sendStatusLabel(item.status);node.dataset.state=item.status;}const field=fieldForDraft(item.draftId);if(field&&terminal&&["target_mismatch","platform_rejected","stopped"].includes(item.status))releaseOwned(field);else if(field)setOwned([field]);if(["succeeded","target_mismatch","platform_rejected","ambiguous","stopped"].includes(item.status))finished+=1;}if(sendPanel)sendPanel.dataset.state=state.batch.status;if(sendBatchTitle)sendBatchTitle.textContent="发送进度 "+finished+" / "+state.items.length;if(sendBatchStatus)sendBatchStatus.textContent=terminal?(state.batch.status==="completed"?"本批次已全部发送":"本批次已停止，未继续发送后续消息"):"正在后台逐条核对并发送，请不要关闭 RoleFlow";if(sendStopButton){sendStopButton.hidden=terminal;sendStopButton.disabled=terminal;}setDiscoveryLocked(!terminal);if(terminal){activeBatchId=0;sendPending=false;if(sendPollTimer!==null)clearTimeout(sendPollTimer);sendPollTimer=null;}else scheduleSendPoll();updateSelection();};
     const readSendResponse=async(response)=>{const parsed=await read(response);if(!response.ok||!parsed.json||!parsed.body?.batch)throw new Error(parsed.body?.errorCode||"MESSAGE_REPLY_SEND_FAILED");return parsed.body;};
     const postSendBatch=async(items)=>readSendResponse(await fetch("/api/message-reply-send-batch",{method:"POST",headers:{"content-type":"application/json","x-roleflow-action":initial.messageReplyActionToken},body:JSON.stringify({profileId:initial.profileId,items})}));
     const scheduleSendPoll=()=>{if(activeBatchId>0&&sendPollTimer===null)sendPollTimer=setTimeout(pollSend,1200);};
@@ -210,6 +219,7 @@ function messageDiscoveryClientScript(scriptState) {
     sendBatchButton?.addEventListener("click",()=>startSend(selectedFields()));
     sendStopButton?.addEventListener("click",async()=>{if(!activeBatchId||sendStopButton.disabled)return;sendStopButton.disabled=true;try{const state=await readSendResponse(await fetch("/api/message-reply-send-control",{method:"POST",headers:{"content-type":"application/json","x-roleflow-action":initial.messageReplyActionToken},body:JSON.stringify({profileId:initial.profileId,batchId:activeBatchId,action:"stop"})}));applySendState(state);feedback.textContent="已停止后续发送。";}catch(error){sendStopButton.disabled=false;feedback.textContent=sendMessage(error.message);}});
     updateSelection();
+    if(initial.initialReplySend)applySendState(initial.initialReplySend);
     for(const link of document.querySelectorAll("[data-flush-drafts]"))link.addEventListener("click",async(event)=>{const fields=Array.from(document.querySelectorAll("[data-draft-text]"));if(!fields.length)return;event.preventDefault();await Promise.allSettled(fields.map(saveDraft));location.href=link.href;});
     const poll=async()=>{pollTimer=null;if(reloadPending||pollPending||actionPending)return;pollPending=true;const version=actionVersion;try{const response=await fetch("/api/message-discovery-status?profileId="+encodeURIComponent(initial.profileId));const parsed=await read(response);if(reloadPending||actionPending||version!==actionVersion)return;if(!accepted(response,parsed,pollStatuses)){show(rejectedCode(parsed));return;}currentStatus=parsed.body.status;if(currentStatus==="running")schedulePoll();else requestReload();}catch{if(!reloadPending&&!actionPending&&version===actionVersion)show("MESSAGE_DISCOVERY_BROWSER_UNAVAILABLE");}finally{pollPending=false;if(!reloadPending&&!actionPending&&version!==actionVersion&&currentStatus==="running")schedulePoll();}};
     if(currentStatus==="running")schedulePoll();

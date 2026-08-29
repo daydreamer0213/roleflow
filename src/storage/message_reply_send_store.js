@@ -89,6 +89,16 @@ function createMessageReplySendBatch(db, input = {}) {
   try {
     return immediateTransaction(db, () => {
       const frozen = requested.map((item) => freezeDraft(db, profileId, item));
+      const conversations = new Set();
+      for (const item of frozen) {
+        if (conversations.has(item.conversationKey)) {
+          throw storageError(
+            "MESSAGE_REPLY_SEND_CONVERSATION_DUPLICATE",
+            "one reply batch may contain only one draft for each conversation"
+          );
+        }
+        conversations.add(item.conversationKey);
+      }
       const batchId = Number(db.prepare(`INSERT INTO message_reply_send_batches(
         profile_id, status, stop_code, created_at, updated_at, completed_at
       ) VALUES (?, 'confirmed', '', ?, ?, NULL)`).run(profileId, createdAt, createdAt).lastInsertRowid);

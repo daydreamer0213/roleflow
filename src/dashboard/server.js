@@ -927,6 +927,7 @@ function createDashboardServer({
         db,
         searchParams: url.searchParams,
         controller: messageDiscovery,
+        replySendController: messageReplySend,
         messageReplyActionToken,
         helpers: messageDiscoveryViewHelpers()
       }));
@@ -3707,6 +3708,7 @@ function sendMessageReplySendError(res, error) {
     "MESSAGE_REPLY_SEND_PROFILE_BUSY",
     "MESSAGE_REPLY_SEND_LEASE_BUSY",
     "MESSAGE_REPLY_SEND_DRAFT_BUSY",
+    "MESSAGE_REPLY_SEND_CONVERSATION_DUPLICATE",
     "MESSAGE_REPLY_SEND_REVISION_CONFLICT",
     "MESSAGE_REPLY_SEND_DRAFT_CLOSED",
     "MESSAGE_REPLY_SEND_CONTEXT_REQUIRED",

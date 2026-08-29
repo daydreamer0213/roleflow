@@ -284,19 +284,15 @@ function buildEditorReadbackExpression() {
 }
 
 function buildClearExpression(item) {
-  const expected = JSON.stringify({ replyText: item.replyText, replyDigest: item.replyDigest });
-  return String.raw`(() => {
-    const operation = "__roleflowReplyClear";
-    const expected = ${expected};
-    const fold = (value) => String(value == null ? "" : value).replace(/\s+/g, " ").trim();
+  return buildPageExpression("__roleflowReplyClear", item, String.raw`
     const editors = Array.from(document.querySelectorAll("#chat-input"));
-    if (location.pathname !== "${CHAT_PATH}" || editors.length !== 1) return { state: "not_owned", operation };
+    if (editors.length !== 1) return { state: "not_owned", operation };
     const editor = editors[0];
     if (fold(editor.innerText || editor.textContent) !== fold(expected.replyText)) return { state: "not_owned", operation };
     editor.textContent = "";
     editor.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward", data: null }));
     return { state: fold(editor.innerText || editor.textContent) ? "not_owned" : "cleared", operation };
-  })()`;
+  `);
 }
 
 function buildDispatchExpression(item) {

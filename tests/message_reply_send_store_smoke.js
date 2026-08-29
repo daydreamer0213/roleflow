@@ -26,6 +26,7 @@ try {
   const first = createDraft(db, owner, "first", "第一条模型草稿", now);
   const second = createDraft(db, owner, "second", "第二条模型草稿", now);
   const third = createDraft(db, owner, "third", "第三条模型草稿", now);
+  const alternatives = createDraftAlternatives(db, owner, "alternatives", ["备选版本甲", "备选版本乙"], now);
   const secretHrText = "HR 原文只允许保存在开放展示上下文";
   const forbiddenRecruiter = "FORBIDDEN_RECRUITER_LABEL";
   const forbiddenSecurity = "FORBIDDEN_SECURITY_ID";
@@ -80,6 +81,7 @@ try {
 
   saveContext(second, "conversation-second", "encrypt-job-second", "378917037748751");
   saveContext(third, "conversation-third", "encrypt-job-third", "378917037748752");
+  saveContext(alternatives, "conversation-alternatives", "encrypt-job-alternatives", "378917037748753");
   assert.throws(
     () => saveContext(third, "conversation-third", "encrypt-job-third", "bad-message-id"),
     (error) => error.code === "MESSAGE_INBOUND_CONTEXT_INVALID"
@@ -111,6 +113,15 @@ try {
     text: "这是第二条确认文字。",
     updatedAt: "2026-08-29T01:02:00.000Z"
   });
+  assert.throws(
+    () => store.createMessageReplySendBatch(db, {
+      profileId: owner.profileId,
+      items: alternatives.drafts.map((draft) => ({ draftId: draft.id, revision: draft.revision })),
+      createdAt: "2026-08-29T01:02:30.000Z"
+    }),
+    (error) => error.code === "MESSAGE_REPLY_SEND_CONVERSATION_DUPLICATE",
+    "two alternative drafts for one HR conversation must never enter the same batch"
+  );
   const frozen = store.createMessageReplySendBatch(db, {
     profileId: owner.profileId,
     items: [
@@ -353,6 +364,26 @@ function createDraft(database, owner, suffix, text, now) {
     createdAt: now
   })[0];
   return { jobId, card, groupKey, draft };
+}
+
+function createDraftAlternatives(database, owner, suffix, messages, now) {
+  const jobId = Number(database.prepare(`INSERT INTO jobs(
+    source, source_id, title, first_seen_at, last_seen_at
+  ) VALUES ('boss', ?, ?, ?, ?)`).run(`boss:encrypt-job-${suffix}`, `Reply ${suffix}`, now, now).lastInsertRowid);
+  const card = ensureProgressCard(database, { ...owner, jobId, source: "boss", now });
+  const groupKey = digest(`group-${suffix}`);
+  const drafts = storage.recordMessageReplyDrafts(database, {
+    profileId: owner.profileId,
+    cardId: card.id,
+    jobId,
+    messageGroupKey: groupKey,
+    questionSummary: `Question ${suffix}`,
+    messageIntent: "information_request",
+    messageCategory: "other",
+    messages,
+    createdAt: now
+  });
+  return { jobId, card, groupKey, drafts };
 }
 
 function digest(value) {

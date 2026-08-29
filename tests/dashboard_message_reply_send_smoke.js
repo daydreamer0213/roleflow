@@ -109,6 +109,10 @@ const NOW = "2026-08-29T06:00:00.000Z";
     assert.equal(response.body.batch.status, "running");
     assert(!JSON.stringify(response.body).includes("确认回复"));
     assert(!JSON.stringify(response.body).includes("executor-job"));
+    const refreshedPage = await request(base, `/messages?profileId=${fixture.profileId}`);
+    assert.match(refreshedPage.body, new RegExp(`"initialReplySend":\\{"batch":\\{"id":${batchId},`),
+      "a refreshed message page must recover the active local batch status");
+    assert.match(refreshedPage.body, /"status":"running"/);
 
     const second = await postJson(base, "/api/message-reply-send-batch", {
       profileId: fixture.profileId,
@@ -172,6 +176,12 @@ async function historicalBatchDoesNotAutoResumeSmoke() {
         expectedStatus: item.status, status, clickCount: status === "click_dispatched" ? 1 : 0
       });
     }
+    const pendingFixture = seedDrafts(db, 1, "pending-reply");
+    const pending = createMessageReplySendBatch(db, {
+      profileId: pendingFixture.profileId,
+      items: [{ draftId: pendingFixture.drafts[0].id, revision: pendingFixture.drafts[0].revision }],
+      createdAt: NOW
+    });
     let browserCreations = 0;
     const controller = createMessageReplySendController({
       db,
@@ -180,7 +190,15 @@ async function historicalBatchDoesNotAutoResumeSmoke() {
     });
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(browserCreations, 0, "historical click-dispatched batches must never auto-resume");
-    assert.equal(controller.status({ profileId: fixture.profileId, batchId: created.batch.id }).items[0].status, "click_dispatched");
+    const clickedState = controller.status({ profileId: fixture.profileId, batchId: created.batch.id });
+    assert.equal(clickedState.batch.status, "interrupted");
+    assert.equal(clickedState.items[0].status, "ambiguous",
+      "a historical durable click must require manual review without replay");
+    const pendingState = controller.status({ profileId: pendingFixture.profileId, batchId: pending.batch.id });
+    assert.equal(pendingState.batch.status, "interrupted");
+    assert.equal(pendingState.items[0].status, "stopped",
+      "a historical pre-click item must be stopped without opening a browser");
+    assert.equal(controller.latest({ profileId: fixture.profileId }).batch.id, created.batch.id);
     await controller.close();
   } finally {
     db.close();
@@ -276,7 +294,7 @@ async function clientSavesBeforeConfirmSmoke(html, drafts) {
   assert(fields.every((field) => field.disabled), "confirmed editors must be disabled");
 }
 
-function seedDrafts(db, count) {
+function seedDrafts(db, count, prefix = "dashboard-reply") {
   const profileId = Number(db.prepare(`INSERT INTO candidate_profiles(
     display_name, profile_json, source_hash, created_at, updated_at
   ) VALUES ('Dashboard reply fixture', '{}', NULL, ?, ?)`).run(NOW, NOW).lastInsertRowid);
@@ -289,13 +307,13 @@ function seedDrafts(db, count) {
     const jobId = Number(db.prepare(`INSERT INTO jobs(
       source, source_id, title, company, salary, first_seen_at, last_seen_at
     ) VALUES ('boss', ?, ?, '示例公司', '15-20K', ?, ?)`).run(
-      `boss:dashboard-reply-${suffix}`, `内容运营 ${suffix}`, NOW, NOW
+      `boss:${prefix}-${suffix}`, `内容运营 ${suffix}`, NOW, NOW
     ).lastInsertRowid);
     const cardId = Number(db.prepare(`INSERT INTO candidate_progress_cards(
       profile_id, plan_id, job_id, source, stage, next_action, last_event_at, created_at, updated_at
     ) VALUES (?, ?, ?, 'boss', 'reply_ready', 'Review reply', ?, ?, ?)`)
       .run(profileId, planId, jobId, NOW, NOW, NOW).lastInsertRowid);
-    const groupKey = digest(`dashboard-group-${suffix}`);
+    const groupKey = digest(`${prefix}-group-${suffix}`);
     const draft = recordMessageReplyDrafts(db, {
       profileId, cardId, jobId, messageGroupKey: groupKey,
       questionSummary: `问题 ${suffix}`,
@@ -306,8 +324,8 @@ function seedDrafts(db, count) {
     })[0];
     saveMessageInboundContext(db, {
       profileId, cardId, messageGroupKey: groupKey,
-      conversationKey: digest(`dashboard-conversation-${suffix}`),
-      sourceJobId: `boss:dashboard-reply-${suffix}`,
+      conversationKey: digest(`${prefix}-conversation-${suffix}`),
+      sourceJobId: `boss:${prefix}-${suffix}`,
       lastMessageId: `3789170377487${String(40 + suffix).padStart(2, "0")}`,
       messageIntent: "information_request",
       messageCategory: "other",

@@ -562,8 +562,13 @@ async function main() {
     assert(!understoodPage.body.includes(removed), `message result must not render analysis/internal label: ${removed}`);
   }
   assert(understoodPage.body.includes("缺少事实，暂不生成草稿"));
-  assert.strictEqual((understoodPage.body.match(/name="action" value="reply_confirmed_sent"/g) || []).length, 2);
+  assert.strictEqual((understoodPage.body.match(/name="action" value="reply_confirmed_sent"/g) || []).length, 3);
   assert.strictEqual((understoodPage.body.match(/<textarea/g) || []).length, 3);
+  assert.strictEqual((understoodPage.body.match(/type="radio" name="message-send-choice-\d+" data-send-select="\d+"/g) || []).length, 2,
+    "alternative drafts for one HR conversation must use one radio group");
+  assert.strictEqual((understoodPage.body.match(/type="radio" name="message-send-choice-\d+" data-send-select="\d+" checked/g) || []).length, 1,
+    "only the first alternative may be selected by default");
+  assert(understoodPage.body.includes("选择这版回复"));
   assert(!understoodPage.body.includes("PRIVATE_RAW_ANALYSIS"));
   assert(!understoodPage.body.includes("PRIVATE_NAVIGATION_URL"));
   for (const unsafeActionValue of [
@@ -1609,6 +1614,10 @@ function jobUnderstandingCompletedRun(fixture) {
           instruction: "ATTACKER LOCATION INSTRUCTION"
         }],
         messages: ["岗位草稿甲", "岗位草稿乙"],
+        drafts: [
+          { id: 8101, text: "岗位草稿甲", revision: 0 },
+          { id: 8102, text: "岗位草稿乙", revision: 0 }
+        ],
         analysis: "PRIVATE_RAW_ANALYSIS",
         navigationUrl: "PRIVATE_NAVIGATION_URL"
       }, {
@@ -1624,7 +1633,8 @@ function jobUnderstandingCompletedRun(fixture) {
         contextComplete: true,
         job: { ...job, title: "面试岗位" },
         inboundMessages: [{ kind: "resume_request", text: RESUME_REQUEST_SUMMARY }],
-        messages: ["您好，感谢邀请，请问面试时间和形式如何安排？"]
+        messages: ["您好，感谢邀请，请问面试时间和形式如何安排？"],
+        drafts: [{ id: 8201, text: "您好，感谢邀请，请问面试时间和形式如何安排？", revision: 0 }]
       }, {
         cardId: fixture.card.id + 2,
         jobId: fixture.jobId + 2,

@@ -3,12 +3,18 @@ const { createBossMessageReader } = require("../adapters/sites/boss_message_read
 const { createBossMessageReplySender } = require("../adapters/sites/boss_message_reply_sender");
 const { createMessageReplySendingService } = require("../application/message_reply_sending");
 const { runMessageReplySendBatch } = require("../core/message_reply_send_executor");
+const {
+  loadReplySendBatch,
+  transitionReplySendBatch,
+  transitionReplySendItem
+} = require("../core/message_reply_send_batches");
 const { createSiteAccessController } = require("../core/site_access_budget");
 const {
   acquireSiteScanLease,
   getSiteScanLease,
   renewSiteScanLease,
-  releaseSiteScanLease
+  releaseSiteScanLease,
+  stopPendingMessageReplySendItems
 } = require("../core/storage");
 
 function createMessageReplySendController({
@@ -50,8 +56,9 @@ function createMessageReplySendController({
       });
     }
   });
+  reconcileHistoricalBatches();
 
-  return { confirm, status, stop, close };
+  return { confirm, status, latest, stop, close };
 
   function confirm(input = {}) {
     if (closing) throw controllerError("MESSAGE_REPLY_SEND_CONTROLLER_CLOSING", "message reply send controller is closing");
@@ -75,6 +82,56 @@ function createMessageReplySendController({
       profileId: positiveInteger(input.profileId, "profileId"),
       batchId: positiveInteger(input.batchId, "batchId")
     });
+  }
+
+  function latest(input = {}) {
+    const profileId = positiveInteger(input.profileId, "profileId");
+    const row = db.prepare(`SELECT id FROM message_reply_send_batches
+      WHERE profile_id = ? ORDER BY id DESC LIMIT 1`).get(profileId);
+    return row ? service.status({ profileId, batchId: Number(row.id) }) : null;
+  }
+
+  function reconcileHistoricalBatches() {
+    const rows = db.prepare(`SELECT id, profile_id FROM message_reply_send_batches
+      WHERE status IN ('confirmed','running') ORDER BY id`).all();
+    for (const row of rows) {
+      const profileId = Number(row.profile_id);
+      const batchId = Number(row.id);
+      let snapshot = loadReplySendBatch(db, { profileId, batchId });
+      for (const item of snapshot.items.filter((entry) => entry.status === "click_dispatched")) {
+        transitionReplySendItem(db, {
+          profileId,
+          batchId,
+          itemId: item.id,
+          expectedStatus: "click_dispatched",
+          status: "ambiguous",
+          clickCount: 1,
+          errorCode: "MESSAGE_REPLY_SEND_STALE_CLICK",
+          errorMessage: "historical click outcome requires manual review"
+        });
+      }
+      stopPendingMessageReplySendItems(db, {
+        profileId,
+        batchId,
+        errorCode: "MESSAGE_REPLY_SEND_STALE_RUN",
+        errorMessage: "historical reply batch stopped without replay"
+      });
+      snapshot = loadReplySendBatch(db, { profileId, batchId });
+      const completed = snapshot.batch.status === "running"
+        && snapshot.items.every((item) => item.status === "succeeded");
+      transitionReplySendBatch(db, {
+        profileId,
+        batchId,
+        expectedStatus: snapshot.batch.status,
+        status: completed ? "completed" : "interrupted",
+        stopCode: completed ? "" : "MESSAGE_REPLY_SEND_STALE_RUN"
+      });
+      logger?.warn("message_reply_send_historical_batch_reconciled", {
+        batchId,
+        profileId,
+        status: completed ? "completed" : "interrupted"
+      });
+    }
   }
 
   function stop(input = {}) {

@@ -92,7 +92,8 @@ function fakeBrowser({
   dispatchState = "ready",
   verifyState = "ready",
   outgoingText = null,
-  outgoingFailed = false
+  outgoingFailed = false,
+  clearRows = null
 } = {}) {
   const calls = [];
   let insertedText = "";
@@ -103,6 +104,58 @@ function fakeBrowser({
     { id: COMMUNICATION_TAB_ID, windowId: 12, active: false, url: CHAT_URL },
     { id: 503, windowId: 12, active: true, url: "http://127.0.0.1:3000/messages" }
   ];
+  const evaluateReplyExpression = (expression, phase) => {
+    const phaseRows = phase === "dispatch" && dispatchState === "target_mismatch"
+      ? [verifiedRow({ conversationKey: safeDigest(["conversation", "id:dispatch-drift"]) })]
+      : phase === "clear" && clearRows ? clearRows : rows;
+    const phaseSnapshot = snapshot({ rows: phaseRows, messages: detailMessages, selectedJobId });
+    let editorValue = phase === "preflight" || phase === "focus"
+      ? editorText
+      : phase === "dispatch" ? insertedText
+        : readbackText === null ? insertedText : readbackText;
+    const document = {
+      activeElement: null,
+      querySelectorAll(selector) {
+        if (selector === "#chat-input") return [editor];
+        if (selector === ".btn-send") return [sendButton];
+        if (selector === ".message-item.item-myself") return clicked ? [outgoingMessage] : [];
+        return [];
+      },
+      elementFromPoint() { return sendButton; }
+    };
+    const editor = {
+      isContentEditable: contentEditable,
+      getAttribute(name) { return name === "contenteditable" ? String(contentEditable) : null; },
+      getBoundingClientRect() { return { width: 500, height: 80, left: 20, top: 600 }; },
+      focus() { document.activeElement = editor; },
+      dispatchEvent() {},
+      get innerText() { return editorValue; },
+      set innerText(value) { editorValue = String(value); insertedText = editorValue; },
+      get textContent() { return editorValue; },
+      set textContent(value) { editorValue = String(value); insertedText = editorValue; }
+    };
+    const sendButton = {
+      disabled: false,
+      getAttribute() { return null; },
+      getBoundingClientRect() { return { width: 90, height: 36, left: 600, top: 700 }; },
+      contains(value) { return value === sendButton; }
+    };
+    const outgoingMessage = {
+      getAttribute(name) { return name === "data-mid" ? OUTGOING_MESSAGE_ID : null; },
+      get innerText() { return outgoingText === null ? insertedText : outgoingText; },
+      get textContent() { return outgoingText === null ? insertedText : outgoingText; },
+      querySelector() { return outgoingFailed ? {} : null; }
+    };
+    return vm.runInNewContext(expression, {
+      location: { pathname: "/web/geek/chat" },
+      window: { __bossMessageSnapshot: () => phaseSnapshot },
+      document,
+      InputEvent: class InputEvent {},
+      getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" }),
+      innerWidth: 1280,
+      innerHeight: 800
+    });
+  };
   return {
     calls,
     get insertedText() { return insertedText; },
@@ -120,35 +173,21 @@ function fakeBrowser({
         return { state: "ready", jobId: selectedJobId, securityId: "fixture-security" };
       }
       if (expression.includes("__roleflowReplyEditorPreflight")) {
-        return { state: "ready", editorText, contentEditable, editorCount: 1 };
+        return evaluateReplyExpression(expression, "preflight");
       }
-      if (expression.includes("__roleflowReplyEditorFocus")) return { state: "focused" };
+      if (expression.includes("__roleflowReplyEditorFocus")) return evaluateReplyExpression(expression, "focus");
       if (expression.includes("__roleflowReplyEditorReadback")) {
-        return { state: "ready", editorText: readbackText === null ? insertedText : readbackText };
+        return evaluateReplyExpression(expression, "readback");
       }
       if (expression.includes("__roleflowReplyClear")) {
-        const expected = JSON.parse(expression.match(/const expected = (\{.*?\});/s)[1]);
-        if (digest(readbackText === null ? insertedText : readbackText) !== expected.replyDigest) {
-          return { state: "not_owned" };
-        }
-        insertedText = "";
-        return { state: "cleared" };
+        return evaluateReplyExpression(expression, "clear");
       }
       if (expression.includes("__roleflowReplyDispatch")) {
-        return dispatchState === "ready"
-          ? { state: "ready", point: { x: 640, y: 720 } }
-          : { state: dispatchState };
+        return evaluateReplyExpression(expression, "dispatch");
       }
       if (expression.includes("__roleflowReplyVerify")) {
         if (verifyState !== "ready") return { state: verifyState };
-        return {
-          state: "ready",
-          outgoing: clicked ? [{
-            messageId: OUTGOING_MESSAGE_ID,
-            text: outgoingText === null ? insertedText : outgoingText,
-            failed: outgoingFailed
-          }] : []
-        };
+        return evaluateReplyExpression(expression, "verify");
       }
       return pageSnapshot;
     },
@@ -296,6 +335,15 @@ function setup(options = {}) {
     () => clearable.sender.dispatchReply(clearablePreparation),
     (error) => error.code === "BOSS_MESSAGE_REPLY_PREPARATION_CLEARED"
   );
+
+  const clearDrift = setup({
+    clearRows: [verifiedRow({ conversationKey: safeDigest(["conversation", "id:other-clear-target"]) })]
+  });
+  const clearDriftInspection = await clearDrift.sender.inspectReplyTarget(item);
+  const clearDriftPreparation = await clearDrift.sender.fillReply(clearDriftInspection, item.replyText);
+  assert.deepStrictEqual(await clearDrift.sender.clearPreparedReply(clearDriftPreparation), { cleared: false },
+    "prepared text must not be cleared after the selected conversation drifts");
+  assert.strictEqual(clearDrift.browser.insertedText, item.replyText);
 
   console.log("boss_message_reply_sender_smoke ok");
 })().catch((error) => {
