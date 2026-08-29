@@ -131,7 +131,7 @@ const logger = { info() {}, warn() {}, error() {}, requestId() { return "dashboa
     const messages = await getText(baseUrl, `/messages?planId=${queueFixture.planId}`);
     assert.strictEqual(messages.status, 200);
     assertSharedFrame(messages.body, `/messages\?planId=${queueFixture.planId}`, "message discovery");
-    assert.match(messages.body, /<h1>BOSS 消息只读发现<\/h1>/);
+    assert.match(messages.body, /<h1>BOSS 消息发现与回复<\/h1>/);
     assert.strictEqual((messages.body.match(/>消息发现<\/a>/g) || []).length, 1, "message discovery must have one primary navigation entry");
 
     const funnel = await getText(baseUrl, `/funnel?planId=${queueFixture.planId}`);
