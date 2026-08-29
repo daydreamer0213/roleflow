@@ -13,6 +13,12 @@ function boundedTextArray(value, label, { maxItems = 6, itemLength = 1_000 } = {
   return value.map((item) => cleanText(item, itemLength, label));
 }
 
+function buildResumeInterviewEvidenceCatalog(sourceText) {
+  const lines = String(sourceText ?? "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (!lines.length) throw new Error("简历证据不能为空");
+  return lines.map((text, index) => ({ id: `R${index + 1}`, kind: "resume", text }));
+}
+
 function normalizeInterviewSettings(input = {}) {
   const type = cleanText(input.type || "mixed", 30, "面试类型");
   if (!INTERVIEW_TYPES.has(type)) throw new Error(`不支持的面试类型：${type}`);
@@ -51,12 +57,19 @@ function normalizeAnswerReview(value, validTurns) {
   };
 }
 
-function normalizeQuestion(value) {
+function normalizeQuestion(value, evidenceById) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("下一题格式无效");
   const basedOn = value.basedOnTurnNumber;
+  const resumeEvidenceIds = [...new Set((Array.isArray(value.resumeEvidenceIds) ? value.resumeEvidenceIds : [])
+    .map((item) => String(item || "").trim()).filter(Boolean))];
+  if (resumeEvidenceIds.length < 1 || resumeEvidenceIds.length > 4) throw new Error("问题必须引用 1-4 条简历证据");
+  for (const evidenceId of resumeEvidenceIds) {
+    if (!evidenceById.has(evidenceId)) throw new Error(`问题引用了不存在的简历证据：${evidenceId}`);
+  }
   return {
     text: cleanText(value.text, 4_000, "问题"),
     focus: cleanText(value.focus, 120, "问题重点"),
+    resumeEvidenceIds,
     basedOnTurnNumber: basedOn === null || basedOn === undefined || basedOn === ""
       ? null
       : Number(basedOn),
@@ -67,11 +80,13 @@ function normalizeQuestion(value) {
 function validateInterviewStep(raw, context = {}) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("面试步骤格式无效");
   const turns = Array.isArray(context.turns) ? context.turns : [];
+  const resumeEvidenceCatalog = Array.isArray(context.resumeEvidenceCatalog) ? context.resumeEvidenceCatalog : [];
+  const evidenceById = new Map(resumeEvidenceCatalog.map((item) => [String(item?.id || "").trim(), item]));
   if (turns.length === 0 && raw.answerReview != null) throw new Error("首题不能包含回答复盘");
   const validTurns = turnNumberSet(turns);
   const complete = raw.complete === true;
   const answerReview = raw.answerReview == null ? null : normalizeAnswerReview(raw.answerReview, validTurns);
-  const nextQuestion = raw.nextQuestion == null ? null : normalizeQuestion(raw.nextQuestion);
+  const nextQuestion = raw.nextQuestion == null ? null : normalizeQuestion(raw.nextQuestion, evidenceById);
 
   if (turns.length > 0 && !answerReview) throw new Error("回答后必须先生成复盘");
   if (turns.length > 0) {
@@ -168,6 +183,7 @@ function validateRetryReview(raw, context = {}) {
 
 module.exports = {
   normalizeInterviewSettings,
+  buildResumeInterviewEvidenceCatalog,
   validateInterviewStep,
   validateInterviewReport,
   validateRetryReview

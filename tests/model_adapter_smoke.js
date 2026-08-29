@@ -214,7 +214,12 @@ server.listen(0, "127.0.0.1", async () => {
       return { kind };
     };
     const interviewInput = {
-      context: { job: { title: "AI 应用工程师" }, resume: { text: "参与知识库开发" } },
+      context: {
+        sessionKind: "job_specific",
+        job: { title: "AI 应用工程师" },
+        resume: { text: "参与知识库开发" },
+        resumeEvidenceCatalog: [{ id: "R1", kind: "resume", text: "参与知识库开发" }]
+      },
       settings: { type: "mixed", difficulty: "standard", plannedQuestions: 3 },
       turns: []
     };
@@ -222,7 +227,7 @@ server.listen(0, "127.0.0.1", async () => {
     assert.deepStrictEqual(await interviewAdapter.reviewMockInterview(interviewInput), { kind: "reviewMockInterview" });
     assert.deepStrictEqual(await interviewAdapter.reviewMockInterviewRetry({ turn: { turnNumber: 1 } }), { kind: "reviewMockInterviewRetry" });
     assert.strictEqual(interviewPrompts.generateMockInterviewStep.input, interviewInput);
-    for (const phrase of ["上一题题号", "plannedQuestions", "录用概率", "只输出 JSON"]) {
+    for (const phrase of ["上一题题号", "resumeEvidenceIds", "resume_general", "公司研究", "plannedQuestions", "录用概率", "只输出 JSON"]) {
       assert(interviewPrompts.generateMockInterviewStep.prompt.includes(phrase), `interview step prompt must include ${phrase}`);
     }
     for (const phrase of ["具体题号", "offerProbability", "不能成为候选人事实"]) {
@@ -235,6 +240,7 @@ server.listen(0, "127.0.0.1", async () => {
     const mockFirstStep = await mockInterview.generateMockInterviewStep(interviewInput);
     assert.strictEqual(mockFirstStep.answerReview, null);
     assert(mockFirstStep.nextQuestion.text.includes("AI 应用工程师"));
+    assert.deepStrictEqual(mockFirstStep.nextQuestion.resumeEvidenceIds, ["R1"]);
     const literalAnswer = "我参与知识库开发并负责接口联调";
     const mockFollowUp = await mockInterview.generateMockInterviewStep({
       ...interviewInput,
@@ -243,6 +249,12 @@ server.listen(0, "127.0.0.1", async () => {
     assert.strictEqual(mockFollowUp.nextQuestion.basedOnTurnNumber, 1);
     assert(mockFollowUp.nextQuestion.text.includes(literalAnswer));
     assert.strictEqual(mockFollowUp.nextQuestion.answerEvidence, literalAnswer);
+    assert.deepStrictEqual(mockFollowUp.nextQuestion.resumeEvidenceIds, ["R1"]);
+    const mockGeneralFirst = await mockInterview.generateMockInterviewStep({
+      ...interviewInput,
+      context: { ...interviewInput.context, sessionKind: "resume_general", job: null }
+    });
+    assert(!/这个岗位|目标岗位/.test(mockGeneralFirst.nextQuestion.text));
     assert.strictEqual((await mockInterview.reviewMockInterview({ turns: [{ turnNumber: 1 }] })).retryRecommendations[0].turnNumber, 1);
     assert.strictEqual((await mockInterview.reviewMockInterviewRetry({
       turn: { turnNumber: 1, originalAnswer: "短回答", retryAnswer: "这是一个更完整的重答" }

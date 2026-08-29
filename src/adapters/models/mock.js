@@ -277,13 +277,23 @@ class MockModelAdapter {
 
   async generateMockInterviewStep({ context = {}, settings = {}, turns = [] } = {}) {
     const job = context.job || {};
+    const resumeEvidence = (Array.isArray(context.resumeEvidenceCatalog) ? context.resumeEvidenceCatalog : [])[0];
+    if (!resumeEvidence?.id || !String(resumeEvidence.text || "").trim()) {
+      throw new Error("Mock 模拟面试需要至少一条简历证据");
+    }
+    const resumeEvidenceIds = [String(resumeEvidence.id)];
+    const resumeExcerpt = clip(String(resumeEvidence.text).replace(/\s+/g, " "), 42);
     const history = Array.isArray(turns) ? turns : [];
     if (!history.length) {
+      const questionText = context.sessionKind === "resume_general" || !context.job
+        ? `简历中写到“${resumeExcerpt}”，请介绍这段经历以及你具体做了什么。`
+        : `简历中写到“${resumeExcerpt}”，请结合真实经历介绍你为什么适合${job.company ? `${job.company}的` : ""}${job.title || "该岗位"}。`;
       return {
         answerReview: null,
         nextQuestion: {
-          text: `请结合你的真实经历，介绍你为什么适合${job.company ? `${job.company}的` : ""}${job.title || "这个岗位"}。`,
+          text: questionText,
           focus: "intro",
+          resumeEvidenceIds,
           basedOnTurnNumber: null,
           answerEvidence: ""
         },
@@ -304,8 +314,11 @@ class MockModelAdapter {
         turnNumbers: [Number(last.turnNumber)]
       },
       nextQuestion: complete ? null : {
-        text: `你刚才提到“${answerExcerpt}”，请结合${job.title || "目标岗位"}继续说明你的个人行动和取舍。`,
+        text: context.sessionKind === "resume_general" || !context.job
+          ? `你刚才提到“${answerExcerpt}”，请结合简历中的“${resumeExcerpt}”继续说明你的个人行动和取舍。`
+          : `你刚才提到“${answerExcerpt}”，请结合${job.title || "该岗位"}继续说明你的个人行动和取舍。`,
         focus,
+        resumeEvidenceIds,
         basedOnTurnNumber: Number(last.turnNumber),
         answerEvidence: answerExcerpt
       },
