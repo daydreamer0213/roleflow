@@ -57,7 +57,7 @@ startFunnelStrategyRound(db, {
 
 - `startFunnelStrategyRound` returns the existing target round when `sourceKey` was already used, closes only `fromRoundId`, and creates exactly one active successor. When no active round exists, `fromRoundId: null` creates sequence 1 directly; it must not create an empty initial round first.
 
-- [ ] **Step 1: Write the failing round-store test**
+- [x] **Step 1: Write the failing round-store test**
 
 Create `tests/funnel_strategy_round_store_smoke.js` with an in-memory database and assertions equivalent to:
 
@@ -94,7 +94,7 @@ Also build a v22 fixture containing one frozen cohort plus one unassigned pool, 
 
 Insert this test in `tests/run_all.js` immediately before `job_search_funnel_smoke.js`.
 
-- [ ] **Step 2: Run the new test and verify the expected failure**
+- [x] **Step 2: Run the new test and verify the expected failure**
 
 Run:
 
@@ -104,7 +104,7 @@ node tests/funnel_strategy_round_store_smoke.js
 
 Expected: failure because migration 23 and `ensureActiveFunnelStrategyRound` do not exist.
 
-- [ ] **Step 3: Add migration 23**
+- [x] **Step 3: Add migration 23**
 
 In `src/core/storage.js`, add `FUNNEL_STRATEGY_ROUNDS_SCHEMA`, migration 23, and a `migrateFunnelStrategyRounds` helper:
 
@@ -155,7 +155,7 @@ Add `strategy_round_id INTEGER REFERENCES candidate_funnel_strategy_rounds(id)` 
 
 Backfill one closed legacy round per existing `cohort_id`. Backfill remaining unassigned entries into one active legacy round per `(profile_id, plan_id)`. Rows with no reliable `plan_id` remain preserved but are explicitly excluded from plan-scoped current diagnosis; do not invent a plan. Set `legacy_uncertain=1` whenever a historical strategy boundary cannot be proven.
 
-- [ ] **Step 4: Implement round mapping and transitions**
+- [x] **Step 4: Implement round mapping and transitions**
 
 In `src/storage/funnel_store.js`, add the five interfaces above. Build `strategy_snapshot_json` from the owned plan and selected résumé:
 
@@ -171,13 +171,13 @@ function strategySnapshot(plan, resumeVersionId) {
 
 Normalize `changeKinds` to unique values from `greeting`, `resume`, and `strategy`; allow `initial` only for lazy creation. Snapshot the current 30/50/70 policy into every round. Run close-and-create in one `immediateTransaction`; if the supplied `sourceKey` already exists, return it before checking `fromRoundId` so an HTTP retry is idempotent. If there is no active round, accept only `fromRoundId: null` and create sequence 1 using the supplied change metadata. If an active round exists, require its ID to equal `fromRoundId`.
 
-- [ ] **Step 5: Export the storage surface and update exact facade contracts**
+- [x] **Step 5: Export the storage surface and update exact facade contracts**
 
 Re-export the five new functions from `src/core/storage.js`. Add their exact names to `FACADE_EXPORTS` in `tests/candidate_store_contract_smoke.js` and update the four exact facade counts from 181 to 186. Do not weaken those contract checks.
 
 Update `tests/storage_migration_smoke.js` so the latest expected schema version is 23 and add assertions for the new table, partial active-round index, new entry column, preserved legacy membership, and migration rollback/backup behavior.
 
-- [ ] **Step 6: Run storage and migration checks**
+- [x] **Step 6: Run storage and migration checks**
 
 Run:
 
@@ -193,7 +193,7 @@ node tests/workflow_store_contract_smoke.js
 
 Expected: every command prints its `ok` line and exits 0.
 
-- [ ] **Step 7: Commit the storage checkpoint**
+- [x] **Step 7: Commit the storage checkpoint**
 
 ```powershell
 git add src/core/storage.js src/storage/funnel_store.js tests/funnel_strategy_round_store_smoke.js tests/storage_migration_smoke.js tests/candidate_store_contract_smoke.js tests/scan_store_contract_smoke.js tests/job_store_contract_smoke.js tests/communication_store_contract_smoke.js tests/workflow_store_contract_smoke.js tests/run_all.js

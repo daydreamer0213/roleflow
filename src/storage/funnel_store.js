@@ -3,9 +3,10 @@ const {
   feedbackMaturesAt,
   normalizeFunnelSamplePolicy
 } = require("../core/funnel_maturity");
-const { immediateTransaction, parseJson } = require("./storage_shared");
+const { immediateTransaction, parseJson, storageError } = require("./storage_shared");
 
 const SOURCE_KINDS = new Set(["applied", "communication", "reply_sent"]);
+const STRATEGY_CHANGE_KINDS = new Set(["initial", "greeting", "resume", "strategy"]);
 
 function getFunnelPolicy(db, { profileId } = {}) {
   const profile = ownedProfile(db, profileId);
@@ -39,6 +40,122 @@ function saveFunnelPolicy(db, input = {}) {
         updatedAt
       );
     return getFunnelPolicy(db, { profileId });
+  });
+}
+
+function getActiveFunnelStrategyRound(db, { profileId, planId } = {}) {
+  const owner = ownedPlan(db, { profileId, planId });
+  return mapStrategyRound(db.prepare(`SELECT * FROM candidate_funnel_strategy_rounds
+    WHERE profile_id = ? AND plan_id = ? AND status = 'active'
+    ORDER BY sequence_number DESC, id DESC LIMIT 1`).get(owner.profileId, owner.id));
+}
+
+function getFunnelStrategyRound(db, { profileId, planId, roundId } = {}) {
+  const owner = ownedPlan(db, { profileId, planId });
+  return mapStrategyRound(db.prepare(`SELECT * FROM candidate_funnel_strategy_rounds
+    WHERE id = ? AND profile_id = ? AND plan_id = ?`).get(
+    positiveInteger(roundId, "roundId"),
+    owner.profileId,
+    owner.id
+  ));
+}
+
+function listFunnelStrategyRounds(db, { profileId, planId, limit = 30 } = {}) {
+  const owner = ownedPlan(db, { profileId, planId });
+  const boundedLimit = Math.max(1, Math.min(200, Number(limit) || 30));
+  return db.prepare(`SELECT * FROM candidate_funnel_strategy_rounds
+    WHERE profile_id = ? AND plan_id = ?
+    ORDER BY sequence_number DESC, id DESC LIMIT ?`)
+    .all(owner.profileId, owner.id, boundedLimit)
+    .map(mapStrategyRound);
+}
+
+function ensureActiveFunnelStrategyRound(db, {
+  profileId,
+  planId,
+  startedAt = new Date().toISOString()
+} = {}) {
+  const active = getActiveFunnelStrategyRound(db, { profileId, planId });
+  if (active) return active;
+  const owner = ownedPlan(db, { profileId, planId });
+  const next = db.prepare(`SELECT COALESCE(MAX(sequence_number), 0) + 1 AS sequence_number
+    FROM candidate_funnel_strategy_rounds WHERE profile_id = ? AND plan_id = ?`)
+    .get(owner.profileId, owner.id);
+  return startFunnelStrategyRound(db, {
+    profileId: owner.profileId,
+    planId: owner.id,
+    fromRoundId: null,
+    sourceKey: `initial:${Number(next.sequence_number)}`,
+    changeKinds: ["initial"],
+    changeNote: "初始策略",
+    startedAt
+  });
+}
+
+function startFunnelStrategyRound(db, input = {}) {
+  const owner = ownedPlan(db, input);
+  const sourceKey = requiredInlineText(input.sourceKey, "sourceKey", 200);
+  const changeKinds = normalizeStrategyChangeKinds(input.changeKinds);
+  const changeNote = shortText(input.changeNote, 300);
+  const startedAt = isoText(input.startedAt || new Date().toISOString(), "startedAt");
+  const requestedFrom = input.fromRoundId === undefined || input.fromRoundId === null || input.fromRoundId === ""
+    ? null
+    : positiveInteger(input.fromRoundId, "fromRoundId");
+
+  return inTransaction(db, () => {
+    const repeated = db.prepare(`SELECT * FROM candidate_funnel_strategy_rounds
+      WHERE profile_id = ? AND plan_id = ? AND source_key = ?`)
+      .get(owner.profileId, owner.id, sourceKey);
+    if (repeated) return mapStrategyRound(repeated);
+
+    const active = db.prepare(`SELECT * FROM candidate_funnel_strategy_rounds
+      WHERE profile_id = ? AND plan_id = ? AND status = 'active'
+      ORDER BY sequence_number DESC, id DESC LIMIT 1`).get(owner.profileId, owner.id);
+    if ((active && Number(active.id) !== requestedFrom) || (!active && requestedFrom !== null)) {
+      throw storageError("FUNNEL_ROUND_STALE", "当前策略轮次已经变化，请刷新后重试");
+    }
+
+    const resumeVersionId = resolveStrategyResumeVersion(db, {
+      profileId: owner.profileId,
+      explicitId: input.resumeVersionId
+    });
+    const policy = getFunnelPolicy(db, { profileId: owner.profileId });
+    const sequence = Number(db.prepare(`SELECT COALESCE(MAX(sequence_number), 0) + 1 AS sequence_number
+      FROM candidate_funnel_strategy_rounds WHERE profile_id = ? AND plan_id = ?`)
+      .get(owner.profileId, owner.id).sequence_number);
+    if (active) {
+      const closed = db.prepare(`UPDATE candidate_funnel_strategy_rounds
+        SET status = 'closed', closed_at = ?, updated_at = ?
+        WHERE id = ? AND profile_id = ? AND plan_id = ? AND status = 'active'`)
+        .run(startedAt, startedAt, Number(active.id), owner.profileId, owner.id);
+      if (Number(closed.changes) !== 1) {
+        throw storageError("FUNNEL_ROUND_STALE", "当前策略轮次已经变化，请刷新后重试");
+      }
+    }
+    const result = db.prepare(`INSERT INTO candidate_funnel_strategy_rounds(
+      profile_id, plan_id, sequence_number, status, source_key,
+      strategy_snapshot_json, change_kinds_json, change_note, resume_version_id,
+      preliminary_sample_target, comparable_sample_target, formal_sample_target,
+      legacy_uncertain, started_at, closed_at, created_at, updated_at
+    ) VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, ?, ?)`)
+      .run(
+        owner.profileId,
+        owner.id,
+        sequence,
+        sourceKey,
+        JSON.stringify(strategySnapshot(owner, resumeVersionId)),
+        JSON.stringify(changeKinds),
+        changeNote,
+        resumeVersionId,
+        policy.preliminarySampleTarget,
+        policy.comparableSampleTarget,
+        policy.formalSampleTarget,
+        startedAt,
+        startedAt,
+        startedAt
+      );
+    return mapStrategyRound(db.prepare("SELECT * FROM candidate_funnel_strategy_rounds WHERE id = ?")
+      .get(Number(result.lastInsertRowid)));
   });
 }
 
@@ -248,6 +365,21 @@ function resolvePlanId(db, value, profileId) {
   return planId;
 }
 
+function ownedPlan(db, { profileId, planId } = {}) {
+  const profile = ownedProfile(db, profileId);
+  const id = positiveInteger(planId, "planId");
+  const row = db.prepare("SELECT id, profile_id, plan_json FROM search_plans WHERE id = ?")
+    .get(id);
+  if (!row || Number(row.profile_id) !== profile) {
+    throw storageError("FUNNEL_PLAN_NOT_OWNED", "funnel plan does not belong to the profile");
+  }
+  return {
+    id: Number(row.id),
+    profileId: Number(row.profile_id),
+    plan: parseJson(row.plan_json, {})
+  };
+}
+
 function ownedProfile(db, value) {
   const profileId = positiveInteger(value, "profileId");
   if (!db.prepare("SELECT id FROM candidate_profiles WHERE id = ?").get(profileId)) {
@@ -301,6 +433,69 @@ function mapCohort(row) {
   } : null;
 }
 
+function mapStrategyRound(row) {
+  return row ? {
+    id: Number(row.id),
+    profileId: Number(row.profile_id),
+    planId: Number(row.plan_id),
+    sequenceNumber: Number(row.sequence_number),
+    status: row.status,
+    sourceKey: row.source_key,
+    strategySnapshot: parseJson(row.strategy_snapshot_json, {}),
+    changeKinds: parseJson(row.change_kinds_json, []),
+    changeNote: row.change_note || "",
+    resumeVersionId: Number(row.resume_version_id || 0) || null,
+    thresholds: {
+      preliminary: Number(row.preliminary_sample_target),
+      comparable: Number(row.comparable_sample_target),
+      formal: Number(row.formal_sample_target)
+    },
+    legacyUncertain: Boolean(row.legacy_uncertain),
+    startedAt: row.started_at,
+    closedAt: row.closed_at || null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  } : null;
+}
+
+function strategySnapshot(plan, resumeVersionId) {
+  return {
+    planId: plan.id,
+    directions: Array.isArray(plan.plan?.directions) ? plan.plan.directions : [],
+    resumeVersionId: resumeVersionId || null
+  };
+}
+
+function resolveStrategyResumeVersion(db, { profileId, explicitId }) {
+  if (explicitId !== undefined && explicitId !== null && explicitId !== "") {
+    const id = positiveInteger(explicitId, "resumeVersionId");
+    const owned = db.prepare(`SELECT id FROM candidate_resume_versions
+      WHERE id = ? AND profile_id = ?`).get(id, profileId);
+    if (!owned) throw storageError("FUNNEL_RESUME_NOT_OWNED", "resume version does not belong to the profile");
+    return id;
+  }
+  const active = db.prepare(`SELECT id FROM candidate_resume_versions
+    WHERE profile_id = ? AND is_active = 1
+    ORDER BY updated_at DESC, id DESC LIMIT 1`).get(profileId);
+  return active ? Number(active.id) : null;
+}
+
+function normalizeStrategyChangeKinds(value) {
+  const raw = Array.isArray(value) ? value : value ? [value] : [];
+  const kinds = [...new Set(raw.map((item) => String(item || "").trim()).filter(Boolean))];
+  if (!kinds.length || kinds.some((kind) => !STRATEGY_CHANGE_KINDS.has(kind))) {
+    throw new Error("funnel strategy change kind is invalid");
+  }
+  return kinds;
+}
+
+function requiredInlineText(value, name, limit) {
+  const text = String(value || "").trim();
+  if (!text) throw new Error(`${name} is required`);
+  if (text.length > limit) throw new Error(`${name} is too long`);
+  return text;
+}
+
 function decisionBucket(analysis) {
   const value = String(analysis?.decisionBucket || analysis?.recommendation || "").trim().toLowerCase();
   if (["primary", "main", "strong_recommend"].includes(value)) return "primary";
@@ -347,6 +542,11 @@ function shortText(value, limit) {
 module.exports = {
   getFunnelPolicy,
   saveFunnelPolicy,
+  getActiveFunnelStrategyRound,
+  getFunnelStrategyRound,
+  listFunnelStrategyRounds,
+  ensureActiveFunnelStrategyRound,
+  startFunnelStrategyRound,
   ensureFunnelEntry,
   getFunnelEntry,
   listFunnelEntries,

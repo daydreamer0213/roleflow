@@ -47,6 +47,7 @@ const tests = [
   "workflow_store_contract_smoke.js",
   "candidate_progress_storage_smoke.js",
   "funnel_threshold_policy_smoke.js",
+  "funnel_strategy_round_store_smoke.js",
   "job_search_funnel_smoke.js",
   "funnel_message_observation_smoke.js",
   "funnel_diagnosis_smoke.js",

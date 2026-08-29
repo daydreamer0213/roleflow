@@ -971,6 +971,39 @@ CREATE INDEX IF NOT EXISTS idx_candidate_funnel_entries_cohort
   ON candidate_funnel_entries(cohort_id, started_at, id);
 `;
 
+const FUNNEL_STRATEGY_ROUNDS_SCHEMA = `
+CREATE TABLE IF NOT EXISTS candidate_funnel_strategy_rounds (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  profile_id INTEGER NOT NULL,
+  plan_id INTEGER NOT NULL,
+  sequence_number INTEGER NOT NULL CHECK(sequence_number > 0),
+  status TEXT NOT NULL CHECK(status IN ('active','closed')),
+  source_key TEXT NOT NULL,
+  strategy_snapshot_json TEXT NOT NULL DEFAULT '{}',
+  change_kinds_json TEXT NOT NULL DEFAULT '[]',
+  change_note TEXT NOT NULL DEFAULT '',
+  resume_version_id INTEGER,
+  preliminary_sample_target INTEGER NOT NULL,
+  comparable_sample_target INTEGER NOT NULL,
+  formal_sample_target INTEGER NOT NULL,
+  legacy_uncertain INTEGER NOT NULL DEFAULT 0 CHECK(legacy_uncertain IN (0,1)),
+  started_at TEXT NOT NULL,
+  closed_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(profile_id, plan_id, sequence_number),
+  UNIQUE(profile_id, plan_id, source_key),
+  FOREIGN KEY(profile_id) REFERENCES candidate_profiles(id),
+  FOREIGN KEY(plan_id) REFERENCES search_plans(id),
+  FOREIGN KEY(resume_version_id) REFERENCES candidate_resume_versions(id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_funnel_strategy_round_active
+  ON candidate_funnel_strategy_rounds(profile_id, plan_id)
+  WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS idx_funnel_strategy_round_history
+  ON candidate_funnel_strategy_rounds(profile_id, plan_id, sequence_number DESC, id DESC);
+`;
+
 const RESUME_OPTIMIZATION_SCHEMA = `
 CREATE TABLE IF NOT EXISTS resume_optimizations (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1262,8 +1295,127 @@ const MIGRATIONS = [
     apply(db) {
       db.exec(MESSAGE_REPLY_SENDING_SCHEMA);
     }
+  },
+  {
+    version: 23,
+    name: "funnel_strategy_rounds_v2",
+    apply(db) {
+      migrateFunnelStrategyRounds(db);
+    }
   }
 ];
+
+function migrateFunnelStrategyRounds(db) {
+  db.exec(JOB_SEARCH_FUNNEL_SCHEMA);
+  db.exec(FUNNEL_STRATEGY_ROUNDS_SCHEMA);
+  const entryColumns = new Set(db.prepare("PRAGMA table_info(candidate_funnel_entries)")
+    .all().map((column) => column.name));
+  if (!entryColumns.has("strategy_round_id")) {
+    db.exec(`ALTER TABLE candidate_funnel_entries
+      ADD COLUMN strategy_round_id INTEGER REFERENCES candidate_funnel_strategy_rounds(id)`);
+  }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_candidate_funnel_entries_strategy_round
+    ON candidate_funnel_entries(profile_id, plan_id, strategy_round_id, mature_at, id)`);
+
+  const owners = db.prepare(`SELECT DISTINCT profile_id, plan_id
+    FROM candidate_funnel_entries
+    WHERE plan_id IS NOT NULL
+    ORDER BY profile_id, plan_id`).all();
+  for (const owner of owners) backfillFunnelStrategyRounds(db, Number(owner.profile_id), Number(owner.plan_id));
+}
+
+function backfillFunnelStrategyRounds(db, profileId, planId) {
+  const existing = db.prepare(`SELECT count(*) AS count FROM candidate_funnel_strategy_rounds
+    WHERE profile_id = ? AND plan_id = ?`).get(profileId, planId);
+  if (Number(existing.count)) return;
+
+  const plan = db.prepare("SELECT plan_json FROM search_plans WHERE id = ? AND profile_id = ?")
+    .get(planId, profileId);
+  if (!plan) return;
+  const planJson = parseJson(plan.plan_json, {});
+  const snapshot = JSON.stringify({
+    planId,
+    directions: Array.isArray(planJson.directions) ? planJson.directions : [],
+    resumeVersionId: null
+  });
+  const insert = db.prepare(`INSERT INTO candidate_funnel_strategy_rounds(
+    profile_id, plan_id, sequence_number, status, source_key,
+    strategy_snapshot_json, change_kinds_json, change_note, resume_version_id,
+    preliminary_sample_target, comparable_sample_target, formal_sample_target,
+    legacy_uncertain, started_at, closed_at, created_at, updated_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, 1, ?, ?, ?, ?)`);
+  const attachCohort = db.prepare(`UPDATE candidate_funnel_entries
+    SET strategy_round_id = ?
+    WHERE profile_id = ? AND plan_id = ? AND cohort_id = ? AND strategy_round_id IS NULL`);
+  let sequence = 0;
+  const cohorts = db.prepare(`SELECT cohort.id, cohort.preliminary_sample_target,
+      cohort.comparable_sample_target, cohort.formal_sample_target,
+      cohort.started_at, cohort.frozen_at
+    FROM candidate_funnel_cohorts cohort
+    WHERE cohort.profile_id = ? AND EXISTS (
+      SELECT 1 FROM candidate_funnel_entries entry
+      WHERE entry.profile_id = ? AND entry.plan_id = ? AND entry.cohort_id = cohort.id
+    )
+    ORDER BY cohort.started_at, cohort.id`).all(profileId, profileId, planId);
+  for (const cohort of cohorts) {
+    sequence += 1;
+    const createdAt = String(cohort.frozen_at || cohort.started_at);
+    const result = insert.run(
+      profileId,
+      planId,
+      sequence,
+      "closed",
+      `legacy:cohort:${Number(cohort.id)}`,
+      snapshot,
+      JSON.stringify(["initial"]),
+      "历史批次，策略边界无法完整还原",
+      Number(cohort.preliminary_sample_target),
+      Number(cohort.comparable_sample_target),
+      Number(cohort.formal_sample_target),
+      String(cohort.started_at),
+      String(cohort.frozen_at),
+      createdAt,
+      createdAt
+    );
+    attachCohort.run(Number(result.lastInsertRowid), profileId, planId, Number(cohort.id));
+  }
+
+  const open = db.prepare(`SELECT MIN(started_at) AS started_at, MAX(updated_at) AS updated_at,
+      COUNT(*) AS count
+    FROM candidate_funnel_entries
+    WHERE profile_id = ? AND plan_id = ? AND cohort_id IS NULL AND strategy_round_id IS NULL`)
+    .get(profileId, planId);
+  if (!Number(open.count)) return;
+  const policy = db.prepare(`SELECT preliminary_sample_target, comparable_sample_target, formal_sample_target
+    FROM candidate_funnel_policies WHERE profile_id = ?`).get(profileId) || {
+    preliminary_sample_target: 30,
+    comparable_sample_target: 50,
+    formal_sample_target: 70
+  };
+  sequence += 1;
+  const startedAt = String(open.started_at);
+  const updatedAt = String(open.updated_at || startedAt);
+  const result = insert.run(
+    profileId,
+    planId,
+    sequence,
+    "active",
+    "legacy:open",
+    snapshot,
+    JSON.stringify(["initial"]),
+    "历史未冻结样本，策略边界无法完整还原",
+    Number(policy.preliminary_sample_target),
+    Number(policy.comparable_sample_target),
+    Number(policy.formal_sample_target),
+    startedAt,
+    null,
+    startedAt,
+    updatedAt
+  );
+  db.prepare(`UPDATE candidate_funnel_entries SET strategy_round_id = ?
+    WHERE profile_id = ? AND plan_id = ? AND cohort_id IS NULL AND strategy_round_id IS NULL`)
+    .run(Number(result.lastInsertRowid), profileId, planId);
+}
 
 function migrateMockInterviewPlanBinding(db) {
   db.exec(MOCK_INTERVIEW_V1_SCHEMA);
@@ -1943,6 +2095,11 @@ module.exports = {
   stopPendingMessageReplySendItems: messageReplySendStore.stopPendingMessageReplySendItems,
   getFunnelPolicy: funnelStore.getFunnelPolicy,
   saveFunnelPolicy: funnelStore.saveFunnelPolicy,
+  getActiveFunnelStrategyRound: funnelStore.getActiveFunnelStrategyRound,
+  getFunnelStrategyRound: funnelStore.getFunnelStrategyRound,
+  listFunnelStrategyRounds: funnelStore.listFunnelStrategyRounds,
+  ensureActiveFunnelStrategyRound: funnelStore.ensureActiveFunnelStrategyRound,
+  startFunnelStrategyRound: funnelStore.startFunnelStrategyRound,
   ensureFunnelEntry: funnelStore.ensureFunnelEntry,
   getFunnelEntry: funnelStore.getFunnelEntry,
   listFunnelEntries: funnelStore.listFunnelEntries,
