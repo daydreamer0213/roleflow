@@ -612,6 +612,49 @@ function recordManualProgressAction(db, input = {}) {
   });
 }
 
+function recordReplyConfirmedSent(db, input = {}) {
+  const cardId = positiveInteger(input.cardId, "cardId");
+  const card = getProgressCard(db, cardId);
+  if (!card) throw progressError("PROGRESS_CARD_NOT_FOUND", "progress card was not found");
+  const rawKey = String(input.idempotencyKey || "").trim();
+  const idempotencyKey = /^message-reply-send:[1-9]\d*:[1-9]\d*$/.test(rawKey)
+    ? derivedProgressIdempotencyKey([rawKey])
+    : progressIdempotencyKey(rawKey);
+  const occurredAt = isoText(input.occurredAt);
+  const summary = shortText(input.summary || "用户确认已手动发送", 240);
+  if (!summary) throw progressError("PROGRESS_ACTION_INVALID", "reply sent summary is required");
+  if (!INTERVIEW_PROGRESS_STAGES.has(card.stage)) {
+    return recordManualProgressAction(db, {
+      cardId,
+      idempotencyKey,
+      stage: "waiting_reply",
+      eventType: "reply_confirmed_sent",
+      summary,
+      nextAction: "等待招聘方回复",
+      now: occurredAt
+    });
+  }
+  return progressTransaction(db, () => {
+    recordProgressEvent(db, {
+      cardId,
+      idempotencyKey,
+      type: "reply_confirmed_sent",
+      actor: "user",
+      summary,
+      occurredAt
+    });
+    ensureFunnelEntry(db, {
+      profileId: card.profileId,
+      planId: card.planId,
+      jobId: card.jobId,
+      cardId: card.id,
+      sourceKind: "reply_sent",
+      startedAt: occurredAt
+    });
+    return getProgressCard(db, cardId);
+  });
+}
+
 function sanitizedMessageSummary(messageCategory, { missingFactKey = "", messageIntent = "" } = {}) {
   if (String(messageIntent || "").trim() === "interview_invitation") return "收到面试邀约";
   const category = String(messageCategory || "").trim();
@@ -1076,6 +1119,7 @@ module.exports = {
   recordDiscoveredMessageClassification,
   recordDiscoveredMessageGroupClassification,
   recordManualProgressAction,
+  recordReplyConfirmedSent,
   sanitizedMessageSummary,
   getProgressCardForJob,
   getProgressCardById,

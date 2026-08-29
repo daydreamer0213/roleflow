@@ -92,6 +92,7 @@ const {
   getProgressCardById,
   recordProgressEvent,
   recordManualProgressAction,
+  recordReplyConfirmedSent,
   listProgressCardsWithEvents
 } = require("../core/candidate_progress");
 const { parseResumeUpload, parseResumeText, MAX_UPLOAD_BYTES } = require("../core/resume_parser");
@@ -3764,15 +3765,11 @@ async function handleProgress(req, res, db, messageDiscovery = null, replyLearni
         }
         scheduledAt = new Date(scheduledAt).toISOString();
       }
-      const preserveInterviewStage = action === "reply_confirmed_sent"
-        && ["interview_invited", "interview_scheduled"].includes(card.stage);
       const recordProgress = () => {
-        if (preserveInterviewStage) {
-          recordProgressEvent(db, {
+        if (action === "reply_confirmed_sent") {
+          recordReplyConfirmedSent(db, {
             cardId: card.id,
             idempotencyKey: params.idempotencyKey,
-            type: definition.eventType,
-            actor: "user",
             summary: enteredSummary || definition.summary
           });
         } else {

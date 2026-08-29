@@ -8,6 +8,7 @@ const {
   ensureProgressCard,
   recordDiscoveredMessageClassification,
   recordDiscoveredMessageGroupClassification,
+  recordReplyConfirmedSent,
   correctProgressStage,
   getProgressCardForJob,
   bindProgressCardThread,
@@ -233,6 +234,22 @@ try {
     (error) => error.code === "PROGRESS_IDEMPOTENCY_CONFLICT",
     "the same correction idempotency key must include the expected from stage"
   );
+  recordReplyConfirmedSent(db, {
+    cardId: correctionCard.id,
+    idempotencyKey: "message-reply-send:31:41",
+    occurredAt: "2026-07-23T08:04:02.000Z"
+  });
+  recordReplyConfirmedSent(db, {
+    cardId: correctionCard.id,
+    idempotencyKey: "message-reply-send:31:41",
+    occurredAt: "2026-07-23T08:04:02.000Z"
+  });
+  assert.strictEqual(getProgressCardForJob(db, {
+    profileId: correctionFixture.profileId,
+    jobId: correctionFixture.jobId
+  }).stage, "interview_scheduled", "reply sent evidence must not downgrade an interview stage");
+  assert.strictEqual(listProgressEvents(db, correctionCard.id)
+    .filter((event) => event.type === "reply_confirmed_sent").length, 1);
 
   const contextFixture = createFixture(db, "context", now);
   ensureProgressCard(db, { ...contextFixture, source: "boss", now });
