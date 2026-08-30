@@ -230,7 +230,7 @@ function buildGuardedConversationClickExpression(target) {
     if (actualConversationKey !== expected.conversationKey) return fail("row_drifted");
     if (expected.identityVerified) {
       const sourceJobId = /^[A-Za-z0-9_-]{6,160}$/.test(String(source.encryptJobId || "")) ? "boss:" + source.encryptJobId : "";
-      const lastMessageId = /^\d{15}$/.test(String(source.lastMsgId || "")) ? String(source.lastMsgId) : "";
+      const lastMessageId = /^\\d{15}$/.test(String(source.lastMsgId || "")) ? String(source.lastMsgId) : "";
       const lastMessageDirection = source.lastIsSelf === true ? "myself" : source.lastIsSelf === false ? "friend" : "unknown";
       if (sourceJobId !== expected.sourceJobId || lastMessageId !== expected.lastMessageId || lastMessageDirection !== expected.lastMessageDirection) return fail("row_drifted");
     }

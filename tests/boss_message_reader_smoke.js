@@ -105,11 +105,12 @@ function deferred() {
   return { promise, resolve };
 }
 
-function runGuardedExpression(expression, { innerText, unread = true, snapshotResult, titleBox = null, lastMsg = null, interactiveChild = null }) {
+function runGuardedExpression(expression, { innerText, unread = true, snapshotResult, titleBox = null, lastMsg = null, interactiveChild = null, source = null }) {
   let clicks = 0;
   let childClicks = 0;
   const child = interactiveChild || null;
   const row = {
+    __vue__: source ? { source } : undefined,
     isConnected: true,
     innerText,
     getAttribute: () => null,
@@ -426,6 +427,33 @@ function runGuardedExpression(expression, { innerText, unread = true, snapshotRe
   });
   assert.deepStrictEqual(JSON.parse(JSON.stringify(directDomMatch.result)), guardedSuccess);
   assert.strictEqual(directDomMatch.clicks, 1, "a matching Task1 signature must click the target row exactly once");
+  const verifiedIncomingRow = row(0, {
+    unread: false,
+    conversationId: "conversation-verified",
+    sourceJobId: "boss:job-verified",
+    lastMessageId: "123456789012345",
+    lastMessageDirection: "friend",
+    lastMessageStatus: "unknown",
+    identityVerified: true
+  });
+  const verifiedIncomingExpression = buildGuardedConversationClickExpression({
+    ...verifiedIncomingRow,
+    operation: "initial_incoming"
+  });
+  const verifiedIncomingMatch = runGuardedExpression(verifiedIncomingExpression, {
+    innerText: "Alex Example\nPlease share availability",
+    unread: false,
+    snapshotResult: snapshot({ rows: [verifiedIncomingRow] }),
+    source: {
+      uniqueId: "conversation-verified",
+      encryptJobId: "job-verified",
+      lastMsgId: "123456789012345",
+      lastIsSelf: false
+    }
+  });
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(verifiedIncomingMatch.result)), guardedSuccess,
+    "a verified first incoming row must retain its numeric message identity inside the browser guard");
+  assert.strictEqual(verifiedIncomingMatch.clicks, 1);
   const liveRowShape = runGuardedExpression(expression, {
     innerText: "10:30\nAlex Example\nPlease share availability",
     titleBox: "Alex Example",
