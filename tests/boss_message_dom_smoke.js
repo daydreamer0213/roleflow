@@ -175,6 +175,21 @@ assert.deepStrictEqual(
   snapshot.rows.map((row) => row.transientSignature),
   "browser and Node snapshots must use the same synchronous transient signature"
 );
+const refreshedBrowserSnapshot = runBrowserSnapshot(
+  documentLike,
+  "https://www.zhipin.com/web/geek/chat",
+  () => ({ state: "stale_snapshot_helper" })
+);
+assert(
+  Array.isArray(refreshedBrowserSnapshot.rows),
+  "each browser snapshot must replace a stale helper left by an older RoleFlow runtime"
+);
+assert.strictEqual(
+  refreshedBrowserSnapshot.rows.length,
+  snapshot.rows.length,
+  "each browser snapshot must replace a stale helper left by an older RoleFlow runtime"
+);
+assert(refreshedBrowserSnapshot.rows.every((row) => /^sha256:[a-f0-9]{64}$/.test(row.friendKey)));
 
 const structuredDocument = createStructuredBossMessageDomFixture();
 const structuredSnapshot = snapshotBossMessagePage(structuredDocument, "https://www.zhipin.com/web/geek/chat");
@@ -205,7 +220,7 @@ assert.strictEqual(
 
 console.log("boss_message_dom_smoke ok");
 
-function runBrowserSnapshot(documentLike, href) {
+function runBrowserSnapshot(documentLike, href, existingSnapshot = null) {
   const url = new URL(href);
   const context = {
     document: documentLike,
@@ -214,6 +229,7 @@ function runBrowserSnapshot(documentLike, href) {
     getComputedStyle: () => ({ display: "block", visibility: "visible" })
   };
   context.window = context;
+  if (existingSnapshot) context.__bossMessageSnapshot = existingSnapshot;
   return vm.runInNewContext(BOSS_MESSAGE_SNAPSHOT_EXPRESSION, context);
 }
 

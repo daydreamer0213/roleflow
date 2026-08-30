@@ -179,6 +179,49 @@ async function main() {
     assert.strictEqual(result.messageIntent, messageIntent);
     assert.strictEqual(result.progressUpdate.stage, "reply_ready");
   }
+  assert.throws(
+    () => validateMessageReply(safeReply({
+      messageIntent: "interest_check",
+      messageCategory: "other",
+      requiredFactKeys: ["employment_status"],
+      usedFactKeys: [],
+      responseItems: [{ id: "employment_status", kind: "question", required: true }],
+      coverage: [{ responseItemId: "employment_status", covered: false }],
+      missingFact: { key: "employment_status", question: "请确认当前求职状态", reason: "provider drift" },
+      messages: []
+    }), { facts: [], now: NOW }),
+    (error) => error.code === "MESSAGE_REPLY_INVALID",
+    "an interest check must not be converted into a missing-fact workflow"
+  );
+  assert.throws(
+    () => validateMessageReply(safeReply({
+      missingFact: { key: "employment_status", question: "请确认当前求职状态", reason: "provider drift" },
+      messages: []
+    }), { facts: [], now: NOW }),
+    (error) => error.code === "MESSAGE_REPLY_INVALID",
+    "missingFact must reject provider-only fields instead of silently accepting contract drift"
+  );
+  assert.throws(
+    () => validateMessageReply(safeReply({
+      missingFact: { key: "employment_status", question: "请确认当前求职状态" },
+      messages: ["must not coexist"]
+    }), { facts: validFacts, now: NOW }),
+    (error) => error.code === "MESSAGE_REPLY_INVALID",
+    "a missing-fact question and a sendable draft must be mutually exclusive"
+  );
+  assert.throws(
+    () => validateMessageReply(safeReply({
+      messageIntent: "interest_check",
+      messageCategory: "other",
+      requiredFactKeys: [],
+      usedFactKeys: [],
+      responseItems: [],
+      coverage: [],
+      messages: []
+    }), { facts: [], now: NOW }),
+    (error) => error.code === "MESSAGE_REPLY_INVALID",
+    "a safe interest check must contain a draft"
+  );
   const manualReview = validateMessageReply(safeReply({
     messageIntent: "manual_review",
     messageCategory: "other",

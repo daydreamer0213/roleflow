@@ -86,6 +86,7 @@ try {
 
   const firstVerifiedFriend = {
     ...readRow(digest("conversation-first-friend"), digest("first-friend")),
+    friendKey: digest("friend-first"),
     sourceJobId: "boss:encrypt-job-first",
     lastMessageId: "378917037748740",
     lastMessageDirection: "friend",
@@ -97,6 +98,8 @@ try {
     baselines: new Map()
   });
   assert.deepStrictEqual(planned.queue.map((item) => item.operation), ["initial_incoming"]);
+  assert.strictEqual(planned.queue[0].friendKey, digest("friend-first"),
+    "the queue must retain the verified friend identity used by the guarded conversation selector");
   assert.strictEqual(planned.queue[0].sourceJobId, "boss:encrypt-job-first");
   assert.strictEqual(planned.queue[0].lastMessageId, "378917037748740");
   assert.strictEqual(planned.baselineWrites.length, 0);

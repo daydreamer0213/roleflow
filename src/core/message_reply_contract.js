@@ -33,6 +33,7 @@ function validateMessageReply(value, context = {}) {
   const answerMemories = Array.isArray(context.answerMemories) ? context.answerMemories : [];
   const validMemoryIds = new Set(answerMemories.map((memory) => Number(memory?.id)).filter((id) => Number.isSafeInteger(id) && id > 0));
   const now = String(context.now || new Date().toISOString());
+  assertIntentShape(normalized);
   assertKnownFactKeys(normalized);
   assertCoverageComplete(normalized);
   assertDraftLimit(normalized.messages, MAX_DRAFTS);
@@ -129,9 +130,9 @@ function normalizeReply(value) {
     if (!text) throw contractError("MESSAGE_REPLY_INVALID", `message ${index} is empty`);
     return text;
   });
-  const missingFact = value.missingFact == null ? null : value.missingFact;
-  if (missingFact && (!missingFact.key || !missingFact.question)) {
-    throw contractError("MESSAGE_REPLY_INVALID", "missingFact must contain key and question");
+  const missingFact = normalizedMissingFact(value.missingFact);
+  if (missingFact && messages.length) {
+    throw contractError("MESSAGE_REPLY_INVALID", "missingFact and messages cannot both be present");
   }
   return {
     messageIntent,
@@ -145,6 +146,36 @@ function normalizeReply(value) {
     missingFact,
     messages
   };
+}
+
+function normalizedMissingFact(value) {
+  if (value == null) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw contractError("MESSAGE_REPLY_INVALID", "missingFact must be null or an object");
+  }
+  const keys = Object.keys(value).sort();
+  if (keys.length !== 2 || keys[0] !== "key" || keys[1] !== "question"
+      || typeof value.key !== "string" || typeof value.question !== "string") {
+    throw contractError("MESSAGE_REPLY_INVALID", "missingFact must contain only key and question strings");
+  }
+  const key = value.key.trim();
+  const question = value.question.trim();
+  if (!key || !question) {
+    throw contractError("MESSAGE_REPLY_INVALID", "missingFact must contain key and question");
+  }
+  return { key, question };
+}
+
+function assertIntentShape(normalized) {
+  if (normalized.messageIntent !== "interest_check"
+      || MANUAL_ONLY_CATEGORIES.has(normalized.messageCategory)) return;
+  if (normalized.missingFact
+      || normalized.requiredFactKeys.length
+      || normalized.responseItems.length
+      || normalized.coverage.length
+      || normalized.messages.length === 0) {
+    throw contractError("MESSAGE_REPLY_INVALID", "interest check must contain a direct draft without missing facts");
+  }
 }
 
 function normalizedMessageSummary(value) {

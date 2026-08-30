@@ -215,6 +215,7 @@ function queueTarget(operation, row, conversationKey, previewDigest, previewKind
     operation,
     rowIndex: row.rowIndex,
     conversationKey,
+    friendKey: String(row.friendKey || ""),
     previewDigest,
     previewKind,
     transientSignature: row.transientSignature || "",

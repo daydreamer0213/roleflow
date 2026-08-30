@@ -334,7 +334,7 @@ const BOSS_MESSAGE_PAGE_HELPERS_EXPRESSION = String.raw`(() => {
 })()`;
 
 const BOSS_MESSAGE_SNAPSHOT_EXPRESSION = String.raw`(() => {
-  if (!window.__bossMessageSnapshot) ${BOSS_MESSAGE_PAGE_HELPERS_EXPRESSION}
+  ${BOSS_MESSAGE_PAGE_HELPERS_EXPRESSION}
   return window.__bossMessageSnapshot ? window.__bossMessageSnapshot() : { state: "snapshot_helper_missing" };
 })()`;
 
