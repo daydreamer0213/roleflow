@@ -1331,8 +1331,45 @@ const MIGRATIONS = [
     apply(db) {
       migrateMockInterviewResumeGeneral(db);
     }
+  },
+  {
+    version: 26,
+    name: "workflow_hard_boundary_classification_v1",
+    apply(db) {
+      migrateWorkflowHardBoundaryClassification(db);
+    }
   }
 ];
+
+function migrateWorkflowHardBoundaryClassification(db) {
+  const hasWorkflowTasks = db.prepare(`SELECT 1
+    FROM sqlite_master WHERE type = 'table' AND name = 'workflow_job_tasks'`).get();
+  const hasObservations = db.prepare(`SELECT 1
+    FROM sqlite_master WHERE type = 'table' AND name = 'job_observations'`).get();
+  if (!hasWorkflowTasks || !hasObservations) return;
+  db.exec(`
+    UPDATE workflow_job_tasks AS t SET
+      last_error_code = NULL,
+      last_error_stage = NULL,
+      last_error_kind = NULL
+    WHERE t.status = 'skipped'
+      AND t.last_error_code = 'DETAIL_REQUIRED'
+      AND EXISTS (
+        SELECT 1
+        FROM job_observations o
+        WHERE o.id = t.observation_id
+          AND o.job_id = t.job_id
+          AND o.batch_id = t.batch_id
+          AND CASE
+            WHEN json_valid(COALESCE(o.analysis_json, '{}')) THEN (
+              json_extract(o.analysis_json, '$.decisionSource') = 'hard_boundary'
+              OR json_extract(o.analysis_json, '$.semanticStatus') = 'blocked'
+            )
+            ELSE 0
+          END
+      );
+  `);
+}
 
 function migrateMockInterviewResumeGeneral(db) {
   db.exec(MOCK_INTERVIEW_V1_SCHEMA);

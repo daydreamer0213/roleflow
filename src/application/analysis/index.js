@@ -69,7 +69,10 @@ async function retryJobAnalyses({ db, input, deps, bulk }) {
     if (decisionState(scored) !== "ready" && !needsMessageContext) {
       return { job, scored, sourcePending: true, analysis: job.analysis };
     }
-    const analysis = await analyze({ ...job, ...scored, greeting: job.greeting || "" });
+    const analysis = await analyze(
+      { ...job, ...scored, greeting: job.greeting || "" },
+      { signal: deps.signal || null }
+    );
     return { job, scored, sourcePending: false, analysis };
   });
   let completed = 0;

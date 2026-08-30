@@ -126,6 +126,20 @@ async function testApplicationBoundary() {
   assert.deepStrictEqual(blockedMessageRunner.calls, ["message-context-inactive"]);
   assert.strictEqual(job(db, blockedMessageContext.planId, blockedMessageJobId).analysis.semanticStatus, "complete");
 
+  const signalContext = seedPlan("message-context-signal");
+  const signalJobId = seedFailedJob(signalContext, "message-context-signal-complete");
+  const signalRunner = controlledRunner({ delayMs: 0 });
+  const signalController = new AbortController();
+  await retryOneJobAnalysis({
+    db,
+    input: { planId: signalContext.planId, jobId: signalJobId },
+    deps: applicationDeps(signalRunner, {
+      messageContextAnalysis: true,
+      signal: signalController.signal
+    })
+  });
+  assert.strictEqual(signalRunner.signals[0], signalController.signal);
+
   const mixed = seedPlan("mixed");
   const completeId = seedFailedJob(mixed, "bulk-complete");
   const partialId = seedFailedJob(mixed, "bulk-partial");
@@ -365,15 +379,17 @@ function applicationDeps(runner, overrides = {}) {
 }
 
 function controlledRunner({ delayMs = 10 } = {}) {
-  const state = { calls: [], active: 0, peak: 0, configs: [] };
+  const state = { calls: [], active: 0, peak: 0, configs: [], signals: [] };
   return {
     get calls() { return state.calls; },
     get peak() { return state.peak; },
     get configs() { return state.configs; },
+    get signals() { return state.signals; },
     create(configs) {
       state.configs.push(configs);
-      return async (jobInput) => {
+      return async (jobInput, options = {}) => {
         state.calls.push(jobInput.sourceId);
+        state.signals.push(options.signal || null);
         state.active += 1;
         state.peak = Math.max(state.peak, state.active);
         try {

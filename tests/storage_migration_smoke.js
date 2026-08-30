@@ -11,6 +11,7 @@ const {
   saveProfileAnalysis,
   createBatch,
   upsertJob,
+  createWorkflowRun,
   getResumeOptimization
 } = require("../src/core/storage");
 const MATCHING_CARD_VERSION = 5;
@@ -34,6 +35,7 @@ const MESSAGE_REPLY_SENDING_VERSION = 22;
 const FUNNEL_STRATEGY_ROUNDS_VERSION = 23;
 const RESUME_OPTIMIZATION_WHOLE_DRAFT_VERSION = 24;
 const MOCK_INTERVIEW_RESUME_GENERAL_VERSION = 25;
+const WORKFLOW_HARD_BOUNDARY_CLASSIFICATION_VERSION = 26;
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-migration-"));
 let db;
@@ -70,10 +72,11 @@ try {
       { version: MESSAGE_REPLY_SENDING_VERSION, name: "message_reply_sending_v1", backup_path: null },
       { version: FUNNEL_STRATEGY_ROUNDS_VERSION, name: "funnel_strategy_rounds_v2", backup_path: null },
       { version: RESUME_OPTIMIZATION_WHOLE_DRAFT_VERSION, name: "resume_optimization_whole_draft_v2", backup_path: null },
-      { version: MOCK_INTERVIEW_RESUME_GENERAL_VERSION, name: "mock_interview_resume_general_v3", backup_path: null }
+      { version: MOCK_INTERVIEW_RESUME_GENERAL_VERSION, name: "mock_interview_resume_general_v3", backup_path: null },
+      { version: WORKFLOW_HARD_BOUNDARY_CLASSIFICATION_VERSION, name: "workflow_hard_boundary_classification_v1", backup_path: null }
     ]
   );
-  assert.strictEqual(freshMigrations[freshMigrations.length - 1].name, "mock_interview_resume_general_v3");
+  assert.strictEqual(freshMigrations[freshMigrations.length - 1].name, "workflow_hard_boundary_classification_v1");
   assert.strictEqual(freshMigrations[freshMigrations.length - 1].version, SCHEMA_VERSION);
   assert(db.prepare("PRAGMA table_info(communication_batches)").all()
     .some((column) => column.name === "runtime_json"));
@@ -216,7 +219,7 @@ try {
   assert(SCHEMA_VERSION >= 3);
   assert.strictEqual(SHARED_BOSS_PACING_VERSION, 16);
   assert.strictEqual(MESSAGE_REPLY_LEARNING_VERSION, 17);
-  assert.strictEqual(SCHEMA_VERSION, MOCK_INTERVIEW_RESUME_GENERAL_VERSION);
+  assert.strictEqual(SCHEMA_VERSION, WORKFLOW_HARD_BOUNDARY_CLASSIFICATION_VERSION);
   assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
   const planNow = "2026-08-16T00:00:00.000Z";
   const planProfileId = Number(db.prepare(`INSERT INTO candidate_profiles(
@@ -415,7 +418,7 @@ try {
   `);
   db.close();
   db = openDb(mockInterviewV19Path);
-  assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, MOCK_INTERVIEW_RESUME_GENERAL_VERSION);
+  assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, SCHEMA_VERSION);
   assert.strictEqual(
     db.prepare("SELECT display_name FROM candidate_profiles WHERE id = ?").get(preservedProfileId).display_name,
     "Mock interview v19 migration",
@@ -530,7 +533,7 @@ try {
   db.close();
 
   db = openDb(mockInterviewV20Path);
-  assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, MOCK_INTERVIEW_RESUME_GENERAL_VERSION);
+  assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, SCHEMA_VERSION);
   assert.strictEqual(
     db.prepare("SELECT plan_id FROM mock_interview_sessions WHERE id = ?").get(uniqueSessionId).plan_id,
     v20Owner.planId,
@@ -711,7 +714,8 @@ try {
       { version: MESSAGE_REPLY_SENDING_VERSION, name: "message_reply_sending_v1" },
       { version: FUNNEL_STRATEGY_ROUNDS_VERSION, name: "funnel_strategy_rounds_v2" },
       { version: RESUME_OPTIMIZATION_WHOLE_DRAFT_VERSION, name: "resume_optimization_whole_draft_v2" },
-      { version: MOCK_INTERVIEW_RESUME_GENERAL_VERSION, name: "mock_interview_resume_general_v3" }
+      { version: MOCK_INTERVIEW_RESUME_GENERAL_VERSION, name: "mock_interview_resume_general_v3" },
+      { version: WORKFLOW_HARD_BOUNDARY_CLASSIFICATION_VERSION, name: "workflow_hard_boundary_classification_v1" }
     ]
   );
   assert.strictEqual(db.prepare("SELECT source FROM keyword_sources WHERE keyword = 'v1-preserved'").get().source, "migration-smoke");
@@ -1415,6 +1419,69 @@ try {
   );
   assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM candidate_profiles").get().n, 2);
   assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM batches").get().n, 1);
+  db.close();
+
+  const workflowClassificationPath = path.join(root, "workflow-hard-boundary-classification.sqlite");
+  db = openDb(workflowClassificationPath);
+  const classificationNow = "2026-08-30T00:00:00.000Z";
+  const classificationProfileId = Number(db.prepare(`INSERT INTO candidate_profiles(
+    display_name, profile_json, source_hash, created_at, updated_at
+  ) VALUES ('Workflow classification candidate', '{}', NULL, ?, ?)`)
+    .run(classificationNow, classificationNow).lastInsertRowid);
+  const classificationPlanId = Number(db.prepare(`INSERT INTO search_plans(
+    profile_id, name, plan_json, profile_version_id, is_active, created_at, updated_at
+  ) VALUES (?, 'Workflow classification plan', '{}', NULL, 1, ?, ?)`)
+    .run(classificationProfileId, classificationNow, classificationNow).lastInsertRowid);
+  const classificationBatchId = createBatch(db, "boss", "classification", "workflow classification migration", {
+    profileId: classificationProfileId,
+    searchPlanId: classificationPlanId
+  });
+  const classificationJobs = [
+    { sourceId: "migration-hard-boundary", analysis: { semanticStatus: "blocked", decisionSource: "hard_boundary" } },
+    { sourceId: "migration-detail-required", analysis: { semanticStatus: "pending", decisionSource: "analysis_pending" } }
+  ].map((item) => Number(upsertJob(db, {
+    source: "boss",
+    sourceId: item.sourceId,
+    title: item.sourceId,
+    description: "",
+    qualityTags: ["detail_unverified"],
+    analysis: item.analysis
+  }, classificationBatchId)));
+  const classificationWorkflowId = createWorkflowRun(db, {
+    id: "workflow-classification-migration",
+    profileId: classificationProfileId,
+    planId: classificationPlanId,
+    localDay: "2026-08-30",
+    sequence: 1
+  }).id;
+  const classificationObservations = db.prepare(`SELECT id, job_id
+    FROM job_observations WHERE batch_id = ? ORDER BY id`).all(classificationBatchId);
+  const insertMisclassifiedTask = db.prepare(`INSERT INTO workflow_job_tasks(
+    workflow_run_id, batch_id, job_id, observation_id, position, status,
+    last_error_code, last_error_stage, last_error_kind, finished_at, created_at, updated_at
+  ) VALUES (?, ?, ?, ?, ?, 'skipped', 'DETAIL_REQUIRED', 'input', 'waiting_for_detail', ?, ?, ?)`);
+  classificationObservations.forEach((observation, index) => insertMisclassifiedTask.run(
+    classificationWorkflowId,
+    classificationBatchId,
+    classificationJobs[index],
+    observation.id,
+    index + 1,
+    classificationNow,
+    classificationNow,
+    classificationNow
+  ));
+  db.exec(`
+    DELETE FROM schema_migrations WHERE version = ${WORKFLOW_HARD_BOUNDARY_CLASSIFICATION_VERSION};
+    PRAGMA user_version = ${MOCK_INTERVIEW_RESUME_GENERAL_VERSION};
+  `);
+  db.close();
+  db = openDb(workflowClassificationPath);
+  const classifiedTasks = db.prepare(`SELECT last_error_code, last_error_stage, last_error_kind
+    FROM workflow_job_tasks WHERE workflow_run_id = ? ORDER BY position`).all(classificationWorkflowId);
+  assert.deepStrictEqual(classifiedTasks.map((row) => ({ ...row })), [
+    { last_error_code: null, last_error_stage: null, last_error_kind: null },
+    { last_error_code: "DETAIL_REQUIRED", last_error_stage: "input", last_error_kind: "waiting_for_detail" }
+  ]);
   db.close();
 
   const futurePath = path.join(root, "future.sqlite");

@@ -274,6 +274,96 @@ server.listen(0, "127.0.0.1", async () => {
     );
     assert.strictEqual(requests, 0, "explicitly disabled env fallback must fail before any request");
     delete process.env.OPENAI_API_KEY;
+
+    const structuredBudgets = [];
+    const structuredBudgetAdapter = new OpenAICompatibleAdapter({
+      baseUrl,
+      apiKeyEnv: "ZHIPPING_TEST_MODEL_KEY",
+      model: "structured-budget-test",
+      timeoutMs: 120000,
+      maxTokens: 4096,
+      maxRetries: 1,
+      thinkingMode: "enabled",
+      logger
+    });
+    structuredBudgetAdapter.requestJson = async ({ maxTokens, timeoutMs }) => {
+      structuredBudgets.push({ maxTokens, timeoutMs });
+      if (structuredBudgets.length === 1) {
+        throw Object.assign(new Error("truncated"), {
+          code: "MODEL_OUTPUT_TRUNCATED",
+          retryable: true,
+          requestedMaxTokens: maxTokens
+        });
+      }
+      return {
+        value: { ok: true },
+        usage: null,
+        httpStatus: 200,
+        providerRequestId: "structured-budget",
+        contentLength: 11
+      };
+    };
+    assert.deepStrictEqual(
+      await structuredBudgetAdapter.chatJson("return json", { test: true }, { kind: "matchRequirements" }),
+      { ok: true }
+    );
+    assert.deepStrictEqual(structuredBudgets, [
+      { maxTokens: 8192, timeoutMs: 240000 },
+      { maxTokens: 16384, timeoutMs: 300000 }
+    ]);
+    await structuredBudgetAdapter.chatJson("return json", { test: true }, { kind: "matchResponsibilities" });
+    assert.deepStrictEqual(structuredBudgets.at(-1), { maxTokens: 8192, timeoutMs: 240000 });
+
+    const ordinaryBudgets = [];
+    const ordinaryBudgetAdapter = new OpenAICompatibleAdapter({
+      baseUrl,
+      apiKeyEnv: "ZHIPPING_TEST_MODEL_KEY",
+      model: "ordinary-budget-test",
+      timeoutMs: 120000,
+      maxTokens: 4096,
+      maxRetries: 0,
+      logger
+    });
+    ordinaryBudgetAdapter.requestJson = async ({ maxTokens, timeoutMs }) => {
+      ordinaryBudgets.push({ maxTokens, timeoutMs });
+      return {
+        value: { ok: true }, usage: null, httpStatus: 200,
+        providerRequestId: "ordinary-budget", contentLength: 11
+      };
+    };
+    await ordinaryBudgetAdapter.chatJson("return json", { test: true }, { kind: "draftCommunication" });
+    assert.deepStrictEqual(ordinaryBudgets, [{ maxTokens: 4096, timeoutMs: 120000 }]);
+
+    const abortAdapter = new OpenAICompatibleAdapter({
+      baseUrl,
+      apiKeyEnv: "ZHIPPING_TEST_MODEL_KEY",
+      model: "abort-test",
+      timeoutMs: 80,
+      maxRetries: 0,
+      logger
+    });
+    const abortController = new AbortController();
+    const abortReason = Object.assign(new Error("message discovery stopped"), {
+      code: "MESSAGE_DISCOVERY_STOPPED"
+    });
+    abortAdapter.requestJson = ({ signal }) => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(Object.assign(new Error("timeout"), {
+        code: "MODEL_TIMEOUT",
+        retryable: false
+      })), 80);
+      signal?.addEventListener("abort", () => {
+        clearTimeout(timer);
+        reject(signal.reason);
+      }, { once: true });
+    });
+    const abortRequest = abortAdapter.chatJson(
+      "return json",
+      { test: true },
+      { kind: "abortRequest", signal: abortController.signal }
+    );
+    setTimeout(() => abortController.abort(abortReason), 10);
+    await assert.rejects(() => abortRequest, (error) => error === abortReason);
+
     const fallbackAdapter = new OpenAICompatibleAdapter({ baseUrl, apiKeyEnv: "ZHIPPING_TEST_MODEL_KEY", model: "test", maxRetries: 0, logger });
     assert.strictEqual(fallbackAdapter.timeoutMs, 60000);
     assert.deepStrictEqual(

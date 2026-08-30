@@ -382,7 +382,8 @@ async function executeAttempt(context, claimed, leaseOwner, summary) {
     const analyzeJob = context.createAnalyzeJob(runtime, { logger: attemptLogger });
     const analyzedJob = await context.analyzeScannedJob(claimed.job, {
       configs: { model: runtime.modelConfig },
-      analyzeJob
+      analyzeJob,
+      signal: context.signal
     });
     const finishedAt = context.now();
     if (isLocalRuleSkip(analyzedJob)) {

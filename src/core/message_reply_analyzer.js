@@ -4,7 +4,10 @@ function createMessageReplyAnalyzer({ adapter, logger = null } = {}) {
   if (!adapter || typeof adapter.draftMessageGroup !== "function") {
     throw new Error("message reply analyzer requires adapter.draftMessageGroup");
   }
-  return async function analyzeMessageGroup({ profile, job, messages = [], facts = [], answerMemories = [], now } = {}) {
+  return async function analyzeMessageGroup(
+    { profile, job, messages = [], facts = [], answerMemories = [], now } = {},
+    { signal = null } = {}
+  ) {
     const normalizedFacts = (facts || []).map((fact) => ({
       key: String(fact.key || fact.factKey || ""),
       value: fact.value !== undefined ? fact.value : fact.factValue,
@@ -27,7 +30,7 @@ function createMessageReplyAnalyzer({ adapter, logger = null } = {}) {
       requestedSubjectKeys
     };
     try {
-      const result = await adapter.draftMessageGroup(input);
+      const result = await adapter.draftMessageGroup(input, { signal });
       return validateMessageReply(result, {
         facts: input.facts,
         answerMemories: input.answerMemories,

@@ -138,6 +138,7 @@ async function fetchedContextSmoke() {
   const target = trustedTarget("fetched-job", secret);
   const calls = [];
   const logs = [];
+  const controller = new AbortController();
   const resolver = createMessageDiscoveryJobContextResolver({
     db,
     profileId: fixture.profileId,
@@ -161,7 +162,7 @@ async function fetchedContextSmoke() {
         return detail("fetched-job");
       }
     },
-    analyzeJob: completeAnalysisAdapter(calls),
+    analyzeJob: completeAnalysisAdapter(calls, controller.signal),
     modelConfig: { provider: "fixture" },
     root,
     logger: captureLogger(logs)
@@ -173,7 +174,8 @@ async function fetchedContextSmoke() {
   const result = await resolver({
     target: { tabId: 43, conversationKey },
     selected: { marker: "selected-fetched" },
-    candidate
+    candidate,
+    signal: controller.signal
   });
   assert.deepStrictEqual(calls, ["target", "binding", "detail", "analyze"]);
   assert.strictEqual(result.cardId, card.id);
@@ -334,12 +336,13 @@ function trustedTarget(jobId, securityId = "fixture-secret") {
   };
 }
 
-function completeAnalysisAdapter(calls) {
+function completeAnalysisAdapter(calls, expectedSignal = null) {
   return async ({ input, deps }) => {
     calls.push("analyze");
     assertDatabaseIdle();
     assert.strictEqual(input.purpose, undefined);
     assert.strictEqual(deps.messageContextAnalysis, true);
+    if (expectedSignal) assert.strictEqual(deps.signal, expectedSignal);
     persistAnalysis(input, { semanticStatus: "complete", recommendation: "primary", marker: "fresh" });
   };
 }

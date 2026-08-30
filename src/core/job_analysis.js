@@ -45,7 +45,8 @@ function createJobAnalysisRunner(configs, keywordPlan = [], {
   const candidateProfile = configs.candidateProfile;
   const semanticMatchingMode = effectiveSemanticMatchingMode(configs);
 
-  return async function analyzeJob(job) {
+  return async function analyzeJob(job, { signal = null } = {}) {
+    throwIfOperationAborted(signal);
     const ruleMatch = explainJobMatch(job, configs, keywordPlan);
     const facts = jobFacts(job);
     const contentHash = sourceContentHash(facts);
@@ -75,6 +76,7 @@ function createJobAnalysisRunner(configs, keywordPlan = [], {
         kind: "understandJob",
         pipelineVersion: PIPELINE_VERSIONS.understandJob,
         input: { job: { ...facts, sourceContentHash: contentHash } },
+        signal,
         run: analyzer.understandJob
       });
       const matchDecision = await cachedModelCall({
@@ -93,6 +95,7 @@ function createJobAnalysisRunner(configs, keywordPlan = [], {
             ? "off"
             : (configs.modelRecommendationMode || DECISION_POLICY.modelRecommendationMode)
         },
+        signal,
         run: analyzer.matchJob
       });
       const analysis = compactAnalysis(configs, { job, jobUnderstanding, matchDecision, ruleMatch, revision });
@@ -103,6 +106,7 @@ function createJobAnalysisRunner(configs, keywordPlan = [], {
         errorCode: error?.code || "MODEL_ANALYSIS_FAILED",
         errorMessage: error?.message || String(error)
       });
+      if (signal?.aborted) throw signalAbortReason(signal);
       if (errorMode === "throw") {
         if (!error.stage && error.modelStage) error.stage = error.modelStage;
         if (!error.phase && error.modelPhase) error.phase = error.modelPhase;
@@ -194,7 +198,7 @@ async function runWorkflowAnalysisPhase(db, input = {}) {
       keywordPlan,
       { db, logger: options?.logger || logger, errorMode: "throw" }
     )),
-    analyzeScannedJob: input.analyzeScannedJob || (async (raw, { analyzeJob }) => analyzeJob(raw)),
+    analyzeScannedJob: input.analyzeScannedJob || (async (raw, { analyzeJob, signal }) => analyzeJob(raw, { signal })),
     logger,
     now,
     sleep: typeof input.sleep === "function" ? input.sleep : undefined,
@@ -283,7 +287,8 @@ function createRuleOnlyAnalysis(configs, job, ruleMatch, revision = buildAnalysi
   }, job);
 }
 
-async function cachedModelCall({ db, configs, logger = null, kind, pipelineVersion, input, run }) {
+async function cachedModelCall({ db, configs, logger = null, kind, pipelineVersion, input, signal = null, run }) {
+  throwIfOperationAborted(signal);
   const modelConfig = configs.model || {};
   const provider = modelConfig.provider || "mock";
   const providerConfig = modelConfig.providers?.[provider] || {};
@@ -310,6 +315,7 @@ async function cachedModelCall({ db, configs, logger = null, kind, pipelineVersi
     if (cached) {
       try {
         const result = validateModelResult(kind, cached.result, validationContext);
+        throwIfOperationAborted(signal);
         logger?.info("model_cache_hit", { kind, provider, model, pipelineVersion });
         logger?.info("model_call_completed", { kind, provider, model, cacheHit: true, latencyMs: 0, attempts: 0, httpStatus: null, usage: null, jsonModeFallback: false });
         return result;
@@ -327,7 +333,8 @@ async function cachedModelCall({ db, configs, logger = null, kind, pipelineVersi
   let result;
   let rawResult;
   try {
-    rawResult = await run(input);
+    rawResult = await run(input, { signal });
+    throwIfOperationAborted(signal);
     result = validateModelResult(kind, rawResult, validationContext);
   } catch (error) {
     if (error?.code !== "MODEL_CONTRACT_INVALID" || error?.modelRepairHandled) {
@@ -348,7 +355,8 @@ async function cachedModelCall({ db, configs, logger = null, kind, pipelineVersi
           invalidOutput,
           instruction: "只修正错误字段并返回完整 JSON；保留原有事实和有效证据，不得编造或输出通用占位语。"
         }
-      });
+      }, { signal });
+      throwIfOperationAborted(signal);
       result = validateModelResult(kind, repaired, validationContext);
       logger?.info("model_contract_repair_completed", { kind, provider, model, pipelineVersion });
     } catch (repairError) {
@@ -363,9 +371,22 @@ async function cachedModelCall({ db, configs, logger = null, kind, pipelineVersi
       throw repairError;
     }
   }
+  throwIfOperationAborted(signal);
   if (db) saveModelCache(db, { cacheKey, kind, provider, model, inputHash, result });
   logger?.info("model_cache_saved", { kind, provider, model, pipelineVersion });
   return result;
+}
+
+function throwIfOperationAborted(signal) {
+  if (signal?.aborted) throw signalAbortReason(signal);
+}
+
+function signalAbortReason(signal) {
+  if (signal?.reason instanceof Error) return signal.reason;
+  return Object.assign(new Error("operation aborted"), {
+    name: "AbortError",
+    code: "OPERATION_ABORTED"
+  });
 }
 
 function contractOutputShape(value) {

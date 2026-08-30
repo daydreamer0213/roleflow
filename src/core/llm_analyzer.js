@@ -11,16 +11,16 @@ const DEFAULT_MODEL_CONFIG = {
 function createLlmAnalyzer({ modelConfig = DEFAULT_MODEL_CONFIG, adapter = null, logger = null } = {}) {
   const modelAdapter = adapter || createModelAdapter(modelConfig, { logger });
   return {
-    analyzeResume: async (input) => validateAdapterResult("analyzeResume", await modelAdapter.analyzeResume(input)),
-    recommendSearchPlan: async (input) => validateAdapterResult("recommendSearchPlan", await modelAdapter.recommendSearchPlan(input)),
-    understandJob: async (input) => validateAdapterResult("understandJob", await modelAdapter.understandJob(input)),
-    matchJob: async (input) => validateAdapterResult(
+    analyzeResume: async (input, options = {}) => validateAdapterResult("analyzeResume", await modelAdapter.analyzeResume(input, options)),
+    recommendSearchPlan: async (input, options = {}) => validateAdapterResult("recommendSearchPlan", await modelAdapter.recommendSearchPlan(input, options)),
+    understandJob: async (input, options = {}) => validateAdapterResult("understandJob", await modelAdapter.understandJob(input, options)),
+    matchJob: async (input, options = {}) => validateAdapterResult(
       "matchJob",
-      await modelAdapter.matchJob(input),
+      await modelAdapter.matchJob(input, options),
       { jobUnderstanding: input?.jobUnderstanding }
     ),
-    draftCommunication: async (input) => validateAdapterResult("draftCommunication", await modelAdapter.draftCommunication(input)),
-    buildCandidateMatchCard: async (input) => validateAdapterResult("buildCandidateMatchCard", await modelAdapter.buildCandidateMatchCard(input))
+    draftCommunication: async (input, options = {}) => validateAdapterResult("draftCommunication", await modelAdapter.draftCommunication(input, options)),
+    buildCandidateMatchCard: async (input, options = {}) => validateAdapterResult("buildCandidateMatchCard", await modelAdapter.buildCandidateMatchCard(input, options))
   };
 }
 
@@ -40,28 +40,28 @@ function getDefaultAnalyzer() {
   return defaultAnalyzer;
 }
 
-function analyzeResume(input) {
-  return getDefaultAnalyzer().analyzeResume(input);
+function analyzeResume(input, options) {
+  return getDefaultAnalyzer().analyzeResume(input, options);
 }
 
-function understandJob(input) {
-  return getDefaultAnalyzer().understandJob(input);
+function understandJob(input, options) {
+  return getDefaultAnalyzer().understandJob(input, options);
 }
 
-function recommendSearchPlan(input) {
-  return getDefaultAnalyzer().recommendSearchPlan(input);
+function recommendSearchPlan(input, options) {
+  return getDefaultAnalyzer().recommendSearchPlan(input, options);
 }
 
-function matchJob(input) {
-  return getDefaultAnalyzer().matchJob(input);
+function matchJob(input, options) {
+  return getDefaultAnalyzer().matchJob(input, options);
 }
 
-function draftCommunication(input) {
-  return getDefaultAnalyzer().draftCommunication(input);
+function draftCommunication(input, options) {
+  return getDefaultAnalyzer().draftCommunication(input, options);
 }
 
-function buildCandidateMatchCard(input) {
-  return getDefaultAnalyzer().buildCandidateMatchCard(input);
+function buildCandidateMatchCard(input, options) {
+  return getDefaultAnalyzer().buildCandidateMatchCard(input, options);
 }
 
 module.exports = {

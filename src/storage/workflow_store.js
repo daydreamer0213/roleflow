@@ -34,6 +34,13 @@ const WORKFLOW_OBSERVATION_READY_SQL = `
     WHERE quality_tag.value = '${DETAIL_UNVERIFIED_TAG}'
   )
 `;
+const WORKFLOW_OBSERVATION_LOCAL_SKIP_SQL = `CASE
+  WHEN json_valid(COALESCE(o.analysis_json, '{}')) THEN (
+    json_extract(o.analysis_json, '$.decisionSource') IN ('local_rules', 'hard_boundary')
+    OR json_extract(o.analysis_json, '$.semanticStatus') IN ('rule_only', 'blocked')
+  )
+  ELSE 0
+END`;
 const WORKFLOW_TRANSITIONS = Object.freeze({
   created: new Set(["scanning", "review_required", "interrupted", "failed", "stopped"]),
   scanning: new Set(["analyzing", "paused", "interrupted", "failed", "stopped"]),
@@ -646,7 +653,31 @@ function isWorkflowJobTaskObservationReady(db, { taskId }) {
 }
 
 function settleIncompleteWorkflowJobTaskRows(db, { workflowRunId, now }) {
-  return db.prepare(`
+  const localSkipped = db.prepare(`
+    UPDATE workflow_job_tasks AS t SET
+      status = 'skipped',
+      priority = 100,
+      available_at = NULL,
+      lease_owner = NULL,
+      leased_at = NULL,
+      lease_expires_at = NULL,
+      last_error_code = NULL,
+      last_error_stage = NULL,
+      last_error_kind = NULL,
+      finished_at = ?,
+      updated_at = ?
+    WHERE t.workflow_run_id = ?
+      AND t.status IN ('pending', 'retry_pending')
+      AND EXISTS (
+        SELECT 1
+        FROM job_observations o
+        WHERE o.id = t.observation_id
+          AND o.job_id = t.job_id
+          AND o.batch_id = t.batch_id
+          AND ${WORKFLOW_OBSERVATION_LOCAL_SKIP_SQL}
+      )
+  `).run(now, now, workflowRunId);
+  const detailRequired = db.prepare(`
     UPDATE workflow_job_tasks AS t SET
       status = 'skipped',
       priority = 100,
@@ -676,6 +707,7 @@ function settleIncompleteWorkflowJobTaskRows(db, { workflowRunId, now }) {
     now,
     workflowRunId
   );
+  return { changes: Number(localSkipped.changes || 0) + Number(detailRequired.changes || 0) };
 }
 
 function selectClaimableWorkflowJobTaskRow(db, { workflowRunId, now }) {

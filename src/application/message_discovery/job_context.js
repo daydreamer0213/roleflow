@@ -92,7 +92,8 @@ function createMessageDiscoveryJobContextResolver({
         modelReady: Boolean(modelConfig),
         modelConfig,
         ...analysisDeps,
-        messageContextAnalysis: true
+        messageContextAnalysis: true,
+        signal
       }
     });
     const complete = findMessageDiscoveryJobContext(db, {

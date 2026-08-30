@@ -410,9 +410,11 @@ async function main() {
   );
 
   let stableAdapterInput;
+  let stableAdapterSignal;
   const stableAdapter = {
-    async draftMessageGroup(input) {
+    async draftMessageGroup(input, options = {}) {
       stableAdapterInput = input;
+      stableAdapterSignal = options.signal;
       return {
         messageIntent: "information_request",
         messageCategory: "qualification",
@@ -427,6 +429,7 @@ async function main() {
     }
   };
   const scopedAnalyzer = createMessageReplyAnalyzer({ adapter: stableAdapter });
+  const scopedController = new AbortController();
   const scopedMessages = [{
     messageKey: "sha256:" + "d".repeat(64),
     text: "Please explain gap 2024-03_2024-08."
@@ -441,7 +444,8 @@ async function main() {
       { key: "employment_status", value: "available", updatedAt: "2026-08-01T00:00:00.000Z" }
     ],
     now: NOW
-  });
+  }, { signal: scopedController.signal });
+  assert.strictEqual(stableAdapterSignal, scopedController.signal);
   assert.strictEqual(scopedResult.progressUpdate.stage, "reply_ready");
   assert.deepStrictEqual(
     stableAdapterInput.facts.map((fact) => fact.key),

@@ -75,6 +75,7 @@ const db = openDb(dbPath);
     await multiTrackValidationIdempotenceSmoke();
     await initialFailureProvenanceSmoke();
     await pipelineVersionCacheSmoke();
+    await modelCancellationSkipsCacheSmoke();
     await modelInferenceIsolationSmoke();
     await compactRoleEvidencePersistenceSmoke();
     await ruleGuardSmoke();
@@ -948,6 +949,38 @@ async function pipelineVersionCacheSmoke() {
   await cachedModelCall({ db, configs, kind: "understandJob", pipelineVersion: "test-v1", input, run });
   await cachedModelCall({ db, configs, kind: "understandJob", pipelineVersion: "test-v2", input, run });
   assert.strictEqual(runs, 2, "pipelineVersion 变化必须使旧缓存失效");
+}
+
+async function modelCancellationSkipsCacheSmoke() {
+  const configs = configFor(["Python"]);
+  const controller = new AbortController();
+  const reason = Object.assign(new Error("message discovery stopped"), {
+    code: "MESSAGE_DISCOVERY_STOPPED"
+  });
+  const before = db.prepare("SELECT COUNT(*) AS count FROM model_cache").get().count;
+  let receivedSignal = null;
+  await assert.rejects(
+    () => cachedModelCall({
+      db,
+      configs,
+      kind: "understandJob",
+      pipelineVersion: "cancellation-v1",
+      input: { job: { sourceId: "cancelled-cache", description: "Python RAG" } },
+      signal: controller.signal,
+      run: async (_input, options = {}) => {
+        receivedSignal = options.signal;
+        controller.abort(reason);
+        return understanding("cancelled-cache");
+      }
+    }),
+    (error) => error === reason
+  );
+  assert.strictEqual(receivedSignal, controller.signal);
+  assert.strictEqual(
+    db.prepare("SELECT COUNT(*) AS count FROM model_cache").get().count,
+    before,
+    "cancelled model results must not be persisted to cache"
+  );
 }
 
 async function modelInferenceIsolationSmoke() {

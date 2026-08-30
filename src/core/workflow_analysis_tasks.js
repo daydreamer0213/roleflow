@@ -848,7 +848,9 @@ function initialTaskStatus(analysis) {
   const semantic = String(analysis.semanticStatus || "");
   const source = String(analysis.decisionSource || "");
   if (semantic === "complete" && source === "model") return "succeeded";
-  if (source === "local_rules" || semantic === "rule_only") return "skipped";
+  if (["local_rules", "hard_boundary"].includes(source) || ["rule_only", "blocked"].includes(semantic)) {
+    return "skipped";
+  }
   return "pending";
 }
 

@@ -1887,7 +1887,8 @@ async function abortAfterClassificationSmoke() {
           ? "123456789012370"
           : "123456789012371"
       })]),
-      classifyMessageGroup: async () => {
+      classifyMessageGroup: async (_input, options = {}) => {
+        assert.strictEqual(options.signal, controller.signal);
         markClassificationStarted();
         return pendingClassification;
       },

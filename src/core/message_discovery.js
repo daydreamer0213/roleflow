@@ -256,7 +256,7 @@ async function runBossMessageDiscovery({
           facts,
           answerMemories,
           contextSource: resolved.contextSource || resolved.job.contextSource || ""
-        })
+        }, { signal })
         : resumeRequestClassification();
     } catch (error) {
       const errorCode = String(error?.code || "");

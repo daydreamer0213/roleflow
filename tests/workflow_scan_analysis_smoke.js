@@ -191,10 +191,18 @@ async function incompleteJdsNeverEnterWorkflowModelQueueSmoke() {
   try {
     const scenario = seedWorkflow(db, {
       localDay: "2026-09-09",
-      analyses: Array.from({ length: 10 }, () => ({
-        semanticStatus: "pending",
-        decisionSource: "analysis_pending"
-      })),
+      analyses: [
+        ...Array.from({ length: 8 }, () => ({
+          semanticStatus: "pending",
+          decisionSource: "analysis_pending"
+        })),
+        ...Array.from({ length: 2 }, () => ({
+          semanticStatus: "blocked",
+          decisionSource: "hard_boundary",
+          recommendation: "not_recommended",
+          fitLevel: "no_fit"
+        }))
+      ],
       modelConfigRevision: "phase-complete-jd-only"
     });
     const completeDescription = "Complete JD evidence for a real model analysis. ".repeat(4);
@@ -247,7 +255,10 @@ async function incompleteJdsNeverEnterWorkflowModelQueueSmoke() {
     );
     assert.deepStrictEqual(
       tasks.slice(5).map((task) => [task.lastErrorCode, task.lastErrorKind, task.totalAttemptCount]),
-      Array.from({ length: 5 }, () => ["DETAIL_REQUIRED", "waiting_for_detail", 0])
+      [
+        ...Array.from({ length: 3 }, () => ["DETAIL_REQUIRED", "waiting_for_detail", 0]),
+        ...Array.from({ length: 2 }, () => [null, null, 0])
+      ]
     );
     const incompleteRows = db.prepare(`
       SELECT analysis_json
@@ -257,7 +268,7 @@ async function incompleteJdsNeverEnterWorkflowModelQueueSmoke() {
     `).all(scenario.batchId, ...scenario.jobIds.slice(5));
     assert.deepStrictEqual(
       incompleteRows.map((row) => JSON.parse(row.analysis_json).semanticStatus),
-      Array(5).fill("pending")
+      ["pending", "pending", "pending", "blocked", "blocked"]
     );
   } finally {
     db.close();

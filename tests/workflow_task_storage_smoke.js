@@ -104,6 +104,7 @@ function testInitialTaskStatusDerivation() {
     analyses: [
       { semanticStatus: "complete", decisionSource: "model" },
       { semanticStatus: "rule_only", decisionSource: "local_rules" },
+      { semanticStatus: "blocked", decisionSource: "hard_boundary" },
       { semanticStatus: "pending", decisionSource: "scan" }
     ],
     localDay: "2026-08-06",
@@ -117,7 +118,8 @@ function testInitialTaskStatusDerivation() {
     now: "2026-08-06T00:00:00.000Z"
   });
   const tasks = listWorkflowJobTasks(db, { workflowRunId: scenario.workflowId });
-  assert.deepStrictEqual(tasks.map((task) => task.status), ["succeeded", "skipped", "pending"]);
+  assert.deepStrictEqual(tasks.map((task) => task.status), ["succeeded", "skipped", "skipped", "pending"]);
+  assert.strictEqual(tasks[2].lastErrorCode, null);
 }
 
 function testBatchAndWorkflowMismatchRejection() {
