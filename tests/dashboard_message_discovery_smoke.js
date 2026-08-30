@@ -621,10 +621,10 @@ async function main() {
     const safeMessage = messageDiscoveryReasonText(code);
     assert(safeMessage && !safeMessage.includes("诊断"), `${code} must have a specific safe recovery message`);
     if (code === "BOSS_MESSAGE_DETAIL_NOT_BACKGROUND") {
-      assert.match(safeMessage, /还原 RoleFlow 专用 Edge（推荐）窗口/,
-        "a minimized dedicated Edge window must tell the user how to restore visibility before retrying");
+      assert.doesNotMatch(safeMessage, /还原 RoleFlow 专用 Edge（推荐）窗口/,
+        "a zero-visible dedicated Edge window must not be presented as a recovery prerequisite");
       assert.match(safeMessage, /会话已保留/,
-        "a background-proof failure must say the pending conversation is preserved");
+        "a genuine background-proof failure must say the pending conversation is preserved");
     }
   }
 

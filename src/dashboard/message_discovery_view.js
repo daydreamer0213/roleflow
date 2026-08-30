@@ -340,7 +340,7 @@ function messageDiscoveryRecoveryMessages() {
     BOSS_MESSAGE_THREAD_MISMATCH: verifyIdentity,
     BOSS_MESSAGE_JOB_TARGET_UNAVAILABLE: "无法确认当前会话对应的岗位入口。该会话已保留，未打开详情，也未生成草稿。",
     BOSS_MESSAGE_DETAIL_BROWSER_FAILED: "后台岗位详情读取遇到浏览器异常。该会话已保留，本次只读发现已安全停止。",
-    BOSS_MESSAGE_DETAIL_NOT_BACKGROUND: "岗位详情未能在后台安全打开。请还原 RoleFlow 专用 Edge（推荐）窗口后重试；若临时页已打开，系统会先关闭它。该会话已保留，本次只读发现已停止。",
+    BOSS_MESSAGE_DETAIL_NOT_BACKGROUND: "岗位详情未能保持后台安全打开；若临时页已创建，系统会先关闭它。该会话已保留，本次只读发现已停止，请保持专用 Edge 的固定标签页不变后重试。",
     BOSS_MESSAGE_DETAIL_TARGET_MISMATCH: "后台打开的岗位与当前会话不一致。临时页会被关闭，该会话已保留待处理。",
     BOSS_MESSAGE_DETAIL_BASELINE_NOT_RESTORED: "岗位详情读取后未能确认浏览器已恢复安全状态。本次只读发现已停止，请检查 BOSS 标签页。",
     MESSAGE_DISCOVERY_JOB_ANALYSIS_INCOMPLETE: "岗位详情已读取，但本地分析还不完整。该会话已保留，请稍后重新开始只读发现。",

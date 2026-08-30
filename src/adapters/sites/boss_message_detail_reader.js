@@ -282,8 +282,8 @@ function captureBinding(tabs, communicationTabId) {
     throw detailError("BOSS_MESSAGE_DETAIL_BASELINE_INVALID", "BOSS fixed-tab baseline is not at rest");
   }
   const visibleTabIds = visibleTabIdsInWindow(tabs, fixed.windowId);
-  if (visibleTabIds.length !== 1) {
-    throw detailError("BOSS_MESSAGE_DETAIL_NOT_BACKGROUND", "visible Edge tab identity is unavailable");
+  if (visibleTabIds.length > 1) {
+    throw detailError("BOSS_MESSAGE_DETAIL_NOT_BACKGROUND", "visible Edge tab identity is ambiguous");
   }
   return {
     searchTabId: fixed.searchTab.id,

@@ -227,17 +227,15 @@ async function read(reader, signal = null) {
 
   const minimizedBrowser = fakeBrowser({ minimized: true });
   const minimized = makeReader(minimizedBrowser);
-  await assert.rejects(
-    () => read(minimized.reader),
-    (error) => error.code === "BOSS_MESSAGE_DETAIL_NOT_BACKGROUND"
-  );
-  assert.deepStrictEqual(minimized.hooks, [], "a minimized window must stop before pacing or issued-attempt accounting");
-  assert.strictEqual(minimizedBrowser.calls.filter((call) => call.name === "createTab").length, 0);
-  assert.strictEqual(minimizedBrowser.calls.filter((call) => call.name === "closeTab").length, 0);
+  const minimizedDetail = await read(minimized.reader);
+  assert.strictEqual(minimizedDetail.sourceId, jobTarget.jobId);
+  assert.deepStrictEqual(minimized.hooks, ["beforeOpen", "recheckMessage", "afterIssuedAttempt"]);
+  assert.strictEqual(minimizedBrowser.calls.filter((call) => call.name === "createTab").length, 1);
+  assert.strictEqual(minimizedBrowser.calls.filter((call) => call.name === "closeTab").length, 1);
   assert.deepStrictEqual(
     minimizedBrowser.tabs,
     baseTabs().map((tab) => ({ ...tab, active: false })),
-    "a minimized window must leave the pending item and exact typed baseline untouched"
+    "a zero-visible Edge window must restore the exact hidden typed baseline"
   );
 
   const ambiguousVisibleBrowser = fakeBrowser();
