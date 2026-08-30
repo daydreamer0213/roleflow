@@ -29,6 +29,8 @@
 - 同一验收修复了专用 Edge 后台/最小化时的消息读取：固定消息页与唯一临时详情页使用 CDP 恢复页面生命周期，但不恢复窗口或聚焦标签；临时详情关闭后只等待浏览器目标清单稳定，再核对精确基线，不重开、不重复访问。真实复验已跨过原关闭后失败点。完整证据及剩余问题见 `docs/superpowers/reports/2026-08-30-real-user-e2e-acceptance.md`。
 - 真实验收后续本地收口提交为 `66d89d4`：迁移 26 只清理仍有 `hard_boundary/blocked` 证据的历史误分类，新任务也先认定确定性排除再判断详情不足；安全停止信号贯穿消息岗位上下文、岗位分析、模型请求与重试等待，取消后不写缓存或完成结果；仅开启思考模式的三类岗位深度结构化任务把输出/超时预算提高到首轮 8192/240 秒、截断重试 16384/300 秒，普通任务和非思考批量分析维持原预算。
 - 在真实运行库的一致副本上执行迁移 26，69 个任务中的 `DETAIL_REQUIRED` 从 12 个变为 4 个，8 个已有排除证据的误分类全部清除；原运行库没有在验证中修改。形成 `66d89d4` 的代码树运行完整 `npm test`，退出码为 0，131/131 项通过，末行为 `All 131 offline checks passed.`。本轮收口没有访问真实 BOSS、调用真实模型或产生外部写。
+- 随后已用 `-NoOpen` 重启正式本地 Dashboard，让正式运行库从 schema 25 迁移到 26；自动备份为 `C:\Users\Administrator\AppData\Local\RoleFlow\Data\data\backups\jobs-before-v25-to-v26-2026-08-30T11-31-26-488Z-3680.sqlite`，另有包含主库/WAL/SHM 的手工备份 `D:\DevData\RoleFlow-verification\pre-v26-original-20260830-193116`。迁移后 `quick_check=ok`，69 个任务为待补 4、误分类 0。真实本地工作流页显示已读 57、待补 4、无需详情 8；分析完成 69、当前未解决 0、本地规则处理 8。1440px 验收无横向溢出、控制台错误、页面错误、失败请求或外部请求，截图和 JSON 位于 `D:\DevData\RoleFlow-verification\v26-workflow-*`。
+- 重启时重新检查出专用 Edge 中预先存在两个沟通页，旧 Dashboard 的内存快照此前未反映该漂移。只读确认两页同窗、均在后台且无未提交输入后，关闭了没有编辑器的空重复页；没有激活窗口、读取聊天正文、填写或发送。重新整理后 Dashboard、浏览器、工作区和只读就绪检查均为 `ready`，基线恢复为一个 Dashboard、一个 `BOSS-SEARCH`、一个 `BOSS-COMMUNICATION`。
 
 ## 2. 当前浏览器交付模型
 
