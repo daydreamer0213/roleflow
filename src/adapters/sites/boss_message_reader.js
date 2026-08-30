@@ -11,7 +11,7 @@ const {
 
 const CHAT_PATH = "/web/geek/chat";
 const GUARDED_OPERATION = "__bossGuardedMessageConversationClick";
-const ALLOWED_OPERATIONS = new Set(["unread", "preview_changed", "durable_unresolved", "authorized_reply"]);
+const ALLOWED_OPERATIONS = new Set(["unread", "initial_incoming", "preview_changed", "durable_unresolved", "authorized_reply"]);
 const SELECTED_IDENTITY_ATTEMPTS = 3;
 const SELECTED_CONTENT_ATTEMPTS = 21;
 const SELECTED_CONTENT_INTERVAL_MS = 250;

@@ -299,6 +299,24 @@ function runGuardedExpression(expression, { innerText, unread = true, snapshotRe
   assert.strictEqual(previewOpened.positionName, "Java Engineer");
   assert.strictEqual(previewBrowser.guardedDomClicks, 1);
 
+  const initialIncomingBrowser = fakeBrowser({
+    snapshots: [
+      snapshot({ rows: [row(0, { unread: false })] }),
+      guardedSuccess,
+      snapshot({ rows: [row(0, { unread: false })] })
+    ]
+  });
+  const initialIncomingReader = createBossMessageReader({ browser: initialIncomingBrowser, sleepFn: async () => {} });
+  const initialIncomingScan = await initialIncomingReader.scanConversationRows();
+  const initialIncomingOpened = await initialIncomingReader.openQueuedConversation({
+    ...initialIncomingScan.rows[0],
+    operation: "initial_incoming",
+    tabId: initialIncomingScan.tabId
+  });
+  assert.strictEqual(initialIncomingOpened.positionName, "Java Engineer");
+  assert.strictEqual(initialIncomingBrowser.guardedDomClicks, 1,
+    "a verified first incoming conversation must use the existing guarded DOM click");
+
   const previewDriftBrowser = fakeBrowser({
     snapshots: [
       previewChangedSnapshot,
