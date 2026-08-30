@@ -31,7 +31,7 @@
 - Produces: `bossLocationConflicts(left: unknown, right: unknown): boolean`, comparing the base city before `·` or whitespace and returning `false` when either side is empty.
 - Changes internal call: `resolveUniqueCandidate(candidates, selected, canonicalThreadKey, sourceJobId)`.
 
-- [ ] **Step 1: Write failing message-discovery regressions**
+- [x] **Step 1: Write failing message-discovery regressions**
 
 Add real end-to-end assertions through `runBossMessageDiscovery`:
 
@@ -61,13 +61,13 @@ Create two same-title candidates with different companies and source IDs, pass t
 
 Extend `selectedConversation` and `fakeReader` so a fixture may provide `sourceJobId` while all old fixtures retain their current fallback.
 
-- [ ] **Step 2: Run the regression and verify RED**
+- [x] **Step 2: Run the regression and verify RED**
 
 Run: `node tests/message_discovery_smoke.js`
 
 Expected: FAIL because `广州` conflicts with `广州·越秀区·东风中路`, or because the same-title candidates remain ambiguous before the new source-ID narrowing exists.
 
-- [ ] **Step 3: Implement the minimal identity helper and matcher**
+- [x] **Step 3: Implement the minimal identity helper and matcher**
 
 Create `src/core/boss_job_identity.js` with no dependencies:
 
@@ -97,13 +97,13 @@ In `runBossMessageDiscovery`, pass `target.sourceJobId` into `resolveUniqueCandi
 
 Do not add a configuration object, strategy class, or generic identity framework.
 
-- [ ] **Step 4: Run Task 1 verification and verify GREEN**
+- [x] **Step 4: Run Task 1 verification and verify GREEN**
 
 Run: `node tests/message_discovery_smoke.js`
 
 Expected: `message_discovery_smoke ok` with exit code 0.
 
-- [ ] **Step 5: Commit Task 1**
+- [x] **Step 5: Commit Task 1**
 
 ```bash
 git add src/core/boss_job_identity.js src/core/message_discovery.js tests/message_discovery_smoke.js
@@ -121,7 +121,7 @@ git commit -m "fix: match message jobs by canonical identity"
 - Preserves browser-facing `jobTarget.jobId` as the raw BOSS ID used in `/job_detail/<jobId>.html`.
 - Persists and queries local jobs with canonical `boss:<jobId>`.
 
-- [ ] **Step 1: Write the failing duplicate-prevention regression**
+- [x] **Step 1: Write the failing duplicate-prevention regression**
 
 Change `seedJob` to persist `sourceId: `boss:${sourceId}`` while keeping the URL raw. In `fetchedContextSmoke`, assert:
 
@@ -136,13 +136,13 @@ assert.strictEqual(
 
 Keep the existing assertion that the returned progress card still refers to the original seeded `jobId`. Update cache-hit expectations to canonical source IDs.
 
-- [ ] **Step 2: Run the regression and verify RED**
+- [x] **Step 2: Run the regression and verify RED**
 
 Run: `node tests/message_discovery_job_context_smoke.js`
 
 Expected: FAIL because the current resolver queries and persists the raw ID, causing a second job instead of reusing `boss:fetched-job`.
 
-- [ ] **Step 3: Canonicalize only at the message job-context boundary**
+- [x] **Step 3: Canonicalize only at the message job-context boundary**
 
 Import `canonicalBossJobSourceId`. After validating the raw `jobTarget.jobId`, derive one local source ID:
 
@@ -154,7 +154,7 @@ Use `localSourceId` for `candidateMatches`, `findMessageDiscoveryJobContext`, th
 
 Make `trustedDetail` return canonical `sourceId` only after proving the detail's raw source ID equals the selected raw target. Do not change the shared `upsertJob` behavior for non-message callers.
 
-- [ ] **Step 4: Run Task 2 verification and verify GREEN**
+- [x] **Step 4: Run Task 2 verification and verify GREEN**
 
 Run: `node tests/message_discovery_job_context_smoke.js`
 
@@ -164,7 +164,7 @@ Run: `node tests/message_discovery_smoke.js`
 
 Expected: `message_discovery_smoke ok` with exit code 0.
 
-- [ ] **Step 5: Commit Task 2**
+- [x] **Step 5: Commit Task 2**
 
 ```bash
 git add src/application/message_discovery/job_context.js tests/message_discovery_job_context_smoke.js
@@ -181,7 +181,7 @@ git commit -m "fix: reuse canonical BOSS jobs in message detail"
 - Consumes: the completed matcher and job-context behavior from Tasks 1 and 2.
 - Produces: exact test count, exact commit IDs, no-live-BOSS statement, and next-step note for the project handoff.
 
-- [ ] **Step 1: Run focused neighboring checks**
+- [x] **Step 1: Run focused neighboring checks**
 
 Run:
 
@@ -194,13 +194,13 @@ node tests/dashboard_message_discovery_smoke.js
 
 Expected: all four commands exit 0 and print their corresponding `ok` line.
 
-- [ ] **Step 2: Run the complete offline gate**
+- [x] **Step 2: Run the complete offline gate**
 
 Run: `npm test`
 
 Expected: exit code 0 with the current `All <N> offline checks passed.` count. Record the actual value; do not reuse an older count.
 
-- [ ] **Step 3: Inspect the final diff and syntax hygiene**
+- [x] **Step 3: Inspect the final diff and syntax hygiene**
 
 Run:
 
@@ -212,7 +212,7 @@ git diff --stat
 
 Expected: no whitespace errors; only the files listed in this plan are changed.
 
-- [ ] **Step 4: Update handoff evidence and plan checkboxes**
+- [x] **Step 4: Update handoff evidence and plan checkboxes**
 
 Add a concise `docs/PROJECT_HANDOFF.md` entry stating:
 
@@ -225,7 +225,7 @@ Add a concise `docs/PROJECT_HANDOFF.md` entry stating:
 
 Mark every completed checkbox in this plan as `[x]`.
 
-- [ ] **Step 5: Verify documentation and commit final evidence**
+- [x] **Step 5: Verify documentation and commit final evidence**
 
 Run:
 
