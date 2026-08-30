@@ -78,7 +78,7 @@ async function cacheHitSmoke() {
   assert.deepStrictEqual(calls, [["target", selected], ["binding"]]);
   assert.strictEqual(result.cardId, card.id);
   assert.strictEqual(result.card.threadKey, conversationKey);
-  assert.strictEqual(result.job.sourceId, "cache-job");
+  assert.strictEqual(result.job.sourceId, "boss:cache-job");
   assert.strictEqual(result.job.analysis.semanticStatus, "complete");
   assert.strictEqual(result.threadKey, conversationKey);
   assert.strictEqual(result.contextSource, "local_cache");
@@ -179,8 +179,15 @@ async function fetchedContextSmoke() {
   assert.strictEqual(result.cardId, card.id);
   assert.strictEqual(result.card.threadKey, conversationKey);
   assert.strictEqual(result.job.description, detail("fetched-job").description.trim());
+  assert.strictEqual(result.job.sourceId, "boss:fetched-job");
   assert.strictEqual(result.job.analysis.semanticStatus, "complete");
   assert.strictEqual(result.contextSource, "message_discovery_detail");
+  assert.strictEqual(
+    db.prepare("SELECT COUNT(*) AS count FROM jobs WHERE source = ? AND source_id IN (?, ?)")
+      .get("boss", "fetched-job", "boss:fetched-job").count,
+    1,
+    "message detail must reuse the canonical BOSS job instead of creating a raw-id duplicate"
+  );
 
   const rawBatch = db.prepare("SELECT * FROM batches WHERE keyword = 'message-discovery-detail' AND profile_id = ?")
     .get(fixture.profileId);
@@ -291,7 +298,7 @@ function seedJob(fixture, sourceId, { complete = false } = {}) {
   }) : null;
   return upsertJob(db, {
     source: "boss",
-    sourceId,
+    sourceId: `boss:${sourceId}`,
     keyword: "AI Engineer",
     title: "AI Engineer",
     company: "Context Co",
