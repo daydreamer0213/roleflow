@@ -10,6 +10,7 @@ const {
   bindProgressCardThread,
   findMessageDiscoveryJobContext
 } = require("../../core/candidate_progress");
+const { canonicalBossJobSourceId } = require("../../core/boss_job_identity");
 const { retryOneJobAnalysis } = require("../analysis");
 
 function createMessageDiscoveryJobContextResolver({
@@ -43,17 +44,18 @@ function createMessageDiscoveryJobContextResolver({
       throw contextError("MESSAGE_DISCOVERY_ACTIVE_PLAN_REQUIRED", "an active search plan is required");
     }
     const jobTarget = trustedJobTarget(await messageReader.readSelectedJobTarget(selected, signal));
+    const localSourceId = canonicalBossJobSourceId(jobTarget.jobId);
     await messageReader.assertActiveBindings();
     const known = candidateMatches(candidate, {
       profileId: normalizedProfileId,
       planId: plan.id,
-      sourceId: jobTarget.jobId
+      sourceId: localSourceId
     })
       ? candidate
       : findMessageDiscoveryJobContext(db, {
         profileId: normalizedProfileId,
         planId: plan.id,
-        sourceId: jobTarget.jobId
+        sourceId: localSourceId
       });
     if (known?.contextComplete) {
       return bindContext(known, target?.conversationKey, "local_cache", now());
@@ -146,11 +148,12 @@ function trustedJobTarget(value) {
 }
 
 function trustedDetail(value, target) {
-  const sourceId = String(value?.sourceId || "").trim();
-  if (sourceId !== target.jobId) {
+  const rawSourceId = String(value?.sourceId || "").trim();
+  if (rawSourceId !== target.jobId) {
     throw contextError("MESSAGE_DISCOVERY_JOB_TARGET_MISMATCH", "job detail target does not match");
   }
-  const canonicalUrl = canonicalBossJobUrl(value?.canonicalUrl, sourceId);
+  const sourceId = canonicalBossJobSourceId(rawSourceId);
+  const canonicalUrl = canonicalBossJobUrl(value?.canonicalUrl, rawSourceId);
   const description = String(value?.description || "").trim();
   if (description.length < 120) {
     throw contextError("MESSAGE_DISCOVERY_JOB_DETAIL_INCOMPLETE", "job detail is incomplete");

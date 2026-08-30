@@ -1,6 +1,6 @@
 # RoleFlow 当前项目交接
 
-> 当前权威交接入口。更新于 2026-08-30。新会话先读根目录 `AGENTS.md`、本文件和 `NEXT_PHASE.md`，再检查当前代码与测试；不要用历史聊天、旧计划或历史发布说明推断当前状态。
+> 当前权威交接入口。更新于 2026-08-31。新会话先读根目录 `AGENTS.md`、本文件和 `NEXT_PHASE.md`，再检查当前代码与测试；不要用历史聊天、旧计划或历史发布说明推断当前状态。
 
 ## 1. 发布与候选状态
 
@@ -32,6 +32,8 @@
 - 随后已用 `-NoOpen` 重启正式本地 Dashboard，让正式运行库从 schema 25 迁移到 26；自动备份为 `C:\Users\Administrator\AppData\Local\RoleFlow\Data\data\backups\jobs-before-v25-to-v26-2026-08-30T11-31-26-488Z-3680.sqlite`，另有包含主库/WAL/SHM 的手工备份 `D:\DevData\RoleFlow-verification\pre-v26-original-20260830-193116`。迁移后 `quick_check=ok`，69 个任务为待补 4、误分类 0。真实本地工作流页显示已读 57、待补 4、无需详情 8；分析完成 69、当前未解决 0、本地规则处理 8。1440px 验收无横向溢出、控制台错误、页面错误、失败请求或外部请求，截图和 JSON 位于 `D:\DevData\RoleFlow-verification\v26-workflow-*`。
 - 重启时重新检查出专用 Edge 中预先存在两个沟通页，旧 Dashboard 的内存快照此前未反映该漂移。只读确认两页同窗、均在后台且无未提交输入后，关闭了没有编辑器的空重复页；没有激活窗口、读取聊天正文、填写或发送。重新整理后 Dashboard、浏览器、工作区和只读就绪检查均为 `ready`，基线恢复为一个 Dashboard、一个 `BOSS-SEARCH`、一个 `BOSS-COMMUNICATION`。
 - 最终消息复验又确认三处根因：旧 Edge 页面保留陈旧 `window.__bossMessageSnapshot`，队列规划遗漏 `friendKey`，真实模型把缺失事实写成 `{key,reason}` 并把草稿误写成 `responseItems(kind=draft)`。提交 `b8e6ccc` 让每次快照重装 helper、完整传递会话身份，并用提示词和运行时校验共同固定模型结构；严格身份守卫与事实契约均未放宽。整库备份后只撤销本次失败的 25 条分类事件和 8 个预览基线，再次运行得到 8 个结果、12 份开放草稿、2 个缺失事实提示、3 个城市不匹配待解决、0 发送批次，`quick_check=ok`。真实页面显示 12 个可编辑并已自动保存的草稿和批量发送面板；完整证据见验收报告和 `D:\DevData\RoleFlow-verification\readonly-message-discovery-contract-recovery-evidence.json`。
+- 2026-08-31 修复消息会话与本地岗位的确定性关联：提交 `4c5f3f1` 让“广州”与“广州·区·商圈”按基础城市一致，并依次利用规范 BOSS 岗位编号、既有会话绑定、岗位名称、公司、薪资和城市缩小同名候选；真实字段或会话冲突仍保持未解决。提交 `c08918d` 让消息详情把裸岗位编号只在本地边界规范为 `boss:<jobId>`，不再为扫描已有岗位创建第二条裸编号记录。历史重复岗位、会话、草稿和事件没有自动合并或删除，页面仍显示真实逐会话待办数。
+- 对提交 `c08918d` 对应代码树运行 `message_discovery_smoke`、`message_discovery_job_context_smoke`、`candidate_progress_storage_smoke`、`dashboard_message_discovery_smoke`，4/4 通过；新鲜完整 `npm test` 退出码为 0，131/131 项通过，原始末行为 `All 131 offline checks passed.`。本次实现与验证只使用 fixture 和临时数据库；没有读取、填写或发送真实 BOSS 消息，没有执行简历同意/拒绝、投递或申请。正式数据库仅在诊断阶段做过只读查询，没有改写其中现存的 3 条未解决会话或重复岗位。
 
 ## 2. 当前浏览器交付模型
 

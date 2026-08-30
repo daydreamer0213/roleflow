@@ -467,6 +467,73 @@ async function identityStopsSmoke() {
   });
   assertStopped(summary, "BOSS_MESSAGE_CARD_AMBIGUOUS");
 
+  const sourced = createFixture({
+    suffix: "sourced-a",
+    title: "Sourced Engineer",
+    company: "First Company"
+  });
+  const sourcedChoice = createFixture({
+    suffix: "sourced-b",
+    profileId: sourced.profileId,
+    planId: sourced.planId,
+    title: sourced.title,
+    company: "Chosen Company"
+  });
+  let sourcedJobId = 0;
+  summary = await runBossMessageDiscovery({
+    db,
+    profileId: sourced.profileId,
+    reader: fakeReader([selectedConversation({
+      title: sourced.title,
+      companyName: sourcedChoice.company,
+      sourceJobId: "boss:job-sourced-b"
+    })]),
+    classifyMessageGroup: async ({ job }) => {
+      sourcedJobId = job.id;
+      return classification();
+    },
+    sleepFn: async () => {}
+  });
+  assert.strictEqual(summary.status, "completed", "the BOSS job id must disambiguate duplicate titles");
+  assert.strictEqual(sourcedJobId, sourcedChoice.jobId);
+
+  const canonicalDuplicate = createFixture({
+    suffix: "canonical-duplicate-a",
+    title: "Canonical Duplicate Engineer",
+    company: "Duplicate Company"
+  });
+  const canonicalDuplicateChoice = createFixture({
+    suffix: "canonical-duplicate-b",
+    profileId: canonicalDuplicate.profileId,
+    planId: canonicalDuplicate.planId,
+    title: canonicalDuplicate.title,
+    company: canonicalDuplicate.company
+  });
+  const canonicalConversationKey = safeDigest(["conversation", "0"]);
+  db.prepare("UPDATE jobs SET source_id = ? WHERE id = ?")
+    .run("boss:canonical-duplicate-job", canonicalDuplicate.jobId);
+  db.prepare("UPDATE jobs SET source_id = ? WHERE id = ?")
+    .run("canonical-duplicate-job", canonicalDuplicateChoice.jobId);
+  db.prepare("UPDATE candidate_progress_cards SET thread_key = ? WHERE id = ?")
+    .run(canonicalConversationKey, canonicalDuplicateChoice.card.id);
+  let canonicalDuplicateJobId = 0;
+  summary = await runBossMessageDiscovery({
+    db,
+    profileId: canonicalDuplicate.profileId,
+    reader: fakeReader([selectedConversation({
+      title: canonicalDuplicate.title,
+      companyName: canonicalDuplicate.company,
+      sourceJobId: "boss:canonical-duplicate-job"
+    })]),
+    classifyMessageGroup: async ({ job }) => {
+      canonicalDuplicateJobId = job.id;
+      return classification();
+    },
+    sleepFn: async () => {}
+  });
+  assert.strictEqual(summary.status, "completed", "an existing thread must disambiguate canonical source duplicates");
+  assert.strictEqual(canonicalDuplicateJobId, canonicalDuplicateChoice.jobId);
+
   const salary = createFixture({ suffix: "salary", title: "Salary Engineer", salary: "20-30K" });
   summary = await runBossMessageDiscovery({
     db,
@@ -484,6 +551,25 @@ async function identityStopsSmoke() {
     classifyMessageGroup
   });
   assertStopped(summary, "BOSS_MESSAGE_CITY_MISMATCH");
+
+  const sameCity = createFixture({
+    suffix: "same-city",
+    title: "Same City Engineer",
+    city: "广州·越秀区·东风中路"
+  });
+  summary = await runBossMessageDiscovery({
+    db,
+    profileId: sameCity.profileId,
+    reader: fakeReader([selectedConversation({
+      title: sameCity.title,
+      city: "广州",
+      sourceJobId: "boss:job-same-city"
+    })]),
+    classifyMessageGroup: async () => classification(),
+    sleepFn: async () => {}
+  });
+  assert.strictEqual(summary.status, "completed", "district detail must not conflict with the same base city");
+  assert.strictEqual(summary.processed, 1);
 
   const company = createFixture({ suffix: "company", title: "Company Engineer" });
   summary = await runBossMessageDiscovery({
@@ -2101,6 +2187,7 @@ function selectedConversation({
   salary = "20-30K",
   city = "Guangzhou",
   companyName = "Fixture Company",
+  sourceJobId = "",
   messageId = "123456789012345",
   messages = null
 }) {
@@ -2112,6 +2199,7 @@ function selectedConversation({
     salary,
     city,
     companyName,
+    sourceJobId,
     risk: false,
     login: false,
     rows: [{
@@ -2352,7 +2440,7 @@ function fakeReader(conversations) {
           previewDigest: safeDigest(["preview", `preview-${index}`]),
           previewKind: "possible_hr_reply",
           transientSignature: safeDigest(["row", String(index)]),
-          sourceJobId: `boss:message-fixture-${index}`,
+          sourceJobId: conversation.sourceJobId || `boss:message-fixture-${index}`,
           lastMessageId: String(conversation.messages?.at(-1)?.messageId || "123456789012345"),
           lastMessageDirection: "friend",
           lastMessageStatus: "unknown",
