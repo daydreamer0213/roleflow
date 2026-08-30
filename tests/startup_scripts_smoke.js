@@ -75,6 +75,7 @@ async function main() {
     return;
   }
   testProcessIdentityProbeUsesFixtureLocalAppData();
+  await testCleanupTreatsReusedPidAsGone();
   testStartupIdentityHelpers();
   testRunScriptFromOutsideCwd();
   await testWorkspaceStartupFromSpacePath();
@@ -784,6 +785,16 @@ function testProcessIdentityProbeUsesFixtureLocalAppData() {
   );
 }
 
+async function testCleanupTreatsReusedPidAsGone() {
+  registerProcess(process.pid, {
+    kind: "reused-pid",
+    expectedCommandFragment: "roleflow-fixture-command-that-cannot-match",
+    audit: false
+  });
+  await stopRegisteredProcess(process.pid);
+  assert.strictEqual(processRegistry.has(process.pid), false, "a reused PID must be removed from the fixture registry");
+}
+
 function startNodeServer(script, args) {
   const child = spawn(process.execPath, [script, ...args], {
     cwd: outsideCwd,
@@ -992,9 +1003,12 @@ async function stopRegisteredProcess(pid) {
   }
   const identityText = `${identity?.executablePath || ""}\n${identity?.commandLine || ""}`.toLowerCase();
   if (!identityText.includes(entry.expectedCommandFragment.toLowerCase())) {
-    throw new Error(
-      `refusing to terminate PID ${processId}: process identity does not match registered ${entry.kind} fixture`
-    );
+    if (entry.child && entry.child.exitCode === null && entry.child.signalCode === null) {
+      throw new Error(`registered ${entry.kind} child ${processId} changed identity while still running`);
+    }
+    processRegistry.delete(processId);
+    if (entry.child) children.delete(entry.child);
+    return;
   }
 
   process.kill(processId);
