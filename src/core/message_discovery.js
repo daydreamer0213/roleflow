@@ -10,6 +10,7 @@ const {
   saveMessageInboundContext
 } = require("./storage");
 const { safeDigest, messageKey } = require("../adapters/sites/boss_message_dom");
+const { canonicalBossJobSourceId, bossLocationConflicts } = require("./boss_job_identity");
 const { MANUAL_ONLY_CATEGORIES } = require("./message_reply_contract");
 const { recordFunnelRowObservations } = require("./funnel_observation");
 const {
@@ -137,7 +138,7 @@ async function runBossMessageDiscovery({
       continue;
     }
 
-    let resolved = resolveUniqueCandidate(candidates, selected, target.conversationKey);
+    let resolved = resolveUniqueCandidate(candidates, selected, target.conversationKey, target.sourceJobId);
     let contextStopCode = "";
     const canResolveContext = resolved.ok
       || ["BOSS_MESSAGE_CARD_NOT_FOUND", "BOSS_MESSAGE_CARD_AMBIGUOUS"].includes(resolved.reasonCode);
@@ -383,22 +384,38 @@ async function paceBeforeNext({
   if (openedCount % 10 === 0) await sleepFn(15_000, signal);
 }
 
-function resolveUniqueCandidate(candidates, selected, canonicalThreadKey) {
+function resolveUniqueCandidate(candidates, selected, canonicalThreadKey, sourceJobId = "") {
   const title = normalizedText(selected?.positionName);
-  const matches = candidates.filter((candidate) => normalizedText(candidate.title) === title);
+  let matches = candidates;
+  const canonicalSourceId = canonicalBossJobSourceId(sourceJobId);
+  if (canonicalSourceId) {
+    const sourceMatches = matches.filter((candidate) =>
+      canonicalBossJobSourceId(candidate.sourceId) === canonicalSourceId);
+    if (sourceMatches.length) matches = sourceMatches;
+  }
+  matches = matches.filter((candidate) => normalizedText(candidate.title) === title);
   if (matches.length === 0) return { ok: false, reasonCode: "BOSS_MESSAGE_CARD_NOT_FOUND" };
-  if (matches.length !== 1) return { ok: false, reasonCode: "BOSS_MESSAGE_CARD_AMBIGUOUS" };
-  const candidate = matches[0];
-  if (conflicts(candidate.salary, selected.salary)) {
-    return { ok: false, reasonCode: "BOSS_MESSAGE_SALARY_MISMATCH" };
-  }
-  if (conflicts(candidate.city, selected.city)) {
-    return { ok: false, reasonCode: "BOSS_MESSAGE_CITY_MISMATCH" };
-  }
-  if (conflicts(candidate.company, selected.companyName)) {
+  const legacyThreadKey = safeDigest(["boss", selected.headerText, selected.positionName]);
+  const threadMatches = matches.filter((candidate) => candidate.threadKey
+    && (candidate.threadKey === canonicalThreadKey || candidate.threadKey === legacyThreadKey));
+  if (threadMatches.length) matches = threadMatches;
+  const companyMatches = matches.filter((candidate) => !conflicts(candidate.company, selected.companyName));
+  if (companyMatches.length === 0) {
     return { ok: false, reasonCode: "BOSS_MESSAGE_COMPANY_MISMATCH" };
   }
-  const legacyThreadKey = safeDigest(["boss", selected.headerText, selected.positionName]);
+  matches = companyMatches;
+  const salaryMatches = matches.filter((candidate) => !conflicts(candidate.salary, selected.salary));
+  if (salaryMatches.length === 0) {
+    return { ok: false, reasonCode: "BOSS_MESSAGE_SALARY_MISMATCH" };
+  }
+  matches = salaryMatches;
+  const cityMatches = matches.filter((candidate) => !bossLocationConflicts(candidate.city, selected.city));
+  if (cityMatches.length === 0) {
+    return { ok: false, reasonCode: "BOSS_MESSAGE_CITY_MISMATCH" };
+  }
+  matches = cityMatches;
+  if (matches.length !== 1) return { ok: false, reasonCode: "BOSS_MESSAGE_CARD_AMBIGUOUS" };
+  const candidate = matches[0];
   if (candidate.threadKey
     && candidate.threadKey !== canonicalThreadKey
     && candidate.threadKey !== legacyThreadKey) {
