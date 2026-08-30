@@ -87,18 +87,39 @@ function fakeBrowser({
   createError = null,
   createErrorAfterInsert = false,
   onCreate = null,
+  listErrorAtCall = 0,
+  listErrorAtCalls = [],
+  listErrorAfterCloseAtCall = 0,
+  listErrorCode = "BROWSER_DISCONNECTED",
   closeNoop = false,
   twoVisibleAfterClose = false,
   communicationSnapshot = communication(),
+  communicationScriptFailure = null,
+  replaceDocumentAfterFirstHelper = false,
   paneSnapshot = pane(),
-  detailSnapshot = messageDetail()
+  detailSnapshot = messageDetail(),
+  evalErrorPattern = null,
+  onEval = null
 } = {}) {
   const browser = {
     tabs: baseTabs().map((tab) => minimized ? { ...tab, active: false } : tab),
     calls: [],
+    listCallCount: 0,
+    postCloseListCount: 0,
+    closed: false,
     detailListIndex: 0,
+    helperInjectionCount: 0,
+    helperInstalled: false,
     async listTabs() {
       this.calls.push({ name: "listTabs" });
+      this.listCallCount += 1;
+      if (this.closed) this.postCloseListCount += 1;
+      if (this.listCallCount === listErrorAtCall || listErrorAtCalls.includes(this.listCallCount)) {
+        throw Object.assign(new Error("socket closed"), { code: listErrorCode });
+      }
+      if (listErrorAfterCloseAtCall > 0 && this.postCloseListCount === listErrorAfterCloseAtCall) {
+        throw Object.assign(new Error("socket closed"), { code: listErrorCode });
+      }
       return this.tabs.map((tab) => ({
         ...tab,
         ...(tab.id === detailTabId && Array.isArray(listedUrlSequence)
@@ -117,8 +138,36 @@ function fakeBrowser({
       if (createError) throw createError;
       return returnedTabId;
     },
+    async setPageLifecycleActive(tabId) {
+      this.calls.push({ name: "setPageLifecycleActive", tabId });
+      return true;
+    },
     async evalValue(tabId, expression) {
       this.calls.push({ name: "evalValue", tabId, expression });
+      onEval?.({ browser: this, tabId, expression });
+      if (evalErrorPattern && expression.trim().startsWith(evalErrorPattern)) {
+        throw Object.assign(new Error(`runtime exception ${SECRET}`), { code: "BROWSER_COMMAND_FAILED" });
+      }
+      if (expression.includes("window.__bossCommunicationSnapshot = function")) {
+        this.helperInjectionCount += 1;
+        this.helperInstalled = !(replaceDocumentAfterFirstHelper && this.helperInjectionCount === 1);
+        return true;
+      }
+      if (expression.includes("__roleflowSafeCommunicationSnapshot")) {
+        if (!this.helperInstalled) {
+          return {
+            ok: false,
+            error: {
+              errorName: "TypeError",
+              errorKind: "not_function",
+              errorMember: "window.__bossCommunicationSnapshot"
+            }
+          };
+        }
+        return communicationScriptFailure
+          ? { ok: false, error: communicationScriptFailure }
+          : { ok: true, value: { ...communicationSnapshot } };
+      }
       if (expression.includes("__bossCommunicationSnapshot")) return { ...communicationSnapshot };
       if (expression.includes("__bossMessageDetailSnapshot")) return { ...detailSnapshot };
       if (expression.includes("__bossPaneState")) return { ...paneSnapshot };
@@ -126,6 +175,7 @@ function fakeBrowser({
     },
     async closeTab(tabId) {
       this.calls.push({ name: "closeTab", tabId });
+      this.closed = true;
       if (!closeNoop) {
         const closingWasActive = this.tabs.some((tab) => tab.id === tabId && tab.active === true);
         this.tabs = this.tabs.filter((tab) => tab.id !== tabId);
@@ -144,7 +194,7 @@ function fakeBrowser({
   return browser;
 }
 
-function makeReader(browser, { identityError = null, rejectAbortedIdentitySignal = false } = {}) {
+function makeReader(browser, { identityError = null, rejectAbortedIdentitySignal = false, logger = null } = {}) {
   const hooks = [];
   const identitySignals = [];
   const messageReader = {
@@ -162,6 +212,7 @@ function makeReader(browser, { identityError = null, rejectAbortedIdentitySignal
   const reader = createBossMessageDetailReader({
     browser,
     messageReader,
+    logger,
     sleepFn: async () => {},
     beforeOpen: async ({ jobId, assertTabBindings }) => {
       hooks.push("beforeOpen");
@@ -207,8 +258,33 @@ async function read(reader, signal = null) {
   assert.deepStrictEqual(browser.tabs, baseTabs(), "the transient detail tab must be closed after a successful read");
   assert.strictEqual(browser.tabs.find((tab) => tab.active).id, DASHBOARD_TAB_ID);
   assert.strictEqual(browser.calls.filter((call) => call.name === "createTab").length, 1);
+  assert.strictEqual(browser.calls.filter((call) => call.name === "setPageLifecycleActive").length, 1);
   assert.strictEqual(browser.calls.filter((call) => call.name === "closeTab").length, 1);
+  assert(
+    browser.calls.findIndex((call) => call.name === "setPageLifecycleActive")
+      > browser.calls.findIndex((call) => call.name === "createTab"),
+    "the transient page may only be woken after its exact background target has been created"
+  );
+  assert(
+    browser.calls.findIndex((call) => call.name === "setPageLifecycleActive")
+      < browser.calls.findIndex((call) => call.name === "evalValue"),
+    "the verified background target must be woken before page helpers or detail reads"
+  );
   assert.strictEqual(browser.calls.some((call) => /bringToFront|focus/i.test(call.name)), false);
+
+  const settlingCloseBrowser = fakeBrowser({
+    listErrorAfterCloseAtCall: 1,
+    listErrorCode: "BROWSER_COMMAND_FAILED"
+  });
+  const settlingClose = makeReader(settlingCloseBrowser);
+  const settlingCloseDetail = await read(settlingClose.reader);
+  assert.strictEqual(settlingCloseDetail.sourceId, jobTarget.jobId);
+  assert.deepStrictEqual(settlingCloseBrowser.tabs, baseTabs());
+  assert.strictEqual(
+    settlingCloseBrowser.calls.filter((call) => call.name === "createTab").length,
+    1,
+    "a transient post-close list failure must not re-open or re-read the external detail"
+  );
 
   const cleanupVisibilityBrowser = fakeBrowser({ twoVisibleAfterClose: true });
   const cleanupVisibility = makeReader(cleanupVisibilityBrowser);
@@ -315,7 +391,10 @@ async function read(reader, signal = null) {
     createError: Object.assign(new Error(`bridge echoed securityId=${SECRET}`), { code: "BROWSER_COMMAND_FAILED" }),
     createErrorAfterInsert: true
   });
-  const uncertain = makeReader(uncertainCreate);
+  const diagnosticEvents = [];
+  const uncertain = makeReader(uncertainCreate, {
+    logger: { warn(event, fields) { diagnosticEvents.push({ event, fields }); } }
+  });
   const uncertainError = await assert.rejects(
     () => read(uncertain.reader),
     (error) => error.code === "BOSS_MESSAGE_DETAIL_BROWSER_FAILED"
@@ -324,6 +403,126 @@ async function read(reader, signal = null) {
   assert.deepStrictEqual(uncertainCreate.tabs, baseTabs(), "an ambiguously created matching detail tab must be cleaned up");
   assert.deepStrictEqual(uncertain.hooks, ["beforeOpen", "afterIssuedAttempt"]);
   assert.strictEqual(uncertainCreate.calls.filter((call) => call.name === "createTab").length, 1, "ambiguous create must never retry");
+  assert.deepStrictEqual(diagnosticEvents, [{
+    event: "boss_message_detail_read_failed",
+    fields: {
+      phase: "create_tab",
+      code: "BOSS_MESSAGE_DETAIL_BROWSER_FAILED",
+      causeCode: "BROWSER_COMMAND_FAILED"
+    }
+  }]);
+  assert.doesNotMatch(JSON.stringify(diagnosticEvents), new RegExp(SECRET));
+
+  const readDiagnosticEvents = [];
+  const readFailureBrowser = fakeBrowser({ evalErrorPattern: "(function __roleflowSafeCommunicationSnapshot" });
+  const readFailure = makeReader(readFailureBrowser, {
+    logger: { warn(event, fields) { readDiagnosticEvents.push({ event, fields }); } }
+  });
+  await assert.rejects(
+    () => read(readFailure.reader),
+    (error) => error.code === "BOSS_MESSAGE_DETAIL_BROWSER_FAILED"
+  );
+  assert.deepStrictEqual(readDiagnosticEvents[0]?.fields, {
+    phase: "read_page_state",
+    code: "BOSS_MESSAGE_DETAIL_BROWSER_FAILED",
+    causeCode: "BROWSER_COMMAND_FAILED"
+  });
+  assert.doesNotMatch(JSON.stringify(readDiagnosticEvents), new RegExp(SECRET));
+  assert.deepStrictEqual(readFailureBrowser.tabs, baseTabs());
+
+  const replacedDocumentBrowser = fakeBrowser({ replaceDocumentAfterFirstHelper: true });
+  const replacedDocument = makeReader(replacedDocumentBrowser);
+  const replacedDocumentDetail = await read(replacedDocument.reader);
+  assert.strictEqual(replacedDocumentDetail.sourceId, jobTarget.jobId);
+  assert.strictEqual(
+    replacedDocumentBrowser.helperInjectionCount,
+    2,
+    "a helper lost during navigation must be re-injected into the current detail document"
+  );
+  assert.deepStrictEqual(replacedDocumentBrowser.tabs, baseTabs());
+
+  let liveReadCount = 0;
+  const midReadDriftBrowser = fakeBrowser({
+    communicationSnapshot: communication({ pageReady: false }),
+    onEval({ browser, expression }) {
+      if (!expression.includes("__roleflowSafeCommunicationSnapshot") || ++liveReadCount !== 1) return;
+      for (const tab of browser.tabs) tab.active = tab.id === DETAIL_TAB_ID;
+    }
+  });
+  const midReadDrift = makeReader(midReadDriftBrowser);
+  await assert.rejects(
+    () => read(midReadDrift.reader),
+    (error) => error.code === "BOSS_MESSAGE_DETAIL_NOT_BACKGROUND"
+  );
+  assert.strictEqual(
+    midReadDriftBrowser.calls.filter((call) => call.name === "evalValue"
+      && call.expression.includes("__bossMessageDetailSnapshot")).length,
+    0,
+    "a detail tab that becomes visible during readiness polling must stop before reading the job snapshot"
+  );
+  assert.deepStrictEqual(midReadDriftBrowser.tabs, baseTabs());
+
+  let fixedBindingReadCount = 0;
+  const midReadFixedBindingDriftBrowser = fakeBrowser({
+    communicationSnapshot: communication({ pageReady: false }),
+    onEval({ browser, expression }) {
+      if (!expression.includes("__roleflowSafeCommunicationSnapshot") || ++fixedBindingReadCount !== 1) return;
+      browser.tabs.find((tab) => tab.id === SEARCH_TAB_ID).url = "https://www.zhipin.com/web/geek/other";
+    }
+  });
+  const midReadFixedBindingDrift = makeReader(midReadFixedBindingDriftBrowser);
+  await assert.rejects(
+    () => read(midReadFixedBindingDrift.reader),
+    (error) => error.code === "BOSS_MESSAGE_DETAIL_BASELINE_NOT_RESTORED"
+  );
+  assert.strictEqual(
+    midReadFixedBindingDriftBrowser.calls.filter((call) => call.name === "evalValue"
+      && call.expression.includes("__bossMessageDetailSnapshot")).length,
+    0,
+    "a fixed BOSS tab that drifts during readiness polling must stop before reading the job snapshot"
+  );
+  assert.strictEqual(midReadFixedBindingDriftBrowser.calls.filter((call) => call.name === "createTab").length, 1);
+  assert.strictEqual(midReadFixedBindingDriftBrowser.calls.filter((call) => call.name === "closeTab").length, 1);
+
+  const scriptDiagnosticEvents = [];
+  const scriptFailureBrowser = fakeBrowser({
+    communicationScriptFailure: {
+      errorName: "TypeError",
+      errorKind: "null_member",
+      errorMember: "getBoundingClientRect"
+    }
+  });
+  const scriptFailure = makeReader(scriptFailureBrowser, {
+    logger: { warn(event, fields) { scriptDiagnosticEvents.push({ event, fields }); } }
+  });
+  await assert.rejects(
+    () => read(scriptFailure.reader),
+    (error) => error.code === "BOSS_MESSAGE_DETAIL_BROWSER_FAILED"
+  );
+  assert.deepStrictEqual(scriptDiagnosticEvents[0]?.fields, {
+    phase: "read_page_state",
+    code: "BOSS_MESSAGE_DETAIL_BROWSER_FAILED",
+    causeCode: "BROWSER_COMMAND_FAILED",
+    scriptErrorName: "TypeError",
+    scriptErrorKind: "null_member",
+    scriptErrorMember: "getBoundingClientRect"
+  });
+  assert.deepStrictEqual(scriptFailureBrowser.tabs, baseTabs());
+
+  const cleanupDiagnosticEvents = [];
+  const cleanupFailureBrowser = fakeBrowser({
+    evalErrorPattern: "(function __roleflowSafeCommunicationSnapshot",
+    listErrorAtCall: 6
+  });
+  const cleanupFailure = makeReader(cleanupFailureBrowser, {
+    logger: { warn(event, fields) { cleanupDiagnosticEvents.push({ event, fields }); } }
+  });
+  await assert.rejects(
+    () => read(cleanupFailure.reader),
+    (error) => error.code === "BOSS_MESSAGE_DETAIL_BROWSER_FAILED"
+  );
+  assert.strictEqual(cleanupDiagnosticEvents[0]?.fields?.phase, "cleanup_attribute_tab");
+  assert.strictEqual(cleanupDiagnosticEvents[0]?.fields?.causeCode, "BROWSER_DISCONNECTED");
 
   const uncertainWrongWindow = fakeBrowser({
     detailWindowId: WINDOW_ID + 1,
@@ -401,6 +600,20 @@ async function read(reader, signal = null) {
   );
   assert.deepStrictEqual(driftBrowser.tabs, baseTabs());
   assert.deepStrictEqual(drift.hooks, ["beforeOpen", "recheckMessage", "afterIssuedAttempt"]);
+
+  const cleanupBrowserEvents = [];
+  const cleanupBrowser = fakeBrowser();
+  const cleanupBrowserFailure = makeReader(cleanupBrowser, {
+    identityError: Object.assign(new Error(`bridge failed ${SECRET}`), { code: "BROWSER_COMMAND_FAILED" }),
+    logger: { warn(event, fields) { cleanupBrowserEvents.push({ event, fields }); } }
+  });
+  await assert.rejects(
+    () => read(cleanupBrowserFailure.reader),
+    (error) => error.code === "BOSS_MESSAGE_DETAIL_BROWSER_FAILED"
+  );
+  assert.strictEqual(cleanupBrowserEvents[0]?.fields?.phase, "cleanup_recheck_message");
+  assert.strictEqual(cleanupBrowserEvents[0]?.fields?.causeCode, "BROWSER_COMMAND_FAILED");
+  assert.doesNotMatch(JSON.stringify(cleanupBrowserEvents), new RegExp(SECRET));
 
   console.log("boss_message_detail_reader_smoke ok");
 })().catch((error) => {

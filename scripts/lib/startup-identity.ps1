@@ -85,7 +85,7 @@ function Assert-RoleFlowPathHasNoReparsePoint {
 
 function New-RoleFlowPortableEdgeArguments {
   param([int]$Port, [string]$ProfilePath, [string]$StartUrl)
-  @("--remote-debugging-address=127.0.0.1", "--remote-debugging-port=$Port", "--remote-allow-origins=*", "--disable-features=CalculateNativeWinOcclusion", ('"--user-data-dir={0}"' -f (Resolve-RoleFlowNormalizedPath -Path $ProfilePath)), "--no-first-run", "--no-default-browser-check", $StartUrl)
+  @("--remote-debugging-address=127.0.0.1", "--remote-debugging-port=$Port", "--remote-allow-origins=*", "--disable-features=CalculateNativeWinOcclusion", "--disable-background-timer-throttling", "--disable-renderer-backgrounding", ('"--user-data-dir={0}"' -f (Resolve-RoleFlowNormalizedPath -Path $ProfilePath)), "--no-first-run", "--no-default-browser-check", $StartUrl)
 }
 
 function ConvertFrom-RoleFlowWindowsCommandLine {
@@ -138,6 +138,10 @@ function Assert-RoleFlowPortableEdgeProcessSnapshot {
       Where-Object { [string]::Equals($_, "CalculateNativeWinOcclusion", [System.StringComparison]::OrdinalIgnoreCase) }
   ).Count -eq 1
   if (-not $nativeOcclusionDisabled) { throw "Portable Edge identity check failed on port ${Port}: native window occlusion must be disabled for reliable background tab identity." }
+  $backgroundTimerArguments = @($processArguments | Where-Object { [string]::Equals($_, "--disable-background-timer-throttling", [System.StringComparison]::OrdinalIgnoreCase) })
+  if ($backgroundTimerArguments.Count -ne 1) { throw "Portable Edge identity check failed on port ${Port}: background timer throttling must be disabled for reliable minimized operation." }
+  $backgroundRendererArguments = @($processArguments | Where-Object { [string]::Equals($_, "--disable-renderer-backgrounding", [System.StringComparison]::OrdinalIgnoreCase) })
+  if ($backgroundRendererArguments.Count -ne 1) { throw "Portable Edge identity check failed on port ${Port}: background renderer throttling must be disabled for reliable minimized operation." }
   $profileArguments = @($processArguments | Where-Object { ([string]$_).StartsWith("--user-data-dir=", [System.StringComparison]::OrdinalIgnoreCase) })
   if ($profileArguments.Count -ne 1) { throw "Portable Edge identity check failed on port ${Port}: listener profile authority is missing or ambiguous." }
   $actualProfile = Resolve-RoleFlowNormalizedPath -Path (([string]$profileArguments[0]).Substring("--user-data-dir=".Length))

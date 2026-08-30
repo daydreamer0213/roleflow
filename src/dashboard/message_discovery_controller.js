@@ -171,6 +171,7 @@ function createMessageDiscoveryController(deps = {}) {
       const detailReader = createDetailReader({
         browser,
         messageReader: reader,
+        logger,
         beforeOpen: detailSafety.beforeOpen,
         afterIssuedAttempt: detailSafety.afterIssuedAttempt,
         sleepFn: detailSleepFn

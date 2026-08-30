@@ -8,6 +8,29 @@ const {
 
 const DETAIL_READY_ATTEMPTS = 60;
 const DETAIL_READY_DELAY_MS = 250;
+const CLEANUP_BASELINE_ATTEMPTS = 8;
+const SAFE_COMMUNICATION_SNAPSHOT_EXPRESSION = String.raw`(function __roleflowSafeCommunicationSnapshot() {
+  try {
+    return { ok: true, value: window.__bossCommunicationSnapshot() };
+  } catch (error) {
+    const message = String(error?.message || "");
+    const member = message.match(/(?:reading|property)\s+['"]([A-Za-z0-9_$.-]{1,80})['"]/i)
+      || message.match(/([A-Za-z_$][A-Za-z0-9_$.-]{0,79}) is not a function/i);
+    let errorKind = "unknown";
+    if (/Cannot read properties of (?:null|undefined)/i.test(message)) errorKind = "null_member";
+    else if (/is not a function/i.test(message)) errorKind = "not_function";
+    else if (/is not defined/i.test(message)) errorKind = "not_defined";
+    else if (/selector|querySelector/i.test(message)) errorKind = "invalid_selector";
+    return {
+      ok: false,
+      error: {
+        errorName: String(error?.name || "Error").slice(0, 40),
+        errorKind,
+        errorMember: member?.[1] || ""
+      }
+    };
+  }
+})()`;
 const MESSAGE_DETAIL_SNAPSHOT_EXPRESSION = `(function __bossMessageDetailSnapshot() {
   const decode = window.__bossDecode || ((value) => String(value || "").replace(/\\s+/g, " ").trim());
   const roots = Array.from(document.querySelectorAll(".job-box > .inner.home-inner > .job-detail"));
@@ -54,6 +77,7 @@ function defaultSleep(ms, signal) {
 function createBossMessageDetailReader({
   browser,
   messageReader,
+  logger = null,
   beforeOpen = async () => {},
   afterIssuedAttempt = async () => {},
   sleepFn = defaultSleep
@@ -68,7 +92,27 @@ function createBossMessageDetailReader({
       try {
         return await readSelectedJobDetail(input);
       } catch (error) {
-        throw sanitizedDetailError(error);
+        const sanitized = sanitizedDetailError(error);
+        if (sanitized.code === "BOSS_MESSAGE_DETAIL_BROWSER_FAILED") {
+          const fields = {
+            phase: detailFailurePhase(error),
+            code: sanitized.code,
+            causeCode: browserCauseCode(error)
+          };
+          if (error?.primaryPhase) {
+            fields.primaryPhase = detailFailurePhase({ detailPhase: error.primaryPhase });
+            fields.primaryCauseCode = /^BROWSER_[A-Z0-9_]+$/.test(String(error.primaryCauseCode || ""))
+              ? error.primaryCauseCode
+              : "BROWSER_UNKNOWN";
+          }
+          if (error?.scriptDiagnostic) {
+            fields.scriptErrorName = safeDiagnosticToken(error.scriptDiagnostic.errorName, "Error");
+            fields.scriptErrorKind = safeDiagnosticToken(error.scriptDiagnostic.errorKind, "unknown");
+            fields.scriptErrorMember = safeDiagnosticToken(error.scriptDiagnostic.errorMember, "");
+          }
+          logger?.warn("boss_message_detail_read_failed", fields);
+        }
+        throw sanitized;
       } finally {
         busy = false;
       }
@@ -76,10 +120,13 @@ function createBossMessageDetailReader({
   };
 
   async function readSelectedJobDetail({ communicationTabId, selected, jobTarget, signal } = {}) {
+    let phase = "validate_target";
     const target = trustedJobTarget(jobTarget);
+    phase = "capture_baseline";
     const beforeTabs = await browser.listTabs();
     const binding = captureBinding(beforeTabs, communicationTabId);
     const assertBaseline = async () => assertRestoredBaseline(await browser.listTabs(), binding);
+    phase = "before_open";
     await beforeOpen({ jobId: target.jobId, signal, assertTabBindings: assertBaseline });
 
     let issued = false;
@@ -89,13 +136,16 @@ function createBossMessageDetailReader({
     let primaryError = null;
     let cleanupError = null;
     let afterError = null;
+    let primaryPhase = phase;
 
     try {
       throwIfAborted(signal);
       issued = true;
+      phase = "create_tab";
       const returnedTabId = await browser.createTab(communicationTabId, target.navigationUrl);
       createReturned = true;
       if (isBrowserTabId(returnedTabId)) detailTabId = returnedTabId;
+      phase = "wait_created_tab";
       const created = await waitForCreatedTargetTab({
         beforeTabs,
         binding,
@@ -104,13 +154,27 @@ function createBossMessageDetailReader({
         signal
       });
       detailTabId = created.id;
-      await browser.evalValue(detailTabId, PAGE_HELPERS);
-      result = await readReadyDetail(detailTabId, selected, target, signal);
+      phase = "wake_detail";
+      await browser.setPageLifecycleActive(detailTabId);
+      phase = "verify_woken_binding";
+      assertLiveDetailBinding(await browser.listTabs(), binding, detailTabId, target);
+      phase = "read_detail";
+      result = await readReadyDetail(
+        detailTabId,
+        selected,
+        target,
+        signal,
+        (value) => { phase = value; },
+        async () => assertLiveDetailBinding(await browser.listTabs(), binding, detailTabId, target)
+      );
+      phase = "verify_live_binding";
       assertLiveDetailBinding(await browser.listTabs(), binding, detailTabId, target);
     } catch (error) {
       primaryError = error;
+      primaryPhase = phase;
     } finally {
       if (issued && primaryError) {
+        phase = "cleanup_attribute_tab";
         try {
           const tabs = await browser.listTabs();
           const attributed = detailTabId !== null && tabs.some((tab) =>
@@ -121,29 +185,36 @@ function createBossMessageDetailReader({
             detailTabId = candidate?.id ?? null;
           }
         } catch (error) {
-          cleanupError = error;
+          cleanupError = phasedDetailError(error, phase);
         }
       }
       if (detailTabId !== null) {
+        phase = "cleanup_close_tab";
         try {
           await browser.closeTab(detailTabId);
         } catch (error) {
-          cleanupError ||= detailError("BOSS_MESSAGE_DETAIL_CLOSE_FAILED", "background detail tab could not be closed");
+          cleanupError ||= phasedDetailError(
+            detailError("BOSS_MESSAGE_DETAIL_CLOSE_FAILED", "background detail tab could not be closed"),
+            phase
+          );
         }
       }
       if (issued) {
+        phase = "cleanup_list_tabs";
         try {
-          await assertRestoredBaseline(await browser.listTabs(), binding);
+          await waitForRestoredBaseline(binding, detailTabId);
           if (createReturned) {
+            phase = "cleanup_recheck_message";
             const currentTarget = await messageReader.readSelectedJobTarget(selected, null);
             if (currentTarget.jobId !== target.jobId) {
               throw detailError("BOSS_MESSAGE_DETAIL_TARGET_MISMATCH", "message detail identity changed");
             }
           }
         } catch (error) {
-          cleanupError ||= error;
+          cleanupError ||= phasedDetailError(error, phase);
         }
         try {
+          phase = "after_issued_attempt";
           await afterIssuedAttempt({ jobId: target.jobId, signal, assertTabBindings: assertBaseline });
         } catch (error) {
           afterError = error;
@@ -151,20 +222,51 @@ function createBossMessageDetailReader({
       }
     }
 
-    if (cleanupError) throw cleanupError;
-    if (afterError) throw afterError;
-    if (primaryError) throw primaryError;
+    if (cleanupError) {
+      if (primaryError) {
+        cleanupError.primaryPhase = primaryPhase;
+        cleanupError.primaryCauseCode = browserCauseCode(primaryError);
+        if (primaryError.scriptDiagnostic) cleanupError.scriptDiagnostic = primaryError.scriptDiagnostic;
+      }
+      throw cleanupError;
+    }
+    if (afterError) throw phasedDetailError(afterError, "after_issued_attempt");
+    if (primaryError) throw phasedDetailError(primaryError, primaryPhase);
     return result;
   }
 
-  async function readReadyDetail(tabId, selected, target, signal) {
+  async function readReadyDetail(tabId, selected, target, signal, setPhase, assertLiveBinding) {
     let sawPage = false;
     for (let attempt = 0; attempt < DETAIL_READY_ATTEMPTS; attempt += 1) {
       throwIfAborted(signal);
-      const communication = await browser.evalValue(tabId, "(() => window.__bossCommunicationSnapshot())()");
+      setPhase("verify_live_binding_before_read");
+      await assertLiveBinding();
+      setPhase("inject_helpers");
+      await browser.evalValue(tabId, PAGE_HELPERS);
+      setPhase("read_page_state");
+      const communicationResult = await browser.evalValue(tabId, SAFE_COMMUNICATION_SNAPSHOT_EXPRESSION);
+      setPhase("verify_live_binding_after_page_state");
+      await assertLiveBinding();
+      setPhase("read_page_state");
+      if (communicationResult?.ok !== true || !communicationResult.value) {
+        const diagnostic = safeScriptDiagnostic(communicationResult?.error);
+        if (isTransientHelperLoss(diagnostic) && attempt + 1 < DETAIL_READY_ATTEMPTS) {
+          setPhase("wait_detail_ready");
+          await sleepFn(DETAIL_READY_DELAY_MS, signal);
+          continue;
+        }
+        const error = detailError("BROWSER_COMMAND_FAILED", "message detail page snapshot failed");
+        error.scriptDiagnostic = diagnostic;
+        throw error;
+      }
+      const communication = communicationResult.value;
       if (communication?.risk) throw detailError("BOSS_RISK_CONTROL", "BOSS requires security verification");
       if (communication?.login) throw detailError("BOSS_LOGIN_REQUIRED", "BOSS login is required");
+      setPhase("read_job_snapshot");
       const detail = await browser.evalValue(tabId, MESSAGE_DETAIL_SNAPSHOT_EXPRESSION);
+      setPhase("verify_live_binding_after_job_snapshot");
+      await assertLiveBinding();
+      setPhase("read_job_snapshot");
       if (communication?.documentReadyState === "complete" && communication?.pageReady && detail?.currentJobId) {
         sawPage = true;
         assertDetailIdentity(communication, detail, selected, target);
@@ -187,7 +289,10 @@ function createBossMessageDetailReader({
           };
         }
       }
-      if (attempt + 1 < DETAIL_READY_ATTEMPTS) await sleepFn(DETAIL_READY_DELAY_MS, signal);
+      if (attempt + 1 < DETAIL_READY_ATTEMPTS) {
+        setPhase("wait_detail_ready");
+        await sleepFn(DETAIL_READY_DELAY_MS, signal);
+      }
     }
     throw detailError(
       sawPage ? "BOSS_MESSAGE_DETAIL_INCOMPLETE" : "BOSS_MESSAGE_DETAIL_READ_TIMEOUT",
@@ -213,10 +318,70 @@ function createBossMessageDetailReader({
     }
     throw detailError("BOSS_MESSAGE_DETAIL_NOT_BACKGROUND", "background detail tab target could not be proven");
   }
+
+  async function waitForRestoredBaseline(binding, detailTabId) {
+    let lastError = null;
+    for (let attempt = 0; attempt < CLEANUP_BASELINE_ATTEMPTS; attempt += 1) {
+      try {
+        const tabs = await browser.listTabs();
+        try {
+          return assertRestoredBaseline(tabs, binding);
+        } catch (error) {
+          if (!isOnlyLingeringClosedTarget(tabs, binding, detailTabId)) throw error;
+          lastError = error;
+        }
+      } catch (error) {
+        if (error?.code !== "BROWSER_COMMAND_FAILED") throw error;
+        lastError = error;
+      }
+      if (attempt + 1 < CLEANUP_BASELINE_ATTEMPTS) {
+        await sleepFn(DETAIL_READY_DELAY_MS, null);
+      }
+    }
+    throw lastError || detailError(
+      "BOSS_MESSAGE_DETAIL_BASELINE_NOT_RESTORED",
+      "BOSS fixed-tab baseline was not restored"
+    );
+  }
+}
+
+function phasedDetailError(error, phase) {
+  const wrapped = detailError(String(error?.code || ""), "message detail read failed");
+  wrapped.detailPhase = phase;
+  if (error?.scriptDiagnostic) wrapped.scriptDiagnostic = safeScriptDiagnostic(error.scriptDiagnostic);
+  return wrapped;
+}
+
+function safeScriptDiagnostic(value) {
+  return {
+    errorName: safeDiagnosticToken(value?.errorName, "Error"),
+    errorKind: safeDiagnosticToken(value?.errorKind, "unknown"),
+    errorMember: safeDiagnosticToken(value?.errorMember, "")
+  };
+}
+
+function isTransientHelperLoss(value) {
+  return value?.errorKind === "not_function"
+    && value?.errorMember === "window.__bossCommunicationSnapshot";
+}
+
+function safeDiagnosticToken(value, fallback) {
+  const token = String(value || "");
+  return /^[A-Za-z0-9_$.-]{1,80}$/.test(token) ? token : fallback;
+}
+
+function detailFailurePhase(error) {
+  const phase = String(error?.detailPhase || "unknown");
+  return /^[a-z_]{1,40}$/.test(phase) ? phase : "unknown";
+}
+
+function browserCauseCode(error) {
+  const code = String(error?.code || "");
+  return /^BROWSER_[A-Z0-9_]+$/.test(code) ? code : "BROWSER_UNKNOWN";
 }
 
 function assertDependencies(browser, messageReader, beforeOpen, afterIssuedAttempt, sleepFn) {
-  for (const name of ["listTabs", "createTab", "evalValue", "closeTab"]) {
+  for (const name of ["listTabs", "createTab", "setPageLifecycleActive", "evalValue", "closeTab"]) {
     if (typeof browser?.[name] !== "function") {
       throw detailError("BOSS_MESSAGE_BROWSER_INVALID", `browser.${name} is required`);
     }
@@ -312,6 +477,23 @@ function assertRestoredBaseline(tabs, binding) {
     return fixed;
   } catch {
     throw detailError("BOSS_MESSAGE_DETAIL_BASELINE_NOT_RESTORED", "BOSS fixed-tab baseline was not restored");
+  }
+}
+
+function isOnlyLingeringClosedTarget(tabs, binding, detailTabId) {
+  try {
+    if (!isBrowserTabId(detailTabId) || tabs.length !== binding.tabIds.length + 1) return false;
+    const extra = tabs.filter((tab) => !binding.tabIds.some((id) => sameBrowserTabId(id, tab.id)));
+    if (extra.length !== 1
+      || !sameBrowserTabId(extra[0].id, detailTabId)
+      || extra[0].windowId !== binding.windowId
+      || extra[0].active === true
+      || !binding.tabIds.every((id) => tabs.some((tab) => sameBrowserTabId(id, tab.id)))
+      || !sameIds(visibleTabIdsInWindow(tabs, binding.windowId), binding.visibleTabIds)) return false;
+    assertFixedTabsPresent(tabs, binding);
+    return true;
+  } catch {
+    return false;
   }
 }
 

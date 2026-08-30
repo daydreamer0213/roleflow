@@ -103,6 +103,10 @@ class EdgeControlAdapter {
     return this.command("navigate", { tabId, url });
   }
 
+  async setPageLifecycleActive(tabId) {
+    return this.cdp(tabId, "Page.setWebLifecycleState", { state: "active" });
+  }
+
   async createTab(openerTabId, url = "about:blank") {
     const tabs = await this.listTabs();
     const opener = tabs.find((tab) => tab.id === openerTabId);

@@ -124,7 +124,7 @@ git add tests/boss_message_detail_reader_smoke.js src/adapters/sites/boss_messag
 git commit -m "fix: allow minimized background message detail reads"
 ```
 
-- [ ] **Step 9: Continue the real read-only acceptance**
+- [x] **Step 9: Continue the real read-only acceptance**
 
 With the same dedicated Edge window left in the background/minimized state:
 
@@ -133,3 +133,28 @@ Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8787/api/message-discovery
 ```
 
 Poll `/api/message-discovery-status?profileId=1` until terminal. Confirm that no `BOSS_MESSAGE_DETAIL_NOT_BACKGROUND` occurs solely because the baseline has zero visible pages; stop on any login, risk-control, target-mismatch, page-loss, new-window, or cleanup error. Then complete the separate investigation of the 12 `DETAIL_REQUIRED` analysis items.
+
+Outcome: the minimized/hidden baseline no longer triggered `BOSS_MESSAGE_DETAIL_NOT_BACKGROUND`. The real run reached message selection, transient detail reads and model analysis, then exposed a separate hidden-page lifecycle suspension and a transient post-close tab-list failure. The 12-item investigation found 4 genuine pending details and 8 already-determinable exclusions. Full results are recorded in `docs/superpowers/reports/2026-08-30-real-user-e2e-acceptance.md`.
+
+---
+
+### Task 2: Wake verified hidden pages without focusing them
+
+**Files:**
+- Modify: `scripts/lib/startup-identity.ps1`
+- Modify: `src/adapters/browser/cdp.js`
+- Modify: `src/adapters/browser/edge_control.js`
+- Modify: `src/adapters/sites/boss_message_reader.js`
+- Modify: `src/adapters/sites/boss_message_detail_reader.js`
+- Modify: focused browser/message tests
+
+- [x] Add browser-adapter support for `Page.setWebLifecycleState({ state: "active" })`.
+- [x] Wake the fixed message page only after its binding is captured, then recheck the binding before reading or selecting.
+- [x] Replace the ineffective synthetic DOM click with the observed outer `boss-list.handleClick()` path after exact row, message, job and component checks.
+- [x] Freeze a one-way digest of the observed `friendId` during scanning and require an exact match before invoking the outer handler; never expose the raw identifier.
+- [x] Wake a transient detail page only after proving its exact hidden same-window identity, then recheck all bindings.
+- [x] Recheck the fixed tabs, transient target and visible set during every readiness attempt and after each critical read.
+- [x] Reinject page helpers into the final loaded document so navigation cannot discard them.
+- [x] After a confirmed close, wait only for the browser target list to stabilize; never reopen or repeat the external detail read.
+- [x] Add safe phase-only diagnostics without logging URLs, HR text, security parameters or candidate content.
+- [x] Run focused regressions and a fresh full offline gate; record the final exact-SHA gate in the handoff after commit.

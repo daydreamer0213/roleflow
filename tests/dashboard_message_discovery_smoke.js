@@ -1104,6 +1104,7 @@ async function controllerBrowserAuthoritySmoke() {
   const resolverSentinel = async () => ({ kind: "controller-context-sentinel" });
   const beforeOpen = async () => {};
   const afterIssuedAttempt = async () => {};
+  const logger = { warn() {} };
   let factoryCalls = 0;
   let readerBrowser = null;
   let detailSafetyInput = null;
@@ -1118,6 +1119,7 @@ async function controllerBrowserAuthoritySmoke() {
   };
   const controller = createMessageDiscoveryController({
     db: controllerDb,
+    logger,
     browserFactory: () => {
       factoryCalls += 1;
       return browserSentinel;
@@ -1168,6 +1170,7 @@ async function controllerBrowserAuthoritySmoke() {
   assert.strictEqual(detailReaderInput.messageReader, readerSentinel);
   assert.strictEqual(detailReaderInput.beforeOpen, beforeOpen);
   assert.strictEqual(detailReaderInput.afterIssuedAttempt, afterIssuedAttempt);
+  assert.strictEqual(detailReaderInput.logger, logger);
   assert.strictEqual(contextResolverInput.messageReader, readerSentinel);
   assert.strictEqual(contextResolverInput.detailReader, detailReaderSentinel);
   assert.strictEqual(runResolver, resolverSentinel);

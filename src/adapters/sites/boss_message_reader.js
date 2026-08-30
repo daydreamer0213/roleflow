@@ -64,6 +64,7 @@ function normalizeBrowserSnapshot(value) {
     requireSnapshotField(row.previewText, (entry) => typeof entry === "string");
     requireSnapshotField(row.recruiterKey, (entry) => /^sha256:[a-f0-9]{64}$/.test(entry));
     requireSnapshotField(row.conversationKey, (entry) => /^sha256:[a-f0-9]{64}$/.test(entry));
+    requireSnapshotField(row.friendKey, (entry) => entry === "" || /^sha256:[a-f0-9]{64}$/.test(entry));
     requireSnapshotField(row.previewDigest, (entry) => /^sha256:[a-f0-9]{64}$/.test(entry));
     requireSnapshotField(row.previewKind, (entry) => ["self_delivered", "self_read", "platform_notice", "possible_hr_reply", "unsupported", "unknown"].includes(entry));
     requireSnapshotField(row.sourceJobId, (entry) => typeof entry === "string");
@@ -81,6 +82,7 @@ function normalizeBrowserSnapshot(value) {
       previewText: normalizedText(row.previewText),
       recruiterKey: row.recruiterKey,
       conversationKey: row.conversationKey,
+      friendKey: row.friendKey,
       previewDigest: row.previewDigest,
       previewKind: row.previewKind,
       sourceJobId: row.sourceJobId,
@@ -167,6 +169,7 @@ function buildGuardedConversationClickExpression(target) {
     rowIndex: target.rowIndex,
     transientSignature: target.transientSignature,
     conversationKey: target.conversationKey,
+    friendKey: target.friendKey || "",
     operation: requestedOperation,
     previewDigest: target.previewDigest || "",
     sourceJobId: target.sourceJobId || "",
@@ -242,7 +245,23 @@ function buildGuardedConversationClickExpression(target) {
       || style.visibility === "hidden"
       || style.opacity === "0"
       || style.pointerEvents === "none") return fail("row_not_clickable");
-    clickTarget.click();
+    const component = row.__vue__;
+    const virtualList = component?.$parent?.$parent;
+    const owner = virtualList?.$parent?.$parent;
+    const friendId = Number(source.friendId);
+    const actualFriendKey = Number.isInteger(friendId) && friendId > 0 && friendId !== 780
+      ? "sha256:" + sha256(canonical(["friend", friendId]))
+      : "";
+    if (component?.$options?.name !== "boss-item"
+      || component.boss !== source
+      || virtualList?.$options?.name !== "virtual-list"
+      || owner?.$options?.name !== "boss-list"
+      || !Number.isInteger(friendId)
+      || friendId <= 0
+      || friendId === 780
+      || actualFriendKey !== expected.friendKey
+      || typeof owner.handleClick !== "function") return fail("row_not_clickable");
+    owner.handleClick(component.boss);
     return { clicked: true, operation, rowIndex: expected.rowIndex };
   })()`;
 }
@@ -332,7 +351,7 @@ function sleep(ms, signal) {
 }
 
 function assertBrowser(browser) {
-  for (const name of ["listTabs", "evalValue"]) {
+  for (const name of ["listTabs", "evalValue", "setPageLifecycleActive"]) {
     if (typeof browser?.[name] !== "function") throw codedError("BOSS_MESSAGE_BROWSER_INVALID", `browser.${name} is required`);
   }
 }
@@ -378,6 +397,8 @@ function createBossMessageReader({ browser, sleepFn = sleep } = {}) {
         }
         throwIfAborted(signal);
         await assertCurrentBinding();
+        await browser.setPageLifecycleActive(activeTabId);
+        await assertCurrentBinding();
         const before = assertSafeSnapshot(normalizeBrowserSnapshot(
           await browser.evalValue(activeTabId, BOSS_MESSAGE_SNAPSHOT_EXPRESSION)
         ));
@@ -407,6 +428,8 @@ function createBossMessageReader({ browser, sleepFn = sleep } = {}) {
           throw codedError("BOSS_MESSAGE_TARGET_INVALID", "message target is not from the active conversation scan");
         }
         throwIfAborted(signal);
+        await assertCurrentBinding();
+        await browser.setPageLifecycleActive(activeTabId);
         await assertCurrentBinding();
         const guarded = normalizeGuardedClickResult(await browser.evalValue(target.tabId, buildGuardedConversationClickExpression(target)));
         if (!guarded.clicked) {
@@ -440,6 +463,8 @@ function createBossMessageReader({ browser, sleepFn = sleep } = {}) {
     const tabs = await browser.listTabs();
     const binding = captureBinding(tabs);
     const tabId = binding.communicationTabId;
+    await browser.setPageLifecycleActive(tabId);
+    assertRestoredBaseline(await browser.listTabs(), binding);
     const snapshot = assertSafeSnapshot(normalizeBrowserSnapshot(await browser.evalValue(tabId, BOSS_MESSAGE_SNAPSHOT_EXPRESSION)));
     assertRestoredBaseline(await browser.listTabs(), binding);
     const rows = Object.freeze(snapshot.rows.map((row) => Object.freeze({ ...row })));

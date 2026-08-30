@@ -43,6 +43,7 @@ function createBossMessageDomFixture() {
       },
       attributes: { "data-conversation-id": "conv-alex", "data-recruiter-id": "recruiter-alex" },
       source: {
+        friendId: 101,
         uniqueId: "conversation-a",
         encryptJobId: "encrypt-job-a",
         lastMsgId: "378917037748737",
@@ -60,6 +61,7 @@ function createBossMessageDomFixture() {
       },
       attributes: { "data-conversation-id": "conv-blair", "data-recruiter-id": "recruiter-blair" },
       source: {
+        friendId: 102,
         uniqueId: "conversation-b",
         encryptJobId: "encrypt-job-b",
         lastMsgId: "378917037748738",
@@ -77,6 +79,7 @@ function createBossMessageDomFixture() {
       },
       attributes: { "data-conversation-id": "conv-casey", "data-recruiter-id": "recruiter-casey" },
       source: {
+        friendId: 103,
         uniqueId: "conversation-c",
         encryptJobId: "encrypt-job-c",
         lastMsgId: "378917037748739",

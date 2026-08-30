@@ -32,7 +32,8 @@ function row(rowIndex, {
   lastMessageId = "",
   lastMessageDirection = "unknown",
   lastMessageStatus = "unknown",
-  identityVerified = false
+  identityVerified = false,
+  friendId = 123
 } = {}) {
   const value = {
     rowIndex,
@@ -52,6 +53,7 @@ function row(rowIndex, {
     lastMessageDirection,
     lastMessageStatus,
     identityVerified,
+    friendKey: safeDigest(["friend", friendId]),
     transientSignature: safeDigest([value.rowIndex, value.recruiterLabel, value.previewText, value.unread])
   };
 }
@@ -81,6 +83,10 @@ function fakeBrowser({ tabs = operatorTabs(), snapshots = [] } = {}) {
       this.calls.push(["listTabs"]);
       return tabs;
     },
+    async setPageLifecycleActive(tabId) {
+      this.calls.push(["setPageLifecycleActive", tabId]);
+      return { state: "active" };
+    },
     async evalValue(tabId, expression) {
       this.calls.push(["evalValue", tabId, expression]);
       const result = this.snapshots.shift();
@@ -108,9 +114,32 @@ function deferred() {
 function runGuardedExpression(expression, { innerText, unread = true, snapshotResult, titleBox = null, lastMsg = null, interactiveChild = null, source = null }) {
   let clicks = 0;
   let childClicks = 0;
+  let componentCalls = 0;
+  let ownerCalls = 0;
   const child = interactiveChild || null;
+  const componentSource = { friendId: 123, ...(source || {}) };
+  const owner = {
+    $options: { name: "boss-list" },
+    handleClick(value) {
+      assert.strictEqual(value, componentSource);
+      ownerCalls += 1;
+    }
+  };
+  const innerList = { $options: { name: "boss-list" }, $parent: owner };
+  const virtualList = { $options: { name: "virtual-list" }, $parent: innerList };
+  const virtualItem = { $options: { name: "VirtualListItem" }, $parent: virtualList };
+  const component = {
+    $options: { name: "boss-item" },
+    $parent: virtualItem,
+    source: componentSource,
+    boss: componentSource,
+    handleOpenChat(value) {
+      assert.strictEqual(value, componentSource);
+      componentCalls += 1;
+    }
+  };
   const row = {
-    __vue__: source ? { source } : undefined,
+    __vue__: component,
     isConnected: true,
     innerText,
     getAttribute: () => null,
@@ -139,7 +168,7 @@ function runGuardedExpression(expression, { innerText, unread = true, snapshotRe
     encodeURIComponent
   };
   context.window = { __bossMessageSnapshot: () => snapshotResult };
-  return { result: vm.runInNewContext(expression, context), clicks, childClicks, child };
+  return { result: vm.runInNewContext(expression, context), clicks, childClicks, componentCalls, ownerCalls, child };
 }
 
 (async () => {
@@ -155,6 +184,8 @@ function runGuardedExpression(expression, { innerText, unread = true, snapshotRe
   const selected = await reader.openQueuedConversation(unread.queue[0]);
   assert.strictEqual(selected.positionName, "Java Engineer");
   assert.strictEqual(browser.guardedDomClicks, 1);
+  assert.strictEqual(browser.calls.filter(([name]) => name === "setPageLifecycleActive").length, 2,
+    "scan and guarded selection must each wake the hidden message page without focusing it");
   for (const forbidden of ["clickAt", "navigate", "createTab", "bringToFront"]) {
     assert.strictEqual(browser.calls.filter(([name]) => name === forbidden).length, 0);
   }
@@ -391,7 +422,12 @@ function runGuardedExpression(expression, { innerText, unread = true, snapshotRe
     "job-target DOM must not be read after a fixed-tab binding drift"
   );
 
-  const expression = buildGuardedConversationClickExpression({ rowIndex: 0, transientSignature: initialSnapshot.rows[0].transientSignature, conversationKey: initialSnapshot.rows[0].conversationKey });
+  const expression = buildGuardedConversationClickExpression({
+    rowIndex: 0,
+    transientSignature: initialSnapshot.rows[0].transientSignature,
+    conversationKey: initialSnapshot.rows[0].conversationKey,
+    friendKey: initialSnapshot.rows[0].friendKey
+  });
   for (const expected of [
     'location.pathname !== "/web/geek/chat"',
     "snapshot.risk === true",
@@ -402,7 +438,9 @@ function runGuardedExpression(expression, { innerText, unread = true, snapshotRe
     ".title-box",
     ".last-msg-text"
   ]) assert(expression.includes(expected), `guard must recheck ${expected}`);
-  assert.strictEqual((expression.match(/\.click\(\)/g) || []).length, 1);
+  assert.strictEqual((expression.match(/\.click\(\)/g) || []).length, 0);
+  assert.match(expression, /owner\.handleClick\(component\.boss\)/,
+    "the guard must call the observed outer BOSS conversation handler after exact row checks");
   assert.doesNotMatch(expression, /chat-input|btn-send|querySelectorAll\(["'](?:button|a)["']/);
   assert.doesNotMatch(expression, /await|Promise|setTimeout|setInterval|MutationObserver|addEventListener/);
 
@@ -426,7 +464,21 @@ function runGuardedExpression(expression, { innerText, unread = true, snapshotRe
     snapshotResult: forgedHelperResult
   });
   assert.deepStrictEqual(JSON.parse(JSON.stringify(directDomMatch.result)), guardedSuccess);
-  assert.strictEqual(directDomMatch.clicks, 1, "a matching Task1 signature must click the target row exactly once");
+  assert.strictEqual(directDomMatch.clicks, 0, "the generic DOM click must not be used for a verified BOSS row");
+  assert.strictEqual(directDomMatch.componentCalls, 0, "the broken intermediate BOSS event relay must not be used");
+  assert.strictEqual(directDomMatch.ownerCalls, 1, "the browser guard must invoke the observed outer conversation handler exactly once");
+  const friendDrift = runGuardedExpression(expression, {
+    innerText: "Alex Example\nPlease share availability",
+    snapshotResult: forgedHelperResult,
+    source: { friendId: 124 }
+  });
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(friendDrift.result)), {
+    clicked: false,
+    operation: "__bossGuardedMessageConversationClick",
+    reason: "row_not_clickable"
+  });
+  assert.strictEqual(friendDrift.ownerCalls, 0,
+    "a changed Vue friend identity must stop before the outer conversation handler");
   const verifiedIncomingRow = row(0, {
     unread: false,
     conversationId: "conversation-verified",
@@ -453,7 +505,9 @@ function runGuardedExpression(expression, { innerText, unread = true, snapshotRe
   });
   assert.deepStrictEqual(JSON.parse(JSON.stringify(verifiedIncomingMatch.result)), guardedSuccess,
     "a verified first incoming row must retain its numeric message identity inside the browser guard");
-  assert.strictEqual(verifiedIncomingMatch.clicks, 1);
+  assert.strictEqual(verifiedIncomingMatch.clicks, 0);
+  assert.strictEqual(verifiedIncomingMatch.componentCalls, 0);
+  assert.strictEqual(verifiedIncomingMatch.ownerCalls, 1);
   const liveRowShape = runGuardedExpression(expression, {
     innerText: "10:30\nAlex Example\nPlease share availability",
     titleBox: "Alex Example",
@@ -461,7 +515,9 @@ function runGuardedExpression(expression, { innerText, unread = true, snapshotRe
     snapshotResult: forgedHelperResult
   });
   assert.deepStrictEqual(JSON.parse(JSON.stringify(liveRowShape.result)), guardedSuccess);
-  assert.strictEqual(liveRowShape.clicks, 1, "a live row with time on its first line must still match title-box and last-msg-text");
+  assert.strictEqual(liveRowShape.clicks, 0);
+  assert.strictEqual(liveRowShape.ownerCalls, 1,
+    "a live row with time on its first line must still match title-box and last-msg-text");
 
   const interactiveChildRow = runGuardedExpression(expression, {
     innerText: "10:30\nAlex Example\nPlease share availability",
@@ -473,14 +529,10 @@ function runGuardedExpression(expression, { innerText, unread = true, snapshotRe
   assert.deepStrictEqual(JSON.parse(JSON.stringify(interactiveChildRow.result)), guardedSuccess);
   assert.strictEqual(
     interactiveChildRow.childClicks,
-    1,
-    "the guarded click must target the real interactive .friend-content child, not only the wrapper row"
+    0,
+    "the guarded selection must not depend on synthetic DOM clicks in a background tab"
   );
-  assert.strictEqual(
-    interactiveChildRow.child.selected,
-    true,
-    "clicking the interactive child must enter the selected state"
-  );
+  assert.strictEqual(interactiveChildRow.ownerCalls, 1);
 
   const driftBrowser = fakeBrowser({ snapshots: [snapshot(), { clicked: false, operation: "__bossGuardedMessageConversationClick", reason: "row_drifted" }] });
   const drift = await scan(driftBrowser);

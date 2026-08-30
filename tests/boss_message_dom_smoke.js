@@ -30,6 +30,7 @@ assert.strictEqual(snapshot.rows[0].lastMessageDirection, "friend");
 assert.strictEqual(snapshot.rows[0].lastMessageStatus, "unknown");
 assert.strictEqual(snapshot.rows[0].identityVerified, true);
 assert.strictEqual(snapshot.rows[0].conversationKey, safeDigest(["conversation", "id:conversation-a"]));
+assert.strictEqual(snapshot.rows[0].friendKey, safeDigest(["friend", 101]));
 assert.strictEqual(snapshot.rows[1].lastMessageDirection, "myself");
 assert.strictEqual(snapshot.rows[1].lastMessageStatus, "delivered");
 assert.strictEqual(snapshot.rows[1].previewKind, "self_delivered");

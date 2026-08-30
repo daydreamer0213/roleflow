@@ -108,6 +108,10 @@ class CdpBrowserAdapter {
     return this.cdp(tabId, "Page.navigate", { url });
   }
 
+  async setPageLifecycleActive(tabId) {
+    return this.cdp(tabId, "Page.setWebLifecycleState", { state: "active" });
+  }
+
   async createTab(openerTabId, url = "about:blank") {
     const beforeTabs = await this.listTabs();
     const opener = beforeTabs.find((tab) => sameBrowserTabId(tab.id, openerTabId));

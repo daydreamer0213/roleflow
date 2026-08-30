@@ -46,6 +46,10 @@ function conversationKey(row, label) {
 
 function rowIdentity(row, label) {
   const source = row?.__vue__?.source || row?.__vue__?.$props?.source || {};
+  const friendId = Number(source.friendId);
+  const friendKey = Number.isInteger(friendId) && friendId > 0 && friendId !== 780
+    ? safeDigest(["friend", friendId])
+    : "";
   const uniqueId = safeSourceValue(source.uniqueId, 256);
   const encryptJobId = safeSourceValue(source.encryptJobId, 160, /^[A-Za-z0-9_-]{6,160}$/);
   const lastMessageId = /^\d{15}$/.test(String(source.lastMsgId || "")) ? String(source.lastMsgId) : "";
@@ -57,6 +61,7 @@ function rowIdentity(row, label) {
     : Number(source.lastMsgStatus) === 2 ? "read"
     : Number(source.lastMsgStatus) === 1 ? "delivered" : "unknown";
   return {
+    friendKey,
     conversationKey: uniqueId ? safeDigest(["conversation", `id:${uniqueId}`]) : conversationKey(row, label),
     sourceJobId: encryptJobId ? `boss:${encryptJobId}` : "",
     lastMessageId,
@@ -250,6 +255,7 @@ function buildUnreadConversationQueue(snapshot) {
       rowIndex: row.rowIndex,
       transientSignature: transientSignature(row),
       conversationKey: row.conversationKey,
+      friendKey: row.friendKey || "",
       sourceJobId: row.sourceJobId || "",
       lastMessageId: row.lastMessageId || "",
       lastMessageDirection: row.lastMessageDirection || "unknown",
@@ -293,12 +299,14 @@ const BOSS_MESSAGE_PAGE_HELPERS_EXPRESSION = String.raw`(() => {
   const sourceValue = (value, limit, pattern = /^\S+$/) => { const normalized = String(value == null ? "" : value).trim(); return normalized.length <= limit && pattern.test(normalized) ? normalized : ""; };
   const rowIdentity = (row, label) => {
     const source = row?.__vue__?.source || row?.__vue__?.$props?.source || {};
+    const friendId = Number(source.friendId);
+    const friendKey = Number.isInteger(friendId) && friendId > 0 && friendId !== 780 ? "sha256:" + sha256(canonical(["friend", friendId])) : "";
     const uniqueId = sourceValue(source.uniqueId, 256);
     const encryptJobId = sourceValue(source.encryptJobId, 160, /^[A-Za-z0-9_-]{6,160}$/);
     const lastMessageId = /^\d{15}$/.test(String(source.lastMsgId || "")) ? String(source.lastMsgId) : "";
     const lastMessageDirection = source.lastIsSelf === true ? "myself" : source.lastIsSelf === false ? "friend" : "unknown";
     const lastMessageStatus = lastMessageDirection !== "myself" ? "unknown" : Number(source.lastMsgStatus) === 2 ? "read" : Number(source.lastMsgStatus) === 1 ? "delivered" : "unknown";
-    return { conversationKey: uniqueId ? "sha256:" + sha256(canonical(["conversation", "id:" + uniqueId])) : legacyConversationKey(row, label), sourceJobId: encryptJobId ? "boss:" + encryptJobId : "", lastMessageId, lastMessageDirection, lastMessageStatus, identityVerified: Boolean(uniqueId && encryptJobId && lastMessageId && lastMessageDirection !== "unknown") };
+    return { friendKey, conversationKey: uniqueId ? "sha256:" + sha256(canonical(["conversation", "id:" + uniqueId])) : legacyConversationKey(row, label), sourceJobId: encryptJobId ? "boss:" + encryptJobId : "", lastMessageId, lastMessageDirection, lastMessageStatus, identityVerified: Boolean(uniqueId && encryptJobId && lastMessageId && lastMessageDirection !== "unknown") };
   };
   const previewKind = (row, value) => { if (row && row.querySelector && row.querySelector(".status-read")) return "self_read"; if (row && row.querySelector && row.querySelector(".status-delivery")) return "self_delivered"; const textValue = text(value); if (/^\[送达\]/.test(textValue)) return "self_delivered"; if (/^\[已读\]/.test(textValue)) return "self_read"; if (/对方已同意|附件简历已发送|已投递成功/.test(textValue)) return "platform_notice"; if (/\[语音\]|\[图片\]|\[文件\]/.test(textValue)) return "unsupported"; return textValue ? "possible_hr_reply" : "unknown"; };
   const verifiedPreviewKind = (row, value, identity) => { const visibleKind = previewKind(row, value); if (identity.lastMessageDirection === "friend") { if (["self_read", "self_delivered"].includes(visibleKind)) throw coded("BOSS_MESSAGE_STRUCTURE_CHANGED", "message row status disagrees with source data"); return visibleKind; } if (identity.lastMessageDirection !== "myself") return visibleKind; const expectedKind = identity.lastMessageStatus === "read" ? "self_read" : identity.lastMessageStatus === "delivered" ? "self_delivered" : "unknown"; if (expectedKind !== "unknown" && visibleKind !== expectedKind) throw coded("BOSS_MESSAGE_STRUCTURE_CHANGED", "message row status disagrees with source data"); if (expectedKind === "unknown" && ["self_read", "self_delivered"].includes(visibleKind)) throw coded("BOSS_MESSAGE_STRUCTURE_CHANGED", "message row status disagrees with source data"); return expectedKind; };

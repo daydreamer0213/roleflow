@@ -23,6 +23,7 @@ function verifiedRow(overrides = {}) {
     recruiterLabel: "Fixture HR",
     previewText: "请问什么时候方便沟通？",
     conversationKey: safeDigest(["conversation", "id:reply-conversation-a"]),
+    friendKey: safeDigest(["friend", 123]),
     sourceJobId: "boss:encrypt-job-a",
     lastMessageId: EXPECTED_MESSAGE_ID,
     lastMessageDirection: "friend",
@@ -167,6 +168,10 @@ function fakeBrowser({
     async listTabs() {
       calls.push(["listTabs"]);
       return tabs;
+    },
+    async setPageLifecycleActive(tabId) {
+      calls.push(["setPageLifecycleActive", tabId]);
+      return { state: "active" };
     },
     async evalValue(tabId, expression) {
       calls.push(["evalValue", tabId, expression]);

@@ -397,6 +397,8 @@ async function main() {
     state.cdpListInvalidAfterCreate = false;
     await cdp.bringToFront("cdp-tab");
     assert.strictEqual(countMethod(websocket.messages, "Page.bringToFront"), 1);
+    await cdp.setPageLifecycleActive("cdp-tab");
+    assert.strictEqual(countMethod(websocket.messages, "Page.setWebLifecycleState"), 1);
     await cdp.clickAt("cdp-tab", { x: 120, y: 48 });
     assert.deepStrictEqual(
       websocket.messages.filter((message) => message.method === "Input.dispatchMouseEvent").slice(-3).map((message) => message.method),
@@ -600,6 +602,11 @@ async function main() {
     reset("ok");
     await edge.bringToFront("edge-tab");
     assert.strictEqual(state.edgeRequests[0].args.method, "Page.bringToFront");
+    reset("ok");
+    await edge.setPageLifecycleActive("edge-tab");
+    assert.strictEqual(state.edgeRequests[0].args.method, "Page.setWebLifecycleState");
+    assert.deepStrictEqual(state.edgeRequests[0].args.params, { state: "active" });
+    reset("ok");
     await edge.clickAt("edge-tab", { x: 120, y: 48 });
     const edgeClickRequests = state.edgeRequests
       .filter((request) => request.command === "send_cdp")

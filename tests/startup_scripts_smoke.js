@@ -633,7 +633,7 @@ function testStartupIdentityHelpers() {
   const acceptedSnapshot = {
     ProcessName: "msedge.exe",
     ExecutablePath: "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
-    CommandLine: '"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --disable-features=CalculateNativeWinOcclusion "--user-data-dir=C:\\RoleFlow Profile"',
+    CommandLine: '"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --disable-features=CalculateNativeWinOcclusion --disable-background-timer-throttling --disable-renderer-backgrounding "--user-data-dir=C:\\RoleFlow Profile"',
     EdgePath: "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
     Port: 9222,
     ProfilePath: "C:\\RoleFlow Profile"
@@ -708,6 +708,8 @@ function testStartupIdentityHelpers() {
           "--remote-debugging-port=9222",
           "--remote-allow-origins=*",
           "--disable-features=CalculateNativeWinOcclusion",
+          "--disable-background-timer-throttling",
+          "--disable-renderer-backgrounding",
           '"--user-data-dir=C:\\RoleFlow Profile"',
           "--no-first-run",
           "--no-default-browser-check",
@@ -722,6 +724,8 @@ function testStartupIdentityHelpers() {
     { name: "portable Edge process rejects ambiguous address", functionName: "Assert-RoleFlowPortableEdgeProcessSnapshot", parameters: { ...acceptedSnapshot, CommandLine: `${acceptedSnapshot.CommandLine} --remote-debugging-address=0.0.0.0` }, expected: { accepted: false, error: /loopback address/i } },
     { name: "portable Edge process rejects port mismatch", functionName: "Assert-RoleFlowPortableEdgeProcessSnapshot", parameters: { ...acceptedSnapshot, CommandLine: acceptedSnapshot.CommandLine.replace("9222", "9333") }, expected: { accepted: false, error: /different port/i } },
     { name: "portable Edge process rejects missing occlusion capability", functionName: "Assert-RoleFlowPortableEdgeProcessSnapshot", parameters: { ...acceptedSnapshot, CommandLine: acceptedSnapshot.CommandLine.replace(" --disable-features=CalculateNativeWinOcclusion", "") }, expected: { accepted: false, error: /native window occlusion/i } },
+    { name: "portable Edge process rejects missing background timer capability", functionName: "Assert-RoleFlowPortableEdgeProcessSnapshot", parameters: { ...acceptedSnapshot, CommandLine: acceptedSnapshot.CommandLine.replace(" --disable-background-timer-throttling", "") }, expected: { accepted: false, error: /background timer/i } },
+    { name: "portable Edge process rejects missing background renderer capability", functionName: "Assert-RoleFlowPortableEdgeProcessSnapshot", parameters: { ...acceptedSnapshot, CommandLine: acceptedSnapshot.CommandLine.replace(" --disable-renderer-backgrounding", "") }, expected: { accepted: false, error: /background renderer/i } },
     { name: "portable Edge listener accepts exact identity", functionName: "Assert-RoleFlowPortableEdgeListenerSnapshot", parameters: listenerParameters(loopbackListener, edgeProcessQuery), expected: { accepted: true, value: 4242 } },
     { name: "portable Edge listener rejects failed listener query", functionName: "Assert-RoleFlowPortableEdgeListenerSnapshot", parameters: listenerParameters({ querySucceeded: false, listeners: [] }, edgeProcessQuery), expected: { accepted: false, error: /listener enumeration failed/i } },
     { name: "portable Edge listener rejects all-address listener", functionName: "Assert-RoleFlowPortableEdgeListenerSnapshot", parameters: listenerParameters({ querySucceeded: true, listeners: [{ localAddress: "0.0.0.0", owningProcess: 4242 }] }, edgeProcessQuery), expected: { accepted: false, error: /exactly one loopback listener/i } },
