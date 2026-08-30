@@ -243,7 +243,7 @@ git add docs/PROJECT_HANDOFF.md docs/superpowers/plans/2026-08-30-message-job-id
 git commit -m "docs: record message identity verification"
 ```
 
-- [ ] **Step 6: Re-run exact-HEAD risk checks**
+- [x] **Step 6: Re-run exact-HEAD risk checks**
 
 Run:
 
