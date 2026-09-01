@@ -138,8 +138,7 @@ async function rebindCommunicationBrowser({ db, input = {}, deps = {} }) {
   }
   const items = listCommunicationBatchItems(db, batchId);
   const readAmbiguity = deps.communicationAmbiguityReader || communicationAmbiguityStateForBatch;
-  if (items.some((item) => Number(item.clickCount || 0) > 0
-      || ["click_dispatched", "ambiguous"].includes(item.status))
+  if (items.some((item) => ["click_dispatched", "ambiguous"].includes(item.status))
     || readAmbiguity(db, batchId).blocked) {
     throw appError("COMMUNICATION_BROWSER_REBIND_BLOCKED", "请先人工确认已发出操作的沟通结果，再重新检查浏览器页面。", { statusCode: 409 });
   }

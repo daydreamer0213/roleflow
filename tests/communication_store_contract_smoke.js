@@ -239,7 +239,7 @@ function runOwnerContract() {
       batchId: portableSucceededBatch.id,
       browser: portableBinding({ searchTabId: "CDP-succeeded-search", messageTabId: "CDP-succeeded-chat" })
     });
-    assertClickedTerminalRebindBlocked(db, portableSucceededBatch, "succeeded");
+    assertClickedTerminalRebindAllowed(db, portableSucceededBatch, "succeeded");
     const portableAlreadyBatch = createCommunicationBatch(db, {
       planId: seeded.planId,
       jobIds: [seeded.ids[12]],
@@ -250,7 +250,7 @@ function runOwnerContract() {
       batchId: portableAlreadyBatch.id,
       browser: portableBinding({ searchTabId: "CDP-already-search", messageTabId: "CDP-already-chat" })
     });
-    assertClickedTerminalRebindBlocked(db, portableAlreadyBatch, "already_communicated");
+    assertClickedTerminalRebindAllowed(db, portableAlreadyBatch, "already_communicated");
     const portableStoppedBatch = createCommunicationBatch(db, {
       planId: seeded.planId,
       jobIds: [seeded.ids[13]],
@@ -261,7 +261,7 @@ function runOwnerContract() {
       batchId: portableStoppedBatch.id,
       browser: portableBinding({ searchTabId: "CDP-stopped-search", messageTabId: "CDP-stopped-chat" })
     });
-    assertClickedTerminalRebindBlocked(db, portableStoppedBatch, "stopped");
+    assertClickedTerminalRebindAllowed(db, portableStoppedBatch, "stopped");
     const items = listCommunicationBatchItems(db, batch.id);
     assert.strictEqual(items.length, 8);
     assert.deepStrictEqual(Object.keys(items[0]).sort(), [
@@ -615,7 +615,7 @@ function portableBinding(overrides = {}) {
   };
 }
 
-function assertClickedTerminalRebindBlocked(db, batch, status) {
+function assertClickedTerminalRebindAllowed(db, batch, status) {
   const item = listCommunicationBatchItems(db, batch.id)[0];
   if (status === "already_communicated") {
     db.prepare("UPDATE communication_batch_items SET status = 'click_dispatched', click_count = 1 WHERE id = ?").run(item.id);
@@ -625,16 +625,17 @@ function assertClickedTerminalRebindBlocked(db, batch, status) {
   }
   assert.strictEqual(listCommunicationBatchItems(db, batch.id)[0].clickCount, 1);
   const before = getCommunicationBatch(db, batch.id).runtime.browser;
-  const blocked = observeTransactions(db, () => assert.throws(
-    () => bindCommunicationBatchRuntime(db, {
-      batchId: batch.id,
-      browser: { ...before, searchScrollTop: before.searchScrollTop + 1 },
-      rebind: true
-    }),
-    (error) => error.code === "COMMUNICATION_BROWSER_REBIND_BLOCKED"
-  ));
-  assert.deepStrictEqual(blocked.statements, ["BEGIN IMMEDIATE", "ROLLBACK"]);
-  assert.deepStrictEqual(getCommunicationBatch(db, batch.id).runtime.browser, before);
+  const rebound = observeTransactions(db, () => bindCommunicationBatchRuntime(db, {
+    batchId: batch.id,
+    browser: { ...before, searchScrollTop: before.searchScrollTop + 1 },
+    rebind: true
+  }));
+  assert.deepStrictEqual(rebound.statements, ["BEGIN IMMEDIATE", "COMMIT"]);
+  assert.deepStrictEqual(rebound.value.runtime.browser, {
+    ...before,
+    searchScrollTop: before.searchScrollTop + 1,
+    bindingGeneration: before.bindingGeneration + 1
+  });
 }
 
 function observeTransactions(db, action) {

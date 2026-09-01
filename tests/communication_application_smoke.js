@@ -206,7 +206,7 @@ let noDbPathServer;
     deps: { async inspectAndBindCommunicationBrowser() { portableBlockedInspections += 1; } }
   }), (error) => error.code === "COMMUNICATION_BROWSER_REBIND_BLOCKED" && error.statusCode === 409);
   assert.strictEqual(portableBlockedInspections, 0);
-  await clickedTerminalPortableRebindGuardSmoke(db, fixture);
+  await clickedTerminalPortableRebindRecoverySmoke(db, fixture);
   recoveryFloorCommunicationGuardSmoke(db, fixture);
   const directResolution = createCommunicationBatch({
     db,
@@ -632,7 +632,7 @@ function transitionToClicked(database, batchId) {
   return listCommunicationBatchItems(database, batchId)[0];
 }
 
-async function clickedTerminalPortableRebindGuardSmoke(database, fixture) {
+async function clickedTerminalPortableRebindRecoverySmoke(database, fixture) {
   for (const [status, jobId] of [
     ["succeeded", fixture.portableSucceededRebindJobId],
     ["already_communicated", fixture.portableAlreadyRebindJobId],
@@ -672,7 +672,7 @@ async function clickedTerminalPortableRebindGuardSmoke(database, fixture) {
     }
     const before = getCommunicationBatch(database, created.batch.id).runtime.browser;
     let inspections = 0;
-    await assert.rejects(() => rebindCommunicationBrowser({
+    const rebound = await rebindCommunicationBrowser({
       db: database,
       input: { batchId: created.batch.id },
       deps: {
@@ -685,9 +685,13 @@ async function clickedTerminalPortableRebindGuardSmoke(database, fixture) {
           });
         }
       }
-    }), (error) => error.code === "COMMUNICATION_BROWSER_REBIND_BLOCKED" && error.statusCode === 409);
-    assert.strictEqual(inspections, 0, `${status} clickCount=1 must stop before browser inspection`);
-    assert.deepStrictEqual(getCommunicationBatch(database, created.batch.id).runtime.browser, before);
+    });
+    assert.strictEqual(inspections, 1, `${status} must allow one read-only browser inspection`);
+    assert.deepStrictEqual(rebound.batch.runtime.browser, {
+      ...before,
+      searchScrollTop: before.searchScrollTop + 1,
+      bindingGeneration: before.bindingGeneration + 1
+    });
     assert.strictEqual(listCommunicationBatchItems(database, created.batch.id)[0].clickCount, 1);
   }
 }
