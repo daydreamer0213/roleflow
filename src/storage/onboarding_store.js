@@ -7,6 +7,7 @@ const {
 } = require("../core/resume_privacy");
 
 const ACTIVE_STATUSES = new Set(["queued", "running"]);
+const INITIAL_SEARCH_PREPARATION_EVENT = "onboarding_initial_search_prepared";
 
 function createOnboardingRun(db, {
   profileId = null,
@@ -267,6 +268,66 @@ function getLatestActiveOnboardingRun(db) {
   `).get());
 }
 
+function getInitialSearchCatchUpCandidate(db) {
+  return onboardingRunRow(db.prepare(`
+    WITH latest_completed AS (
+      SELECT * FROM onboarding_runs
+      WHERE status = 'completed'
+      ORDER BY COALESCE(finished_at, updated_at) DESC, created_at DESC
+      LIMIT 1
+    )
+    SELECT runs.*
+    FROM latest_completed runs
+    JOIN candidate_profiles profiles
+      ON profiles.id = runs.profile_id AND profiles.is_ready = 1
+    JOIN search_plans plans
+      ON plans.id = runs.search_plan_id
+      AND plans.profile_id = runs.profile_id
+      AND plans.profile_version_id = runs.profile_version_id
+      AND plans.is_active = 1
+    WHERE NOT EXISTS (
+      SELECT 1 FROM workflow_runs workflows
+      WHERE workflows.profile_id = runs.profile_id
+        AND workflows.plan_id = runs.search_plan_id
+    )
+      AND NOT EXISTS (
+        SELECT 1 FROM events markers
+        WHERE markers.event_type = ?
+          AND json_valid(markers.payload_json)
+          AND json_extract(markers.payload_json, '$.runId') = runs.id
+      )
+  `).get(INITIAL_SEARCH_PREPARATION_EVENT));
+}
+
+function recordInitialSearchPreparationHandled(db, { run, source, result } = {}) {
+  const status = String(result?.status || "").trim();
+  const reason = String(result?.reason || "").trim();
+  const handled = status === "prepared"
+    || (status === "skipped" && ["query_present", "keyword_missing"].includes(reason));
+  if (!handled) return false;
+  const runId = String(run?.id || "").trim();
+  const profileId = Number(run?.profileId || 0);
+  const planId = Number(run?.searchPlanId || 0);
+  if (!runId || !profileId || !planId) return false;
+  const existing = db.prepare(`SELECT id FROM events
+    WHERE event_type = ?
+      AND json_valid(payload_json)
+      AND json_extract(payload_json, '$.runId') = ?
+    LIMIT 1`).get(INITIAL_SEARCH_PREPARATION_EVENT, runId);
+  if (existing) return false;
+  db.prepare(`INSERT INTO events(job_id, event_type, payload_json, created_at)
+    VALUES (NULL, ?, ?, ?)`)
+    .run(INITIAL_SEARCH_PREPARATION_EVENT, JSON.stringify({
+      runId,
+      profileId,
+      planId,
+      source: String(source || "onboarding_completion").trim() || "onboarding_completion",
+      status,
+      reason
+    }), nowIso());
+  return true;
+}
+
 function onboardingRunRow(row) {
   if (!row) return null;
   return {
@@ -319,5 +380,7 @@ module.exports = {
   retryOnboardingRun,
   failOnboardingRun,
   recoverStaleOnboardingRuns,
-  getLatestActiveOnboardingRun
+  getLatestActiveOnboardingRun,
+  getInitialSearchCatchUpCandidate,
+  recordInitialSearchPreparationHandled
 };

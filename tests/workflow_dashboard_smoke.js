@@ -1236,8 +1236,10 @@ let server;
   assert.match(planAfter.body, /今日成功沟通<\/span><strong class="metric-value">30\s*<small>\/\s*70/);
   assert.match(planAfter.body, /下一轮目标 40/);
   assert.match(planAfter.body, /详情读取预算剩余 355，搜索页面预算剩余 58/);
-  assert.strictEqual((planAfter.body.match(/name="action" value="start"/g) || []).length, 0);
-  assert.match(planAfter.body, /两轮扫描至少间隔 2 小时/);
+  assert.strictEqual((planAfter.body.match(/name="action" value="start"/g) || []).length, 1);
+  assert.match(planAfter.body, /data-early-scan-dialog/);
+  assert.match(planAfter.body, /name="confirmEarlyScan" value="1"/);
+  assert.match(planAfter.body, /确认不等待本次默认冷却/);
 
   const rejectedWhileScanExists = await postForm(baseUrl, "/api/workflow-run", {
     planId: saved.planId,
@@ -3237,8 +3239,10 @@ async function assertSerializedSlowBrowserReadinessGate(readinessScript) {
   let intervalCallback = null;
   let intervalMs = null;
   let clearedInterval = null;
+  let submitPrevented = false;
   const formListeners = new Map();
   const form = {
+    getAttribute(name) { return name === "action" ? "/api/workflow-run" : null; },
     addEventListener(event, callback) { formListeners.set(event, callback); }
   };
   const button = {
@@ -3252,9 +3256,9 @@ async function assertSerializedSlowBrowserReadinessGate(readinessScript) {
       getElementById(id) { return id === "browser-readiness-status" ? statusNode : null; },
       querySelector(selector) { return selector === "[data-browser-readiness-button]" ? button : null; }
     },
-    fetch() {
+    fetch(url) {
       const request = deferred();
-      requests.push(request);
+      requests.push({ url, request });
       return request.promise;
     },
     setInterval(callback, interval) {
@@ -3263,7 +3267,10 @@ async function assertSerializedSlowBrowserReadinessGate(readinessScript) {
       return 1;
     },
     clearInterval(id) { clearedInterval = id; },
-    URLSearchParams
+    URLSearchParams,
+    FormData: class FormData {
+      *[Symbol.iterator]() {}
+    }
   });
   new vm.Script(readinessScript).runInContext(context);
   assert.strictEqual(requests.length, 1);
@@ -3278,15 +3285,17 @@ async function assertSerializedSlowBrowserReadinessGate(readinessScript) {
   );
   await overlappingTick;
 
-  requests[0].resolve(readinessResponse("ready"));
+  requests[0].request.resolve(readinessResponse("ready"));
   await flushPromises();
   assert.strictEqual(statusNode.dataset.status, "ready", "a slow first response must still update the status");
   assert.strictEqual(button.disabled, false, "a slow ready response must still enable an otherwise eligible workflow");
   assert.strictEqual(typeof formListeners.get("submit"), "function");
-  formListeners.get("submit")();
+  formListeners.get("submit")({ preventDefault() { submitPrevented = true; } });
+  assert.strictEqual(submitPrevented, true, "workflow submission must prevent native document navigation");
+  assert.strictEqual(requests[1].url, "/api/workflow-run");
   assert.strictEqual(clearedInterval, 1, "workflow submission must stop the readiness timer");
   await intervalCallback();
-  assert.strictEqual(requests.length, 1, "readiness polling must remain stopped after workflow submission");
+  assert.strictEqual(requests.length, 2, "readiness polling must remain stopped after workflow submission");
   assert.strictEqual(statusNode.textContent, "正在启动本轮任务…");
   assert.strictEqual(button.disabled, true);
 }

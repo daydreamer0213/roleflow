@@ -299,7 +299,7 @@ const generatedReports = [];
   const planPage = await fetch(`${baseUrl}${confirmedLocation}`);
   const planHtml = await planPage.text();
   assert.strictEqual(planPage.status, 200);
-  assert(planHtml.includes("可直接开始扫描"));
+  assert(planHtml.includes("先在固定 BOSS 搜索页补充城市、地铁或商圈"));
   assert(planHtml.includes("筛选方案"));
   assert(planHtml.includes("搜索关键词"));
   assert(planHtml.includes("广泛扫描预算"));

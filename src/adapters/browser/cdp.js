@@ -80,12 +80,21 @@ class CdpBrowserAdapter {
   }
 
   async visibilityStateForPage(page) {
-    const result = await sendCdp(
-      page.webSocketDebuggerUrl,
-      "Runtime.evaluate",
-      { expression: "document.visibilityState", returnByValue: true },
-      this.timeoutMs
-    );
+    let result;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        result = await sendCdp(
+          page.webSocketDebuggerUrl,
+          "Runtime.evaluate",
+          { expression: "document.visibilityState", returnByValue: true },
+          this.timeoutMs
+        );
+        break;
+      } catch (error) {
+        if (attempt === 1 || !isRetryableReadError(error)) throw error;
+        await retryReadDelay();
+      }
+    }
     const state = result?.result?.value;
     if (!new Set(["visible", "hidden"]).has(state)) {
       throw browserError("BROWSER_COMMAND_FAILED", `CDP page visibility is unavailable: ${page.id}`);

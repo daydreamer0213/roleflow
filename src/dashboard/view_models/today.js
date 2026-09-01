@@ -123,6 +123,14 @@ function buildPrimaryAction({ activeRun, nextPlan, dependency, runtimeBlock, pro
   if (dependency.matchingCardRequired) return { type: "link", label: "确认匹配偏好卡", href: `/match-card?profileId=${profileId}${dependency.draftCardId ? `&cardId=${dependency.draftCardId}` : ""}`, status: "扫描前需要确认", detail: "确认当前草稿后，才会启用扫描和岗位匹配。" };
   if (dependency.stale) return { type: "link", label: "重新确认筛选条件", href: `/plan?profileId=${profileId}&planId=${planId}#plan-settings`, status: "方案需要重新确认", detail: "画像已更新；保存现有条件即可重新绑定，不会覆盖人工设置。" };
   if (runtimeBlock) return { type: "link", label: "查看恢复说明", href: "/diagnostics", status: "BOSS 安全暂停中", detail: `已采集的数据安全保留。${runtimeBlock.blockedUntil ? `恢复时间 ${runtimeBlock.blockedUntil}` : "请等待风控恢复。"}` };
+  if (nextPlan?.errorCode === "WORKFLOW_SCAN_INTERVAL") return {
+    type: "cooldown_override",
+    label: "提前开始下一轮",
+    status: nextPlan.nextRunAt
+      ? `建议等待至 ${new Date(nextPlan.nextRunAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}`
+      : "建议稍后再开始下一轮",
+    detail: "如果本轮结果不足，可以提前开始。"
+  };
   if (nextPlan?.errorCode) return { type: "notice", label: "今日任务暂不能继续", status: workflowBlockedMessage(nextPlan.errorCode, nextPlan), detail: workflowShortfallLabel(nextPlan.shortfallReason || nextPlan.errorCode) };
   return { type: "form", label: "开始一轮岗位发现", status: startBlocked ? "等待前置条件恢复" : "可以开始新一轮", detail: "使用已保存条件发现一批岗位。", disabled: Boolean(startBlocked) };
 }

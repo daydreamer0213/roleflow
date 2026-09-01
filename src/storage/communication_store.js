@@ -183,7 +183,7 @@ function bindCommunicationBatchRuntime(db, input = {}) {
         SELECT 1
         FROM communication_batch_items
         WHERE batch_id = ?
-          AND (click_count > 0 OR status IN ('click_dispatched', 'ambiguous'))
+          AND status IN ('click_dispatched', 'ambiguous')
         LIMIT 1
       `).get(batchId);
       if (unresolved) {

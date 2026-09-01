@@ -99,6 +99,7 @@ const tests = [
   "model_task_profiles_smoke.js",
   "model_settings_ui_smoke.js",
   "onboarding_run_smoke.js",
+  "initial_search_page_smoke.js",
   "onboarding_progress_ui_smoke.js",
   "onboarding_cli_smoke.js",
   "observability_smoke.js",

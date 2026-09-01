@@ -16,6 +16,8 @@ async function main() {
   await validationPrecedesPersistenceAndLaunch();
   await activeWorkflowSkipsPreparation();
   await directApplicationContract();
+  await earlyScanConfirmationContract();
+  await earlyScanConfirmationCannotBypassScanAvailability();
   await portableWorkflowPersistsDashboardAuthority();
   await portableRecoveryKeepsFrozenAuthority();
   await invalidPortableRecoveryFailsClosed();
@@ -124,6 +126,73 @@ async function portableWorkflowPersistsDashboardAuthority() {
   assert.deepStrictEqual(
     { browserMode: launch.input.browserMode, cdpPort: launch.input.cdpPort },
     { browserMode: "portable", cdpPort: 9222 }
+  );
+}
+
+async function earlyScanConfirmationCannotBypassScanAvailability() {
+  const events = [];
+  const deps = startDeps(events);
+  deps.scanAvailability = () => {
+    events.push("scan-availability");
+    throw appError("BOSS_RISK_CONTROL", "risk fixture", { statusCode: 409 });
+  };
+  await assert.rejects(
+    startWorkflow({
+      db: {},
+      input: { planId: 41, confirmEarlyScan: "1", modelReady: true, modelState: modelState() },
+      deps
+    }),
+    (error) => error.code === "BOSS_RISK_CONTROL" && error.statusCode === 409
+  );
+  assert(events.includes("scan-availability"));
+  assert(!events.includes("workflow-persistence"));
+  assert(!events.includes("launcher"));
+}
+
+async function earlyScanConfirmationContract() {
+  const nextRunAt = "2026-07-21T05:00:01.000Z";
+  const allowedOptions = [];
+  let persistedPlanner = null;
+  const allowedDeps = startDeps([], () => {}, (value) => { persistedPlanner = value; });
+  allowedDeps.workflowBlockedMessage = (code) => code;
+  allowedDeps.buildDashboardState = (_db, _plan, _now, options = {}) => {
+    allowedOptions.push(options);
+    const state = dashboardState();
+    return {
+      ...state,
+      nextPlan: options.allowEarlyScan === true
+        ? { ...state.nextPlan, intervalOverrideUsed: true, nextRunAt }
+        : { ...state.nextPlan, errorCode: "WORKFLOW_SCAN_INTERVAL", scanNeeded: false, nextRunAt }
+    };
+  };
+  const started = await startWorkflow({
+    db: {},
+    input: { planId: 41, confirmEarlyScan: "1", modelReady: true, modelState: modelState() },
+    deps: allowedDeps
+  });
+  assert.strictEqual(allowedOptions.length, 2);
+  assert(allowedOptions.every((options) => options.allowEarlyScan === true));
+  assert.strictEqual(started.workflow.planner.intervalOverrideUsed, true);
+  assert.strictEqual(persistedPlanner.nextRunAt, nextRunAt);
+
+  const rejectedDeps = startDeps([]);
+  rejectedDeps.workflowBlockedMessage = (code) => code;
+  rejectedDeps.buildDashboardState = (_db, _plan, _now, options = {}) => {
+    const state = dashboardState();
+    return {
+      ...state,
+      nextPlan: options.allowEarlyScan === true
+        ? { ...state.nextPlan, intervalOverrideUsed: true, nextRunAt }
+        : { ...state.nextPlan, errorCode: "WORKFLOW_SCAN_INTERVAL", scanNeeded: false, nextRunAt }
+    };
+  };
+  await assert.rejects(
+    startWorkflow({
+      db: {},
+      input: { planId: 41, confirmEarlyScan: "true", modelReady: true, modelState: modelState() },
+      deps: rejectedDeps
+    }),
+    (error) => error.code === "WORKFLOW_SCAN_INTERVAL" && error.statusCode === 409
   );
 }
 
@@ -240,7 +309,7 @@ async function activeWorkflowSkipsPreparation() {
   };
   const result = await startWorkflow({
     db: {},
-    input: { planId: 41, browserMode: "edge", modelReady: true, modelState: modelState() },
+    input: { planId: 41, browserMode: "edge", confirmEarlyScan: "1", modelReady: true, modelState: modelState() },
     deps
   });
   assert.strictEqual(result.alreadyActive, true);

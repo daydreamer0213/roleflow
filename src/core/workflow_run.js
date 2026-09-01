@@ -71,7 +71,8 @@ function planWorkflowRun(input = {}) {
   const wantsScan = candidateGap > 0 && thirdScanAllowed
     && budget.maxDetailTotal > 0 && budget.browserPageBudget > 0;
   const interval = scanInterval(input, policy);
-  const intervalBlocked = wantsScan && !interval.ready;
+  const intervalOverrideUsed = wantsScan && !interval.ready && input.allowEarlyScan === true;
+  const intervalBlocked = wantsScan && !interval.ready && !intervalOverrideUsed;
   const scanNeeded = wantsScan && !intervalBlocked;
   const selectedKeywords = scanNeeded
     ? selectKeywords(input.keywords, planningSlots, policy, budget.maxDetailTotal)
@@ -95,6 +96,7 @@ function planWorkflowRun(input = {}) {
     replacementBuffer: policy.replacementBuffer,
     inventoryCount,
     candidateGap,
+    intervalOverrideUsed,
     scanNeeded: scanNeeded && selectedKeywords.length > 0,
     selectedKeywords,
     budget,

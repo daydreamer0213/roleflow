@@ -546,6 +546,13 @@ async function assertCommunicationClient() {
   assert.strictEqual(created.status, 200);
   assert.strictEqual(created.body.batch.browserMode, "edge");
   const batchId = created.body.batch.id;
+  bindCommunicationBatchRuntime(db, {
+    batchId,
+    browser: browserBinding({
+      searchReturnUrl: liveSearchUrl,
+      searchScrollTop: 360
+    })
+  });
   assert.deepStrictEqual(listCommunicationBatchItems(db, batchId).map((item) => [item.jobId, item.titleSnapshot, item.companySnapshot]), [
     [fixture.primaryId, "Primary role", "Company primary"],
     [fixture.backupId, "Backup role", "Company backup"]
@@ -826,8 +833,9 @@ async function assertCommunicationClient() {
     batchId,
     action: "resume"
   });
-  assert.strictEqual(resumedAfterReview.status, 200);
+  assert.strictEqual(resumedAfterReview.status, 200, JSON.stringify(resumedAfterReview.body));
   assert.strictEqual(resumedAfterReview.body.batch.status, "running");
+  assert.strictEqual(getCommunicationBatch(db, batchId).runtime.browser.bindingGeneration, 3);
   assert.strictEqual(spawns.length, 4);
 
   const discardable = await postJson(baseUrl, "/api/communication-batch", { planId: fixture.planId, jobIds: fixture.talkId, browserMode: "edge" });

@@ -225,6 +225,17 @@ async function main() {
     assert.strictEqual(countMethod(websocket.messages, "Browser.getWindowForTarget"), 1);
     state.cdpExtraPage = false;
 
+    websocket.mode = "visibility-timeout-once";
+    websocket.messages.length = 0;
+    const recoveredTabs = await cdp.listTabs({ scope: "boss" });
+    assert.deepStrictEqual(recoveredTabs.map((tab) => tab.id), ["cdp-tab"]);
+    assert.strictEqual(
+      websocket.messages.filter((message) => message.method === "Runtime.evaluate"
+        && message.params.expression === "document.visibilityState").length,
+      2,
+      "a transient timeout while reading page visibility must retry the read exactly once"
+    );
+
     websocket.mode = "window-identity-missing";
     await rejectsWithCode(() => cdp.listTabs(), "BROWSER_COMMAND_FAILED");
 
@@ -741,6 +752,8 @@ function installFakeWebSocket() {
           else result = control.responseBodies[payload.params.requestId] || { body: "", base64Encoded: false };
         } else if (payload.method === "Runtime.evaluate"
           && payload.params.expression === "document.visibilityState") {
+          if (control.mode === "visibility-timeout-once"
+            && countMethod(control.messages, "Runtime.evaluate") === 1) return;
           const targetId = this.url.split("/").at(-1);
           const stateValue = control.mode === "created-visible" && targetId === "cdp-created-tab"
             ? "visible"
