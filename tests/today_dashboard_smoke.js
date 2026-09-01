@@ -27,6 +27,7 @@ const logger = { info() {}, warn() {}, error() {}, requestId() { return "today-d
 (async () => {
   assertEvaluationScriptExplainsMissingPlaywright();
   assertRendererIsPureAndEscapesHtml();
+  assertEarlyScanConfirmationRendering();
   await assertPriorityPanelStaysCompactAtDesktopWidth();
   assertScanStatusLabels();
   fs.mkdirSync(smokeDir, { recursive: true });
@@ -148,7 +149,7 @@ async function assertPriorityPanelStaysCompactAtDesktopWidth() {
     let markWorkflowRequest;
     const workflowRequestStarted = new Promise((resolve) => { markWorkflowRequest = resolve; });
     const workflowRequestWait = new Promise((resolve) => { releaseWorkflowRequest = resolve; });
-    const html = renderTodayPage({
+    let html = renderTodayPage({
       page: { todayPath: "/plan", planId: 1 },
       heading: { title: "今日任务" },
       primary: { type: "form", status: "可以开始新一轮", detail: "使用已保存条件发现一批岗位。" },
@@ -203,6 +204,23 @@ async function assertPriorityPanelStaysCompactAtDesktopWidth() {
     releaseWorkflowRequest();
     await click;
     await page.waitForFunction(() => document.getElementById("browser-readiness-status")?.textContent?.includes("BROWSER_TIMEOUT"));
+
+    html = renderTodayPage({
+      page: { todayPath: "/plan", planId: 1 },
+      heading: { title: "今日任务" },
+      primary: { type: "cooldown_override", status: "建议等待至 20:00", detail: "如果本轮结果不足，可以提前开始。", label: "提前开始下一轮" },
+      metrics: {},
+      runtime: { browserMode: "portable", cdpPort: 9222 },
+      profile: {}
+    });
+    await page.goto("http://roleflow.test/plan");
+    await page.waitForFunction(() => document.querySelector("[data-browser-readiness-button]")?.disabled === false);
+    assert.strictEqual(await page.locator("[data-early-scan-dialog]").isVisible(), false);
+    await page.locator("[data-early-scan-open]").click();
+    assert.strictEqual(await page.locator("[data-early-scan-dialog]").isVisible(), true);
+    assert.strictEqual(await page.locator('input[name="confirmEarlyScan"]').inputValue(), "1");
+    await page.locator("[data-early-scan-cancel]").click();
+    assert.strictEqual(await page.locator("[data-early-scan-dialog]").isVisible(), false);
     await page.close();
   } finally {
     releaseWorkflowRequest();
@@ -253,6 +271,45 @@ function assertRendererIsPureAndEscapesHtml() {
   assert.match(html, /name="browserMode" value="portable"/);
   assert.match(html, /name="cdpPort" value="9222"/);
   assert.match(html, /当前浏览器：RoleFlow 专用 Edge（推荐）/);
+}
+
+function assertEarlyScanConfirmationRendering() {
+  const base = {
+    profile: { id: 7, profile: { candidate: { name: "候选人" }, skills: [], projects: [] } },
+    planRecord: { id: 12, profileId: 7 },
+    plan: { name: "AI 应用", keywords: [], salary: {}, scan: {} },
+    validation: { valid: true, errors: [], warnings: [] },
+    planDependency: { stale: false, matchingCardRequired: false },
+    bossRuntimeBlock: null,
+    run: { state: "idle", error: "" },
+    runtime: { browserMode: "portable", cdpPort: 9222 }
+  };
+  const blocked = buildTodayViewModel({
+    ...base,
+    workflowState: {
+      activeRun: null,
+      nextPlan: {
+        errorCode: "WORKFLOW_SCAN_INTERVAL",
+        nextRunAt: "2026-09-01T12:00:00.000Z",
+        targetSuccessCount: 35
+      }
+    }
+  });
+  const html = renderTodayPage(blocked);
+  assert.strictEqual(blocked.primary.type, "cooldown_override");
+  assert.match(html, /data-early-scan-open/);
+  assert.match(html, /<dialog[^>]+data-early-scan-dialog/);
+  assert.match(html, /name="confirmEarlyScan" value="1"/);
+  assert.match(html, /连续多轮访问 BOSS 可能增加账号触发限制的风险/);
+  assert.match(html, /data-browser-readiness-button/);
+
+  const normal = renderTodayPage(buildTodayViewModel({
+    ...base,
+    workflowState: { activeRun: null, nextPlan: { targetSuccessCount: 35 } }
+  }));
+  assert.doesNotMatch(normal, /<button[^>]+data-early-scan-open/);
+  assert.doesNotMatch(normal, /<dialog[^>]+data-early-scan-dialog/);
+  assert.doesNotMatch(normal, /name="confirmEarlyScan"/);
 }
 
 function assertScanStatusLabels() {

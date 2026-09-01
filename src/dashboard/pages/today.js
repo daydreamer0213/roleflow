@@ -15,7 +15,7 @@ function renderTodayPage(vm) {
   <details class="today-context"><summary>求职方向与资料</summary><div class="today-context-grid"><div>${renderPlanSummary(vm)}</div><aside aria-label="候选人摘要">${renderCandidateSummary(vm.profile || {})}</aside></div></details>
   ${renderPlanSettings(vm)}
   ${renderAdvancedScan(vm)}
-</main><p class="footer-note">本页只展示本地保存的任务状态。扫描仍遵守固定标签页、随机等待、预算和风控即停；不会自动沟通或投递。</p>` }) + renderClientScripts(vm.run?.state, vm.primary?.type === "form", vm.runtime || {});
+</main><p class="footer-note">本页只展示本地保存的任务状态。扫描仍遵守固定标签页、随机等待、预算和风控即停；不会自动沟通或投递。</p>` }) + renderClientScripts(vm.run?.state, ["form", "cooldown_override"].includes(vm.primary?.type), vm.runtime || {});
 }
 
 function renderPrimaryPanel(vm) {
@@ -27,6 +27,7 @@ function renderPrimaryAction(primary, page, runtime) {
   if (primary.type === "link") return `<a class="button" data-today-primary="true" href="${escapeAttr(primary.href)}">${escapeHtml(primary.label)}</a>`;
   if (primary.type === "notice") return `<p class="primary-notice" role="status">${escapeHtml(primary.label)}</p>`;
   const browserLabel = browserAuthorityLabel(runtime);
+  if (primary.type === "cooldown_override") return `<button class="button" type="button" data-today-primary="true" data-early-scan-open>${escapeHtml(primary.label)}</button><dialog class="early-scan-dialog" data-early-scan-dialog aria-labelledby="early-scan-title"><div class="early-scan-dialog-body"><p class="section-label">提前开始下一轮</p><h2 id="early-scan-title">确认不等待本次默认冷却？</h2><p>连续多轮访问 BOSS 可能增加账号触发限制的风险。</p><p class="muted">本次确认只解除两轮之间的两小时间隔；随机等待、访问额度、固定标签页和风控即停仍然有效。</p><div class="workflow-budget">当前浏览器：${escapeHtml(browserLabel)}</div><div id="browser-readiness-status" class="workflow-budget" role="status">正在检查${escapeHtml(browserLabel)}与固定 BOSS 页面状态…</div><div class="button-row"><button class="secondary" type="button" data-early-scan-cancel>继续等待</button><form class="workflow-start" method="post" action="/api/workflow-run"><input type="hidden" name="planId" value="${escapeAttr(page.planId)}">${browserInputs(runtime)}<input type="hidden" name="confirmEarlyScan" value="1"><button class="button" name="action" value="start" data-browser-readiness-button data-browser-base-disabled="${runtime.workflowStartDisabled ? "true" : "false"}" disabled>确认提前开始</button></form></div></div></dialog>`;
   return `<form class="workflow-start" method="post" action="/api/workflow-run"><input type="hidden" name="planId" value="${escapeAttr(page.planId)}">${browserInputs(runtime)}<button class="button" data-today-primary="true" name="action" value="start" data-browser-readiness-button data-browser-base-disabled="${runtime.workflowStartDisabled ? "true" : "false"}" disabled>${escapeHtml(primary.label || "开始一轮岗位发现")}</button></form><div class="workflow-budget">当前浏览器：${escapeHtml(browserLabel)}</div><div id="browser-readiness-status" class="workflow-budget" role="status">正在检查${escapeHtml(browserLabel)}与固定 BOSS 页面状态…</div>`;
 }
 
@@ -137,6 +138,9 @@ function renderClientScripts(runState, includeBrowserReadiness, runtime = {}) {
       const statusNode = document.getElementById('browser-readiness-status');
       const button = document.querySelector('[data-browser-readiness-button]');
       if (!statusNode || !button) return;
+      const earlyDialog = document.querySelector('[data-early-scan-dialog]');
+      document.querySelector('[data-early-scan-open]')?.addEventListener('click', () => earlyDialog?.showModal());
+      document.querySelector('[data-early-scan-cancel]')?.addEventListener('click', () => earlyDialog?.close());
       const baseDisabled = button.dataset.browserBaseDisabled === 'true';
       let readinessInFlight = false;
       let queuedRefresh = false;
