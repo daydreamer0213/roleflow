@@ -1236,8 +1236,10 @@ let server;
   assert.match(planAfter.body, /今日成功沟通<\/span><strong class="metric-value">30\s*<small>\/\s*70/);
   assert.match(planAfter.body, /下一轮目标 40/);
   assert.match(planAfter.body, /详情读取预算剩余 355，搜索页面预算剩余 58/);
-  assert.strictEqual((planAfter.body.match(/name="action" value="start"/g) || []).length, 0);
-  assert.match(planAfter.body, /两轮扫描至少间隔 2 小时/);
+  assert.strictEqual((planAfter.body.match(/name="action" value="start"/g) || []).length, 1);
+  assert.match(planAfter.body, /data-early-scan-dialog/);
+  assert.match(planAfter.body, /name="confirmEarlyScan" value="1"/);
+  assert.match(planAfter.body, /确认不等待本次默认冷却/);
 
   const rejectedWhileScanExists = await postForm(baseUrl, "/api/workflow-run", {
     planId: saved.planId,
