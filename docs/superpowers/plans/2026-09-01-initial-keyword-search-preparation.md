@@ -57,13 +57,12 @@
 **Files:**
 - Modify: `src/storage/onboarding_store.js`
 - Modify: `src/dashboard/server.js`
-- Modify: `src/cli.js`
 - Modify: `tests/onboarding_run_smoke.js`
 - Modify: `tests/onboarding_progress_ui_smoke.js`
-- Modify: `tests/onboarding_cli_smoke.js`
+- Modify: `docs/PROJECT_HANDOFF.md`
 
-- [ ] **Step 1:** 写失败测试，证明只选择“已完成、方案与画像版本一致、从未创建 workflow、无完成标记”的 run。
-- [ ] **Step 2:** 在已有 `events` 表记录脱敏完成标记；成功、已有 query 和缺少关键词视为已处理，浏览器异常不落标记。
-- [ ] **Step 3:** Dashboard 暴露进程内仅一次的续接入口；初始工作区 ready 后由 CLI 异步调用，失败只记脱敏 warning。
-- [ ] **Step 4:** 新完成 onboarding 复用相同标记，避免后续启动重复检查。
+- [x] **Step 1:** 写失败测试，证明只选择“已完成、方案与画像版本一致、从未创建 workflow、无完成标记”的 run。
+- [x] **Step 2:** 在已有 `events` 表记录脱敏完成标记；成功、已有 query 和缺少关键词视为已处理，浏览器异常不落标记。
+- [x] **Step 3:** Dashboard 在初始启动、登录监测或用户恢复后的工作区首次 ready 时异步续接；同一进程只尝试一次，失败只记脱敏 warning。
+- [x] **Step 4:** 新完成 onboarding 复用相同标记，避免后续启动重复检查。
 - [ ] **Step 5:** 运行定向、完整离线门禁和精确提交验证，再制作独立本地验收包；不推送、不合并、不发布。
