@@ -18,6 +18,7 @@ const db = openDb(dbPath);
 const spawns = [];
 const initialSearchPrepareCalls = [];
 let initialSearchPrepareShouldFail = true;
+let workspaceReconcileStatus = "workspace_ambiguous";
 const dashboardWarnings = [];
 const dashboardLogger = createLogger({ root: dataRoot, component: "dashboard-test" });
 const writeDashboardWarning = dashboardLogger.warn.bind(dashboardLogger);
@@ -52,7 +53,7 @@ async function main() {
       getSnapshot() { return { ready: true }; }
     },
     async workspaceReconciler() {
-      return { status: "ready", message: "浏览器工作区已就绪。" };
+      return { status: workspaceReconcileStatus, message: "浏览器工作区状态夹具。" };
     },
     async initialSearchPreparer(input) {
       initialSearchPrepareCalls.push(input);
@@ -236,9 +237,13 @@ async function main() {
   initialSearchPrepareShouldFail = false;
   await server.reconcileWorkspace({ startupGuidance: true, reason: "initial_startup" });
   await new Promise((resolve) => setImmediate(resolve));
+  assert.strictEqual(initialSearchPrepareCalls.length, 1,
+    "an ambiguous initial workspace must leave catch-up available for the next ready reconciliation");
+  workspaceReconcileStatus = "ready";
+  await server.reconcileWorkspace({ startupGuidance: false, reason: "user_reconcile" });
   await new Promise((resolve) => setImmediate(resolve));
   assert.strictEqual(initialSearchPrepareCalls.length, 2,
-    "the first ready workspace must catch up a completed pre-feature onboarding once");
+    "the first ready user reconciliation must catch up a completed pre-feature onboarding once");
   const catchUpMarker = JSON.parse(db.prepare(`SELECT payload_json FROM events
     WHERE event_type = 'onboarding_initial_search_prepared'`).get().payload_json);
   assert.deepStrictEqual(catchUpMarker, {
@@ -249,7 +254,7 @@ async function main() {
     status: "skipped",
     reason: "query_present"
   });
-  await server.reconcileWorkspace({ startupGuidance: true, reason: "initial_startup" });
+  await server.reconcileWorkspace({ startupGuidance: false, reason: "user_reconcile" });
   await new Promise((resolve) => setImmediate(resolve));
   assert.strictEqual(initialSearchPrepareCalls.length, 2,
     "the same dashboard process must not repeat the startup catch-up");

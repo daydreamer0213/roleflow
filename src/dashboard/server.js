@@ -834,7 +834,7 @@ function createDashboardServer({
         workspaceRuntime = publicWorkspaceRuntimeSnapshot(workspace);
         updateWorkspaceLoginMonitor(workspace);
         if (workspace?.status === "ready"
-          && ["initial_startup", "login_monitor", "user_recovery"].includes(String(input?.reason || ""))) {
+          && ["initial_startup", "login_monitor", "user_recovery", "user_reconcile"].includes(String(input?.reason || ""))) {
           Promise.resolve()
             .then(() => runInitialSearchCatchUp())
             .catch((error) => logger.warn("onboarding_initial_search_catch_up_failed", {
