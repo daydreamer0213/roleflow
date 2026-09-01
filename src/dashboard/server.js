@@ -106,7 +106,9 @@ const {
   getLatestActiveOnboardingRun,
   retryOnboardingRun,
   failOnboardingRun,
-  recoverStaleOnboardingRuns
+  recoverStaleOnboardingRuns,
+  getInitialSearchCatchUpCandidate,
+  recordInitialSearchPreparationHandled
 } = require("../storage/onboarding_store");
 const { matchingCardFromProfile, matchingCardRevision } = require("../core/matching_card");
 const { createLlmAnalyzer } = require("../core/llm_analyzer");
@@ -787,6 +789,7 @@ function createDashboardServer({
   let workspaceLoginTimer = null;
   let workspaceLoginStartedAt = null;
   let workspaceClosing = false;
+  let initialSearchCatchUpAttempted = false;
   const stopWorkspaceLoginMonitor = () => {
     if (workspaceLoginTimer !== null) workspaceLoginCancel(workspaceLoginTimer);
     workspaceLoginTimer = null;
@@ -830,6 +833,14 @@ function createDashboardServer({
       .then((workspace) => {
         workspaceRuntime = publicWorkspaceRuntimeSnapshot(workspace);
         updateWorkspaceLoginMonitor(workspace);
+        if (workspace?.status === "ready"
+          && ["initial_startup", "login_monitor", "user_recovery"].includes(String(input?.reason || ""))) {
+          Promise.resolve()
+            .then(() => runInitialSearchCatchUp())
+            .catch((error) => logger.warn("onboarding_initial_search_catch_up_failed", {
+              errorCode: String(error?.code || "INITIAL_SEARCH_CATCH_UP_FAILED")
+            }));
+        }
         return workspace;
       });
     activeWorkspaceReconciliation = pending;
@@ -870,7 +881,7 @@ function createDashboardServer({
         : "BOSS_WORKSPACE_NOT_READY";
     throw appError(code, publicWorkspace.message, { statusCode: 409 });
   };
-  const prepareCompletedOnboardingSearch = (runId, requestId) => runBrowserRead(async () => {
+  const prepareCompletedOnboardingSearch = (runId, requestId, source = "onboarding_completion") => runBrowserRead(async () => {
     const completedRun = getOnboardingRun(db, runId);
     if (!completedRun || completedRun.status !== "completed" || !completedRun.searchPlanId) {
       return { status: "skipped", reason: "onboarding_incomplete" };
@@ -890,14 +901,25 @@ function createDashboardServer({
     });
     const adapter = new boss.BossSiteAdapter({ browser, logger, accessController });
     const result = await initialSearchPreparer({ plan, browser, adapter });
+    recordInitialSearchPreparationHandled(db, { run: completedRun, source, result });
     logger.info("onboarding_initial_search_prepare_finished", {
       requestId,
       runId: completedRun.id,
+      source,
       status: String(result?.status || "unknown"),
       reason: String(result?.reason || "")
     });
     return result;
   });
+  const runInitialSearchCatchUp = () => {
+    if (initialSearchCatchUpAttempted) {
+      return Promise.resolve({ status: "skipped", reason: "already_attempted" });
+    }
+    initialSearchCatchUpAttempted = true;
+    const run = getInitialSearchCatchUpCandidate(db);
+    if (!run) return Promise.resolve({ status: "skipped", reason: "not_eligible" });
+    return prepareCompletedOnboardingSearch(run.id, "startup-catch-up", "upgrade_catch_up");
+  };
   const dashboardServer = http.createServer(async (req, res) => {
     const requestId = logger.requestId();
     const startedAt = Date.now();

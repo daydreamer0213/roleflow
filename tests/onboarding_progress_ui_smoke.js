@@ -17,6 +17,7 @@ fs.mkdirSync(appRoot, { recursive: true });
 const db = openDb(dbPath);
 const spawns = [];
 const initialSearchPrepareCalls = [];
+let initialSearchPrepareShouldFail = true;
 const dashboardWarnings = [];
 const dashboardLogger = createLogger({ root: dataRoot, component: "dashboard-test" });
 const writeDashboardWarning = dashboardLogger.warn.bind(dashboardLogger);
@@ -47,11 +48,20 @@ async function main() {
     browserFactory() {
       return { fixture: "onboarding-browser" };
     },
+    browserSupervisor: {
+      getSnapshot() { return { ready: true }; }
+    },
+    async workspaceReconciler() {
+      return { status: "ready", message: "浏览器工作区已就绪。" };
+    },
     async initialSearchPreparer(input) {
       initialSearchPrepareCalls.push(input);
-      throw Object.assign(new Error("fixture preparation failure"), {
-        code: "INITIAL_SEARCH_PREPARE_FIXTURE"
-      });
+      if (initialSearchPrepareShouldFail) {
+        throw Object.assign(new Error("fixture preparation failure"), {
+          code: "INITIAL_SEARCH_PREPARE_FIXTURE"
+        });
+      }
+      return { status: "skipped", reason: "query_present" };
     },
     spawnProcess(file, args, options) {
       const child = new EventEmitter();
@@ -219,7 +229,30 @@ async function main() {
   assert(initialSearchPrepareCalls[0].adapter, "the completion hook must receive the paced BOSS adapter");
   assert(dashboardWarnings.some((entry) => entry.event === "onboarding_initial_search_prepare_failed"
     && entry.details.errorCode === "INITIAL_SEARCH_PREPARE_FIXTURE"));
+  assert.strictEqual(db.prepare(`SELECT COUNT(*) AS count FROM events
+    WHERE event_type = 'onboarding_initial_search_prepared'`).get().count, 0,
+  "a browser failure must remain retryable on the next application start");
   assert.strictEqual(getOnboardingRun(db, runId).status, "completed", "search preparation failure must not roll back onboarding results");
+  initialSearchPrepareShouldFail = false;
+  await server.reconcileWorkspace({ startupGuidance: true, reason: "initial_startup" });
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.strictEqual(initialSearchPrepareCalls.length, 2,
+    "the first ready workspace must catch up a completed pre-feature onboarding once");
+  const catchUpMarker = JSON.parse(db.prepare(`SELECT payload_json FROM events
+    WHERE event_type = 'onboarding_initial_search_prepared'`).get().payload_json);
+  assert.deepStrictEqual(catchUpMarker, {
+    runId,
+    profileId: stored.profileId,
+    planId: stored.searchPlanId,
+    source: "upgrade_catch_up",
+    status: "skipped",
+    reason: "query_present"
+  });
+  await server.reconcileWorkspace({ startupGuidance: true, reason: "initial_startup" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.strictEqual(initialSearchPrepareCalls.length, 2,
+    "the same dashboard process must not repeat the startup catch-up");
   const rootAfterCompletion = await fetch(`${base}/`, { redirect: "manual" });
   assert.strictEqual(
     rootAfterCompletion.headers.get("location"),

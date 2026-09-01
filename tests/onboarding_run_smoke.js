@@ -17,9 +17,12 @@ const {
   getOnboardingRunContext,
   retryOnboardingRun,
   recoverStaleOnboardingRuns,
-  getLatestActiveOnboardingRun
+  getLatestActiveOnboardingRun,
+  getInitialSearchCatchUpCandidate,
+  recordInitialSearchPreparationHandled
 } = require("../src/storage/onboarding_store");
 const { processOnboardingRun } = require("../src/core/onboarding_run");
+const { createWorkflowRun } = require("../src/storage/workflow_store");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-onboarding-run-"));
 const dbPath = path.join(root, "jobs.sqlite");
@@ -141,6 +144,59 @@ async function main() {
   assert.strictEqual(listCandidateProfiles(db).length, 1);
   assert(getMatchingCard(db, result.matchingCardId));
   assert(getSearchPlan(db, result.searchPlanId));
+
+  assert.strictEqual(typeof getInitialSearchCatchUpCandidate, "function");
+  assert.strictEqual(typeof recordInitialSearchPreparationHandled, "function");
+  assert.strictEqual(
+    getInitialSearchCatchUpCandidate(db)?.id,
+    result.id,
+    "the latest completed onboarding must be eligible before its first workflow"
+  );
+  db.prepare("UPDATE search_plans SET profile_version_id = profile_version_id + 1 WHERE id = ?")
+    .run(result.searchPlanId);
+  assert.strictEqual(
+    getInitialSearchCatchUpCandidate(db),
+    null,
+    "a plan from another profile version must never drive upgrade catch-up"
+  );
+  db.prepare("UPDATE search_plans SET profile_version_id = ? WHERE id = ?")
+    .run(result.profileVersionId, result.searchPlanId);
+  createWorkflowRun(db, {
+    id: "catch-up-blocking-workflow",
+    profileId: result.profileId,
+    planId: result.searchPlanId,
+    localDay: "2026-09-01",
+    sequence: 1,
+    targetSuccessCount: 1
+  });
+  assert.strictEqual(
+    getInitialSearchCatchUpCandidate(db),
+    null,
+    "an onboarding plan with any workflow history must not be changed by catch-up"
+  );
+  db.prepare("DELETE FROM workflow_runs WHERE id = 'catch-up-blocking-workflow'").run();
+  assert.strictEqual(recordInitialSearchPreparationHandled(db, {
+    run: result,
+    source: "upgrade_catch_up",
+    result: { status: "skipped", reason: "query_present" }
+  }), true);
+  assert.strictEqual(recordInitialSearchPreparationHandled(db, {
+    run: result,
+    source: "upgrade_catch_up",
+    result: { status: "skipped", reason: "query_present" }
+  }), false, "the durable preparation marker must be idempotent");
+  assert.strictEqual(getInitialSearchCatchUpCandidate(db), null);
+  const preparationMarker = db.prepare(`SELECT payload_json FROM events
+    WHERE event_type = 'onboarding_initial_search_prepared'`).get();
+  assert.deepStrictEqual(JSON.parse(preparationMarker.payload_json), {
+    runId: result.id,
+    profileId: result.profileId,
+    planId: result.searchPlanId,
+    source: "upgrade_catch_up",
+    status: "skipped",
+    reason: "query_present"
+  });
+  assert(!preparationMarker.payload_json.includes("AI 应用开发"), "the marker must not persist the keyword");
 
   await processOnboardingRun({
     db,
