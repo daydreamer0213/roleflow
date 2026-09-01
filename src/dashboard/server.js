@@ -293,6 +293,7 @@ const { createMessageReplySendController } = require("./message_reply_send_contr
 const { renderMessageDiscoveryPage } = require("./message_discovery_view");
 const { renderCommunicationProfilePage } = require("./communication_profile_view");
 const { createMessageReplyLearningService } = require("../application/message_learning");
+const { prepareInitialSearchPage } = require("../application/onboarding/initial_search_page");
 const { createModelAdapter } = require("../adapters/models");
 const boss = require("../adapters/sites/boss");
 const { inspectBossBrowserReadiness, readinessAction } = require("../core/browser_readiness");
@@ -519,6 +520,7 @@ function createDashboardServer({
   workspaceLoginNow = Date.now,
   workspaceLoginRandom = Math.random,
   communicationBrowserRebinder = inspectAndBindCommunicationBrowser,
+  initialSearchPreparer = prepareInitialSearchPage,
   planRescore = rescorePlanObservations,
   assetReader = fs.readFileSync,
   applicationVersion = require("../../package.json").version,
@@ -868,6 +870,34 @@ function createDashboardServer({
         : "BOSS_WORKSPACE_NOT_READY";
     throw appError(code, publicWorkspace.message, { statusCode: 409 });
   };
+  const prepareCompletedOnboardingSearch = (runId, requestId) => runBrowserRead(async () => {
+    const completedRun = getOnboardingRun(db, runId);
+    if (!completedRun || completedRun.status !== "completed" || !completedRun.searchPlanId) {
+      return { status: "skipped", reason: "onboarding_incomplete" };
+    }
+    const plan = getSearchPlan(db, completedRun.searchPlanId);
+    if (!plan) return { status: "skipped", reason: "plan_missing" };
+    if (Number(plan.profileVersionId || 0) !== Number(completedRun.profileVersionId || 0)) {
+      return { status: "skipped", reason: "existing_plan_reused" };
+    }
+    assertBrowserRuntimeReady();
+    const browser = browserFactory(frozenBrowserAuthority);
+    const accessController = createSiteAccessController({
+      db,
+      site: "boss",
+      runId: `onboarding-search:${completedRun.id}`,
+      logger
+    });
+    const adapter = new boss.BossSiteAdapter({ browser, logger, accessController });
+    const result = await initialSearchPreparer({ plan, browser, adapter });
+    logger.info("onboarding_initial_search_prepare_finished", {
+      requestId,
+      runId: completedRun.id,
+      status: String(result?.status || "unknown"),
+      reason: String(result?.reason || "")
+    });
+    return result;
+  });
   const dashboardServer = http.createServer(async (req, res) => {
     const requestId = logger.requestId();
     const startedAt = Date.now();
@@ -1149,7 +1179,8 @@ function createDashboardServer({
         logger,
         requestId,
         spawnProcess,
-        forceMock
+        forceMock,
+        onCompleted: (runId) => prepareCompletedOnboardingSearch(runId, requestId)
       });
       if (req.method === "POST" && url.pathname === "/api/onboarding-retry") return handleOnboardingRetry(req, res, {
         db,
@@ -1159,7 +1190,8 @@ function createDashboardServer({
         logger,
         requestId,
         spawnProcess,
-        forceMock
+        forceMock,
+        onCompleted: (runId) => prepareCompletedOnboardingSearch(runId, requestId)
       });
       if (req.method === "POST" && url.pathname === "/api/match-card") return handleMatchCardSave(req, res, { db, logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/match-card/confirm") return handleMatchCardConfirm(req, res, { db, logger, requestId });
@@ -1316,7 +1348,8 @@ async function handleResumeUpload(req, res, {
   logger,
   requestId,
   spawnProcess,
-  forceMock = false
+  forceMock = false,
+  onCompleted = null
 }) {
   let form = { fields: {}, files: {} };
   let parseRecorded = false;
@@ -1373,7 +1406,8 @@ async function handleResumeUpload(req, res, {
           logger,
           requestId,
           spawnProcess,
-          forceMock
+          forceMock,
+          onCompleted
         });
       } catch (startError) {
         logger.warn("onboarding_process_start_failed", {
@@ -3451,7 +3485,8 @@ function startOnboardingProcess({
   logger,
   requestId,
   spawnProcess = spawn,
-  forceMock = false
+  forceMock = false,
+  onCompleted = null
 }) {
   if (!dbPath) throw appError(
     "ONBOARDING_DB_PATH_REQUIRED",
@@ -3490,7 +3525,18 @@ function startOnboardingProcess({
       });
     });
     child.on?.("close", (code, signal) => {
-      if (Number(code || 0) === 0 && !signal) return;
+      if (Number(code || 0) === 0 && !signal) {
+        if (typeof onCompleted === "function") {
+          Promise.resolve()
+            .then(() => onCompleted(run.id))
+            .catch((error) => logger.warn("onboarding_initial_search_prepare_failed", {
+              requestId,
+              runId: run.id,
+              errorCode: String(error?.code || "INITIAL_SEARCH_PREPARE_FAILED")
+            }));
+        }
+        return;
+      }
       const current = getOnboardingRun(db, run.id);
       if (!current || !["queued", "running"].includes(current.status)) return;
       failOnboardingRun(db, run.id, {
@@ -3528,7 +3574,8 @@ async function handleOnboardingRetry(req, res, {
   logger,
   requestId,
   spawnProcess,
-  forceMock
+  forceMock,
+  onCompleted = null
 }) {
   let runId = "";
   try {
@@ -3545,7 +3592,8 @@ async function handleOnboardingRetry(req, res, {
         logger,
         requestId,
         spawnProcess,
-        forceMock
+        forceMock,
+        onCompleted
       });
     } catch (startError) {
       logger.warn("onboarding_process_restart_failed", {
@@ -5049,7 +5097,7 @@ function renderPlanPage({ db, searchParams, scanRuns, browserAuthority = { brows
   const selectedBossSalaryLanes = generated.salaryLanes;
   const confirmation = searchParams.get("rescoreDeferred")
     ? "筛选方案已保存。当前任务继续使用启动时的条件；新条件会在下一次创建任务时生效。"
-    : searchParams.get("saved") ? "本地筛选方案已保存。" : searchParams.get("created") ? "已根据你提供的简历生成画像和本地筛选方案，可直接开始扫描；只有需要调整时再编辑。" : searchParams.get("matchCardConfirmed") ? "匹配偏好卡已确认，将作为扫描与岗位匹配的依据，可直接开始扫描；只有需要调整时再编辑。" : "";
+    : searchParams.get("saved") ? "本地筛选方案已保存。" : searchParams.get("created") ? "已根据简历生成画像和本地筛选方案。开始前，请先在固定 BOSS 搜索页补充城市、地铁或商圈等条件，再回来开始一轮岗位发现。" : searchParams.get("matchCardConfirmed") ? "匹配偏好卡已确认。开始前，请先在固定 BOSS 搜索页补充城市、地铁或商圈等条件，再回来开始一轮岗位发现。" : "";
   const matchingContext = getCandidateMatchingContext(db, profile.id);
   const viewModel = buildTodayViewModel({
     profile,

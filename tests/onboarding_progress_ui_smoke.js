@@ -7,6 +7,7 @@ const { openDb } = require("../src/core/storage");
 const { createDashboardServer } = require("../src/dashboard/server");
 const { getOnboardingRun } = require("../src/storage/onboarding_store");
 const { processOnboardingRun } = require("../src/core/onboarding_run");
+const { createLogger } = require("../src/core/observability");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-onboarding-progress-"));
 const appRoot = path.join(root, "application");
@@ -15,6 +16,14 @@ const dbPath = path.join(dataRoot, "data", "jobs.sqlite");
 fs.mkdirSync(appRoot, { recursive: true });
 const db = openDb(dbPath);
 const spawns = [];
+const initialSearchPrepareCalls = [];
+const dashboardWarnings = [];
+const dashboardLogger = createLogger({ root: dataRoot, component: "dashboard-test" });
+const writeDashboardWarning = dashboardLogger.warn.bind(dashboardLogger);
+dashboardLogger.warn = (event, details) => {
+  dashboardWarnings.push({ event, details });
+  writeDashboardWarning(event, details);
+};
 let server;
 
 main().catch((error) => {
@@ -34,11 +43,21 @@ async function main() {
     dataRoot,
     dbPath,
     forceMock: true,
+    logger: dashboardLogger,
+    browserFactory() {
+      return { fixture: "onboarding-browser" };
+    },
+    async initialSearchPreparer(input) {
+      initialSearchPrepareCalls.push(input);
+      throw Object.assign(new Error("fixture preparation failure"), {
+        code: "INITIAL_SEARCH_PREPARE_FIXTURE"
+      });
+    },
     spawnProcess(file, args, options) {
-      spawns.push({ file, args, options });
       const child = new EventEmitter();
       child.pid = 4321;
       child.unref = () => {};
+      spawns.push({ file, args, options, child });
       return child;
     }
   });
@@ -191,6 +210,16 @@ async function main() {
   assert(stored.profileVersionId > 0);
   assert(stored.matchingCardId > 0);
   assert(stored.searchPlanId > 0);
+  spawns[0].child.emit("close", 0, null);
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.strictEqual(initialSearchPrepareCalls.length, 1, "clean onboarding completion must prepare the initial search page once");
+  assert.strictEqual(initialSearchPrepareCalls[0].plan.id, stored.searchPlanId);
+  assert.strictEqual(initialSearchPrepareCalls[0].browser.fixture, "onboarding-browser");
+  assert(initialSearchPrepareCalls[0].adapter, "the completion hook must receive the paced BOSS adapter");
+  assert(dashboardWarnings.some((entry) => entry.event === "onboarding_initial_search_prepare_failed"
+    && entry.details.errorCode === "INITIAL_SEARCH_PREPARE_FIXTURE"));
+  assert.strictEqual(getOnboardingRun(db, runId).status, "completed", "search preparation failure must not roll back onboarding results");
   const rootAfterCompletion = await fetch(`${base}/`, { redirect: "manual" });
   assert.strictEqual(
     rootAfterCompletion.headers.get("location"),
@@ -292,7 +321,9 @@ async function testAsynchronousChildFailureStaysRecoverable() {
 }
 
 async function testNonzeroChildExitStaysRecoverable() {
+  let preparationCalls = 0;
   const fixture = await createFailureFixture({
+    initialSearchPreparer: async () => { preparationCalls += 1; },
     spawnProcess() {
       const child = new EventEmitter();
       child.pid = 5003;
@@ -310,6 +341,7 @@ async function testNonzeroChildExitStaysRecoverable() {
     )).json();
     assert.strictEqual(status.status, "failed");
     assert.strictEqual(status.errorCode, "ONBOARDING_PROCESS_EXITED");
+    assert.strictEqual(preparationCalls, 0, "an interrupted onboarding process must not prepare the search page");
   } finally {
     await fixture.close();
   }
@@ -344,7 +376,7 @@ async function testStatusPollingRecoversStaleRun() {
   }
 }
 
-async function createFailureFixture({ spawnProcess }) {
+async function createFailureFixture({ spawnProcess, initialSearchPreparer }) {
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-onboarding-child-fail-"));
   const fixtureDbPath = path.join(fixtureRoot, "jobs.sqlite");
   const fixtureDb = openDb(fixtureDbPath);
@@ -354,6 +386,7 @@ async function createFailureFixture({ spawnProcess }) {
     root: fixtureRoot,
     dbPath: fixtureDbPath,
     forceMock: true,
+    initialSearchPreparer,
     spawnProcess
   });
   await listen(fixtureServer);
@@ -393,11 +426,11 @@ function listen(target) {
   });
 }
 
-function quietLogger() {
+function quietLogger({ warnings = [] } = {}) {
   return {
     requestId() { return "onboarding-progress-ui"; },
     info() {},
-    warn() {},
+    warn(event, details) { warnings.push({ event, details }); },
     error() {},
     listRecent() { return []; },
     child() { return this; }
