@@ -1969,7 +1969,7 @@ function buildWorkflowDashboardState(
   db,
   planRecord,
   now = new Date(),
-  { searchScope = null, keywordSource = null } = {}
+  { searchScope = null, keywordSource = null, allowEarlyScan = false } = {}
 ) {
   if (!planRecord) throw appError("WORKFLOW_PLAN_NOT_FOUND", "筛选方案不存在。", { statusCode: 404 });
   const localDay = chinaLocalDay(now);
@@ -2052,6 +2052,7 @@ function buildWorkflowDashboardState(
     },
     usedBudget,
     lastScanStartedAt,
+    allowEarlyScan,
     keywords
   });
   return {

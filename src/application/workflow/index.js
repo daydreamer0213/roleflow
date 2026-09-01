@@ -24,6 +24,7 @@ async function startWorkflow({ db, input = {}, deps = {} }) {
     logger
   } = deps;
   const planId = Number(input.planId || 0);
+  const allowEarlyScan = input.confirmEarlyScan === "1";
   const browserAuthority = resolveNewWorkflowBrowser(input);
   const plan = getSearchPlan(db, planId);
   if (!plan || !getCandidateProfile(db, plan.profileId)) {
@@ -40,7 +41,7 @@ async function startWorkflow({ db, input = {}, deps = {} }) {
     { acquisitionMode: acquisitionModeOf(plan.plan) }
   );
   await preparePlanForNewWorkflow({ db, plan, matchingContext });
-  const preliminaryState = buildDashboardState(db, plan);
+  const preliminaryState = buildDashboardState(db, plan, new Date(), { allowEarlyScan });
   if (preliminaryState.activeRun) return { workflow: preliminaryState.activeRun, alreadyActive: true };
   if (preliminaryState.nextPlan?.errorCode) {
     throw appError(
@@ -69,7 +70,7 @@ async function startWorkflow({ db, input = {}, deps = {} }) {
   } catch (error) {
     throw appError(error.code, error.message, { statusCode: 409, cause: error });
   }
-  const state = buildDashboardState(db, plan, new Date(), acquisition);
+  const state = buildDashboardState(db, plan, new Date(), { ...acquisition, allowEarlyScan });
   if (state.activeRun) return { workflow: state.activeRun, alreadyActive: true };
   if (state.nextPlan?.errorCode) {
     throw appError(state.nextPlan.errorCode, workflowBlockedMessage(state.nextPlan.errorCode, state.nextPlan), { statusCode: 409 });
