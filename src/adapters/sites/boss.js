@@ -18,6 +18,7 @@ const PACING_STATE_FIELDS = Object.freeze([
 ]);
 
 const DEFAULT_CITY_CODE = "101280100";
+const LIST_READY_ATTEMPTS = 40;
 const BOSS_FILTER_FIELDS = {
   salary: { key: "salary", label: "\u85aa\u8d44\u5f85\u9047", urlParam: "salary", selection: "single", semantic: "salary_range" },
   exp: { key: "experience", label: "\u5de5\u4f5c\u7ecf\u9a8c", urlParam: "experience", selection: "multiple", semantic: "experience" },
@@ -1606,7 +1607,7 @@ class BossSiteAdapter {
   async collectCards(tabId, maxCards, signal = null, assertTabBindings = null, onCards = null) {
     const found = new Map();
     let readinessAttempts = 0;
-    while (!found.size && readinessAttempts < 10) {
+    while (!found.size && readinessAttempts < LIST_READY_ATTEMPTS) {
       throwIfAborted(signal);
       await assertRuntimeTabBindings(assertTabBindings);
       await this.assertSearchPage(tabId);

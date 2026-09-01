@@ -171,14 +171,43 @@ function renderClientScripts(runState, includeBrowserReadiness, runtime = {}) {
         }
       }
       refreshReadiness();
-      const readinessInterval = setInterval(refreshReadiness, 5000);
-      button.form?.addEventListener?.('submit', () => {
+      let readinessInterval = setInterval(refreshReadiness, 5000);
+      button.form?.addEventListener?.('submit', async (event) => {
+        event.preventDefault();
+        if (pollingStopped) return;
         pollingStopped = true;
         queuedRefresh = false;
         clearInterval(readinessInterval);
         button.disabled = true;
         statusNode.textContent = '正在启动本轮任务…';
         statusNode.dataset.status = 'starting';
+        try {
+          const response = await fetch(button.form.getAttribute('action'), {
+            method: 'POST',
+            headers: {accept:'application/json, text/html', 'content-type':'application/x-www-form-urlencoded'},
+            body: new URLSearchParams(new FormData(button.form))
+          });
+          if (response.redirected && response.url) {
+            location.assign(response.url);
+            return;
+          }
+          let payload = {};
+          if ((response.headers.get('content-type') || '').includes('application/json')) {
+            try { payload = await response.json(); } catch {}
+          }
+          const detail = [payload.errorCode, payload.requestId].filter(Boolean).join(' · ');
+          statusNode.textContent = (payload.error || '本轮未能启动，请稍后重试。') + (detail ? '（' + detail + '）' : '');
+          statusNode.dataset.status = 'start_failed';
+          pollingStopped = false;
+          button.disabled = baseDisabled;
+          readinessInterval = setInterval(refreshReadiness, 5000);
+        } catch {
+          statusNode.textContent = '本轮未能启动，请检查本地服务后重试。';
+          statusNode.dataset.status = 'start_failed';
+          pollingStopped = false;
+          button.disabled = baseDisabled;
+          readinessInterval = setInterval(refreshReadiness, 5000);
+        }
       });
     })();
     </script>` : "";

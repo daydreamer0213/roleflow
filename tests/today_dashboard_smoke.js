@@ -141,18 +141,48 @@ async function assertPriorityPanelStaysCompactAtDesktopWidth() {
     return;
   }
   const browser = await chromium.launch({ channel: "msedge", headless: true });
+  let releaseWorkflowRequest = () => {};
   try {
     const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
-    await page.setContent(renderTodayPage({
+    let workflowRequestType = "";
+    let markWorkflowRequest;
+    const workflowRequestStarted = new Promise((resolve) => { markWorkflowRequest = resolve; });
+    const workflowRequestWait = new Promise((resolve) => { releaseWorkflowRequest = resolve; });
+    const html = renderTodayPage({
       page: { todayPath: "/plan", planId: 1 },
       heading: { title: "今日任务" },
       primary: { type: "form", status: "可以开始新一轮", detail: "使用已保存条件发现一批岗位。" },
       metrics: {},
       runtime: { browserMode: "portable", cdpPort: 9222 },
       profile: {}
-    }));
+    });
+    await page.route("http://roleflow.test/**", async (route) => {
+      const requestUrl = new URL(route.request().url());
+      if (requestUrl.pathname === "/plan") {
+        return route.fulfill({ status: 200, contentType: "text/html", body: html });
+      }
+      if (requestUrl.pathname === "/api/browser-readiness") {
+        return route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ status: "ready", ready: true, message: "fixture ready" })
+        });
+      }
+      if (requestUrl.pathname === "/api/workflow-run") {
+        workflowRequestType = route.request().resourceType();
+        markWorkflowRequest();
+        await workflowRequestWait;
+        return route.fulfill({
+          status: 500,
+          contentType: "application/json",
+          body: JSON.stringify({ error: "服务处理失败，请查看错误编号对应的诊断日志。", errorCode: "BROWSER_TIMEOUT", requestId: "fixture-1" })
+        });
+      }
+      return route.fulfill({ status: 204, body: "" });
+    });
+    await page.goto("http://roleflow.test/plan");
     await page.addStyleTag({ path: path.join(root, "src", "dashboard", "assets", "roleflow.css") });
-    await page.waitForTimeout(20);
+    await page.waitForFunction(() => document.querySelector("[data-browser-readiness-button]")?.disabled === false);
     await page.locator("#browser-readiness-status").evaluate((node) => {
       node.textContent = "请在RoleFlow 专用 Edge（推荐）的固定 BOSS 搜索标签打开职位搜索结果页并设置本轮筛选。";
     });
@@ -167,8 +197,15 @@ async function assertPriorityPanelStaysCompactAtDesktopWidth() {
     });
     assert.ok(layout.height <= 320, `desktop next-action panel must stay compact, got ${layout.height}px`);
     assert.ok(layout.copyWidth >= 180, `desktop next-action copy must retain readable width, got ${layout.copyWidth}px`);
+    const click = page.locator("[data-browser-readiness-button]").click({ noWaitAfter: true });
+    await workflowRequestStarted;
+    assert.strictEqual(workflowRequestType, "fetch", "workflow start must keep the Dashboard document stable while the server verifies the workspace");
+    releaseWorkflowRequest();
+    await click;
+    await page.waitForFunction(() => document.getElementById("browser-readiness-status")?.textContent?.includes("BROWSER_TIMEOUT"));
     await page.close();
   } finally {
+    releaseWorkflowRequest();
     await browser.close();
   }
 }

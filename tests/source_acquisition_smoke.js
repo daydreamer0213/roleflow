@@ -145,6 +145,7 @@ assert.deepStrictEqual(ambiguousNative.unresolvedSelections, [{ field: "jobType"
   await scrollSafetyLimitSmoke();
   await maxCardScrollBudgetSmoke();
   await delayedListSmoke();
+  await slowNetworkListSmoke();
   await accessReservationSmoke();
   pageHelperCardActivationPointSmoke();
   await searchPageApiDetailStateMachineSmoke();
@@ -592,6 +593,28 @@ async function delayedListSmoke() {
   assert.strictEqual(result.cards.length, 1);
   assert.strictEqual(scrolls, 0);
   assert(reads >= 4);
+}
+
+async function slowNetworkListSmoke() {
+  let reads = 0;
+  let scrolls = 0;
+  const browser = {
+    async evalValue(_tabId, expression) {
+      if (!expression.includes("__bossExtractCards")) return true;
+      reads += 1;
+      return reads < 25 ? [] : [card("slow-network")];
+    }
+  };
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {}, randomFn: () => 0 });
+  adapter.assertSearchPage = async () => ({ isSearchPage: true });
+  adapter.scrollList = async () => {
+    scrolls += 1;
+    return { moved: false, atBottom: true };
+  };
+  const result = await adapter.collectCards("tab", 1);
+  assert.strictEqual(result.cards.length, 1, "a slow first list response must not be mistaken for an empty result");
+  assert.strictEqual(scrolls, 0, "the scanner must wait for the first card before it starts scrolling");
+  assert(reads >= 25);
 }
 
 async function accessReservationSmoke() {
