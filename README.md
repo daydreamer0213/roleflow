@@ -1,6 +1,6 @@
 # RoleFlow
 
-[![Release: v1.2.0](https://img.shields.io/badge/release-v1.2.0-2563eb)](https://github.com/daydreamer0213/roleflow/releases/tag/v1.2.0)
+[![Release: v1.2.1](https://img.shields.io/badge/release-v1.2.1-2563eb)](https://github.com/daydreamer0213/roleflow/releases/tag/v1.2.1)
 [![CI](https://github.com/daydreamer0213/roleflow/actions/workflows/ci.yml/badge.svg)](https://github.com/daydreamer0213/roleflow/actions/workflows/ci.yml)
 [![License: AGPL-3.0-only](https://img.shields.io/badge/license-AGPL--3.0--only-0f766e)](LICENSE)
 
@@ -12,9 +12,9 @@ RoleFlow 的筛选规则由搜索关键词、城市、薪资和经验范围驱�
 
 ## 发布状态
 
-`v1.2.0` 是当前正式版；普通用户应从 [v1.2.0 下载页](https://github.com/daydreamer0213/roleflow/releases/tag/v1.2.0) 获取安装器，并以该版本的发布说明为准。安装器尚未代码签名，Windows 可能显示信誉或 SmartScreen 提示。
+`v1.2.1` 是当前正式版；普通用户应从 [v1.2.1 下载页](https://github.com/daydreamer0213/roleflow/releases/tag/v1.2.1) 获取安装器，并以该版本的发布说明为准。安装器尚未代码签名，Windows 可能显示信誉或 SmartScreen 提示。
 
-v1.2.0 默认使用“RoleFlow 专用 Edge（推荐）”，登录资料固定保存在 `%LOCALAPPDATA%\RoleFlow\BrowserProfile`。本版把岗位发现、消息处理、求职反馈、定向简历和模拟面试整理为一个桌面工作台；确认发送仍只执行用户当次确认的固定目标和文字。
+v1.2.1 默认使用“RoleFlow 专用 Edge（推荐）”，登录资料固定保存在 `%LOCALAPPDATA%\RoleFlow\BrowserProfile`。本版改善首次搜索准备、慢页面启动恢复和沟通中断续接；本轮候选不足时，用户也可以在风险提示中明确确认一次提前开始。
 
 ## 核心能力
 
@@ -26,7 +26,7 @@ v1.2.0 默认使用“RoleFlow 专用 Edge（推荐）”，登录资料固定�
 - 按 48 小时和周末顺延规则分析 30/50/70 档求职反馈；策略改变后开启新轮，不混用修改前后的投递数据。
 - 基于原简历和目标方向生成整份可编辑定向简历，并提供基于简历证据的通用模拟面试。
 - 沟通前必须由用户确认清单；登录失效、页面漂移或结果不明确时停止操作。
-- v1.2.0 发布线注册 131 项离线检查；标签发布会在精确版本提交上重新执行全部检查。测试不访问真实 BOSS，也不会创建假的 `msedge.exe`。
+- v1.2.1 发布线注册 132 项离线检查；标签发布会在精确版本提交上重新执行全部检查。测试不访问真实 BOSS，也不会创建假的 `msedge.exe`。
 
 RoleFlow 每天最多由用户手动启动三轮任务，前两轮是主要工作轮次，第三轮只在候选库存明显不足时追加。每轮都要经过清单确认才会串行点击沟通；不会后台定时运行，也不会绕过用户确认直接执行。
 
@@ -34,9 +34,9 @@ RoleFlow 每天最多由用户手动启动三轮任务，前两轮是主要工�
 
 Windows 普通用户：
 
-> **请前往 [v1.2.0 下载页](https://github.com/daydreamer0213/roleflow/releases/tag/v1.2.0)，下载 `RoleFlow-Setup-1.2.0.exe`。**
+> **请前往 [v1.2.1 下载页](https://github.com/daydreamer0213/roleflow/releases/tag/v1.2.1)，下载 `RoleFlow-Setup-1.2.1.exe`。**
 >
-> 同页的 `RoleFlow-Setup-1.2.0.exe.sha256` 用于核对文件完整性；GitHub 自动生成的 Source code 压缩包不是安装程序。
+> 同页的 `RoleFlow-Setup-1.2.1.exe.sha256` 用于核对文件完整性；GitHub 自动生成的 Source code 压缩包不是安装程序。
 
 安装后的日常路径如下：
 

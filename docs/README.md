@@ -14,6 +14,8 @@
 以下文档需要与当前代码持续保持一致：
 
 - [`../README.md`](../README.md)：项目定位、安装方式、主要能力和快速开始。
+- [`releases/v1.2.1.md`](releases/v1.2.1.md)：当前正式版 v1.2.1 的用户变化、下载方式和限制。
+- [`releases/v1.2.0.md`](releases/v1.2.0.md)：已发布 v1.2.0 的历史版本说明；不代表当前 source candidate。
 - [`releases/v1.0.0.md`](releases/v1.0.0.md)：已发布 v1.0.0 的历史版本说明；不代表当前 source candidate。
 - [`product_spec.md`](product_spec.md)：产品边界、用户流程和功能规格。
 - [`daily_workflow.md`](daily_workflow.md)：每日扫描、模型分析、清单确认和批量沟通逻辑。
