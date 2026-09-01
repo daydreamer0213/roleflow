@@ -102,11 +102,11 @@ h2{font-size:19px;font-weight:600}
 }
 
 /* Today: one clear daily action, then progress and cross-day feedback. */
-.today-priority{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:28px;margin-bottom:18px;padding:22px 24px;background:var(--rf-ink);border:0;border-left:5px solid var(--rf-orange);border-radius:var(--rf-radius);box-shadow:none}
+.today-priority{display:grid;grid-template-columns:minmax(220px,1fr) minmax(0,520px);align-items:center;gap:28px;margin-bottom:18px;padding:22px 24px;background:var(--rf-ink);border:0;border-left:5px solid var(--rf-orange);border-radius:var(--rf-radius);box-shadow:none}
 .today-priority h2{margin:0;color:#fff;font-size:24px}
 .today-priority .section-label{color:#bcd0ca}
 .today-priority .muted{max-width:620px;margin:7px 0 0;color:#d7e1de}
-.today-priority .button-row{justify-content:flex-end;margin:0}
+.today-priority .button-row{justify-self:end;justify-content:flex-end;max-width:520px;margin:0}
 .today-priority .button.quiet{color:#fff;background:transparent;border-color:#6d7c77}
 .today-priority .workflow-budget{color:#bdcac6;text-align:right}
 .today-overview{display:grid;grid-template-columns:minmax(0,1.08fr) minmax(280px,.72fr);gap:28px;margin:22px 0 26px}
@@ -125,6 +125,11 @@ h2{font-size:19px;font-weight:600}
 .today-context>summary:hover{color:var(--rf-teal)}
 .today-context-grid{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(280px,.65fr);gap:18px;padding:0 0 18px}
 .today-context-grid>.aside,.today-context-grid .card{height:100%}
+@media(max-width:1100px){
+  .today-priority{grid-template-columns:1fr}
+  .today-priority .button-row{justify-self:stretch;justify-content:flex-start;max-width:none}
+  .today-priority .workflow-budget{text-align:left}
+}
 @media(max-width:860px){
   .today-priority,.today-overview,.today-context-grid{grid-template-columns:1fr}
   .today-priority .button-row{justify-content:flex-start}

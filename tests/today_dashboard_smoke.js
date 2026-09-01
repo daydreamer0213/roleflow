@@ -27,6 +27,7 @@ const logger = { info() {}, warn() {}, error() {}, requestId() { return "today-d
 (async () => {
   assertEvaluationScriptExplainsMissingPlaywright();
   assertRendererIsPureAndEscapesHtml();
+  await assertPriorityPanelStaysCompactAtDesktopWidth();
   assertScanStatusLabels();
   fs.mkdirSync(smokeDir, { recursive: true });
   await assertBrowserReadsAreSerialized();
@@ -128,6 +129,48 @@ function assertEvaluationScriptExplainsMissingPlaywright() {
     /Playwright is unavailable.+NODE_PATH/s,
     "evaluation must explain how to provide the existing workspace Playwright package"
   );
+}
+
+async function assertPriorityPanelStaysCompactAtDesktopWidth() {
+  let chromium;
+  try {
+    ({ chromium } = require("playwright"));
+  } catch (error) {
+    if (process.env.ROLEFLOW_REQUIRE_PLAYWRIGHT === "1") throw error;
+    console.log("today_dashboard_smoke layout fixture skipped: Playwright is unavailable");
+    return;
+  }
+  const browser = await chromium.launch({ channel: "msedge", headless: true });
+  try {
+    const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+    await page.setContent(renderTodayPage({
+      page: { todayPath: "/plan", planId: 1 },
+      heading: { title: "今日任务" },
+      primary: { type: "form", status: "可以开始新一轮", detail: "使用已保存条件发现一批岗位。" },
+      metrics: {},
+      runtime: { browserMode: "portable", cdpPort: 9222 },
+      profile: {}
+    }));
+    await page.addStyleTag({ path: path.join(root, "src", "dashboard", "assets", "roleflow.css") });
+    await page.waitForTimeout(20);
+    await page.locator("#browser-readiness-status").evaluate((node) => {
+      node.textContent = "请在RoleFlow 专用 Edge（推荐）的固定 BOSS 搜索标签打开职位搜索结果页并设置本轮筛选。";
+    });
+    const layout = await page.locator("#today-discovery").evaluate((panel) => {
+      const copy = panel.firstElementChild;
+      const panelRect = panel.getBoundingClientRect();
+      const copyRect = copy?.getBoundingClientRect();
+      return {
+        height: Math.round(panelRect.height),
+        copyWidth: Math.round(copyRect?.width || 0)
+      };
+    });
+    assert.ok(layout.height <= 320, `desktop next-action panel must stay compact, got ${layout.height}px`);
+    assert.ok(layout.copyWidth >= 180, `desktop next-action copy must retain readable width, got ${layout.copyWidth}px`);
+    await page.close();
+  } finally {
+    await browser.close();
+  }
 }
 
 function assertRendererIsPureAndEscapesHtml() {
