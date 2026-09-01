@@ -150,7 +150,7 @@ node -e "const {openDb}=require('./src/core/storage'); const db=openDb('data/job
 - `BOSS_LOGIN_REQUIRED`：没有可用登录态。
 - `BOSS_RISK_CONTROL`：发现验证、风控或异常重定向；本轮立即停止。
 - `BOSS_PANE_SWITCH_TIMEOUT`：点击左侧卡片后右侧详情未正常切换。
-- `WORKFLOW_SCAN_INTERVAL`：距离上一轮扫描开始不足 2 小时；等待页面提示的时间后再启动。
+- `WORKFLOW_SCAN_INTERVAL`：距离上一轮扫描开始不足 2 小时；默认建议等到页面提示的时间。若本轮结果确实不足，也可以点击“提前开始下一轮”，阅读风险提示后仅为这一次确认提前开始。
 - `WORKFLOW_DAILY_RUN_LIMIT`：当天已创建 3 轮任务。
 - `COMMUNICATION_QUOTA_EXHAUSTED`：所选岗位超过当天剩余沟通额度。
 - `COMMUNICATION_RESULT_AMBIGUOUS`：点击后无法可靠确认聊天状态；必须人工复核，不能自动重放。
@@ -162,8 +162,8 @@ node -e "const {openDb}=require('./src/core/storage'); const db=openDb('data/job
 - 静止基线只保留同一窗口内一个 `BOSS-SEARCH` 和一个 `BOSS-COMMUNICATION` 固定页，不同时运行多个扫描，不用多个标签并发点卡片。
 - 消息发现只有在新会话没有完整可信本地 JD 时，才允许串行打开一个 `active: false` 的后台临时详情页；核验、保存并关闭后恢复两页基线。
 - 启动助手可在用户启动工作区且未传 `-NoOpen` 时引导一次前台。扫描、JD 读取、分析、消息发现、沟通、轮询、重试和恢复不得激活 BOSS 页或恢复前台焦点。
-- 两次正式扫描开始时间至少间隔 2 小时；不要为了凑数量连续追加扫描。
-- 留足冷却后再小样本验证；不要连续重跑整轮扫描。
+- 两次正式扫描默认建议至少间隔 2 小时；本轮结果不足时，用户可以明确确认一次提前开始。每日访问额度、短窗口限流、登录与风控停止等硬性保护不会因此放宽。
+- 不要只为了凑固定数量连续重跑整轮扫描；先看本轮候选质量和剩余库存，再决定等待或提前开始。
 - 本地模型分析可以有限并行，因为岗位内容已经落盘，不会增加 BOSS 请求频率。
 
 ## 工作流恢复
