@@ -274,6 +274,6 @@ git add -- docs/operations.md docs/daily_workflow.md docs/superpowers/plans/2026
 git commit -m "docs: explain optional workflow cooldown"
 ```
 
-- [ ] **Step 6: Build and switch the local acceptance stage**
+- [x] **Step 6: Build and switch the local acceptance stage**
 
 After the exact commit passes verification, run `scripts/build-installer.ps1 -StageOnly -SkipTests` with a new `D:\DevData\RoleFlow-first-use-acceptance\package-<short-sha>` build root and pinned `D:\hermes\node`. Stop only the verified old Dashboard process, start the new stage hidden on port 8787 with the existing data root and browser profile, and verify `/api/browser-readiness` plus the Today page. Do not start a workflow or click BOSS.
