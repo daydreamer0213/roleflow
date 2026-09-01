@@ -100,6 +100,19 @@ const intervalBlocked = planWorkflowRun(fixture({
 assert.strictEqual(intervalBlocked.errorCode, "WORKFLOW_SCAN_INTERVAL");
 assert.strictEqual(intervalBlocked.nextRunAt, "2026-07-21T05:00:01.000Z");
 assert.strictEqual(intervalBlocked.scanNeeded, false);
+assert.strictEqual(intervalBlocked.intervalOverrideUsed, false);
+
+const intervalOverridden = planWorkflowRun(fixture({
+  completedRuns: 1,
+  inventoryCount: 0,
+  usedBudget: { details: 94, pages: 3 },
+  lastScanStartedAt: "2026-07-21T03:00:01.000Z",
+  allowEarlyScan: true
+}));
+assert.strictEqual(intervalOverridden.errorCode, null);
+assert.strictEqual(intervalOverridden.scanNeeded, true);
+assert.strictEqual(intervalOverridden.intervalOverrideUsed, true);
+assert.strictEqual(intervalOverridden.nextRunAt, "2026-07-21T05:00:01.000Z");
 
 const intervalReady = planWorkflowRun(fixture({
   completedRuns: 1,
