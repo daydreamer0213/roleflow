@@ -67,6 +67,14 @@ const supported = assessMessageDraftQuality({
 assert.equal(supported.valid, true, JSON.stringify(supported.errors));
 assert(supported.errors.length === 0);
 
+const supportedAvailabilityParaphrase = assessMessageDraftQuality({
+  text: "我本周三可以到岗。",
+  recentTexts: [],
+  evidenceTexts: ["本周三到岗"]
+});
+assert.equal(supportedAvailabilityParaphrase.valid, true,
+  "the same explicit arrival date should not depend on filler wording");
+
 const extractedKinds = new Set(extractHighRiskClaims(supportedText).map((item) => item.kind));
 for (const kind of ["phone", "email", "url", "salary", "arrival", "interview_availability", "duration", "percentage", "numeric_achievement", "overtime", "travel", "relocation"]) {
   assert(extractedKinds.has(kind), `expected ${kind} claim`);

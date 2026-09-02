@@ -56,16 +56,20 @@ function renderCandidate(candidate, { profileId, planId }) {
   const prior = candidate.context?.inboundMessages?.[0]?.text || "";
   const draft = candidate.draft;
   const body = draft
-    ? `${prior ? `<div class="follow-up-prior"><strong>你上次发送</strong><p>${escapeHtml(prior)}</p></div>` : ""}${renderDraft(draft)}`
+    ? `${prior ? `<div class="follow-up-prior"><strong>你上次发送</strong><p>${escapeHtml(prior)}</p></div>` : ""}${renderDraft(draft, candidate.draftQualityWarnings)}`
     : `<form method="post" action="/api/message-follow-up/prepare"><input type="hidden" name="profileId" value="${profileId}"><input type="hidden" name="planId" value="${planId}"><input type="hidden" name="jobId" value="${escapeAttr(candidate.jobId)}"><button>准备跟进草稿</button></form>`;
   return `<article class="panel follow-up-card"><header><div><h2>${escapeHtml(job.title || "岗位待确认")}</h2><p class="line">${escapeHtml(job.company || "公司待确认")}</p></div><span class="status waiting">已等待 ${hours} 小时</span></header>${body}</article>`;
 }
 
-function renderDraft(draft) {
+function renderDraft(draft, draftQualityWarnings = []) {
   const id = `follow-up-draft-${Number(draft.id)}`;
   const text = draft.currentText ?? draft.text ?? "";
   const revision = Math.max(0, Number(draft.revision) || 0);
-  return `<section class="message-draft" data-draft-card="${Number(draft.id)}"><label for="${id}">跟进草稿</label><textarea id="${id}" data-draft-text data-draft-id="${Number(draft.id)}" data-revision="${revision}" data-draft-revision="${revision}">${escapeHtml(text)}</textarea><p class="message-draft-save-status" data-draft-save-status="${Number(draft.id)}" role="status">已自动保存</p><button type="button" data-copy-draft="${id}">复制到本机剪贴板</button><div class="message-draft-actions"><label class="message-send-choice"><input type="checkbox" data-send-select="${Number(draft.id)}" checked>加入本次发送</label><button type="button" data-send-single="${Number(draft.id)}">确认发送</button></div><p class="message-send-status" data-send-status="${Number(draft.id)}" role="status">等待确认</p></section>`;
+  const qualityNotice = Array.isArray(draftQualityWarnings)
+    && draftQualityWarnings.includes("MESSAGE_DRAFT_RECENTLY_SIMILAR")
+    ? '<p class="line message-draft-quality">这条草稿与近期消息的表达比较接近，你可以直接发送，也可以改得更具体。</p>'
+    : "";
+  return `<section class="message-draft" data-draft-card="${Number(draft.id)}"><label for="${id}">跟进草稿</label>${qualityNotice}<textarea id="${id}" data-draft-text data-draft-id="${Number(draft.id)}" data-revision="${revision}" data-draft-revision="${revision}">${escapeHtml(text)}</textarea><p class="message-draft-save-status" data-draft-save-status="${Number(draft.id)}" role="status">已自动保存</p><button type="button" data-copy-draft="${id}">复制到本机剪贴板</button><div class="message-draft-actions"><label class="message-send-choice"><input type="checkbox" data-send-select="${Number(draft.id)}" checked>加入本次发送</label><button type="button" data-send-single="${Number(draft.id)}">确认发送</button></div><p class="message-send-status" data-send-status="${Number(draft.id)}" role="status">等待确认</p></section>`;
 }
 
 function positiveInteger(value) {

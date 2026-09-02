@@ -50,7 +50,8 @@ async function main() {
       entry: { startedAt: "2026-08-25T07:00:00.000Z" },
       projection: { waitedHours: 72, waitingSince: "2026-08-25T08:00:00.000Z" },
       draft: prepared ? fixture.draft : null,
-      context: prepared ? fixture.context : null
+      context: prepared ? fixture.context : null,
+      draftQualityWarnings: prepared ? ["MESSAGE_DRAFT_RECENTLY_SIMILAR"] : []
     });
     const followUpService = {
       listCandidates({ profileId, planId }) {
@@ -127,6 +128,7 @@ async function main() {
     assert.match(page.body, new RegExp(`data-send-single="${fixture.draft.id}"`));
     assert.match(page.body, /data-send-select="\d+" checked/);
     assert.match(page.body, /确认并串行发送 1 条/);
+    assert.match(page.body, /这条草稿与近期消息的表达比较接近，你可以直接发送，也可以改得更具体。/);
     assert(page.body.includes(TOKEN));
     assert.match(page.body, /\/api\/message-reply-draft/);
     assert.match(page.body, /\/api\/message-reply-send-batch/);

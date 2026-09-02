@@ -1,7 +1,8 @@
 const {
   createMessageReplySendBatch,
   stopPendingMessageReplySendItems,
-  getMessageReplyDraft
+  getMessageReplyDraft,
+  getMessageInboundContext
 } = require("../../core/storage");
 const {
   loadReplySendBatch,
@@ -10,6 +11,9 @@ const {
   publicReplySendBatch
 } = require("../../core/message_reply_send_batches");
 const { recordReplyConfirmedSent, recordFollowUpSent } = require("../../core/candidate_progress");
+const { replyDraftWasEdited } = require("../../core/message_reply_learning");
+const { assessMessageDraftQuality } = require("../../core/message_draft_quality");
+const { buildMessageDraftQualityContext } = require("../message_draft_quality");
 
 const TERMINAL_BATCH_STATUSES = new Set(["completed", "stopped", "interrupted"]);
 
@@ -36,6 +40,7 @@ function createMessageReplySendingService({
   function confirmBatch(input = {}) {
     const profileId = positiveInteger(input.profileId, "profileId");
     const items = confirmItems(input.items);
+    assertCurrentModelDraftFacts(profileId, items);
     const snapshot = createMessageReplySendBatch(db, {
       profileId,
       items,
@@ -47,6 +52,38 @@ function createMessageReplySendingService({
         try { onExecutionError(error, snapshot.batch.id); } catch {}
       });
     return snapshot;
+  }
+
+  function assertCurrentModelDraftFacts(profileId, items) {
+    for (const item of items) {
+      const draft = getMessageReplyDraft(db, { profileId, draftId: item.draftId });
+      if (!draft || draft.closedAt || draft.revision !== item.revision
+        || replyDraftWasEdited(draft.originalText, draft.currentText)) continue;
+      const job = db.prepare("SELECT id, source_id, company FROM jobs WHERE id = ?").get(draft.jobId) || {};
+      const context = getMessageInboundContext(db, {
+        profileId,
+        cardId: draft.cardId,
+        messageGroupKey: draft.messageGroupKey
+      });
+      const { evidenceTexts } = buildMessageDraftQualityContext(db, {
+        profileId,
+        job: { id: Number(job.id || draft.jobId), sourceId: job.source_id || "", company: job.company || "" },
+        messageTexts: (context?.inboundMessages || [])
+          .filter((message) => message?.kind === "text")
+          .map((message) => String(message.text || ""))
+      });
+      const assessment = assessMessageDraftQuality({
+        text: draft.currentText,
+        recentTexts: [],
+        evidenceTexts
+      });
+      if (assessment.errors.some((error) => error.code === "MESSAGE_DRAFT_FACT_UNSUPPORTED")) {
+        throw sendingError(
+          "MESSAGE_DRAFT_FACT_UNSUPPORTED",
+          "草稿里有系统找不到依据的个人信息，请修改后再发送。"
+        );
+      }
+    }
   }
 
   function status({ profileId, batchId } = {}) {

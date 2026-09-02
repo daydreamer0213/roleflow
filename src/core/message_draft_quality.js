@@ -116,12 +116,20 @@ function claimSignature({ kind, value }) {
   if (["phone", "email", "url"].includes(kind)) return normalized;
   if (kind === "salary") return numericToken(value);
   if (["percentage", "duration", "numeric_achievement"].includes(kind)) return numericToken(value);
+  if (["arrival", "interview_availability"].includes(kind)) return scheduleToken(value);
   if (["overtime", "travel", "relocation"].includes(kind)) {
     const polarity = /不接受|不考虑|不能|无法|拒绝/.test(value) ? "negative" : "positive";
     const qualifier = kind === "travel" ? (/长期/.test(value) ? "long" : /短期/.test(value) ? "short" : "") : "";
     return `${polarity}:${qualifier}`;
   }
   return normalized;
+}
+
+function scheduleToken(value) {
+  const match = String(value || "").match(
+    /本周[一二三四五六日天]?|下周[一二三四五六日天]?|这周[一二三四五六日天]?|今天|明天|后天|周[一二三四五六日天]|随时|立即|一周内|两周后|两周内|一个月内|\d+天后|\d+周后/
+  );
+  return normalizedMessageText(match?.[0] || value);
 }
 
 function numericToken(value) {

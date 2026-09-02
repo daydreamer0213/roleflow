@@ -335,6 +335,62 @@ const db = storage.openDb(":memory:");
     assert.deepEqual(stopped.items.map((item) => item.status), ["click_dispatched", "stopped"]);
     assert.equal(stopped.batch.status, "interrupted");
 
+    const qualityOwner = createOwner(db, now, "quality");
+    const evidenceDraft = seedDraft(db, qualityOwner, "evidence", "模型未填写联系方式", now);
+    const evidence = storage.completeMessageReplyDraft(db, {
+      profileId: qualityOwner.profileId,
+      draftId: evidenceDraft.draft.id,
+      finalText: "用户确认手机号是 13800138000。",
+      changedText: "用户确认手机号是 13800138000。",
+      scope: { kind: "global", key: "" },
+      completionKind: "copied",
+      extractedFacts: [],
+      completedAt: now
+    });
+    const unsupported = seedDraft(db, qualityOwner, "unsupported", "我的手机号是 13800138000。", now);
+    saveContext(db, qualityOwner, unsupported, "378917037748778", now);
+    storage.withdrawCandidateAnswerMemory(db, {
+      profileId: qualityOwner.profileId,
+      memoryId: evidence.id,
+      withdrawnAt: "2026-08-29T03:01:00.000Z"
+    });
+    const batchCountBeforeQualityFailure = db.prepare("SELECT COUNT(*) AS n FROM message_reply_send_batches").get().n;
+    assert.throws(
+      () => service.confirmBatch({
+        profileId: qualityOwner.profileId,
+        items: [{ draftId: unsupported.draft.id, revision: unsupported.draft.revision }]
+      }),
+      (error) => error.code === "MESSAGE_DRAFT_FACT_UNSUPPORTED"
+    );
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM message_reply_send_batches").get().n, batchCountBeforeQualityFailure,
+      "an unsupported untouched model draft must fail before a batch is created");
+    const userConfirmed = storage.saveMessageReplyDraftEdit(db, {
+      profileId: qualityOwner.profileId,
+      draftId: unsupported.draft.id,
+      text: "用户亲自补充：我的手机号是 13800138000。",
+      updatedAt: "2026-08-29T03:02:00.000Z"
+    });
+    const userConfirmedBatch = service.confirmBatch({
+      profileId: qualityOwner.profileId,
+      items: [{ draftId: userConfirmed.id, revision: userConfirmed.revision }]
+    });
+    assert.equal(userConfirmedBatch.batch.status, "confirmed", "a user edit is the authoritative confirmation input");
+
+    const factOwner = createOwner(db, now, "fact-evidence");
+    storage.saveCandidateFact(db, {
+      profileId: factOwner.profileId,
+      factKey: "availability_date",
+      factValue: "本周三",
+      source: "user_provided"
+    });
+    const supportedByFact = seedDraft(db, factOwner, "supported", "我本周三可以到岗。", now);
+    saveContext(db, factOwner, supportedByFact, "378917037748779", now);
+    const supportedBatch = service.confirmBatch({
+      profileId: factOwner.profileId,
+      items: [{ draftId: supportedByFact.draft.id, revision: supportedByFact.draft.revision }]
+    });
+    assert.equal(supportedBatch.batch.status, "confirmed", "a current candidate fact should support the untouched model draft");
+
     console.log("message_reply_send_service_smoke ok");
   } finally {
     db.close();

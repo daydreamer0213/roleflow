@@ -370,6 +370,7 @@ async function main() {
     fixture,
     drafts: [PRIVATE_DRAFT],
     durableDrafts: [renderedDraft],
+    draftQualityWarnings: ["MESSAGE_DRAFT_RECENTLY_SIMILAR"],
     inboundMessages: [{ kind: "text", text: OPEN_HR_TEXT }],
     counters: { visible: 52, newReplies: 1, currentRead: 31, currentDelivered: 20, unbound: 0 },
     callModel: true
@@ -421,6 +422,7 @@ async function main() {
   const completedPage = await request(base, `/messages?profileId=${fixture.profileId}`);
   assert.strictEqual(completedPage.status, 200);
   assert(completedPage.body.includes(PRIVATE_DRAFT));
+  assert(completedPage.body.includes("这条草稿与近期消息的表达比较接近，你可以直接发送，也可以改得更具体。"));
   assert(completedPage.body.includes("HR 消息"));
   assert(completedPage.body.includes(OPEN_HR_TEXT));
   assert(completedPage.body.includes("可见 52 · HR 新回复 1 · 已读 31 · 送达 20"));
@@ -1511,6 +1513,7 @@ function completedRun({
   messageIntent = "information_request",
   messageCategory = "qualification",
   messageSummary = "对方正在确认候选人的任职资格。",
+  draftQualityWarnings = [],
   counters = {},
   additionalResults = []
 }) {
@@ -1554,6 +1557,7 @@ function completedRun({
         messageIntent,
         messageCategory,
         messageSummary,
+        draftQualityWarnings,
         missingFactKey: "",
         inboundMessages,
         drafts: durableDrafts.map((draft) => ({

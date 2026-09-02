@@ -82,6 +82,7 @@ const NOW = "2026-08-29T06:00:00.000Z";
     assert.match(page.body, /data-send-stop hidden disabled/);
     assert.match(page.body, /已读 0 · 送达 0/);
     assert(page.body.includes(TOKEN), "the local action token must be scoped to the rendered message page");
+    assert(page.body.includes("草稿里有系统找不到依据的个人信息，请修改后再发送。"));
 
     let response = await postJson(base, "/api/message-reply-send-batch", {
       profileId: fixture.profileId,

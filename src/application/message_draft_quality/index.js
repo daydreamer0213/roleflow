@@ -95,16 +95,17 @@ function factEvidenceText(fact = {}) {
   const key = String(fact.factKey || fact.key || "").trim();
   const value = String(fact.factValue ?? fact.value ?? "").trim();
   if (!value) return "";
+  if (key === "availability_date") return `${value}到岗`;
+  if (key === "interview_availability") return `${value}可以面试`;
+  if (key === "overtime_acceptance") return `${value}加班`;
+  if (key === "travel_acceptance") return `${value}出差`;
+  if (key === "relocation_acceptance") return `${value}异地搬迁`;
   const label = {
     expected_salary: "期望薪资",
     salary: "期望薪资",
     phone: "手机号",
     mobile: "手机号",
-    email: "邮箱",
-    availability_date: "到岗时间",
-    overtime_acceptance: "加班安排",
-    travel_acceptance: "出差安排",
-    relocation_acceptance: "异地搬迁"
+    email: "邮箱"
   }[key] || key;
   return label ? `${label}：${value}` : value;
 }

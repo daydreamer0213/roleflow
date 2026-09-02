@@ -78,7 +78,11 @@ function renderMessageDiscoveryPage({ db, searchParams, controller, replySendCon
       const saveStatus = editable
         ? `<p class="message-draft-save-status" data-draft-save-status="${draft.id}" role="status">已自动保存</p>`
         : "";
-      return `<section class="message-draft" data-draft-card="${draft.id}"><label for="${id}">草稿 ${messageIndex + 1}</label><textarea id="${id}"${editable ? ` data-draft-text data-draft-id="${draft.id}" data-revision="${draft.revision}" data-draft-revision="${draft.revision}"` : " readonly"}>${escapeHtml(draft.text)}</textarea>${saveStatus}<button type="button" data-copy-draft="${id}"${editable ? "" : " data-copy-only"}>复制到本机剪贴板</button>${send}${sent}</section>`;
+      const qualityNotice = Array.isArray(result.draftQualityWarnings)
+        && result.draftQualityWarnings.includes("MESSAGE_DRAFT_RECENTLY_SIMILAR")
+        ? '<p class="line message-draft-quality">这条草稿与近期消息的表达比较接近，你可以直接发送，也可以改得更具体。</p>'
+        : "";
+      return `<section class="message-draft" data-draft-card="${draft.id}"><label for="${id}">草稿 ${messageIndex + 1}</label>${qualityNotice}<textarea id="${id}"${editable ? ` data-draft-text data-draft-id="${draft.id}" data-revision="${draft.revision}" data-draft-revision="${draft.revision}"` : " readonly"}>${escapeHtml(draft.text)}</textarea>${saveStatus}<button type="button" data-copy-draft="${id}"${editable ? "" : " data-copy-only"}>复制到本机剪贴板</button>${send}${sent}</section>`;
     }).join("");
     const inboundMessages = Array.isArray(result.inboundMessages) ? result.inboundMessages : [];
     const inboundSection = inboundMessages.length
@@ -209,6 +213,7 @@ function messageDiscoveryClientScript(scriptState) {
       MESSAGE_REPLY_SEND_DRAFT_BUSY:"这条草稿已经属于另一批发送任务。",
       MESSAGE_REPLY_SEND_CONVERSATION_DUPLICATE:"同一条 HR 会话只能选择一个回复版本。",
       MESSAGE_REPLY_SEND_CONTEXT_REQUIRED:"这条草稿缺少可验证的 HR 消息上下文，未发送。",
+      MESSAGE_DRAFT_FACT_UNSUPPORTED:"草稿里有系统找不到依据的个人信息，请修改后再发送。",
       MESSAGE_REPLY_SEND_ACTION_REQUIRED:"请从当前消息页面重新点击确认发送。"
     }[String(code||"")]||"发送没有开始，请刷新页面后重试。");
     const fieldForDraft=(draftId)=>document.querySelector('[data-draft-text][data-draft-id="'+Number(draftId)+'"]');
