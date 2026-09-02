@@ -5702,6 +5702,7 @@ async function handleResumeOptimizationSave(req, res, { db, resumeOptimization }
   if (!draft) throw appError("RESUME_OPTIMIZATION_NOT_FOUND", "定向简历草稿不存在。", { statusCode: 404 });
   const saved = await Promise.resolve(resumeOptimization.saveDraft({
     profileId: plan.profileId,
+    planId: plan.id,
     draftId,
     finalText: String(params.finalText || "")
   }));

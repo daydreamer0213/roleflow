@@ -100,6 +100,7 @@ try {
 
   assert.throws(() => storage.saveResumeOptimizationDraft(db, {
     profileId: other.profileId,
+    planId: owner.planId,
     optimizationId: draft.id,
     finalText: "越权修改"
   }), /not found|不存在/i);
@@ -107,6 +108,7 @@ try {
   const finalText = "个人总结\n参与 Node.js 企业知识库开发\n技能：Node.js\n补充：用户自行校对";
   const saved = storage.saveResumeOptimizationDraft(db, {
     profileId: owner.profileId,
+    planId: owner.planId,
     optimizationId: draft.id,
     finalText,
     updatedAt: "2026-08-29T09:30:00.000Z",
@@ -184,6 +186,7 @@ try {
 
   assert.throws(() => storage.saveResumeOptimizationDraft(db, {
     profileId: owner.profileId,
+    planId: owner.planId,
     optimizationId: draft.id,
     finalText: "迟到保存"
   }), (error) => error.code === "RESUME_OPTIMIZATION_CLOSED");
@@ -201,6 +204,7 @@ try {
   });
   storage.saveResumeOptimizationDraft(db, {
     profileId: owner.profileId,
+    planId: owner.planId,
     optimizationId: rollbackDraft.id,
     finalText: "个人总结\n参与知识库开发\n技能：Node.js"
   });

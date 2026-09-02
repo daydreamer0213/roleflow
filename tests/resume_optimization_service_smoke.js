@@ -211,8 +211,20 @@ try {
   assert.strictEqual(draft.suggestions[0].decision, "accepted");
   assert.strictEqual(draft.modelIdentity.provider, "scripted");
 
+  const otherOwnerPlanId = Number(db.prepare(`INSERT INTO search_plans(
+    profile_id, name, plan_json, is_active, created_at, updated_at
+  ) VALUES (?, 'Owner second plan', ?, 0, ?, ?)`)
+    .run(owner.profileId, JSON.stringify({ directions: ["AI 应用工程师"] }), now, now).lastInsertRowid);
+  assert.throws(() => service.saveDraft({
+    profileId: owner.profileId,
+    planId: otherOwnerPlanId,
+    draftId: draft.id,
+    finalText: `${draft.finalText}\n越权修改`
+  }), (error) => error.code === "RESUME_OPTIMIZATION_PLAN_MISMATCH");
+
   const nearlyUnchanged = service.saveDraft({
     profileId: owner.profileId,
+    planId: owner.planId,
     draftId: draft.id,
     finalText: document("resume-owner", "候选人甲").text
   });
@@ -224,6 +236,7 @@ try {
 
   const saved = service.saveDraft({
     profileId: owner.profileId,
+    planId: owner.planId,
     draftId: draft.id,
     finalText: `${draft.finalText}\n用户补充：已校对`
   });
@@ -248,10 +261,6 @@ try {
     planId: owner.planId
   }).length, roundsBeforeFailure);
 
-  const otherOwnerPlanId = Number(db.prepare(`INSERT INTO search_plans(
-    profile_id, name, plan_json, is_active, created_at, updated_at
-  ) VALUES (?, 'Owner second plan', ?, 0, ?, ?)`)
-    .run(owner.profileId, JSON.stringify({ directions: ["AI 应用工程师"] }), now, now).lastInsertRowid);
   assert.throws(() => service.activateDraft({
     profileId: owner.profileId,
     planId: otherOwnerPlanId,

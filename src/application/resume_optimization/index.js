@@ -121,12 +121,17 @@ function createResumeOptimizationService({ db, adapter = null, funnelAnalysisSer
     return listResumeOptimizations(db, requiredId(profileId, "profileId"), limit);
   }
 
-  function saveDraft({ profileId, draftId, optimizationId, finalText } = {}) {
+  function saveDraft({ profileId, planId, draftId, optimizationId, finalText } = {}) {
     const owned = getDraft({ profileId, draftId: draftId || optimizationId });
     if (!owned) throw serviceError("RESUME_OPTIMIZATION_NOT_FOUND", "定向简历草稿不存在");
+    const plan = ownedPlan(owned.profileId, planId);
+    if (owned.planId !== plan.id) {
+      throw serviceError("RESUME_OPTIMIZATION_PLAN_MISMATCH", "这份定向简历不属于当前投递方案，请返回原方案修改");
+    }
     if (owned.status !== "draft") throw serviceError("RESUME_OPTIMIZATION_CLOSED", "已启用的定向简历不能继续修改");
     const saved = saveResumeOptimizationDraft(db, {
       profileId: owned.profileId,
+      planId: plan.id,
       optimizationId: owned.id,
       finalText
     });

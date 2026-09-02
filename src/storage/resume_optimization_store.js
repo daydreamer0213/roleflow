@@ -141,12 +141,16 @@ function listResumeOptimizations(db, profileId, limit = 30) {
 
 function saveResumeOptimizationDraft(db, input = {}) {
   const profileId = positiveId(input.profileId, "profileId");
+  const planId = positiveId(input.planId, "planId");
   const optimizationId = positiveId(input.optimizationId, "optimizationId");
   const finalText = boundedText(input.finalText, 200_000, "最终简历文字");
   return immediateTransaction(db, () => {
-    const existing = db.prepare("SELECT status, generated_text FROM resume_optimizations WHERE id = ? AND profile_id = ?")
+    const existing = db.prepare("SELECT plan_id, status, generated_text FROM resume_optimizations WHERE id = ? AND profile_id = ?")
       .get(optimizationId, profileId);
     if (!existing) throw storageError("RESUME_OPTIMIZATION_NOT_FOUND", "定向简历草稿不存在");
+    if (Number(existing.plan_id || 0) !== planId) {
+      throw storageError("RESUME_OPTIMIZATION_PLAN_MISMATCH", "这份定向简历不属于当前投递方案，请返回原方案修改");
+    }
     if (existing.status !== "draft") throw storageError("RESUME_OPTIMIZATION_CLOSED", "已启用的定向简历不能继续保存");
     const updatedAt = String(input.updatedAt || nowIso());
     const userEditedAt = comparableText(finalText) === comparableText(existing.generated_text) ? null : updatedAt;

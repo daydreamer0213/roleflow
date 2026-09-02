@@ -198,6 +198,7 @@ const logger = {
     assert.deepEqual(JSON.parse(save.body), { ok: true, integrity: warningIntegrity });
     assert.deepEqual(calls.save[0], {
       profileId: owner.profileId,
+      planId: owner.planId,
       draftId: 41,
       finalText: "自动保存中的旧文字"
     });
