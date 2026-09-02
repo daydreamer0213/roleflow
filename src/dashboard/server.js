@@ -2678,7 +2678,8 @@ async function handleWorkflowRunResume(req, res, {
       return sendHtml(res, renderWorkflowScopeChoicePage({
         workflowRunId,
         browserMode: browserAuthority.browserMode,
-        cdpPort: browserAuthority.cdpPort
+        cdpPort: browserAuthority.cdpPort,
+        expectedScopeToken: result.scopeChange.expectedScopeToken
       }), 409);
     }
     redirect(res, `/workflow?runId=${encodeURIComponent(result.workflow.id)}`);
@@ -2695,9 +2696,9 @@ async function handleWorkflowRunResume(req, res, {
   }
 }
 
-function renderWorkflowScopeChoicePage({ workflowRunId, browserMode, cdpPort }) {
+function renderWorkflowScopeChoicePage({ workflowRunId, browserMode, cdpPort, expectedScopeToken }) {
   const identity = `<input type="hidden" name="workflowRunId" value="${escapeAttr(workflowRunId)}"><input type="hidden" name="browserMode" value="${escapeAttr(browserMode)}">${cdpPort ? `<input type="hidden" name="cdpPort" value="${Number(cdpPort)}">` : ""}`;
-  return renderPage("搜索条件已经变化", `<main><h1>搜索条件已经变化</h1><section class="panel"><p>本轮开始时的条件与当前 BOSS 搜索页不同。旧结果不会与新结果混合。</p><div class="workflow-actions"><form method="post" action="/api/workflow-run/resume">${identity}<input type="hidden" name="scopeChoice" value="new"><button data-workflow-primary="true">按新条件重新开始本轮</button></form><form method="post" action="/api/workflow-run/resume">${identity}<input type="hidden" name="scopeChoice" value="original"><button class="secondary">继续开始时的条件</button></form><a class="button-link" href="/workflow?runId=${encodeURIComponent(workflowRunId)}">返回本轮</a></div></section></main>`);
+  return renderPage("搜索条件已经变化", `<main><h1>搜索条件已经变化</h1><section class="panel"><p>本轮开始时的条件与当前 BOSS 搜索页不同。旧结果不会与新结果混合。</p><div class="workflow-actions"><form method="post" action="/api/workflow-run/resume">${identity}<input type="hidden" name="scopeChoice" value="new"><input type="hidden" name="expectedScopeToken" value="${escapeAttr(expectedScopeToken)}"><button data-workflow-primary="true">按新条件重新开始本轮</button></form><form method="post" action="/api/workflow-run/resume">${identity}<input type="hidden" name="scopeChoice" value="original"><button class="secondary">继续开始时的条件</button></form><a class="button-link" href="/workflow?runId=${encodeURIComponent(workflowRunId)}">返回本轮</a></div></section></main>`);
 }
 
 function workflowResumeRequiresBrowser(db, workflow) {
@@ -5264,7 +5265,13 @@ function renderRoleEvidenceSummary(analysis = {}, className = "line", tag = "spa
 }
 
 function renderErrorPage(message, back, { code = "", requestId = "" } = {}) {
-  const issue = userFacingError(code || "INTERNAL_ERROR", message);
+  const issue = code
+    ? userFacingError(code, message)
+    : {
+      title: "操作没有完成",
+      impact: String(message || "当前页面暂时不可用。"),
+      nextAction: "请返回上一页，按页面提示重新进入。"
+    };
   const diagnostic = code ? `<details class="error-technical"><summary>技术信息</summary><p>错误编号：${escapeHtml(code)}${requestId ? ` · 请求编号：${escapeHtml(requestId)}` : ""}</p>${message ? `<p>${escapeHtml(message)}</p>` : ""}<p class="hint">可在“诊断”页面查看对应日志。</p></details>` : "";
   return renderPage(issue.title, `<main><nav>${navLinks({})}</nav><h1>${escapeHtml(issue.title)}</h1><section class="panel"><p class="risk-text">${escapeHtml(issue.impact)}</p><p>${escapeHtml(issue.nextAction)}</p>${diagnostic}<p><a href="${escapeAttr(back)}">返回</a></p></section></main>`);
 }

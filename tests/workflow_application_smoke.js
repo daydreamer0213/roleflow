@@ -375,6 +375,7 @@ async function scanScopeResumeContracts() {
   });
   assert.strictEqual(readOnly.workflow.id, "workflow-scope");
   assert.strictEqual(readOnly.scopeChange.kind, "search_scope_changed");
+  assert(readOnly.scopeChange.expectedScopeToken);
   assert.deepStrictEqual(readOnlyEvents, ["browser-probe", "scope-read"]);
 
   const replacementEvents = [];
@@ -384,7 +385,8 @@ async function scanScopeResumeContracts() {
     input: {
       workflowRunId: "workflow-scope",
       batchModelReady: true,
-      scopeChoice: "new"
+      scopeChoice: "new",
+      expectedScopeToken: readOnly.scopeChange.expectedScopeToken
     },
     deps: scanScopeResumeDeps(replacementEvents, changedLiveContext, replacementLaunches)
   });
@@ -400,6 +402,24 @@ async function scanScopeResumeContracts() {
   assert.strictEqual(replaced.workflow.sequence, 1);
   assert.strictEqual(replaced.workflow.scanBatchId, null);
   assert.strictEqual(replacementLaunches[0].resumeBatchId, null);
+
+  const changedAgainEvents = [];
+  const changedAgain = await resumeWorkflow({
+    db: {},
+    input: {
+      workflowRunId: "workflow-scope",
+      batchModelReady: true,
+      scopeChoice: "new",
+      expectedScopeToken: readOnly.scopeChange.expectedScopeToken
+    },
+    deps: scanScopeResumeDeps(changedAgainEvents, {
+      ...changedLiveContext,
+      currentTargetUrl: "https://www.zhipin.com/web/geek/jobs?city=101280100&multiSubway=101280100%3A2&query=Node.js"
+    })
+  });
+  assert.strictEqual(changedAgain.scopeChange.kind, "search_scope_changed");
+  assert.notStrictEqual(changedAgain.scopeChange.expectedScopeToken, readOnly.scopeChange.expectedScopeToken);
+  assert.deepStrictEqual(changedAgainEvents, ["browser-probe", "scope-read"]);
 
   const originalEvents = [];
   const originalLaunches = [];
@@ -433,6 +453,30 @@ async function scanScopeResumeContracts() {
   });
   assert.strictEqual(same.scopeChange, null);
   assert.deepStrictEqual(sameEvents, ["browser-probe", "scope-read", "scan-availability", "spawn"]);
+
+  const keywordEvents = [];
+  const keywordLiveContext = {
+    ...sameLiveContext,
+    currentTargetUrl: "https://www.zhipin.com/web/geek/jobs?query=LLM%E5%BA%94%E7%94%A8&city=101280100"
+  };
+  const keywordResult = await resumeWorkflow({
+    db: {},
+    input: {
+      workflowRunId: "workflow-scope",
+      batchModelReady: true,
+      scopeChoice: "new",
+      expectedScopeToken: "boss:9:old-scope|LLM%E5%BA%94%E7%94%A8"
+    },
+    deps: scanScopeResumeDeps(keywordEvents, keywordLiveContext)
+  });
+  assert.strictEqual(keywordResult.workflow.keywords[0].word, "LLM应用");
+  assert.deepStrictEqual(keywordEvents, [
+    "browser-probe",
+    "scope-read",
+    "scan-availability",
+    "replace-context",
+    "spawn"
+  ]);
 }
 
 function startDeps(events, captureLaunch = () => {}, capturePlanner = () => {}) {
@@ -583,6 +627,7 @@ function scanScopeResumeDeps(events, liveContext, launches = []) {
       events.push("replace-context");
       return {
         ...workflow,
+        keywords: input.keywords,
         scanRunId: "",
         scanBatchId: null,
         planner: input.planner,

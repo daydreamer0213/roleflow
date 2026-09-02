@@ -2873,7 +2873,7 @@ async function testWorkflowSearchScopeReplacement({
   setCurrentSearchContext
 }) {
   const oldContext = workflowInheritedContext(saved, "https://www.zhipin.com/web/geek/jobs?city=101280100&multiSubway=101280100%3A1&query=RAG");
-  const newContext = workflowInheritedContext(saved, "https://www.zhipin.com/web/geek/jobs?city=101280100&multiSubway=101280100%3A2&query=RAG");
+  const newContext = workflowInheritedContext(saved, "https://www.zhipin.com/web/geek/jobs?city=101280100&multiSubway=101280100%3A2&query=LLM%E5%BA%94%E7%94%A8");
   const workflow = createWorkflowRun(database, {
     profileId: saved.profileId,
     planId: saved.planId,
@@ -2944,13 +2944,15 @@ async function testWorkflowSearchScopeReplacement({
   assert.match(choice.body, /搜索条件已经变化/);
   assert.match(choice.body, /按新条件重新开始本轮/);
   assert.match(choice.body, /继续开始时的条件/);
+  assert.match(choice.body, /name="expectedScopeToken"/);
   assert.deepStrictEqual(getWorkflowRun(database, workflow.id), before);
   assert.strictEqual(spawns.length, spawnCount);
 
   const replaced = await postForm(baseUrl, "/api/workflow-run/resume", {
     workflowRunId: workflow.id,
     browserMode: "edge",
-    scopeChoice: "new"
+    scopeChoice: "new",
+    expectedScopeToken: `${newContext.searchScope.key}|${encodeURIComponent("LLM应用")}`
   });
   assert.strictEqual(replaced.status, 303, replaced.body);
   const current = getWorkflowRun(database, workflow.id);
@@ -2959,6 +2961,8 @@ async function testWorkflowSearchScopeReplacement({
   assert.strictEqual(current.sequence, before.sequence);
   assert.strictEqual(current.scanBatchId, null);
   assert.strictEqual(current.planner.searchScope.key, newContext.searchScope.key);
+  assert.strictEqual(current.keywords[0].word, "LLM应用");
+  assert.strictEqual(current.planner.selectedKeywords[0].word, "LLM应用");
   assert(database.prepare("SELECT 1 FROM batches WHERE id = ?").get(oldBatchId));
   assert.strictEqual(spawns.length, spawnCount + 1);
   spawns.at(-1).child.emit("close", 0, null);

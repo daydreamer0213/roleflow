@@ -284,21 +284,17 @@ async function resumeWorkflow({ db, input = {}, deps = {} }) {
     const liveContext = await resolveCurrentSearchContext({ workflow, browserMode, cdpPort });
     const scopeChanged = workflowSearchScopeChanged(workflow, liveContext);
     if (scopeChanged && !scopeChoice) {
-      return {
-        workflow,
-        scopeChange: {
-          kind: "search_scope_changed",
-          runId: workflow.id,
-          oldScopeKey: String(workflow.planner?.searchScope?.key || ""),
-          newScopeKey: String(liveContext?.searchScope?.key || "")
-        }
-      };
+      return workflowScopeChangeResult(workflow, liveContext);
     }
     if (scopeChoice === "new") {
       if (!scopeChanged) {
         throw appError("WORKFLOW_SEARCH_SCOPE_UNCHANGED", "当前搜索条件没有变化，可以直接继续本轮。", { statusCode: 409 });
       }
+      if (String(input.expectedScopeToken || "") !== workflowSearchScopeToken(liveContext)) {
+        return workflowScopeChangeResult(workflow, liveContext);
+      }
       const { currentTargetUrl: _currentTargetUrl, ...nextContext } = liveContext || {};
+      const nextKeywords = replacementWorkflowKeywords(workflow, liveContext);
       assertCompleteInheritedContext(nextContext, {
         code: "WORKFLOW_INHERITED_SNAPSHOT_INVALID",
         message: "当前搜索条件不完整，不能安全重新开始本轮。",
@@ -309,7 +305,8 @@ async function resumeWorkflow({ db, input = {}, deps = {} }) {
       workflow = replaceWorkflowScanContext(db, {
         workflowRunId: workflow.id,
         expectedUpdatedAt: workflow.updatedAt,
-        planner: { ...workflow.planner, ...nextContext }
+        planner: { ...workflow.planner, ...nextContext, selectedKeywords: nextKeywords },
+        keywords: nextKeywords
       });
     }
   }
@@ -336,12 +333,48 @@ async function resumeWorkflow({ db, input = {}, deps = {} }) {
 function workflowSearchScopeChanged(workflow, liveContext) {
   if (String(workflow?.planner?.searchScope?.templateUrl || "")
     !== String(liveContext?.searchScope?.templateUrl || "")) return true;
-  let currentKeyword = "";
-  try {
-    currentKeyword = new URL(String(liveContext?.currentTargetUrl || "")).searchParams.get("query")?.trim() || "";
-  } catch {}
+  const currentKeyword = workflowLiveSearchKeyword(liveContext);
   if (!currentKeyword) return false;
   return !(workflow?.keywords || []).some((item) => String(item?.word || "").trim() === currentKeyword);
+}
+
+function workflowScopeChangeResult(workflow, liveContext) {
+  return {
+    workflow,
+    scopeChange: {
+      kind: "search_scope_changed",
+      runId: workflow.id,
+      oldScopeKey: String(workflow.planner?.searchScope?.key || ""),
+      newScopeKey: String(liveContext?.searchScope?.key || ""),
+      expectedScopeToken: workflowSearchScopeToken(liveContext)
+    }
+  };
+}
+
+function workflowSearchScopeToken(liveContext) {
+  return `${String(liveContext?.searchScope?.key || "")}|${encodeURIComponent(workflowLiveSearchKeyword(liveContext))}`;
+}
+
+function replacementWorkflowKeywords(workflow, liveContext) {
+  const currentKeyword = workflowLiveSearchKeyword(liveContext);
+  const frozen = (workflow?.keywords || []).map((item) => ({ ...item }));
+  if (!currentKeyword || frozen.some((item) => String(item?.word || "").trim() === currentKeyword)) {
+    return frozen;
+  }
+  const [first, ...remaining] = frozen;
+  if (!first) return [{ word: currentKeyword, priority: "A", reason: "用户当前 BOSS 搜索关键词" }];
+  return [
+    { ...first, word: currentKeyword, reason: "用户当前 BOSS 搜索关键词" },
+    ...remaining
+  ];
+}
+
+function workflowLiveSearchKeyword(liveContext) {
+  try {
+    return new URL(String(liveContext?.currentTargetUrl || "")).searchParams.get("query")?.trim() || "";
+  } catch {
+    return "";
+  }
 }
 
 async function controlWorkflow({ db, input = {}, deps = {} }) {

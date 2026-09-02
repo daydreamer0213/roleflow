@@ -731,8 +731,9 @@ function replaceWorkflowScanContext(db, input = {}) {
       throw workflowRunError("WORKFLOW_SCAN_CONTEXT_ANALYSIS_EXISTS", "workflow analysis tasks already exist");
     }
     const activeLease = db.prepare("SELECT expires_at FROM site_scan_leases WHERE site = 'boss'").get();
-    const replacedAt = String(input.replacedAt || nowIso());
-    if (activeLease && Date.parse(activeLease.expires_at) > Date.parse(replacedAt)) {
+    const checkedAt = nowIso();
+    const replacedAt = String(input.replacedAt || checkedAt);
+    if (activeLease && Date.parse(activeLease.expires_at) > Date.parse(checkedAt)) {
       throw workflowRunError("WORKFLOW_SCAN_CONTEXT_LEASE_ACTIVE", "BOSS scan lease is still active");
     }
     const scan = run.scanRunId
@@ -745,6 +746,14 @@ function replaceWorkflowScanContext(db, input = {}) {
     const newScopeKey = String(planner?.searchScope?.key || "").trim();
     if (!planner || typeof planner !== "object" || Array.isArray(planner) || !newScopeKey) {
       throw workflowRunError("WORKFLOW_SCAN_CONTEXT_INVALID", "replacement scan context is incomplete");
+    }
+    const nextKeywords = input.keywords === undefined
+      ? run.keywords
+      : input.keywords;
+    if (!Array.isArray(nextKeywords)
+      || !nextKeywords.length
+      || nextKeywords.some((item) => !item || typeof item !== "object" || Array.isArray(item) || !String(item.word || "").trim())) {
+      throw workflowRunError("WORKFLOW_SCAN_CONTEXT_INVALID", "replacement workflow keywords are incomplete");
     }
     const nextPlanner = {
       ...planner,
@@ -760,6 +769,7 @@ function replaceWorkflowScanContext(db, input = {}) {
     };
     const result = db.prepare(`UPDATE workflow_runs SET
       status = 'interrupted',
+      keywords_json = ?,
       planner_json = ?,
       control_state = 'none',
       resume_phase = 'scanning',
@@ -770,7 +780,7 @@ function replaceWorkflowScanContext(db, input = {}) {
       error_message = NULL,
       updated_at = ?
     WHERE id = ? AND updated_at = ?`)
-      .run(JSON.stringify(nextPlanner), replacedAt, id, run.updatedAt);
+      .run(JSON.stringify(nextKeywords), JSON.stringify(nextPlanner), replacedAt, id, run.updatedAt);
     if (Number(result.changes || 0) !== 1) {
       throw workflowRunError("WORKFLOW_SCAN_CONTEXT_STALE", "workflow run changed before scan context replacement");
     }
