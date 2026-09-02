@@ -151,6 +151,24 @@ function assertRendererContracts(vm) {
   assert.match(paused, /data-workflow-primary="true"[^>]*>继续本轮/);
   assertPrimaryBeforeDetails(paused, "paused");
 
+  const pauseRequested = renderWorkflowPage(buildWorkflowViewModel(fixture({
+    progressSnapshot: {
+      workflow: {
+        id: "workflow-migration-fixture",
+        status: "scanning",
+        controlState: "pause_requested",
+        progressRevision: 5,
+        lastActivityAt: new Date().toISOString()
+      },
+      controls: { canPause: false, canResume: false, canStop: true, stopConsumesRunSlot: true }
+    }
+  })));
+  assert.match(pauseRequested, /data-control-group="pause-requested"/);
+  assert.match(pauseRequested, /正在暂停/);
+  assert.match(pauseRequested, /显示“本轮已暂停”后再修改 BOSS 搜索条件/);
+  assert.match(pauseRequested, /data-control-group="paused" hidden/);
+  assert.match(pauseRequested, /data-action="resume" disabled/);
+
   const review = renderWorkflowPage(buildWorkflowViewModel(fixture({ workflow: { status: "review_required" }, progressSnapshot: null, reviewCandidates: [{ id: 71, url: "https://example.test/immutable", title: "候选岗位", company: "甲公司", salary: "20K", experience: "3年", analysis: {}, workflowTier: "primary", defaultChecked: true }], quota: { remaining: 1 } })));
   assert.match(review, /id="workflow-review-form"/);
   assertSinglePrimary(review, "review", "确认清单");
@@ -202,6 +220,40 @@ function assertRendererContracts(vm) {
 
   const resumable = renderWorkflowPage(buildWorkflowViewModel(fixture({ workflow: { status: "interrupted", communicationBatchId: null, errorCode: "SAFE_STOP" }, progressSnapshot: null })));
   assertSinglePrimary(resumable, "resumable interrupted", "继续本轮");
+
+  const browserTimeout = renderWorkflowPage(buildWorkflowViewModel(fixture({
+    workflow: {
+      status: "interrupted",
+      communicationBatchId: null,
+      errorCode: "BROWSER_TIMEOUT",
+      errorMessage: "Runtime.evaluate timed out after 15000ms"
+    },
+    progressSnapshot: null
+  })));
+  assert.match(browserTimeout, /BOSS 页面响应较慢/);
+  assert.match(browserTimeout, /本次检查已经停止/);
+  assert.match(browserTimeout, /页面加载完成后/);
+  assert.match(browserTimeout, /<details class="workflow-error-technical">/);
+  assert.match(browserTimeout, /BROWSER_TIMEOUT/);
+  assert.match(browserTimeout, /Runtime\.evaluate timed out/);
+  const timeoutPrimary = browserTimeout.slice(
+    browserTimeout.indexOf('<section class="workflow-phase">'),
+    browserTimeout.indexOf('<details class="workflow-error-technical">')
+  );
+  assert.doesNotMatch(timeoutPrimary, /BROWSER_TIMEOUT|Runtime\.evaluate/);
+
+  const unknownFailure = renderWorkflowPage(buildWorkflowViewModel(fixture({
+    workflow: {
+      status: "interrupted",
+      communicationBatchId: null,
+      errorCode: "UNKNOWN_PRIVATE_CODE",
+      errorMessage: "private internal failure"
+    },
+    progressSnapshot: null
+  })));
+  assert.match(unknownFailure, /操作没有完成/);
+  assert.match(unknownFailure, /当前进度已保留/);
+  assert.match(unknownFailure, /若再次发生/);
 
   const fallback = renderWorkflowPage(buildWorkflowViewModel(fixture({ workflow: { status: "failed", errorCode: "SAFE_FAILURE" }, progressSnapshot: null })));
   assertSinglePrimary(fallback, "fallback", "返回今日任务");

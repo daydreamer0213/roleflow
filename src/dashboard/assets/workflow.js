@@ -161,7 +161,9 @@
     const status = snapshot.workflow.status;
     const running = ["created", "scanning", "analyzing"].includes(status);
     const paused = status === "paused";
-    const runningGroup = node('[data-control-group="running"]'); if (runningGroup) runningGroup.hidden = !running;
+    const pauseRequested = running && snapshot.workflow.controlState === "pause_requested";
+    const runningGroup = node('[data-control-group="running"]'); if (runningGroup) runningGroup.hidden = !running || pauseRequested;
+    const pauseRequestedGroup = node('[data-control-group="pause-requested"]'); if (pauseRequestedGroup) pauseRequestedGroup.hidden = !pauseRequested;
     const pausedGroup = node('[data-control-group="paused"]'); if (pausedGroup) pausedGroup.hidden = !paused;
     const pause = node('[data-action="pause"]'); if (pause) pause.disabled = !snapshot.controls.canPause;
     const resume = node('[data-action="resume"]'); if (resume) resume.disabled = !snapshot.controls.canResume;

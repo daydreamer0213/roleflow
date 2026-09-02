@@ -300,9 +300,19 @@ async function assertRuntimeClient(source) {
   const clickPromise = click();
   assert.strictEqual(fetchCalls.at(-1).url, "/api/runtime/browser/recover");
   assert.strictEqual(fetchCalls.at(-1).options.method, "POST");
-  pending.shift()({ ok: true, async json() { return { browser: { status: "ready", ready: true }, workspace: { status: "ready" } }; } });
+  pending.shift()({
+    ok: false,
+    async json() {
+      return {
+        error: "请先等待专用 Edge 准备完成。",
+        errorCode: "BROWSER_RUNTIME_NOT_READY",
+        requestId: "runtime-readable-error"
+      };
+    }
+  });
   await clickPromise;
   await settlePromises();
+  assert.strictEqual(elements["[data-runtime-message]"].textContent, "请先等待专用 Edge 准备完成。");
 
   document.hidden = true;
   documentHandlers.visibilitychange();

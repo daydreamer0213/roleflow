@@ -85,14 +85,17 @@
         headers: { accept: "application/json", ...(options.headers || {}) }
       });
       const payload = await response.json();
-      if (!response.ok) throw new Error(String(payload?.errorCode || "RUNTIME_REQUEST_FAILED"));
+      if (!response.ok) throw Object.assign(
+        new Error(String(payload?.error || "请求没有完成。")),
+        { payload }
+      );
       render(payload);
-    } catch {
+    } catch (error) {
       render({
         browser: {
           status: "needs_attention",
           ready: false,
-          message: "暂时无法读取本地运行状态，请稍后重试。"
+          message: String(error?.payload?.error || error?.message || "暂时无法读取本地运行状态，请稍后重试。")
         },
         workspace: { status: "unchecked" }
       });

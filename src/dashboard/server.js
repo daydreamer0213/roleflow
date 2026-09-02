@@ -122,6 +122,7 @@ const { isBossDetailAccessAction } = require("../core/site_access_usage");
 const { loadConfigs } = require("../config");
 const { validateSearchPlan, assertSearchPlanReady } = require("../core/plan_validation");
 const { createLogger, appError, errorMeta, publicError, sanitize, workflowLogContext } = require("../core/observability");
+const { userFacingError } = require("./user_facing_errors");
 const {
   listModelPresets,
   listModelTaskProfiles,
@@ -2862,8 +2863,9 @@ async function handleWorkflowControl(req, res, {
       error: errorMeta(error),
       errorCode: issue.code
     });
+    const guidance = userFacingError(issue.code, issue.message);
     return sendJson(res, issue.statusCode, {
-      error: issue.message,
+      error: `${guidance.title}：${guidance.impact} ${guidance.nextAction}`,
       errorCode: issue.code,
       requestId,
       ...(issue.code === "MODEL_CONFIGURATION_REQUIRED"
@@ -5262,8 +5264,9 @@ function renderRoleEvidenceSummary(analysis = {}, className = "line", tag = "spa
 }
 
 function renderErrorPage(message, back, { code = "", requestId = "" } = {}) {
-  const diagnostic = code ? `<p class="error-code">错误编号：${escapeHtml(code)}${requestId ? ` · 请求编号：${escapeHtml(requestId)}` : ""}</p><p class="hint">可在“诊断”页面查看对应日志。</p>` : "";
-  return renderPage("操作未完成", `<main><nav>${navLinks({})}</nav><h1>操作未完成</h1><section class="panel"><p class="risk-text">${escapeHtml(message)}</p>${diagnostic}<p><a href="${escapeAttr(back)}">返回</a></p></section></main>`);
+  const issue = userFacingError(code || "INTERNAL_ERROR", message);
+  const diagnostic = code ? `<details class="error-technical"><summary>技术信息</summary><p>错误编号：${escapeHtml(code)}${requestId ? ` · 请求编号：${escapeHtml(requestId)}` : ""}</p>${message ? `<p>${escapeHtml(message)}</p>` : ""}<p class="hint">可在“诊断”页面查看对应日志。</p></details>` : "";
+  return renderPage(issue.title, `<main><nav>${navLinks({})}</nav><h1>${escapeHtml(issue.title)}</h1><section class="panel"><p class="risk-text">${escapeHtml(issue.impact)}</p><p>${escapeHtml(issue.nextAction)}</p>${diagnostic}<p><a href="${escapeAttr(back)}">返回</a></p></section></main>`);
 }
 
 function modelSettingsBack(error, fallback) {
@@ -5368,7 +5371,8 @@ function respondUiError(res, error, back, { logger, requestId, event, fallbackCo
 
 function respondUnexpectedError(res, error, requestId, requestPath) {
   const issue = publicError(error, { fallbackCode: "INTERNAL_ERROR", fallbackMessage: "服务处理失败，请查看错误编号对应的诊断日志。", statusCode: 500 });
-  if (String(requestPath || "").startsWith("/api/")) return sendJson(res, issue.statusCode, { error: issue.message, errorCode: issue.code, requestId });
+  const guidance = userFacingError(issue.code, issue.message);
+  if (String(requestPath || "").startsWith("/api/")) return sendJson(res, issue.statusCode, { error: `${guidance.title}：${guidance.impact} ${guidance.nextAction}`, errorCode: issue.code, requestId });
   sendHtml(res, renderErrorPage(issue.message, "/", { code: issue.code, requestId }), issue.statusCode);
 }
 

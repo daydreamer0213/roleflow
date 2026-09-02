@@ -2,6 +2,7 @@
 
 const { scopeShortId } = require("../../core/inherited_search_scope");
 const { communicationAmbiguityState } = require("../../core/communication_ambiguity");
+const { userFacingError } = require("../user_facing_errors");
 
 const ANALYSIS_STATUS_LABELS = Object.freeze({
   pending: "等待分析",
@@ -209,7 +210,10 @@ function blockerView({ workflow, cooldown, runtimeBlock }) {
   if (cooldown.active) return { label: "安全冷却中", detail: cooldown.reason, recovery: "到达重试时间后等待本地状态刷新" };
   if (runtimeBlock) return { label: "运行环境已阻塞", detail: runtimeBlockLabel(runtimeBlock.reasonCode), recovery: "检查运行环境后再查看本轮状态" };
   if (workflow.status === "paused") return { label: "本轮已暂停", detail: String(workflow.errorCode || "安全暂停"), recovery: "检查原因后继续本轮" };
-  if (["interrupted", "failed", "stopped"].includes(workflow.status)) return { label: "本轮需要处理", detail: String(workflow.errorCode || workflow.shortfallCode || "状态已停止"), recovery: String(workflow.errorMessage || "检查技术明细后选择下一步") };
+  if (["interrupted", "failed", "stopped"].includes(workflow.status)) {
+    const issue = userFacingError(workflow.errorCode || workflow.shortfallCode, workflow.errorMessage);
+    return { label: issue.title, detail: issue.impact, recovery: issue.nextAction };
+  }
   return { label: "没有阻塞", detail: "本轮按当前安全规则进行", recovery: "等待下一次状态更新" };
 }
 
@@ -224,10 +228,15 @@ function nextActionLabel(phase, controls) {
 
 function controlView(snapshot, workflow, stopPreview) {
   const status = String(snapshot?.workflow?.status || workflow.status || "");
+  const controlState = String(snapshot?.workflow?.controlState || workflow.controlState || "none");
+  const pauseRequested = ["created", "scanning", "analyzing"].includes(status)
+    && controlState === "pause_requested";
   const access = stopPreview.access || {};
   return {
     canPause: Boolean(snapshot?.controls?.canPause), canResume: Boolean(snapshot?.controls?.canResume), canStop: Boolean(snapshot?.controls?.canStop),
-    runningVisible: ["created", "scanning", "analyzing"].includes(status), pausedVisible: status === "paused",
+    runningVisible: ["created", "scanning", "analyzing"].includes(status) && !pauseRequested,
+    pauseRequestedVisible: pauseRequested,
+    pausedVisible: status === "paused",
     pauseReason: String(workflow.errorCode || "本轮已安全暂停"), endpoint: "/api/workflow-control", runId: String(workflow.id || ""),
     stopPreview: { collected: number(stopPreview.collected), analyzed: number(stopPreview.analyzed), failed: number(stopPreview.failed), unfinished: number(stopPreview.unfinished), access: { details: number(access.details), pages: number(access.pages), scrolls: number(access.scrolls) }, consumesRunSlot: Boolean(stopPreview.consumesRunSlot) }
   };
@@ -247,7 +256,9 @@ function phaseView({ workflow, plan, daily, communication, runtimeBlock, reviewC
   if (status === "completed") return { ...common, kind: "completed", successfulCount: number(workflow.successfulCount), todaySuccessful: number(daily.successfulToday), dailyTarget: number(daily.dailyTarget), shortfall: shortfallText(workflow.shortfallCode) };
   if (status === "interrupted") {
     const communicationDetails = communication ? communicationView(communication, runtimeBlock) : null;
-    return { ...common, kind: "interrupted", errorCode: String(workflow.errorCode || "WORKFLOW_INTERRUPTED"), errorMessage: String(workflow.errorMessage || "请检查诊断后继续。"), communication: communicationDetails, communicationHref: communicationDetails?.detailsHref || (workflow.communicationBatchId ? `/communication?batchId=${encodeURIComponent(workflow.communicationBatchId)}` : ""), resume: workflow.communicationBatchId ? null : resumeView(workflow) };
+    const errorCode = String(workflow.errorCode || "WORKFLOW_INTERRUPTED");
+    const errorMessage = String(workflow.errorMessage || "请检查诊断后继续。");
+    return { ...common, kind: "interrupted", errorCode, errorMessage, error: userFacingError(errorCode, errorMessage), communication: communicationDetails, communicationHref: communicationDetails?.detailsHref || (workflow.communicationBatchId ? `/communication?batchId=${encodeURIComponent(workflow.communicationBatchId)}` : ""), resume: workflow.communicationBatchId ? null : resumeView(workflow) };
   }
   return { ...common, kind: ["created", "scanning", "analyzing", "paused"].includes(status) ? "active" : "fallback", errorCode: String(workflow.errorCode || workflow.shortfallCode || "本轮已经结束。") };
 }

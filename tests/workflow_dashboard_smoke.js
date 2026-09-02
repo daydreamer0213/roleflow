@@ -2637,6 +2637,7 @@ async function testWorkflowControlApi(
   });
   assert.strictEqual(modelBlockedControlResume.status, 409);
   assert.match(modelBlockedControlResume.body, /MODEL_CONFIGURATION_REQUIRED/);
+  assert.match(modelBlockedControlResume.body, /批量筛选模型还没有准备好/);
   assert.strictEqual(spawns.length, spawnCountBeforeModelBlockedControlResume);
   assert.strictEqual(getWorkflowRun(database, analyzing.workflowId).status, "paused");
   setBatchReady(true);
