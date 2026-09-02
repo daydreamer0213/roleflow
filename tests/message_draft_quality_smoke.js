@@ -141,7 +141,9 @@ for (const employerQuestion of [
   "我想了解岗位负责 3 个模块吗？",
   "感谢您介绍这 2 个方向。",
   "感谢您介绍这 2 个方向，我很有兴趣。",
-  "这 2 个方向我都有兴趣。"
+  "这 2 个方向我都有兴趣。",
+  "我有 2 个问题想请教。",
+  "其中我有 2 个方向比较感兴趣。"
 ]) {
   const result = assessMessageDraftQuality({
     text: employerQuestion,
