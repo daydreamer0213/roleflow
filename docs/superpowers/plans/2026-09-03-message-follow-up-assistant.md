@@ -65,7 +65,8 @@ function projectMessageFollowUpCandidate(input = {}) {
   if (!new Set(["primary", "apply"]).has(tier)) return rejected("tier_ineligible", funnel);
   if (input.job?.archived) return rejected("archived", funnel);
   if (!input.card?.threadKey) return rejected("conversation_unresolved", funnel);
-  if (["rejected", "closed", "interview"].includes(String(input.card?.stage || ""))) return rejected("terminal", funnel);
+  if (String(input.card?.stage || "") !== "waiting_reply") return rejected("stage_ineligible", funnel);
+  if (["review", "later", "skipped", "interview", "rejected", "invalid", "salary_mismatch"].includes(String(input.job?.applicationStatus || ""))) return rejected("outcome_ineligible", funnel);
   if (input.hasSentFollowUp) return rejected("already_followed_up", funnel);
   if (input.hasActiveFollowUp) return rejected("follow_up_active", funnel);
   if (!funnel.mature || funnel.replyWindowWaiting) return rejected("feedback_waiting", funnel);
