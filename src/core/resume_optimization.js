@@ -10,6 +10,17 @@ const EDITING_PRINCIPLES = new Set([
   "structure"
 ]);
 const STRONG_ROLE_MARKERS = ["主导", "牵头", "独立负责", "全权负责", "从零搭建", "第一负责人"];
+const {
+  extractHighRiskClaims,
+  normalizedMessageText,
+  assessMessageDraftQuality
+} = require("./message_draft_quality");
+const PLACEHOLDER_PATTERNS = Object.freeze([
+  /X{3,}/i,
+  /待(?:填写|补充|确认)/,
+  /TODO/i,
+  /(?:手机|电话|邮箱)[:：]?\s*(?:无|未填|示例)/
+]);
 
 function cleanText(value, maxLength, label, { required = true } = {}) {
   const text = String(value ?? "").trim();
@@ -226,9 +237,138 @@ function selectRepresentativeResumeJobs(jobs, { targetDirection, limit = 5 } = {
   return selected;
 }
 
+function validateResumeActivationText({
+  sourceText = "",
+  generatedText = "",
+  finalText = "",
+  candidateName = "",
+  facts = [],
+  answerMemories = [],
+  suggestions = []
+} = {}) {
+  const source = String(sourceText || "").trim();
+  const generated = String(generatedText || "").trim();
+  const final = String(finalText || "").trim();
+  const errors = [];
+  const warnings = [];
+  try {
+    const expectedGenerated = renderOptimizedResume(source, suggestions);
+    if (comparableResumeText(expectedGenerated) !== comparableResumeText(generated)) {
+      errors.push(issue("RESUME_GENERATED_BASELINE_CHANGED"));
+    }
+  } catch {
+    errors.push(issue("RESUME_GENERATED_BASELINE_CHANGED"));
+  }
+  if (normalizedMessageText(final).length < 40) errors.push(issue("RESUME_TEXT_TOO_SHORT"));
+  if (PLACEHOLDER_PATTERNS.some((pattern) => pattern.test(final))) {
+    errors.push(issue("RESUME_PLACEHOLDER_PRESENT"));
+  }
+  if (sourceIdentityRemoved(source, final, candidateName)) {
+    errors.push(issue("RESUME_CONTACT_REMOVED"));
+  }
+
+  const evidenceTexts = [source]
+    .concat((Array.isArray(facts) ? facts : []).filter(candidateEvidenceItem).map(factEvidenceText))
+    .concat((Array.isArray(answerMemories) ? answerMemories : [])
+      .filter(candidateEvidenceItem)
+      .map((memory) => String(memory.finalText ?? memory.final_text ?? "").trim()))
+    .filter(Boolean);
+  const unsupported = assessMessageDraftQuality({ text: final, recentTexts: [], evidenceTexts }).errors;
+  if (unsupported.length || hasUnsupportedResumeTokens(final, evidenceTexts)) {
+    errors.push(issue("RESUME_FACT_UNSUPPORTED"));
+  }
+
+  const normalizedSource = normalizedMessageText(source);
+  const normalizedFinal = normalizedMessageText(final);
+  if (normalizedSource && trigramJaccard(normalizedSource, normalizedFinal) >= 0.98) {
+    warnings.push(issue("RESUME_NEARLY_UNCHANGED"));
+  }
+  const sourceLength = source.replace(/\s+/g, "").length;
+  const finalLength = final.replace(/\s+/g, "").length;
+  if (sourceLength > 0 && finalLength > sourceLength * 1.3) {
+    warnings.push(issue("RESUME_LENGTH_INCREASED"));
+  }
+  if (comparableResumeText(final) !== comparableResumeText(generated)) {
+    warnings.push(issue("RESUME_USER_EXTRA_EDIT"));
+  }
+  return { valid: uniqueIssues(errors).length === 0, errors: uniqueIssues(errors), warnings: uniqueIssues(warnings) };
+}
+
+function sourceIdentityRemoved(sourceText, finalText, candidateName) {
+  const normalizedFinal = normalizedMessageText(finalText);
+  const normalizedName = normalizedMessageText(candidateName);
+  if (normalizedName && normalizedMessageText(sourceText).includes(normalizedName)
+    && !normalizedFinal.includes(normalizedName)) return true;
+  const sourceContacts = extractHighRiskClaims(sourceText)
+    .filter((claim) => ["phone", "email", "url"].includes(claim.kind));
+  return sourceContacts.some((claim) => !normalizedFinal.includes(normalizedMessageText(claim.value)));
+}
+
+function candidateEvidenceItem(item) {
+  return !["job", "diagnosis"].includes(String(item?.kind || ""));
+}
+
+function factEvidenceText(fact = {}) {
+  const key = String(fact.factKey || fact.key || "").trim();
+  const value = String(fact.factValue ?? fact.value ?? "").trim();
+  if (!value) return "";
+  if (["availability", "availability_date"].includes(key)) return `${value}到岗`;
+  if (key === "interview_availability") return `${value}可以面试`;
+  if (key === "overtime_acceptance") return `${value}加班`;
+  if (key === "travel_acceptance") return `${value}出差`;
+  if (key === "relocation_acceptance") return `${value}异地搬迁`;
+  const label = { expected_salary: "期望薪资", salary: "期望薪资", phone: "手机号", mobile: "手机号", email: "邮箱" }[key] || key;
+  return label ? `${label}：${value}` : value;
+}
+
+function hasUnsupportedResumeTokens(text, evidenceTexts) {
+  const evidence = normalizedMessageText(evidenceTexts.join("\n"));
+  return resumeOnlyTokens(text).some((token) => !evidence.includes(normalizedMessageText(token)));
+}
+
+function resumeOnlyTokens(text) {
+  const source = String(text || "");
+  const patterns = [
+    /\b(?:19|20)\d{2}[年./-]\d{1,2}(?:[月./-]\d{1,2}日?)?/g,
+    /(?<![A-Za-z0-9])\d+(?:\.\d+)?\s*(?:[KkWw]|万|千)元?(?![A-Za-z0-9])/g
+  ];
+  return [...new Set(patterns.flatMap((pattern) => [...source.matchAll(pattern)].map((match) => match[0])))];
+}
+
+function comparableResumeText(value) {
+  return String(value || "").replace(/\r\n?/g, "\n").split("\n")
+    .map((line) => line.trim()).filter(Boolean).join("\n");
+}
+
+function trigramJaccard(left, right) {
+  if (left === right && left) return 1;
+  const leftSet = trigrams(left);
+  const rightSet = trigrams(right);
+  let intersection = 0;
+  for (const value of leftSet) if (rightSet.has(value)) intersection += 1;
+  const union = leftSet.size + rightSet.size - intersection;
+  return union ? intersection / union : 0;
+}
+
+function trigrams(text) {
+  const values = new Set();
+  for (let index = 0; index <= text.length - 3; index += 1) values.add(text.slice(index, index + 3));
+  return values;
+}
+
+function issue(code) {
+  return { code };
+}
+
+function uniqueIssues(items) {
+  const seen = new Set();
+  return items.filter((item) => item?.code && !seen.has(item.code) && seen.add(item.code));
+}
+
 module.exports = {
   buildResumeEvidenceCatalog,
   validateResumeOptimizationDraft,
+  validateResumeActivationText,
   normalizeResumeSuggestionDecisions,
   renderOptimizedResume,
   selectRepresentativeResumeJobs

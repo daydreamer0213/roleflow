@@ -2,6 +2,7 @@ const assert = require("node:assert");
 const {
   buildResumeEvidenceCatalog,
   validateResumeOptimizationDraft,
+  validateResumeActivationText,
   normalizeResumeSuggestionDecisions,
   renderOptimizedResume
 } = require("../src/core/resume_optimization");
@@ -177,5 +178,111 @@ assert.strictEqual(renderOptimizedResume(sourceText, allAccepted), [
 assert.throws(() => normalizeResumeSuggestionDecisions(validated.suggestions, {
   S1: { decision: "edited", userText: "" }
 }), /编辑文字/);
+
+const integritySource = [
+  "候选人甲",
+  "手机号 13800138000",
+  "邮箱 user@example.com",
+  "作品 https://example.com/work",
+  "参与知识库开发 2 年"
+].join("\n");
+const integritySuggestions = [{
+  id: "S1",
+  operation: "replace",
+  originalText: "参与知识库开发 2 年",
+  proposedText: "参与 Node.js 知识库开发 2 年",
+  decision: "accepted",
+  userText: ""
+}];
+const integrityGenerated = renderOptimizedResume(integritySource, integritySuggestions);
+const invalidIntegrity = validateResumeActivationText({
+  sourceText: integritySource,
+  generatedText: integrityGenerated,
+  finalText: [
+    "候选人甲",
+    "待填写手机号",
+    "邮箱 user@example.com",
+    "作品 https://example.com/work",
+    "主导知识库开发 5 年"
+  ].join("\n"),
+  candidateName: "候选人甲",
+  facts: [],
+  answerMemories: [],
+  suggestions: integritySuggestions
+});
+assert.equal(invalidIntegrity.valid, false);
+assert(invalidIntegrity.errors.some((item) => item.code === "RESUME_CONTACT_REMOVED"));
+assert(invalidIntegrity.errors.some((item) => item.code === "RESUME_PLACEHOLDER_PRESENT"));
+assert(invalidIntegrity.errors.some((item) => item.code === "RESUME_FACT_UNSUPPORTED"));
+
+const removedName = validateResumeActivationText({
+  sourceText: integritySource,
+  generatedText: integrityGenerated,
+  finalText: integrityGenerated.replace("候选人甲", ""),
+  candidateName: "候选人甲",
+  facts: [], answerMemories: [], suggestions: integritySuggestions
+});
+assert(removedName.errors.some((item) => item.code === "RESUME_CONTACT_REMOVED"));
+
+const supportedNewFact = validateResumeActivationText({
+  sourceText: integritySource,
+  generatedText: integrityGenerated,
+  finalText: `${integrityGenerated}\n本周三可以到岗`,
+  candidateName: "候选人甲",
+  facts: [],
+  answerMemories: [{ kind: "answer", finalText: "我确认本周三到岗" }],
+  suggestions: integritySuggestions
+});
+assert.equal(supportedNewFact.valid, true, JSON.stringify(supportedNewFact.errors));
+
+const jdOnlyFact = validateResumeActivationText({
+  sourceText: integritySource,
+  generatedText: integrityGenerated,
+  finalText: `${integrityGenerated}\n项目成果提升 80%`,
+  candidateName: "候选人甲",
+  facts: [],
+  answerMemories: [{ kind: "job", finalText: "JD 要求项目成果提升 80%" }],
+  suggestions: integritySuggestions
+});
+assert(jdOnlyFact.errors.some((item) => item.code === "RESUME_FACT_UNSUPPORTED"));
+
+const baselineChanged = validateResumeActivationText({
+  sourceText: integritySource,
+  generatedText: `${integrityGenerated}\n被篡改`,
+  finalText: integrityGenerated,
+  candidateName: "候选人甲",
+  facts: [], answerMemories: [], suggestions: integritySuggestions
+});
+assert(baselineChanged.errors.some((item) => item.code === "RESUME_GENERATED_BASELINE_CHANGED"));
+
+const warningIntegrity = validateResumeActivationText({
+  sourceText: integritySource,
+  generatedText: integrityGenerated,
+  finalText: `${integrityGenerated}\n${"补充说明".repeat(30)}`,
+  candidateName: "候选人甲",
+  facts: [], answerMemories: [], suggestions: integritySuggestions
+});
+assert.equal(warningIntegrity.valid, true);
+assert(warningIntegrity.warnings.some((item) => item.code === "RESUME_LENGTH_INCREASED"));
+assert(warningIntegrity.warnings.some((item) => item.code === "RESUME_USER_EXTRA_EDIT"));
+
+const nearlyUnchanged = validateResumeActivationText({
+  sourceText: integritySource,
+  generatedText: integritySource,
+  finalText: integritySource,
+  candidateName: "候选人甲",
+  facts: [], answerMemories: [], suggestions: []
+});
+assert(nearlyUnchanged.warnings.some((item) => item.code === "RESUME_NEARLY_UNCHANGED"));
+
+const tooShort = validateResumeActivationText({
+  sourceText: integritySource,
+  generatedText: integrityGenerated,
+  finalText: "候选人甲",
+  candidateName: "候选人甲",
+  facts: [], answerMemories: [], suggestions: integritySuggestions
+});
+assert.equal(tooShort.valid, false);
+assert(tooShort.errors.some((item) => item.code === "RESUME_TEXT_TOO_SHORT"));
 
 console.log("resume_optimization_contract_smoke ok");
