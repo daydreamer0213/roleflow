@@ -34,6 +34,7 @@ function createSiteAccessController({
       const sanitizedDetails = sanitizeReservationDetails(normalizedAction, details);
       let waitedMs = 0;
       while (true) {
+        if (typeof assertActive === "function") assertActive();
         throwIfAborted(signal);
         const nowMs = Number(nowFn());
         let transactionOpen = false;

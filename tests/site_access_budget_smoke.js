@@ -504,6 +504,27 @@ async function workflowControlInterruptsSegmentedCooldownSmoke() {
   db.close();
 }
 
+async function workflowControlStopsBeforeImmediateReservationSmoke() {
+  const db = openDb(":memory:");
+  const controller = createSiteAccessController({
+    db,
+    site: "boss",
+    assertActive() {
+      throw Object.assign(new Error("pause"), { code: "WORKFLOW_PAUSE_REQUESTED" });
+    }
+  });
+
+  await assert.rejects(
+    () => controller.reserve("list_scroll"),
+    (error) => error.code === "WORKFLOW_PAUSE_REQUESTED"
+  );
+  assert.strictEqual(listSiteAccessEvents(db, {
+    site: "boss",
+    action: "list_scroll"
+  }).length, 0);
+  db.close();
+}
+
 async function communicationTenMinuteBudgetSmoke() {
   const db = openDb(":memory:");
   let now = Date.parse("2026-07-21T12:00:00+08:00");
@@ -859,6 +880,7 @@ Promise.resolve()
   .then(unconfiguredActionFailsClosedSmoke)
   .then(abortDuringWindowWaitSmoke)
   .then(workflowControlInterruptsSegmentedCooldownSmoke)
+  .then(workflowControlStopsBeforeImmediateReservationSmoke)
   .then(communicationTenMinuteBudgetSmoke)
   .then(communicationThirtyMinuteBudgetSmoke)
   .then(communicationWindowBoundarySmoke)

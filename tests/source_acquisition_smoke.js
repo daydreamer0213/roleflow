@@ -139,6 +139,7 @@ assert.deepStrictEqual(ambiguousNative.unresolvedSelections, [{ field: "jobType"
   await riskPreflightSmoke();
   await scrollSmoke();
   await cardGrowthCheckpointSmoke();
+  await cardGrowthLimitCheckpointSmoke();
   await scanProgressEventOrderSmoke();
   await delayedAppendAtBottomSmoke();
   await confirmedListEndSmoke();
@@ -451,6 +452,35 @@ async function cardGrowthCheckpointSmoke() {
   assert.strictEqual(withCheckpoint.result.cards.length, 4);
   assert.deepStrictEqual(withCheckpoint.counts, withoutCheckpoint.counts,
     "card checkpoints must not add evaluation, scrolling, search checks, or waits");
+}
+
+async function cardGrowthLimitCheckpointSmoke() {
+  let visible = 2;
+  const batches = [];
+  const browser = {
+    async evalValue(_tabId, expression) {
+      if (!expression.includes("__bossExtractCards")) return true;
+      return Array.from({ length: visible }, (_, index) => card(`limit-${index + 1}`));
+    }
+  };
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
+  adapter.assertSearchPage = async () => ({ isSearchPage: true });
+  adapter.scrollList = async () => {
+    visible = 7;
+    return { moved: true, atBottom: false, scrollTop: 700 };
+  };
+  adapter.waitWithPacing = async () => {};
+
+  const result = await adapter.collectCards("tab", 4, null, null, ({ cards, total }) => {
+    batches.push({ ids: cards.map((entry) => entry.title), total });
+  });
+
+  assert.deepStrictEqual(batches, [
+    { ids: ["limit-1", "limit-2"], total: 2 },
+    { ids: ["limit-3", "limit-4"], total: 4 }
+  ]);
+  assert.strictEqual(result.cards.length, 4);
+  assert(batches.every((entry) => entry.total <= 4));
 }
 
 async function scanProgressEventOrderSmoke() {

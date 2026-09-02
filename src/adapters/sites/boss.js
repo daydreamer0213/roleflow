@@ -1613,7 +1613,7 @@ class BossSiteAdapter {
       await this.assertSearchPage(tabId);
       await this.browser.evalValue(tabId, PAGE_HELPERS);
       const initialCards = await this.browser.evalValue(tabId, `(() => window.__bossExtractCards(${maxCards}))()`);
-      const added = mergeUniqueCards(found, initialCards);
+      const added = mergeUniqueCards(found, initialCards, maxCards);
       if (added.length && typeof onCards === "function") await onCards({ cards: added, total: found.size });
       if (found.size) break;
       readinessAttempts += 1;
@@ -1633,7 +1633,7 @@ class BossSiteAdapter {
       await this.assertSearchPage(tabId);
       await this.browser.evalValue(tabId, PAGE_HELPERS);
       const cards = await this.browser.evalValue(tabId, `(() => window.__bossExtractCards(${maxCards}))()`);
-      const added = mergeUniqueCards(found, cards);
+      const added = mergeUniqueCards(found, cards, maxCards);
       if (added.length) {
         growthRounds += 1;
         if (typeof onCards === "function") await onCards({ cards: added, total: found.size });
@@ -1682,7 +1682,7 @@ class BossSiteAdapter {
       await this.assertSearchPage(tabId);
       await this.browser.evalValue(tabId, PAGE_HELPERS);
       const cards = await this.browser.evalValue(tabId, `(() => window.__bossExtractCards(${maxCards}))()`);
-      const added = mergeUniqueCards(found, cards);
+      const added = mergeUniqueCards(found, cards, maxCards);
       if (added.length && typeof onCards === "function") await onCards({ cards: added, total: found.size });
       if (added.length > 0 || found.size >= maxCards) return { grew: true, added: added.length, polls: poll + 1 };
     }
@@ -2782,9 +2782,10 @@ function randomBetween(min, max, randomFn = Math.random) {
   return Math.round(low + (high - low) * Math.max(0, Math.min(1, Number(randomFn()) || 0)));
 }
 
-function mergeUniqueCards(found, cards) {
+function mergeUniqueCards(found, cards, limit = Number.POSITIVE_INFINITY) {
   const added = [];
   for (const card of cards || []) {
+    if (found.size >= limit) break;
     const key = bossSourceId(card) || `${card.company}|${card.title}|${card.salary}|${card.cardText}`;
     if (found.has(key)) continue;
     found.set(key, card);
