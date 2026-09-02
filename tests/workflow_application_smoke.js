@@ -22,6 +22,7 @@ async function main() {
   await portableRecoveryKeepsFrozenAuthority();
   await invalidPortableRecoveryFailsClosed();
   await portableAnalysisControlKeepsAuthorityWithoutBrowserProbe();
+  await scanScopeResumeContracts();
   await resumeControlAndStatusContracts();
   console.log("workflow application smoke passed");
 }
@@ -353,6 +354,87 @@ async function resumeControlAndStatusContracts() {
   assertPlain(status);
 }
 
+async function scanScopeResumeContracts() {
+  const changedLiveContext = {
+    acquisitionMode: "inherited",
+    searchTemplate: { mode: "inherited", url: "https://www.zhipin.com/web/geek/jobs?city=101280100&multiSubway=101280100%3A2" },
+    searchScope: {
+      key: "boss:9:new-scope",
+      templateUrl: "https://www.zhipin.com/web/geek/jobs?city=101280100&multiSubway=101280100%3A2"
+    },
+    keywordSource: { keywords: [{ word: "RAG" }] },
+    platformPolicy: { hash: "new-policy" },
+    currentTargetUrl: "https://www.zhipin.com/web/geek/jobs?city=101280100&multiSubway=101280100%3A2&query=RAG"
+  };
+
+  const readOnlyEvents = [];
+  const readOnly = await resumeWorkflow({
+    db: {},
+    input: { workflowRunId: "workflow-scope", batchModelReady: true },
+    deps: scanScopeResumeDeps(readOnlyEvents, changedLiveContext)
+  });
+  assert.strictEqual(readOnly.workflow.id, "workflow-scope");
+  assert.strictEqual(readOnly.scopeChange.kind, "search_scope_changed");
+  assert.deepStrictEqual(readOnlyEvents, ["browser-probe", "scope-read"]);
+
+  const replacementEvents = [];
+  const replacementLaunches = [];
+  const replaced = await resumeWorkflow({
+    db: {},
+    input: {
+      workflowRunId: "workflow-scope",
+      batchModelReady: true,
+      scopeChoice: "new"
+    },
+    deps: scanScopeResumeDeps(replacementEvents, changedLiveContext, replacementLaunches)
+  });
+  assert.strictEqual(replaced.scopeChange, null);
+  assert.deepStrictEqual(replacementEvents, [
+    "browser-probe",
+    "scope-read",
+    "scan-availability",
+    "replace-context",
+    "spawn"
+  ]);
+  assert.strictEqual(replaced.workflow.id, "workflow-scope");
+  assert.strictEqual(replaced.workflow.sequence, 1);
+  assert.strictEqual(replaced.workflow.scanBatchId, null);
+  assert.strictEqual(replacementLaunches[0].resumeBatchId, null);
+
+  const originalEvents = [];
+  const originalLaunches = [];
+  const original = await resumeWorkflow({
+    db: {},
+    input: {
+      workflowRunId: "workflow-scope",
+      batchModelReady: true,
+      scopeChoice: "original"
+    },
+    deps: scanScopeResumeDeps(originalEvents, changedLiveContext, originalLaunches)
+  });
+  assert.strictEqual(original.scopeChange, null);
+  assert.deepStrictEqual(originalEvents, ["browser-probe", "scope-read", "scan-availability", "spawn"]);
+  assert.strictEqual(originalLaunches[0].resumeBatchId, 91);
+
+  const sameEvents = [];
+  const sameLiveContext = {
+    ...changedLiveContext,
+    searchTemplate: { mode: "inherited", url: "https://www.zhipin.com/web/geek/jobs?city=101280100" },
+    searchScope: {
+      key: "boss:9:old-scope",
+      templateUrl: "https://www.zhipin.com/web/geek/jobs?city=101280100"
+    },
+    currentTargetUrl: "https://www.zhipin.com/web/geek/jobs?query=RAG&city=101280100"
+  };
+  const same = await resumeWorkflow({
+    db: {},
+    input: { workflowRunId: "workflow-scope", batchModelReady: true },
+    deps: scanScopeResumeDeps(sameEvents, sameLiveContext)
+  });
+  assert.strictEqual(same.scopeChange, null);
+  assert.deepStrictEqual(sameEvents, ["browser-probe", "scope-read", "scan-availability", "spawn"]);
+}
+
 function startDeps(events, captureLaunch = () => {}, capturePlanner = () => {}) {
   const plan = planFixture();
   let dashboardReads = 0;
@@ -445,6 +527,74 @@ function resumeDeps(events, browserAuthority = { browserMode: "edge", cdpPort: n
       events.push("spawn");
       return { runId: "scan-8", batchId: 91, workflowRunId: input.workflowRunId, input: selectLaunchInput(input) };
     },
+    logger: silentLogger()
+  };
+}
+
+function scanScopeResumeDeps(events, liveContext, launches = []) {
+  const workflow = {
+    id: "workflow-scope",
+    profileId: 9,
+    planId: 41,
+    localDay: "2099-02-02",
+    sequence: 1,
+    status: "interrupted",
+    resumePhase: "scanning",
+    scanNeeded: true,
+    scanBatchId: 91,
+    communicationBatchId: null,
+    updatedAt: "2099-02-02T00:00:00.000Z",
+    keywords: [{ word: "RAG", priority: "A" }],
+    planner: {
+      acquisitionMode: "inherited",
+      browserMode: "edge",
+      cdpPort: null,
+      searchTemplate: { mode: "inherited", url: "https://www.zhipin.com/web/geek/jobs?city=101280100" },
+      searchScope: {
+        key: "boss:9:old-scope",
+        templateUrl: "https://www.zhipin.com/web/geek/jobs?city=101280100"
+      },
+      keywordSource: { keywords: [{ word: "RAG" }] },
+      platformPolicy: { hash: "old-policy" }
+    }
+  };
+  return {
+    appError,
+    getWorkflowRun: () => workflow,
+    getBatch: () => ({ id: 91 }),
+    workflowResumeNeedsBatchModel: () => false,
+    assertCompleteInheritedContext: (value) => value,
+    resolveWorkflowResumeBrowserMode: () => "edge",
+    normalizeCdpPort: Number,
+    portableCdpPort: 9222,
+    validateResumeBatch: () => true,
+    workflowResumeRequiresBrowser: () => true,
+    browserReadinessProbe: async () => {
+      events.push("browser-probe");
+      return { ready: true, status: "ready" };
+    },
+    publicBrowserReadinessSnapshot: (value) => value,
+    assertWorkflowResumeBrowserReady: () => {},
+    resolveCurrentSearchContext: async () => {
+      events.push("scope-read");
+      return liveContext;
+    },
+    replaceWorkflowScanContext(_db, input) {
+      events.push("replace-context");
+      return {
+        ...workflow,
+        scanRunId: "",
+        scanBatchId: null,
+        planner: input.planner,
+        updatedAt: "2099-02-02T00:00:01.000Z"
+      };
+    },
+    scanAvailability: () => events.push("scan-availability"),
+    spawnScan(_scanRuns, input) {
+      launches.push(input);
+      events.push("spawn");
+    },
+    settleFailedWorkflowLaunch: () => {},
     logger: silentLogger()
   };
 }

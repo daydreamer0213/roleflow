@@ -10,6 +10,7 @@ const {
   getActiveWorkflowRun,
   transitionWorkflowRun,
   attachWorkflowScan,
+  replaceWorkflowScanContext,
   attachWorkflowCommunication
 } = require("../src/core/storage");
 
@@ -191,6 +192,80 @@ try {
   });
   assert.strictEqual(rebound.scanRunId, newScan.id);
   assert.strictEqual(rebound.scanBatchId, resumedBatchId);
+
+  const replaceableWorkflow = createWorkflowRun(db, input({
+    profileId,
+    planId,
+    localDay: "2026-07-23",
+    sequence: 1,
+    planner: {
+      acquisitionMode: "inherited",
+      searchScope: { key: "boss:1:old-scope" }
+    }
+  }));
+  transitionWorkflowRun(db, { id: replaceableWorkflow.id, status: "scanning" });
+  const replaceableBatchId = createBatch(db, "boss", "RAG", "workflow scope replacement", {
+    profileId,
+    searchPlanId: planId
+  });
+  const replaceableScan = createScanRun(db, {
+    runId: "workflow-replace-old",
+    planId,
+    batchId: replaceableBatchId
+  });
+  attachWorkflowScan(db, {
+    id: replaceableWorkflow.id,
+    scanRunId: replaceableScan.id,
+    scanBatchId: replaceableBatchId
+  });
+  finishScanRun(db, {
+    runId: replaceableScan.id,
+    status: "interrupted",
+    stopCode: "BOSS_SEARCH_SCOPE_CHANGED"
+  });
+  transitionWorkflowRun(db, {
+    id: replaceableWorkflow.id,
+    status: "interrupted",
+    errorCode: "BOSS_SEARCH_SCOPE_CHANGED"
+  });
+  const beforeReplacement = getWorkflowRun(db, replaceableWorkflow.id);
+  const replacementPlanner = {
+    acquisitionMode: "inherited",
+    searchScope: { key: "boss:1:new-scope" }
+  };
+  const replaced = replaceWorkflowScanContext(db, {
+    workflowRunId: replaceableWorkflow.id,
+    expectedUpdatedAt: beforeReplacement.updatedAt,
+    planner: replacementPlanner,
+    replacedAt: "2099-02-02T00:00:00.000Z"
+  });
+  assert.strictEqual(replaced.id, beforeReplacement.id);
+  assert.strictEqual(replaced.localDay, beforeReplacement.localDay);
+  assert.strictEqual(replaced.sequence, beforeReplacement.sequence);
+  assert.strictEqual(replaced.scanRunId, "");
+  assert.strictEqual(replaced.scanBatchId, null);
+  assert.strictEqual(replaced.status, "interrupted");
+  assert.strictEqual(replaced.resumePhase, "scanning");
+  assert.strictEqual(replaced.recoveryGeneration, beforeReplacement.recoveryGeneration + 1);
+  assert.strictEqual(replaced.planner.searchScope.key, replacementPlanner.searchScope.key);
+  assert.deepStrictEqual(replaced.planner.scopeReplacements.at(-1), {
+    replacedAt: "2099-02-02T00:00:00.000Z",
+    oldScopeKey: "boss:1:old-scope",
+    oldBatchId: replaceableBatchId,
+    newScopeKey: "boss:1:new-scope"
+  });
+  assert(db.prepare("SELECT 1 FROM batches WHERE id = ?").get(replaceableBatchId));
+  const afterReplacement = getWorkflowRun(db, replaceableWorkflow.id);
+  assert.throws(
+    () => replaceWorkflowScanContext(db, {
+      workflowRunId: replaceableWorkflow.id,
+      expectedUpdatedAt: beforeReplacement.updatedAt,
+      planner: replacementPlanner,
+      replacedAt: "2099-02-02T00:00:01.000Z"
+    }),
+    (error) => error.code === "WORKFLOW_SCAN_CONTEXT_STALE"
+  );
+  assert.deepStrictEqual(getWorkflowRun(db, replaceableWorkflow.id), afterReplacement);
 
   console.log("workflow_storage_smoke ok");
 } finally {

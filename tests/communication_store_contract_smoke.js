@@ -30,7 +30,7 @@ process.removeListener("warning", onWarning);
 assert.deepStrictEqual(Object.keys(store).sort(), COMMUNICATION_EXPORTS);
 assert.strictEqual(coreFacade, store, "core compatibility facade must export the store object itself");
 for (const name of COMMUNICATION_EXPORTS) assert.strictEqual(coreFacade[name], store[name], `${name} must keep its direct reference`);
-assert.strictEqual(Object.keys(storage).length, 186);
+assert.strictEqual(Object.keys(storage).length, 187);
 assert.strictEqual(Object.keys(candidateStore).length, 29);
 assert.strictEqual(Object.keys(jobStore).length, 26);
 assert.strictEqual(Object.keys(scanStore).length, 39);

@@ -33,6 +33,7 @@ const {
   transitionWorkflowRun,
   attachWorkflowScan,
   attachWorkflowScanRun,
+  replaceWorkflowScanContext,
   attachWorkflowCommunication,
   requestWorkflowRunConfigurationPause,
   recordWorkflowScanWait,
@@ -2307,6 +2308,7 @@ module.exports = {
   transitionWorkflowRun,
   attachWorkflowScan,
   attachWorkflowScanRun,
+  replaceWorkflowScanContext,
   attachWorkflowCommunication,
   createBatch: scanStore.createBatch,
 

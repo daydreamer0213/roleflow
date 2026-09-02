@@ -34,6 +34,7 @@ const {
   getScanRun,
   attachWorkflowScan,
   attachWorkflowScanRun,
+  replaceWorkflowScanContext,
   getWorkflowHealthSnapshot,
   getWorkflowRunByCommunicationBatch,
   listWorkflowRuns,
@@ -275,6 +276,7 @@ const PROGRESS_ACTIONS = Object.freeze({
 const {
   buildInheritedSearchScope,
   canonicalizeBossSearchTemplate,
+  canonicalizeBossTargetUrl,
   assertInheritedAcquisitionScope,
   assertCompleteInheritedContext,
   freezeKeywordSource,
@@ -505,6 +507,7 @@ function createDashboardServer({
   mockInterviewAdapterResolver = null,
   acquisitionContextResolver = resolveLiveAcquisitionContext,
   inheritedPreviewResolver = resolveLiveInheritedContext,
+  currentSearchContextResolver = resolveLiveInheritedContext,
   browserReadinessProbe = null,
   workflowResumeBrowserReadinessProbe = null,
   workflowControlSchedule = setTimeout,
@@ -568,6 +571,8 @@ function createDashboardServer({
     runBrowserRead(() => acquisitionContextResolver(input));
   const resolveSerializedInheritedPreview = (input) =>
     runBrowserRead(() => inheritedPreviewResolver(input));
+  const resolveSerializedCurrentSearchContext = (input) =>
+    runBrowserRead(() => currentSearchContextResolver(input));
   const assertBrowserRuntimeReady = () => {
     if (!browserSupervisor?.getSnapshot) return;
     const snapshot = browserSupervisor.getSnapshot();
@@ -1230,7 +1235,7 @@ function createDashboardServer({
           : null;
         return handleWorkflowRunStart(req, res, { db, root, dataRoot, dbPath, scanRuns, modelReady: modelStateReady(batchModelState, "batch_screening"), modelState: batchModelState, backupRuntime, logger, requestId, spawnProcess, acquisitionContextResolver: resolveSerializedAcquisitionContext, planRescore, resolveNewWorkflowBrowser: resolveDashboardWorkflowBrowser });
       }
-      if (req.method === "POST" && url.pathname === "/api/workflow-run/resume") return handleWorkflowRunResume(req, res, { db, root, dataRoot, dbPath, scanRuns, batchModelReady: modelReady("batch_screening"), logger, requestId, spawnProcess, browserReadinessProbe: inspectWorkflowResumeBrowserReadiness, resolveNewWorkflowBrowser: resolveDashboardWorkflowBrowser });
+      if (req.method === "POST" && url.pathname === "/api/workflow-run/resume") return handleWorkflowRunResume(req, res, { db, root, dataRoot, dbPath, scanRuns, batchModelReady: modelReady("batch_screening"), logger, requestId, spawnProcess, browserReadinessProbe: inspectWorkflowResumeBrowserReadiness, resolveNewWorkflowBrowser: resolveDashboardWorkflowBrowser, currentSearchContextResolver: resolveSerializedCurrentSearchContext });
       if (req.method === "POST" && url.pathname === "/api/scan") {
         await ensureManagedWorkspaceReady("scan_start");
         return handlePlanScan(req, res, { db, root, dataRoot, dbPath, scanRuns, modelReady: modelReady("batch_screening"), logger, requestId, spawnProcess, resolveNewWorkflowBrowser: resolveDashboardWorkflowBrowser });
@@ -2166,6 +2171,7 @@ async function resolveLiveInheritedContext({
       acquisitionMode: "inherited",
       searchTemplate,
       searchScope,
+      currentTargetUrl: canonicalizeBossTargetUrl(inspected.url).url,
       keywordSource,
       platformPolicy
     };
@@ -2633,7 +2639,8 @@ async function handleWorkflowRunResume(req, res, {
   requestId,
   spawnProcess,
   browserReadinessProbe,
-  resolveNewWorkflowBrowser
+  resolveNewWorkflowBrowser,
+  currentSearchContextResolver
 }) {
   let workflowRunId = "";
   try {
@@ -2648,10 +2655,31 @@ async function handleWorkflowRunResume(req, res, {
         assertCompleteGeneratedContext, assertFrozenWorkflowPlan,
         resolveWorkflowResumeBrowserMode, normalizeCdpPort, portableCdpPort: PORTABLE_CDP_PORT,
         validateResumeBatch, assertWorkflowAnalysisBatch, workflowResumeRequiresBrowser, browserReadinessProbe,
-        publicBrowserReadinessSnapshot, assertWorkflowResumeBrowserReady, transitionWorkflowRun,
+        publicBrowserReadinessSnapshot, assertWorkflowResumeBrowserReady,
+        resolveCurrentSearchContext: ({ workflow, browserMode, cdpPort }) => {
+          const plan = getSearchPlan(db, workflow.planId);
+          if (!plan) throw appError("WORKFLOW_PLAN_NOT_FOUND", "本轮任务的 Search Plan 不存在。", { statusCode: 404 });
+          return currentSearchContextResolver({
+            db,
+            plan,
+            matchingContext: getCandidateMatchingContext(db, plan.profileId),
+            logger,
+            browserMode,
+            cdpPort
+          });
+        },
+        replaceWorkflowScanContext,
+        transitionWorkflowRun,
         scanAvailability: assertWorkflowScanAvailable, spawnScan: startPlanScan, settleFailedWorkflowLaunch, logger
       }
     });
+    if (result.scopeChange) {
+      return sendHtml(res, renderWorkflowScopeChoicePage({
+        workflowRunId,
+        browserMode: browserAuthority.browserMode,
+        cdpPort: browserAuthority.cdpPort
+      }), 409);
+    }
     redirect(res, `/workflow?runId=${encodeURIComponent(result.workflow.id)}`);
   } catch (error) {
     respondUiError(res, error, modelSettingsBack(
@@ -2664,6 +2692,11 @@ async function handleWorkflowRunResume(req, res, {
       fallbackCode: "WORKFLOW_RUN_RESUME_FAILED"
     });
   }
+}
+
+function renderWorkflowScopeChoicePage({ workflowRunId, browserMode, cdpPort }) {
+  const identity = `<input type="hidden" name="workflowRunId" value="${escapeAttr(workflowRunId)}"><input type="hidden" name="browserMode" value="${escapeAttr(browserMode)}">${cdpPort ? `<input type="hidden" name="cdpPort" value="${Number(cdpPort)}">` : ""}`;
+  return renderPage("搜索条件已经变化", `<main><h1>搜索条件已经变化</h1><section class="panel"><p>本轮开始时的条件与当前 BOSS 搜索页不同。旧结果不会与新结果混合。</p><div class="workflow-actions"><form method="post" action="/api/workflow-run/resume">${identity}<input type="hidden" name="scopeChoice" value="new"><button data-workflow-primary="true">按新条件重新开始本轮</button></form><form method="post" action="/api/workflow-run/resume">${identity}<input type="hidden" name="scopeChoice" value="original"><button class="secondary">继续开始时的条件</button></form><a class="button-link" href="/workflow?runId=${encodeURIComponent(workflowRunId)}">返回本轮</a></div></section></main>`);
 }
 
 function workflowResumeRequiresBrowser(db, workflow) {

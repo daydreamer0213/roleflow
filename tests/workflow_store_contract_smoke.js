@@ -8,7 +8,7 @@ const BASE = "96087de2c495398808da9d2ed03b25697b23a284";
 const WORKFLOW_EXPORTS = [
   "createWorkflowRun", "getWorkflowRun", "getWorkflowRunByCommunicationBatch", "listWorkflowRuns",
   "getActiveWorkflowRun", "transitionWorkflowRun", "attachWorkflowScan", "attachWorkflowScanRun",
-  "attachWorkflowCommunication", "requestWorkflowRunConfigurationPause", "recordWorkflowScanWait",
+  "replaceWorkflowScanContext", "attachWorkflowCommunication", "requestWorkflowRunConfigurationPause", "recordWorkflowScanWait",
   "recordWorkflowPlatformAccess", "workflowJobTaskRow", "jobAnalysisAttemptRow", "countWorkflowJobTasks",
   "insertWorkflowJobTaskRow", "reactivateWorkflowDetailRequiredTaskRow", "selectReadyWorkflowJobEntries",
   "isWorkflowJobTaskObservationReady", "settleIncompleteWorkflowJobTaskRows", "selectClaimableWorkflowJobTaskRow",
@@ -20,7 +20,7 @@ const WORKFLOW_EXPORTS = [
   "WORKFLOW_RUN_STATUSES", "WORKFLOW_TIMEOUT_CIRCUIT_OPEN_CODE"
 ].sort();
 const MOVED_DEFINITIONS = [
-  ...WORKFLOW_EXPORTS,
+  ...WORKFLOW_EXPORTS.filter((name) => name !== "replaceWorkflowScanContext"),
   "workflowRunRow", "workflowObservationJobRow", "nonNegativeInteger", "workflowRunError",
   "ACTIVE_WORKFLOW_RUN_STATUSES", "TERMINAL_WORKFLOW_RUN_STATUSES", "WORKFLOW_CONTROL_STATES",
   "WORKFLOW_DETAIL_REQUIRED_CODE", "WORKFLOW_DETAIL_REQUIRED_KIND", "WORKFLOW_OBSERVATION_QUALITY_JSON_SQL",
@@ -57,7 +57,7 @@ console.log("workflow_store_contract_smoke ok (5 owner contracts)");
 
 function contract01ExportsAndFacadeIdentity() {
   assert.deepEqual(Object.keys(workflowStore).sort(), WORKFLOW_EXPORTS);
-  assert.equal(Object.keys(storage).length, 186);
+  assert.equal(Object.keys(storage).length, 187);
   assert.equal(Object.keys(candidateStore).length, 29);
   assert.equal(Object.keys(jobStore).length, 26);
   assert.equal(Object.keys(scanStore).length, 39);

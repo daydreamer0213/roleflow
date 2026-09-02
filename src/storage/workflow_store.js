@@ -710,6 +710,74 @@ function settleIncompleteWorkflowJobTaskRows(db, { workflowRunId, now }) {
   return { changes: Number(localSkipped.changes || 0) + Number(detailRequired.changes || 0) };
 }
 
+function replaceWorkflowScanContext(db, input = {}) {
+  return immediateTransaction(db, () => {
+    const id = String(input.id || input.workflowRunId || "").trim();
+    const run = getWorkflowRun(db, id);
+    if (!run) throw workflowRunError("WORKFLOW_RUN_NOT_FOUND", "workflow run was not found");
+    if (String(input.expectedUpdatedAt || "") !== String(run.updatedAt || "")) {
+      throw workflowRunError("WORKFLOW_SCAN_CONTEXT_STALE", "workflow run changed before scan context replacement");
+    }
+    if (!["paused", "interrupted"].includes(run.status) || run.resumePhase !== "scanning") {
+      throw workflowRunError("WORKFLOW_SCAN_CONTEXT_STATUS_INVALID", "workflow scan context can only be replaced while paused or interrupted scanning");
+    }
+    if (run.controlState !== "none") {
+      throw workflowRunError("WORKFLOW_SCAN_CONTEXT_CONTROL_ACTIVE", "workflow control must settle before scan context replacement");
+    }
+    if (run.communicationBatchId) {
+      throw workflowRunError("WORKFLOW_SCAN_CONTEXT_COMMUNICATION_EXISTS", "workflow communication already exists");
+    }
+    if (countWorkflowJobTasks(db, id) > 0) {
+      throw workflowRunError("WORKFLOW_SCAN_CONTEXT_ANALYSIS_EXISTS", "workflow analysis tasks already exist");
+    }
+    const activeLease = db.prepare("SELECT expires_at FROM site_scan_leases WHERE site = 'boss'").get();
+    const replacedAt = String(input.replacedAt || nowIso());
+    if (activeLease && Date.parse(activeLease.expires_at) > Date.parse(replacedAt)) {
+      throw workflowRunError("WORKFLOW_SCAN_CONTEXT_LEASE_ACTIVE", "BOSS scan lease is still active");
+    }
+    const scan = run.scanRunId
+      ? db.prepare("SELECT status FROM scan_runs WHERE id = ?").get(run.scanRunId)
+      : null;
+    if (scan?.status === "running") {
+      throw workflowRunError("WORKFLOW_SCAN_CONTEXT_PROCESS_ACTIVE", "workflow scan process is still active");
+    }
+    const planner = input.planner;
+    const newScopeKey = String(planner?.searchScope?.key || "").trim();
+    if (!planner || typeof planner !== "object" || Array.isArray(planner) || !newScopeKey) {
+      throw workflowRunError("WORKFLOW_SCAN_CONTEXT_INVALID", "replacement scan context is incomplete");
+    }
+    const nextPlanner = {
+      ...planner,
+      scopeReplacements: [
+        ...(Array.isArray(run.planner?.scopeReplacements) ? run.planner.scopeReplacements : []),
+        {
+          replacedAt,
+          oldScopeKey: String(run.planner?.searchScope?.key || ""),
+          oldBatchId: run.scanBatchId,
+          newScopeKey
+        }
+      ]
+    };
+    const result = db.prepare(`UPDATE workflow_runs SET
+      status = 'interrupted',
+      planner_json = ?,
+      control_state = 'none',
+      resume_phase = 'scanning',
+      recovery_generation = recovery_generation + 1,
+      scan_run_id = NULL,
+      scan_batch_id = NULL,
+      error_code = NULL,
+      error_message = NULL,
+      updated_at = ?
+    WHERE id = ? AND updated_at = ?`)
+      .run(JSON.stringify(nextPlanner), replacedAt, id, run.updatedAt);
+    if (Number(result.changes || 0) !== 1) {
+      throw workflowRunError("WORKFLOW_SCAN_CONTEXT_STALE", "workflow run changed before scan context replacement");
+    }
+    return getWorkflowRun(db, id);
+  });
+}
+
 function selectClaimableWorkflowJobTaskRow(db, { workflowRunId, now }) {
   return db.prepare(`
     SELECT t.*
@@ -1184,6 +1252,7 @@ module.exports = {
   transitionWorkflowRun,
   attachWorkflowScan,
   attachWorkflowScanRun,
+  replaceWorkflowScanContext,
   attachWorkflowCommunication,
   requestWorkflowRunConfigurationPause,
   recordWorkflowScanWait,

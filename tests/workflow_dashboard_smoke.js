@@ -30,6 +30,7 @@ const {
 const { matchingCardFromProfile } = require("../src/core/matching_card");
 const { listWorkflowReviewCandidates } = require("../src/core/workflow_inventory");
 const { buildScanExecutionSnapshot } = require("../src/core/scan_snapshot");
+const { buildInheritedSearchScope } = require("../src/core/inherited_search_scope");
 const { finalizeWorkflowControl, requestWorkflowStop } = require("../src/core/workflow_control");
 const {
   createCommunicationBatch,
@@ -160,6 +161,7 @@ let server;
   let inheritedFailureCode = "";
   let inheritedResolutionCount = 0;
   let inheritedResolutionInput = null;
+  let currentSearchContext = null;
   let resumeBrowserReadinessStatus = "ready";
   const resumeBrowserProbeInputs = [];
   let browserReadiness = {
@@ -252,6 +254,7 @@ let server;
     logger,
     acquisitionContextResolver,
     inheritedPreviewResolver: acquisitionContextResolver,
+    currentSearchContextResolver: async (input) => currentSearchContext || acquisitionContextResolver(input),
     browserReadinessProbe: async (authority) => {
       browserReadinessInputs.push(authority);
       return { ...browserReadiness };
@@ -1400,6 +1403,13 @@ let server;
   assert.strictEqual(getWorkflowRun(db, generatedWorkflow.id).status, "interrupted");
 
   for (const spawned of spawns) spawned.child.emit("close", 0, null);
+  await testWorkflowSearchScopeReplacement({
+    baseUrl,
+    database: db,
+    saved,
+    spawns,
+    setCurrentSearchContext(value) { currentSearchContext = value; }
+  });
   testWorkflowStatusReadBudget();
   const progressPanelFixture = await testWorkflowStatusApi(baseUrl, db, saved);
   await testWorkflowProgressPanel(baseUrl, db, progressPanelFixture);
@@ -1965,6 +1975,7 @@ async function testPortableDashboardBinding({ database, acquisitionContextResolv
     },
     acquisitionContextResolver,
     inheritedPreviewResolver: trackedPreviewResolver,
+    currentSearchContextResolver: acquisitionContextResolver,
     browserReadinessProbe: async (authority) => {
       readinessInputs.push(authority);
       return { status: "ready", ready: true, message: "portable fixture ready", checkedAt: "2099-01-01T00:00:00.000Z" };
@@ -2851,6 +2862,134 @@ async function testWorkflowControlApi(
   });
   assert.strictEqual(invalid.status, 409);
   assert.match(invalid.body, /WORKFLOW_CONTROL_ACTION_INVALID/);
+}
+
+async function testWorkflowSearchScopeReplacement({
+  baseUrl,
+  database,
+  saved,
+  spawns,
+  setCurrentSearchContext
+}) {
+  const oldContext = workflowInheritedContext(saved, "https://www.zhipin.com/web/geek/jobs?city=101280100&multiSubway=101280100%3A1&query=RAG");
+  const newContext = workflowInheritedContext(saved, "https://www.zhipin.com/web/geek/jobs?city=101280100&multiSubway=101280100%3A2&query=RAG");
+  const workflow = createWorkflowRun(database, {
+    profileId: saved.profileId,
+    planId: saved.planId,
+    localDay: "2099-02-18",
+    sequence: 1,
+    targetSuccessCount: 35,
+    candidateGap: 35,
+    scanNeeded: true,
+    keywords: [{ word: "RAG", priority: "A", maxCards: 20 }],
+    budget: { maxDetailTotal: 20, browserPageBudget: 4 },
+    planner: { ...oldContext, browserMode: "edge", cdpPort: null }
+  });
+  transitionWorkflowRun(database, { id: workflow.id, status: "scanning" });
+  const oldExecution = buildScanExecutionSnapshot({
+    site: "boss",
+    scanKind: "daily",
+    runtimePolicyHash: "scope-replacement-runtime",
+    searchTemplate: oldContext.searchTemplate,
+    searchScope: oldContext.searchScope,
+    keywordSource: oldContext.keywordSource,
+    platformPolicy: oldContext.platformPolicy,
+    cityScopes: [{ city: "广州", cityCode: "101280100" }],
+    keywordPlan: [{ word: "RAG", priority: "A", maxCards: 20 }],
+    nativeFilters: { site: "boss", params: {}, lanes: [] },
+    limits: {
+      maxCards: 20,
+      maxDetailTotal: 20,
+      browserPageBudget: 4,
+      detailLimits: { A: 20, B: 20, C: 20 }
+    }
+  });
+  const oldBatchId = createBatch(database, "boss", "RAG", "scope replacement fixture", {
+    profileId: saved.profileId,
+    searchPlanId: saved.planId,
+    filterSnapshot: { execution: oldExecution }
+  });
+  const oldScan = createScanRun(database, {
+    runId: "workflow-scope-replacement-old",
+    site: "boss",
+    command: "daily",
+    planId: saved.planId,
+    batchId: oldBatchId
+  });
+  attachWorkflowScan(database, {
+    id: workflow.id,
+    scanRunId: oldScan.id,
+    scanBatchId: oldBatchId
+  });
+  finishScanRun(database, {
+    runId: oldScan.id,
+    status: "interrupted",
+    stopCode: "BOSS_SEARCH_SCOPE_CHANGED"
+  });
+  transitionWorkflowRun(database, {
+    id: workflow.id,
+    status: "interrupted",
+    errorCode: "BOSS_SEARCH_SCOPE_CHANGED"
+  });
+  setCurrentSearchContext(newContext);
+  const before = getWorkflowRun(database, workflow.id);
+  const spawnCount = spawns.length;
+
+  const choice = await postForm(baseUrl, "/api/workflow-run/resume", {
+    workflowRunId: workflow.id,
+    browserMode: "edge"
+  });
+  assert.strictEqual(choice.status, 409);
+  assert.match(choice.body, /搜索条件已经变化/);
+  assert.match(choice.body, /按新条件重新开始本轮/);
+  assert.match(choice.body, /继续开始时的条件/);
+  assert.deepStrictEqual(getWorkflowRun(database, workflow.id), before);
+  assert.strictEqual(spawns.length, spawnCount);
+
+  const replaced = await postForm(baseUrl, "/api/workflow-run/resume", {
+    workflowRunId: workflow.id,
+    browserMode: "edge",
+    scopeChoice: "new"
+  });
+  assert.strictEqual(replaced.status, 303, replaced.body);
+  const current = getWorkflowRun(database, workflow.id);
+  assert.strictEqual(current.id, before.id);
+  assert.strictEqual(current.localDay, before.localDay);
+  assert.strictEqual(current.sequence, before.sequence);
+  assert.strictEqual(current.scanBatchId, null);
+  assert.strictEqual(current.planner.searchScope.key, newContext.searchScope.key);
+  assert(database.prepare("SELECT 1 FROM batches WHERE id = ?").get(oldBatchId));
+  assert.strictEqual(spawns.length, spawnCount + 1);
+  spawns.at(-1).child.emit("close", 0, null);
+  setCurrentSearchContext(null);
+}
+
+function workflowInheritedContext(saved, rawUrl) {
+  const { searchTemplate, searchScope } = buildInheritedSearchScope({
+    profileId: saved.profileId,
+    rawUrl
+  });
+  return {
+    acquisitionMode: "inherited",
+    searchTemplate,
+    searchScope,
+    keywordSource: {
+      searchPlanId: saved.planId,
+      profileVersionId: saved.profileVersionId,
+      matchingCardRevision: "fixture-card",
+      catalogHash: "fixture-keywords",
+      keywords: [{ word: "RAG", priority: "A", reason: "fixture" }]
+    },
+    platformPolicy: {
+      site: "boss",
+      hash: `fixture-policy-${searchScope.templateHash}`,
+      templateHash: searchScope.templateHash,
+      filters: {},
+      unresolvedParams: [],
+      filterSummary: []
+    },
+    currentTargetUrl: rawUrl
+  };
 }
 
 function seedWorkflowApiFixture(database, saved, {

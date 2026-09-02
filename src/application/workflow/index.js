@@ -177,6 +177,8 @@ async function resumeWorkflow({ db, input = {}, deps = {} }) {
     browserReadinessProbe,
     publicBrowserReadinessSnapshot,
     assertWorkflowResumeBrowserReady,
+    resolveCurrentSearchContext,
+    replaceWorkflowScanContext,
     transitionWorkflowRun,
     scanAvailability,
     spawnScan,
@@ -184,8 +186,12 @@ async function resumeWorkflow({ db, input = {}, deps = {} }) {
     logger
   } = deps;
   const workflowRunId = String(input.workflowRunId || input.runId || "").trim();
-  const workflow = getWorkflowRun(db, workflowRunId);
+  let workflow = getWorkflowRun(db, workflowRunId);
   if (!workflow) throw appError("WORKFLOW_RUN_NOT_FOUND", "本轮任务不存在。", { statusCode: 404 });
+  const scopeChoice = String(input.scopeChoice || "").trim();
+  if (scopeChoice && !["new", "original"].includes(scopeChoice)) {
+    throw appError("WORKFLOW_SEARCH_SCOPE_CHOICE_INVALID", "请选择按新条件重新开始，或继续开始时的条件。", { statusCode: 400 });
+  }
   if (workflowResumeNeedsBatchModel(db, workflow) && !input.batchModelReady) {
     throw appError("MODEL_CONFIGURATION_REQUIRED", "继续本轮前，请先完成批量筛选模型连接测试。", { statusCode: 409 });
   }
@@ -269,6 +275,44 @@ async function resumeWorkflow({ db, input = {}, deps = {} }) {
     const readiness = publicBrowserReadinessSnapshot(await browserReadinessProbe({ browserMode, cdpPort }));
     assertWorkflowResumeBrowserReady(readiness);
   }
+  const comparesSearchScope = !resumesAnalysis
+    && workflow.scanNeeded
+    && typeof resolveCurrentSearchContext === "function"
+    && Boolean(workflow.planner?.searchScope?.templateUrl);
+  let scanAvailabilityChecked = false;
+  if (comparesSearchScope) {
+    const liveContext = await resolveCurrentSearchContext({ workflow, browserMode, cdpPort });
+    const scopeChanged = workflowSearchScopeChanged(workflow, liveContext);
+    if (scopeChanged && !scopeChoice) {
+      return {
+        workflow,
+        scopeChange: {
+          kind: "search_scope_changed",
+          runId: workflow.id,
+          oldScopeKey: String(workflow.planner?.searchScope?.key || ""),
+          newScopeKey: String(liveContext?.searchScope?.key || "")
+        }
+      };
+    }
+    if (scopeChoice === "new") {
+      if (!scopeChanged) {
+        throw appError("WORKFLOW_SEARCH_SCOPE_UNCHANGED", "当前搜索条件没有变化，可以直接继续本轮。", { statusCode: 409 });
+      }
+      const { currentTargetUrl: _currentTargetUrl, ...nextContext } = liveContext || {};
+      assertCompleteInheritedContext(nextContext, {
+        code: "WORKFLOW_INHERITED_SNAPSHOT_INVALID",
+        message: "当前搜索条件不完整，不能安全重新开始本轮。",
+        planId: workflow.planId
+      });
+      scanAvailability(db, input.scanRuns, workflow.planId, logger);
+      scanAvailabilityChecked = true;
+      workflow = replaceWorkflowScanContext(db, {
+        workflowRunId: workflow.id,
+        expectedUpdatedAt: workflow.updatedAt,
+        planner: { ...workflow.planner, ...nextContext }
+      });
+    }
+  }
   let resumed = workflow;
   if (workflow.status === "created" || (workflow.status === "interrupted" && !workflow.communicationBatchId)) {
     try {
@@ -276,7 +320,7 @@ async function resumeWorkflow({ db, input = {}, deps = {} }) {
         resumed = transitionWorkflowRun(db, { id: workflow.id, status: "analyzing", resumePhase: null });
         spawnScan(input.scanRuns, { db, root: input.root, dataRoot: input.dataRoot, dbPath: input.dbPath, planId: workflow.planId, cdpPort, browserMode, scanKind: "daily", workflowRunId: workflow.id, logger, requestId: input.requestId, spawnProcess: input.spawnProcess });
       } else if (workflow.scanNeeded) {
-        scanAvailability(db, input.scanRuns, workflow.planId, logger);
+        if (!scanAvailabilityChecked) scanAvailability(db, input.scanRuns, workflow.planId, logger);
         spawnScan(input.scanRuns, { db, root: input.root, dataRoot: input.dataRoot, dbPath: input.dbPath, planId: workflow.planId, cdpPort, browserMode, scanKind: "daily", resumeBatchId: workflow.scanBatchId, workflowRunId: workflow.id, logger, requestId: input.requestId, spawnProcess: input.spawnProcess });
       } else {
         resumed = transitionWorkflowRun(db, { id: workflow.id, status: "review_required" });
@@ -286,7 +330,18 @@ async function resumeWorkflow({ db, input = {}, deps = {} }) {
       throw launchError;
     }
   }
-  return { workflow: resumed };
+  return { workflow: resumed, scopeChange: null };
+}
+
+function workflowSearchScopeChanged(workflow, liveContext) {
+  if (String(workflow?.planner?.searchScope?.templateUrl || "")
+    !== String(liveContext?.searchScope?.templateUrl || "")) return true;
+  let currentKeyword = "";
+  try {
+    currentKeyword = new URL(String(liveContext?.currentTargetUrl || "")).searchParams.get("query")?.trim() || "";
+  } catch {}
+  if (!currentKeyword) return false;
+  return !(workflow?.keywords || []).some((item) => String(item?.word || "").trim() === currentKeyword);
 }
 
 async function controlWorkflow({ db, input = {}, deps = {} }) {
