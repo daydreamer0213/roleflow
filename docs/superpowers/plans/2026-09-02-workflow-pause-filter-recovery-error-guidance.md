@@ -553,7 +553,7 @@ git add -- docs/PROJECT_HANDOFF.md docs/superpowers/plans/2026-09-02-workflow-pa
 git commit -m "docs: record workflow filter recovery verification"
 ```
 
-- [ ] **Step 6: Verify the exact final commit**
+- [x] **Step 6: Verify the exact final commit**
 
 Run the high-risk regressions again on exact `HEAD`, then:
 
