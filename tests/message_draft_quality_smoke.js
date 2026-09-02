@@ -143,7 +143,8 @@ for (const employerQuestion of [
   "感谢您介绍这 2 个方向，我很有兴趣。",
   "这 2 个方向我都有兴趣。",
   "我有 2 个问题想请教。",
-  "其中我有 2 个方向比较感兴趣。"
+  "其中我有 2 个方向比较感兴趣。",
+  "我有 2 个客户相关问题想请教。"
 ]) {
   const result = assessMessageDraftQuality({
     text: employerQuestion,
@@ -155,6 +156,10 @@ for (const employerQuestion of [
 
 for (const unsupportedCandidateClaim of [
   "我有 100 个客户。",
+  "我有 100 个长期合作客户。",
+  "我有 100 个优质客户。",
+  "我有 100 个软件项目。",
+  "我有 100 个落地项目。",
   "我做过 100 个项目。",
   "100 个项目均已完成。"
 ]) {
