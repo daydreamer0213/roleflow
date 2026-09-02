@@ -111,4 +111,28 @@ const supportedAchievementParaphrase = assessMessageDraftQuality({
 });
 assert.equal(supportedAchievementParaphrase.valid, true, JSON.stringify(supportedAchievementParaphrase.errors));
 
+const unsupportedResponseCount = assessMessageDraftQuality({
+  text: "响应 100 次调用。",
+  recentTexts: [],
+  evidenceTexts: []
+});
+assert.equal(unsupportedResponseCount.valid, false);
+assert(unsupportedResponseCount.errors.some((item) => item.kind === "numeric_achievement"));
+
+const supportedSoftwareExperienceParaphrase = assessMessageDraftQuality({
+  text: "有 3 年软件工程经验。",
+  recentTexts: [],
+  evidenceTexts: ["有 3 年软件开发经验。"]
+});
+assert.equal(supportedSoftwareExperienceParaphrase.valid, true,
+  JSON.stringify(supportedSoftwareExperienceParaphrase.errors));
+
+const supportedRequestCountParaphrase = assessMessageDraftQuality({
+  text: "响应 100 次调用。",
+  recentTexts: [],
+  evidenceTexts: ["处理 100 个请求。"]
+});
+assert.equal(supportedRequestCountParaphrase.valid, true,
+  JSON.stringify(supportedRequestCountParaphrase.errors));
+
 console.log("message_draft_quality_smoke ok");

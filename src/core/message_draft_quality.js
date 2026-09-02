@@ -12,7 +12,7 @@ const CLAIM_PATTERNS = Object.freeze({
   salary: /(?:期望|薪资|月薪|年薪)[^，。；\n]{0,12}(?:\d+(?:\.\d+)?\s*[KkWw万千]?)/g,
   percentage: /[^，。；\n]{0,12}\d+(?:\.\d+)?%[^，。；\n]{0,12}/g,
   duration: /[^，。；\n]{0,12}\d+(?:\.\d+)?\s*(?:年|个月|月|天)[^，。；\n]{0,12}/g,
-  numeric_achievement: /[^，。；\n]{0,12}(?:提升|增长|降低|减少|服务|处理|覆盖|完成|负责)[^，。；\n]{0,12}\d+(?:\.\d+)?\s*(?:个|人|家|次|万|千|%|项|篇|条)?[^，。；\n]{0,12}/g,
+  numeric_achievement: /[^，。；\n]{0,12}\d+(?:\.\d+)?\s*(?:个|人|位|名|家|次|万|千|项|篇|条|单|场)[^，。；\n]{0,12}/g,
   arrival: /(?:本周|下周|这周|今天|明天|后天|周[一二三四五六日天]|随时|立即|一周内|两周后|两周内|一个月内|\d+天后|\d+周后)[^，。；\n]{0,8}(?:到岗|入职)/g,
   interview_availability: /(?:本周|下周|今天|明天|后天|周[一二三四五六日天])[^，。；\n]{0,10}(?:可以|可|方便|有空)?[^，。；\n]{0,4}(?:面试|沟通)/g,
   overtime: /(?:不接受|不考虑|不能|无法|拒绝|可以接受|可以|接受|愿意)[^，。；\n]{0,4}(?:加班|大小周|单休)/g,
@@ -136,15 +136,16 @@ function scheduleToken(value) {
 
 function numericToken(value) {
   const tokens = String(value || "").normalize("NFKC").toLowerCase()
-    .match(/\d+(?:\.\d+)?\s*(?:k|w|万|千|%|年|个月|月|天|个|人|家|次|项|篇|条)?/g);
-  return (tokens || []).map((token) => token.replace(/\s+/g, "")).join("|");
+    .match(/\d+(?:\.\d+)?\s*(?:k|w|万|千|%|年|个月|月|天|个|人|位|名|家|次|项|篇|条|单|场)?/g);
+  return (tokens || []).map((token) => token.replace(/\s+/g, "")
+    .replace(/(?:个|人|位|名|家|次|项|篇|条|单|场)$/, "count")).join("|");
 }
 
 function semanticToken(kind, value) {
   const text = normalizedMessageText(value);
   const groups = kind === "duration"
     ? [
-        ["software", /开发|研发|编程|代码|程序|前端|后端|全栈|测试/],
+        ["software", /软件|开发|研发|编程|代码|程序|前端|后端|全栈|测试/],
         ["sales", /销售|售前|商务|成交|签单|拓客/],
         ["operations", /运营|内容|社群|投放|活动/],
         ["product", /产品|需求|用户研究/],
