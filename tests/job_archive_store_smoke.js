@@ -9,7 +9,8 @@ const {
   listReportJobs,
   archiveCandidateJob,
   restoreCandidateJob,
-  isCandidateJobArchived
+  isCandidateJobArchived,
+  markCandidateJob
 } = require("../src/core/storage");
 
 const NOW = "2026-09-03T08:00:00.000Z";
@@ -37,6 +38,10 @@ try {
   assert.equal(job.archived, true);
   assert.equal(job.archivedAt, NOW);
   assert.equal(job.applicationStatus, "applied", "archive must not alter the application state");
+  assert.throws(() => markCandidateJob(db, {
+    ...own,
+    status: "applied"
+  }), (error) => error.code === "JOB_ARCHIVED_ACTION_BLOCKED");
 
   assert.throws(() => archiveCandidateJob(db, {
     profileId: own.profileId,

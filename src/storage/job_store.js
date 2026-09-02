@@ -527,6 +527,9 @@ function markCandidateJob(db, { profileId, jobId, status, note = "", reasonCode 
   if (!Number.isInteger(job) || job <= 0) throw new Error("job is required");
   if (!VALID_CANDIDATE_STATUSES.has(status)) throw new Error("invalid candidate job status");
   if (!db.prepare("SELECT id FROM jobs WHERE id = ?").get(job)) throw new Error("job not found");
+  if (isCandidateJobArchived(db, { profileId: profile, jobId: job })) {
+    throw storageError("JOB_ARCHIVED_ACTION_BLOCKED", "岗位已归档，请先恢复后再处理");
+  }
   const now = nowIso();
   const normalizedReason = NEGATIVE_FEEDBACK_STATUSES.has(status) ? normalizeFeedbackReason(reasonCode, status) : "";
   const work = () => {

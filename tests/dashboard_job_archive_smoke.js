@@ -43,6 +43,19 @@ async function main() {
     page = await request(base, `${activeUrl}&archive=only`);
     assert.match(page.body, /归档测试岗位/);
     assert.match(page.body, /name="action" value="restore"/);
+    assert.doesNotMatch(page.body, /name="status" value="applied"/);
+    assert.doesNotMatch(page.body, /action="\/api\/communication"/);
+    assert.match(page.body, /恢复后可继续处理/);
+
+    response = await postForm(base, "/api/mark", {
+      profileId: fixture.profileId,
+      planId: fixture.planId,
+      jobId: fixture.jobId,
+      status: "applied"
+    }, `${activeUrl}&archive=only`);
+    assert.equal(response.status, 409);
+    assert.match(response.body, /请先恢复/);
+    assert.equal(db.prepare("SELECT count(*) AS n FROM candidate_funnel_entries").get().n, 0);
 
     response = await postForm(base, "/api/job-archive", { ...fixture, action: "restore" }, `${activeUrl}&archive=only`);
     assert.equal(response.status, 303);
