@@ -1,6 +1,7 @@
 const {
   createMessageReplySendBatch,
-  stopPendingMessageReplySendItems
+  stopPendingMessageReplySendItems,
+  getMessageReplyDraft
 } = require("../../core/storage");
 const {
   loadReplySendBatch,
@@ -8,7 +9,7 @@ const {
   transitionReplySendItem,
   publicReplySendBatch
 } = require("../../core/message_reply_send_batches");
-const { recordReplyConfirmedSent } = require("../../core/candidate_progress");
+const { recordReplyConfirmedSent, recordFollowUpSent } = require("../../core/candidate_progress");
 
 const TERMINAL_BATCH_STATUSES = new Set(["completed", "stopped", "interrupted"]);
 
@@ -102,6 +103,8 @@ function createMessageReplySendingService({
     if (current.status !== "click_dispatched" || current.clickCount !== 1) {
       throw sendingError("MESSAGE_REPLY_SEND_ITEM_NOT_VERIFIED", "message reply send item is not awaiting verified completion");
     }
+    const draft = getMessageReplyDraft(db, { profileId, draftId: current.draftId });
+    if (!draft) throw sendingError("MESSAGE_REPLY_SEND_DRAFT_NOT_FOUND", "message reply draft was not found");
     const completedAt = nowIso(now());
     const learning = await learningService.completeDraft({
       profileId,
@@ -118,10 +121,11 @@ function createMessageReplySendingService({
           clickCount: 1,
           updatedAt: completedAt
         });
-        recordReplyConfirmedSent(db, {
+        const recordSent = draft.messageIntent === "follow_up" ? recordFollowUpSent : recordReplyConfirmedSent;
+        recordSent(db, {
           cardId: current.cardId,
           idempotencyKey: `message-reply-send:${batch}:${item}`,
-          summary: "用户确认已手动发送",
+          summary: draft.messageIntent === "follow_up" ? "已发送首次跟进" : "用户确认已手动发送",
           occurredAt: completedAt
         });
       }

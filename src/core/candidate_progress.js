@@ -655,6 +655,30 @@ function recordReplyConfirmedSent(db, input = {}) {
   });
 }
 
+function recordFollowUpSent(db, input = {}) {
+  const cardId = positiveInteger(input.cardId, "cardId");
+  const card = getProgressCard(db, cardId);
+  if (!card) throw progressError("PROGRESS_CARD_NOT_FOUND", "progress card was not found");
+  const rawKey = String(input.idempotencyKey || "").trim();
+  const idempotencyKey = /^message-reply-send:[1-9]\d*:[1-9]\d*$/.test(rawKey)
+    ? derivedProgressIdempotencyKey([rawKey])
+    : progressIdempotencyKey(rawKey);
+  const occurredAt = isoText(input.occurredAt);
+  const summary = shortText(input.summary || "已发送首次跟进", 240);
+  if (!summary) throw progressError("PROGRESS_ACTION_INVALID", "follow-up sent summary is required");
+  return progressTransaction(db, () => {
+    recordProgressEvent(db, {
+      cardId,
+      idempotencyKey,
+      type: "follow_up_sent",
+      actor: "user",
+      summary,
+      occurredAt
+    });
+    return getProgressCard(db, cardId);
+  });
+}
+
 function sanitizedMessageSummary(messageCategory, { missingFactKey = "", messageIntent = "" } = {}) {
   if (String(messageIntent || "").trim() === "interview_invitation") return "收到面试邀约";
   const category = String(messageCategory || "").trim();
@@ -1120,6 +1144,7 @@ module.exports = {
   recordDiscoveredMessageGroupClassification,
   recordManualProgressAction,
   recordReplyConfirmedSent,
+  recordFollowUpSent,
   sanitizedMessageSummary,
   getProgressCardForJob,
   getProgressCardById,

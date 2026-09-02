@@ -9,6 +9,7 @@ const {
   recordMessageReplyDrafts,
   saveMessageInboundContext,
   createMessageReplySendBatch,
+  ensureFunnelEntry,
   acquireSiteScanLease,
   releaseSiteScanLease
 } = require("../src/core/storage");
@@ -19,12 +20,15 @@ const {
 } = require("../src/core/message_reply_send_batches");
 const { createDashboardServer } = require("../src/dashboard/server");
 const { createMessageReplySendController } = require("../src/dashboard/message_reply_send_controller");
+const { createMessageReplyLearningService } = require("../src/application/message_learning");
+const { createMessageReplySendingService } = require("../src/application/message_reply_sending");
 
 const TOKEN = "message-reply-action-fixture";
 const NOW = "2026-08-29T06:00:00.000Z";
 
 (async () => {
   await historicalBatchDoesNotAutoResumeSmoke();
+  await followUpCompletionUsesItsOwnProgressEventSmoke();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-dashboard-reply-send-"));
   const db = openDb(path.join(root, "dashboard.sqlite"));
   let server = null;
@@ -153,6 +157,58 @@ const NOW = "2026-08-29T06:00:00.000Z";
   console.error(error.stack || error.message);
   process.exitCode = 1;
 });
+
+async function followUpCompletionUsesItsOwnProgressEventSmoke() {
+  const db = openDb(":memory:");
+  try {
+    const fixture = seedDrafts(db, 1, "follow-up-completion");
+    const draft = fixture.drafts[0];
+    db.prepare("UPDATE message_reply_drafts SET message_intent = 'follow_up' WHERE id = ?").run(draft.id);
+    db.prepare("UPDATE candidate_progress_cards SET stage = 'waiting_reply' WHERE id = ?").run(draft.cardId);
+    ensureFunnelEntry(db, {
+      profileId: fixture.profileId,
+      planId: fixture.planId,
+      jobId: draft.jobId,
+      cardId: draft.cardId,
+      sourceKind: "reply_sent",
+      startedAt: NOW
+    });
+    const created = createMessageReplySendBatch(db, {
+      profileId: fixture.profileId,
+      items: [{ draftId: draft.id, revision: draft.revision }],
+      createdAt: NOW
+    });
+    transitionReplySendBatch(db, {
+      profileId: fixture.profileId,
+      batchId: created.batch.id,
+      expectedStatus: "confirmed",
+      status: "running"
+    });
+    let item = created.items[0];
+    for (const status of ["selecting", "verified", "filled", "click_dispatched"]) {
+      item = transitionReplySendItem(db, {
+        profileId: fixture.profileId,
+        batchId: created.batch.id,
+        itemId: item.id,
+        expectedStatus: item.status,
+        status,
+        clickCount: status === "click_dispatched" ? 1 : 0
+      });
+    }
+    const service = createMessageReplySendingService({
+      db,
+      learningService: createMessageReplyLearningService({ db, adapter: {}, now: () => NOW }),
+      now: () => NOW
+    });
+    await service.completeVerifiedItem({ batchId: created.batch.id, itemId: item.id });
+    await service.completeVerifiedItem({ batchId: created.batch.id, itemId: item.id });
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM candidate_progress_events WHERE card_id = ? AND type = 'follow_up_sent'").get(draft.cardId).n, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM candidate_progress_events WHERE card_id = ? AND type = 'reply_confirmed_sent'").get(draft.cardId).n, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM candidate_funnel_entries WHERE profile_id = ? AND job_id = ?").get(fixture.profileId, draft.jobId).n, 1);
+  } finally {
+    db.close();
+  }
+}
 
 async function historicalBatchDoesNotAutoResumeSmoke() {
   const db = openDb(":memory:");
