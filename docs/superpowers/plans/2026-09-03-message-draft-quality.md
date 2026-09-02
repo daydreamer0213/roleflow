@@ -32,7 +32,7 @@
 - Produces: `normalizedMessageText(text) -> string`.
 - Produces: `extractHighRiskClaims(text) -> Array<{ kind, value }>`.
 
-- [ ] **Step 1: Write failing pure-function tests**
+- [x] **Step 1: Write failing pure-function tests**
 
 ```js
 const repeated = assessMessageDraftQuality({
@@ -54,13 +54,13 @@ assert.deepEqual(invented.errors.map((item) => item.kind).sort(), ["arrival", "p
 
 Add positive cases where exact evidence supports phone, email, URL, availability, salary, year/month duration, percentage and numeric achievement. Add whitespace folding, punctuation-only differences, short generic phrases and unrelated messages.
 
-- [ ] **Step 2: Run the test and verify RED**
+- [x] **Step 2: Run the test and verify RED**
 
 Run: `node tests/message_draft_quality_smoke.js`
 
 Expected: FAIL because `src/core/message_draft_quality.js` does not exist.
 
-- [ ] **Step 3: Implement deterministic normalization and similarity**
+- [x] **Step 3: Implement deterministic normalization and similarity**
 
 Normalize Unicode width, lowercase Latin text, fold whitespace and remove decorative punctuation. Compare:
 
@@ -69,7 +69,7 @@ Normalize Unicode width, lowercase Latin text, fold whitespace and remove decora
 
 Keep thresholds as named constants and export them for fixture assertions. Do not warn on generic openings shorter than 8 normalized characters.
 
-- [ ] **Step 4: Implement high-risk claim extraction**
+- [x] **Step 4: Implement high-risk claim extraction**
 
 Use bounded regular expressions for:
 
@@ -86,7 +86,7 @@ const CLAIM_PATTERNS = Object.freeze({
 
 Add explicit preference phrases for arrival/interview availability, overtime, travel and relocation. A claim is supported only when its normalized token or the same explicit preference is present in at least one evidence text.
 
-- [ ] **Step 5: Run the test and commit**
+- [x] **Step 5: Run the test and commit**
 
 Run: `node tests/message_draft_quality_smoke.js`
 
@@ -108,7 +108,7 @@ git commit -m "feat: assess generated message draft quality"
 - Consumes: `assessMessageDraftQuality()`.
 - Produces: async `generateQualityCheckedDraft({ generate, input, recentTexts, evidenceTexts }) -> { result, assessment, attempts }`.
 
-- [ ] **Step 1: Write the failing orchestration test**
+- [x] **Step 1: Write the failing orchestration test**
 
 ```js
 const calls = [];
@@ -129,13 +129,13 @@ assert.equal(calls[1].draftQualityRevision.reasonCodes[0], "MESSAGE_DRAFT_RECENT
 
 Add cases for unsupported facts, second result still similar, second result still fact-invalid, generator failure on the second call, zero messages and two alternatives where only one is invalid.
 
-- [ ] **Step 2: Run the test and verify RED**
+- [x] **Step 2: Run the test and verify RED**
 
 Run: `node tests/message_draft_quality_service_smoke.js`
 
 Expected: FAIL because the orchestration service is absent.
 
-- [ ] **Step 3: Implement exactly two bounded attempts**
+- [x] **Step 3: Implement exactly two bounded attempts**
 
 ```js
 const first = await generate(input);
@@ -154,7 +154,7 @@ try {
 
 If the second call fails, preserve the first result and its invalid assessment. If any message has unsupported facts, `sendable` is false. Similarity alone keeps `sendable` true.
 
-- [ ] **Step 4: Run the service test and commit**
+- [x] **Step 4: Run the service test and commit**
 
 Run: `node tests/message_draft_quality_service_smoke.js`
 
@@ -177,7 +177,7 @@ git commit -m "feat: revise message drafts once for quality"
 - Consumes: optional `input.draftQualityRevision = { reasonCodes, matchedOpening, unsupportedClaims }`.
 - Produces: the existing `classifyMessageGroup` and `draftCommunication` result shapes without new required output fields.
 
-- [ ] **Step 1: Write failing prompt and mock tests**
+- [x] **Step 1: Write failing prompt and mock tests**
 
 ```js
 await adapter.draftCommunication({
@@ -193,13 +193,13 @@ assert.match(capturedPrompt, /删除没有依据的薪资事实/);
 
 Assert the raw error values are converted to bounded Chinese instructions and arbitrary user-provided instruction strings are never interpolated into the system prompt.
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 Run: `node tests/model_adapter_smoke.js && node tests/message_reply_contract_smoke.js`
 
 Expected: FAIL because the adapters ignore `draftQualityRevision`.
 
-- [ ] **Step 3: Add bounded revision instructions**
+- [x] **Step 3: Add bounded revision instructions**
 
 Map known reason codes in code:
 
@@ -212,7 +212,7 @@ const QUALITY_REVISION_INSTRUCTIONS = Object.freeze({
 
 Pass at most four unsupported `{ kind, value }` entries as JSON data, each value truncated to 80 characters. Do not add a third model call or change the output contract.
 
-- [ ] **Step 4: Run adapter tests and commit**
+- [x] **Step 4: Run adapter tests and commit**
 
 Run: `node tests/model_adapter_smoke.js && node tests/message_reply_contract_smoke.js`
 
@@ -237,19 +237,19 @@ git commit -m "feat: guide one message quality revision"
 - Consumes: `generateQualityCheckedDraft()` and the current profile's recent completion records.
 - Produces: discovery/follow-up results with transient `draftQualityWarnings`; invalid model text is not passed to `recordMessageReplyDrafts()`.
 
-- [ ] **Step 1: Write failing integration tests**
+- [x] **Step 1: Write failing integration tests**
 
 For message discovery, seed 20 recent copied/sent memories, return a repeated first model result and a distinct second result, and assert exactly two calls and only the second text is persisted. Return an unsupported phone twice and assert no draft row is created.
 
 For follow-up, return a repeated first result and distinct second result; assert an existing user-edited open draft is not replaced when quality generation fails.
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 Run: `node tests/message_discovery_smoke.js && node tests/message_follow_up_service_smoke.js`
 
 Expected: FAIL because generation does not use the quality orchestrator.
 
-- [ ] **Step 3: Build recent and evidence inputs**
+- [x] **Step 3: Build recent and evidence inputs**
 
 Recent texts:
 
@@ -263,11 +263,11 @@ listCandidateAnswerMemories(db, { profileId, activeOnly: false, limit: 100 })
 
 Evidence texts contain active resume text, `listCandidateFacts`, and only applicable active `user_edited_reply` memories. Do not include JD description in candidate evidence.
 
-- [ ] **Step 4: Persist only sendable model output**
+- [x] **Step 4: Persist only sendable model output**
 
 If `assessment.errors.length > 0`, set a user-readable missing-fact result and pass an empty `messages` array to storage. If only warnings remain, persist the draft and attach warnings to the in-memory/public view model. Never overwrite an existing open draft during a failed refresh.
 
-- [ ] **Step 5: Run integration tests and commit**
+- [x] **Step 5: Run integration tests and commit**
 
 Run: `node tests/message_discovery_smoke.js && node tests/message_follow_up_service_smoke.js && node tests/dashboard_message_discovery_smoke.js`
 
@@ -292,7 +292,7 @@ git commit -m "feat: quality-check generated reply drafts"
 - Consumes: `replyDraftWasEdited(originalText, currentText)` and `assessMessageDraftQuality()`.
 - Produces: `MESSAGE_DRAFT_FACT_UNSUPPORTED` before batch creation only for an unedited model draft whose active evidence no longer supports its facts.
 
-- [ ] **Step 1: Write failing send and UI tests**
+- [x] **Step 1: Write failing send and UI tests**
 
 ```js
 withdrawCandidateAnswerMemory(db, { profileId, memoryId, withdrawnAt: NOW });
@@ -306,17 +306,17 @@ assert.doesNotThrow(() => sending.confirmBatch({ profileId, items: [{ draftId, r
 
 UI tests assert “与近期消息较接近” is visible but the send button remains enabled, while unsupported untouched model text has no send control.
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 Run: `node tests/message_reply_learning_smoke.js && node tests/dashboard_message_reply_send_smoke.js && node tests/dashboard_message_follow_up_smoke.js`
 
 Expected: FAIL because confirmation does not recheck current evidence and warnings are not rendered.
 
-- [ ] **Step 3: Add pre-freeze validation**
+- [x] **Step 3: Add pre-freeze validation**
 
 In `confirmBatch`, load each draft and compare original/current text. For unedited drafts only, rebuild active evidence and throw before `createMessageReplySendBatch()` if unsupported claims exist. Do not write a batch, close a draft or record a memory on this failure.
 
-- [ ] **Step 4: Render plain-language quality messages**
+- [x] **Step 4: Render plain-language quality messages**
 
 Render only stable user text:
 
@@ -325,7 +325,7 @@ Render only stable user text:
 
 Do not display similarity scores, token types or raw model prompts.
 
-- [ ] **Step 5: Run focused and full gates**
+- [x] **Step 5: Run focused and full gates**
 
 ```powershell
 node tests/message_draft_quality_smoke.js
@@ -340,7 +340,7 @@ git status --short
 
 Expected: focused tests print `ok`; the full suite prints the current exact count; diff check has no output.
 
-- [ ] **Step 6: Update documentation and commit**
+- [x] **Step 6: Update documentation and commit**
 
 Update `docs/NEXT_PHASE.md` and `docs/PROJECT_HANDOFF.md` with the 20-message window, one-revision maximum, user-edit authority, exact tests and real-platform non-access.
 
