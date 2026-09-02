@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { openDb, createBatch, upsertJob } = require("../src/core/storage");
+const { ensureProgressCard } = require("../src/core/candidate_progress");
 const { createDashboardServer } = require("../src/dashboard/server");
 
 const NOW = "2026-09-03T08:00:00.000Z";
@@ -36,7 +37,7 @@ async function main() {
     assert.match(page.body, /归档测试岗位/);
     assert.match(page.body, /name="action" value="archive"/);
 
-    let response = await postForm(base, "/api/job-archive", fixture, activeUrl);
+    let response = await postForm(base, "/api/job-archive", archiveForm(fixture), activeUrl);
     assert.equal(response.status, 303);
     page = await request(base, activeUrl);
     assert.doesNotMatch(page.body, /归档测试岗位/);
@@ -45,6 +46,7 @@ async function main() {
     assert.match(page.body, /name="action" value="restore"/);
     assert.doesNotMatch(page.body, /name="status" value="applied"/);
     assert.doesNotMatch(page.body, /action="\/api\/communication"/);
+    assert.doesNotMatch(page.body, /action="\/api\/progress"/);
     assert.match(page.body, /恢复后可继续处理/);
 
     response = await postForm(base, "/api/mark", {
@@ -57,7 +59,16 @@ async function main() {
     assert.match(response.body, /请先恢复/);
     assert.equal(db.prepare("SELECT count(*) AS n FROM candidate_funnel_entries").get().n, 0);
 
-    response = await postForm(base, "/api/job-archive", { ...fixture, action: "restore" }, `${activeUrl}&archive=only`);
+    response = await postForm(base, "/api/progress", {
+      cardId: fixture.cardId,
+      action: "reply_confirmed_sent",
+      idempotencyKey: "archive-progress-blocked"
+    }, `${activeUrl}&archive=only`);
+    assert.equal(response.status, 409);
+    assert.match(response.body, /请先恢复/);
+    assert.equal(db.prepare("SELECT count(*) AS n FROM candidate_funnel_entries").get().n, 0);
+
+    response = await postForm(base, "/api/job-archive", archiveForm(fixture, "restore"), `${activeUrl}&archive=only`);
     assert.equal(response.status, 303);
     page = await request(base, activeUrl);
     assert.match(page.body, /归档测试岗位/);
@@ -71,7 +82,7 @@ async function main() {
       batch_id, job_id, position, job_url, title_snapshot, company_snapshot, status, updated_at
     ) VALUES (?, ?, 1, 'https://example.test/archive', '归档测试岗位', '示例公司', 'pending', ?)`)
       .run(batchId, fixture.jobId, NOW);
-    response = await postForm(base, "/api/job-archive", fixture, activeUrl);
+    response = await postForm(base, "/api/job-archive", archiveForm(fixture), activeUrl);
     assert.equal(response.status, 409);
     assert.match(response.body, /完成或停止后才能归档/);
 
@@ -101,7 +112,19 @@ function seed(db) {
     description: "负责内容运营、增长实验和复盘。".repeat(10),
     analysis: { semanticStatus: "complete", recommendation: "primary", recommendationSchemaVersion: 2 }
   }, scanBatch);
-  return { profileId, planId, jobId, action: "archive" };
+  const cardId = ensureProgressCard(db, {
+    profileId, planId, jobId, source: "boss", now: NOW
+  }).id;
+  return { profileId, planId, jobId, cardId, action: "archive" };
+}
+
+function archiveForm(fixture, action = "archive") {
+  return {
+    profileId: fixture.profileId,
+    planId: fixture.planId,
+    jobId: fixture.jobId,
+    action
+  };
 }
 
 async function postForm(base, pathname, values, referer) {

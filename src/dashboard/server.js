@@ -4190,6 +4190,9 @@ async function handleProgress(req, res, db, messageDiscovery = null, replyLearni
     const params = parseBody(await readBody(req), req.headers["content-type"] || "");
     const card = getProgressCardById(db, params.cardId);
     if (!card) throw appError("PROGRESS_CARD_NOT_FOUND", "进展卡不存在。", { statusCode: 404 });
+    if (isCandidateJobArchived(db, { profileId: card.profileId, jobId: card.jobId })) {
+      throw appError("JOB_ARCHIVED_ACTION_BLOCKED", "岗位已归档，请先恢复后再处理。", { statusCode: 409 });
+    }
     const action = String(params.action || "").trim();
     if (action === "correct_stage") {
       const targetStage = String(params.targetStage || "").trim();
@@ -6153,7 +6156,7 @@ function renderCompactFilters(filters) {
 
 function renderCompactJob(job, filters) {
   const html = renderCompactJobBase(job, filters);
-  if (!job.progressCard) return html;
+  if (!job.progressCard || job.archived) return html;
   return html.replace("</details></article>", `</details>${renderProgressPanel(job.progressCard)}</article>`);
 }
 
