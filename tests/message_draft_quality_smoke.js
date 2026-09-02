@@ -88,4 +88,27 @@ const wrongPreference = assessMessageDraftQuality({
 assert.equal(wrongPreference.valid, false);
 assert.deepEqual(wrongPreference.errors.map((item) => item.kind).sort(), ["overtime", "travel"]);
 
+const reusedNumberForDifferentAchievement = assessMessageDraftQuality({
+  text: "完成 100 个大型项目。",
+  recentTexts: [],
+  evidenceTexts: ["处理 100 个请求。"]
+});
+assert.equal(reusedNumberForDifferentAchievement.valid, false);
+assert(reusedNumberForDifferentAchievement.errors.some((item) => item.kind === "numeric_achievement"));
+
+const reusedDurationForDifferentWork = assessMessageDraftQuality({
+  text: "有 3 年销售经验。",
+  recentTexts: [],
+  evidenceTexts: ["有 3 年开发经验。"]
+});
+assert.equal(reusedDurationForDifferentWork.valid, false);
+assert(reusedDurationForDifferentWork.errors.some((item) => item.kind === "duration"));
+
+const supportedAchievementParaphrase = assessMessageDraftQuality({
+  text: "服务客户 200 个。",
+  recentTexts: [],
+  evidenceTexts: ["累计服务 200 个客户。"]
+});
+assert.equal(supportedAchievementParaphrase.valid, true, JSON.stringify(supportedAchievementParaphrase.errors));
+
 console.log("message_draft_quality_smoke ok");

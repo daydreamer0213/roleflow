@@ -215,6 +215,20 @@ assert(invalidIntegrity.errors.some((item) => item.code === "RESUME_CONTACT_REMO
 assert(invalidIntegrity.errors.some((item) => item.code === "RESUME_PLACEHOLDER_PRESENT"));
 assert(invalidIntegrity.errors.some((item) => item.code === "RESUME_FACT_UNSUPPORTED"));
 
+const semanticNumericMisuseSource = `${integritySource}\n有 3 年开发经验\n处理 100 个请求`;
+const semanticNumericMisuse = validateResumeActivationText({
+  sourceText: semanticNumericMisuseSource,
+  generatedText: semanticNumericMisuseSource,
+  finalText: semanticNumericMisuseSource
+    .replace("有 3 年开发经验", "有 3 年销售经验")
+    .replace("处理 100 个请求", "完成 100 个大型项目"),
+  candidateName: "候选人甲",
+  facts: [],
+  answerMemories: [],
+  suggestions: []
+});
+assert(semanticNumericMisuse.errors.some((item) => item.code === "RESUME_FACT_UNSUPPORTED"));
+
 const removedName = validateResumeActivationText({
   sourceText: integritySource,
   generatedText: integrityGenerated,
