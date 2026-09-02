@@ -403,10 +403,17 @@ function createMessageDiscoveryController(deps = {}) {
         contextComplete: item?.contextComplete === true,
         job: sanitizeJobUnderstanding(item?.job),
         inboundMessages: sanitizeInboundMessages(item?.inboundMessages),
+        draftQualityWarnings: sanitizeDraftQualityWarnings(item?.draftQualityWarnings),
         drafts,
         messages
       };
     });
+  }
+
+  function sanitizeDraftQualityWarnings(value) {
+    return Array.isArray(value) && value.includes("MESSAGE_DRAFT_RECENTLY_SIMILAR")
+      ? ["MESSAGE_DRAFT_RECENTLY_SIMILAR"]
+      : [];
   }
 
   function sanitizeManualActions(value) {

@@ -14,6 +14,10 @@ const { canonicalBossJobSourceId, bossLocationConflicts } = require("./boss_job_
 const { MANUAL_ONLY_CATEGORIES } = require("./message_reply_contract");
 const { recordFunnelRowObservations } = require("./funnel_observation");
 const {
+  generateQualityCheckedDraft,
+  buildMessageDraftQualityContext
+} = require("../application/message_draft_quality");
+const {
   listPreviewStates,
   recordPreviewState,
   listUnresolvedMessageDiscoveryItems,
@@ -71,7 +75,6 @@ async function runBossMessageDiscovery({
     throw discoveryError("MESSAGE_DISCOVERY_PROFILE_NOT_FOUND", "candidate profile was not found");
   }
   const profile = messageReplyProfile(storedProfile.profile);
-  const facts = listCandidateFacts(db, profileId);
   let retained = unresolvedSummary(db, profileId);
   let scan;
   try {
@@ -240,6 +243,7 @@ async function runBossMessageDiscovery({
     const inboundMessages = inboundDisplayMessages(incoming);
     let classification;
     try {
+      const currentFacts = incoming.messages.length ? listCandidateFacts(db, profileId) : [];
       const answerMemories = incoming.messages.length
         ? listCandidateAnswerMemories(db, {
           profileId,
@@ -248,17 +252,37 @@ async function runBossMessageDiscovery({
           limit: 100
         })
         : [];
-      classification = incoming.messages.length
-        ? await classifyMessageGroup({
+      if (incoming.messages.length) {
+        const baseInput = {
           profile,
           card: resolved.card,
           job: resolved.job,
-          messages: incoming.messages,
-          facts,
+          facts: currentFacts,
           answerMemories,
           contextSource: resolved.contextSource || resolved.job.contextSource || ""
-        }, { signal })
-        : resumeRequestClassification();
+        };
+        const quality = await generateQualityCheckedDraft({
+          generate: (qualityInput) => classifyMessageGroup({
+            ...baseInput,
+            messages: incoming.messages.map((message) => ({ ...message })),
+            ...(qualityInput.draftQualityRevision
+              ? { draftQualityRevision: qualityInput.draftQualityRevision }
+              : {})
+          }, { signal }),
+          shouldAssess: (result) => !result?.missingFact
+            && !MANUAL_ONLY_CATEGORIES.has(String(result?.messageCategory || "")),
+          ...buildMessageDraftQualityContext(db, {
+            profileId,
+            job: resolved.job,
+            messageTexts: incoming.messages.map((message) => String(message?.text || ""))
+          })
+        });
+        classification = quality.sendable
+          ? { ...quality.result, draftQualityWarnings: qualityWarningCodes(quality.assessment) }
+          : rejectedQualityClassification(quality.result, quality.assessment);
+      } else {
+        classification = resumeRequestClassification();
+      }
     } catch (error) {
       const errorCode = String(error?.code || "");
       if (!/^MESSAGE_REPLY_[A-Z0-9_]+$/.test(errorCode)
@@ -627,7 +651,8 @@ function safeResult(card, result, resolvedJob, contextSource, drafts = [], inbou
     job: projectMessageDecisionCard(resolvedJob),
     inboundMessages: safeInboundDisplayMessages(inboundMessages),
     drafts: safeDrafts,
-    messages
+    messages,
+    draftQualityWarnings: qualityWarningCodes(result)
   };
 }
 
@@ -669,6 +694,9 @@ function safeManualActions(value) {
 }
 
 function safeManualActionReason(result, missingFactKey, messages) {
+  if (result.manualActionReason === "draft_fact_unsupported") {
+    return "草稿里有系统找不到依据的个人信息，请修改后再发送";
+  }
   if (missingFactKey) return "需要先确认候选人事实后再回复";
   if (result.manualActionReason === "model_contract_invalid") {
     return "模型结果未通过安全校验，需要人工处理";
@@ -680,6 +708,32 @@ function safeManualActionReason(result, missingFactKey, messages) {
     identity_uncertain: "岗位或会话身份仍需人工核对"
   }[String(result.messageCategory || "")];
   return categoryReason || "当前结果需要人工处理";
+}
+
+function rejectedQualityClassification(result = {}, assessment = {}) {
+  const unsupported = Array.isArray(assessment.errors)
+    && assessment.errors.some((item) => item?.code === "MESSAGE_DRAFT_FACT_UNSUPPORTED");
+  return {
+    ...result,
+    missingFact: unsupported ? {
+      key: "draft_fact_unsupported",
+      question: "草稿里有系统找不到依据的个人信息，请修改后再发送。"
+    } : null,
+    messages: [],
+    manualActionReason: unsupported ? "draft_fact_unsupported" : "model_contract_invalid",
+    draftQualityWarnings: qualityWarningCodes(assessment),
+    progressUpdate: { ...(result.progressUpdate || {}), stage: "needs_user_action" }
+  };
+}
+
+function qualityWarningCodes(value = {}) {
+  const warnings = Array.isArray(value.warnings)
+    ? value.warnings
+    : Array.isArray(value.draftQualityWarnings)
+      ? value.draftQualityWarnings.map((code) => ({ code }))
+      : [];
+  return [...new Set(warnings.map((warning) => String(warning?.code || ""))
+    .filter((code) => code === "MESSAGE_DRAFT_RECENTLY_SIMILAR"))];
 }
 
 function projectMessageDecisionCard(job = {}) {

@@ -16,6 +16,10 @@ const { getProgressCardForJob } = require("../../core/candidate_progress");
 const { canonicalBossJobSourceId } = require("../../core/boss_job_identity");
 const { projectMessageFollowUpCandidate } = require("../../core/message_follow_up");
 const { immediateTransaction } = require("../../storage/storage_shared");
+const {
+  generateQualityCheckedDraft,
+  buildMessageDraftQualityContext
+} = require("../message_draft_quality");
 
 const ACTIVE_SEND_STATUSES = ["pending", "selecting", "verified", "filled", "click_dispatched", "ambiguous"];
 const MAX_TEXT = 4000;
@@ -24,6 +28,7 @@ function createMessageFollowUpService({ db, generateDraft, now = () => new Date(
   if (!db || typeof db.prepare !== "function") throw new TypeError("db is required");
   if (typeof generateDraft !== "function") throw new TypeError("generateDraft is required");
   if (typeof now !== "function") throw new TypeError("now must be a function");
+  const qualityWarnings = new Map();
 
   function listCandidates({ profileId, planId } = {}) {
     const owner = ownedPlan(db, profileId, planId);
@@ -87,7 +92,8 @@ function createMessageFollowUpService({ db, generateDraft, now = () => new Date(
         projection,
         draft,
         context: draft ? contextsByGroup.get(draft.messageGroupKey) || null : null,
-        followUpDrafts
+        followUpDrafts,
+        draftQualityWarnings: qualityWarnings.get(qualityKey(owner.profileId, entry.jobId)) || []
       });
     }
     return candidates.sort((left, right) => right.projection.waitedHours - left.projection.waitedHours
@@ -107,17 +113,47 @@ function createMessageFollowUpService({ db, generateDraft, now = () => new Date(
     const candidate = requireCandidate({ profileId, planId, jobId });
     const baseline = normalizeSnapshot(candidate, snapshot);
     const existing = matchingDraft(candidate, baseline);
-    if (existing) return preparedResult(candidate, existing.draft, existing.context, baseline.previousOutboundText);
+    if (existing) return preparedResult(
+      candidate,
+      existing.draft,
+      existing.context,
+      baseline.previousOutboundText,
+      qualityWarnings.get(qualityKey(candidate.profileId, candidate.jobId)) || []
+    );
 
-    const generated = await generateDraft({ candidate, previousOutboundText: baseline.previousOutboundText });
-    const message = generatedMessage(generated);
+    const checked = await generateQualityCheckedDraft({
+      generate: (qualityInput) => generateDraft({
+        candidate,
+        previousOutboundText: baseline.previousOutboundText,
+        ...(qualityInput.draftQualityRevision
+          ? { draftQualityRevision: qualityInput.draftQualityRevision }
+          : {})
+      }),
+      shouldAssess: (result) => !result?.missingFact,
+      ...buildMessageDraftQualityContext(db, {
+        profileId: candidate.profileId,
+        job: candidate.job,
+        messageTexts: []
+      })
+    });
+    if (!checked.sendable) {
+      throw followUpError("FOLLOW_UP_DRAFT_FACT_REQUIRED", "草稿里有系统找不到依据的个人信息，请修改后再发送");
+    }
+    const message = generatedMessage(checked.result);
+    const warningCodes = qualityWarningCodes(checked.assessment);
     const preparedAt = isoText(now(), "now");
 
-    return immediateTransaction(db, () => {
+    const prepared = immediateTransaction(db, () => {
       const current = requireCandidate({ profileId, planId, jobId });
       normalizeSnapshot(current, baseline);
       const repeated = matchingDraft(current, baseline);
-      if (repeated) return preparedResult(current, repeated.draft, repeated.context, baseline.previousOutboundText);
+      if (repeated) return preparedResult(
+        current,
+        repeated.draft,
+        repeated.context,
+        baseline.previousOutboundText,
+        qualityWarnings.get(qualityKey(current.profileId, current.jobId)) || []
+      );
       closeOpenMessageReplyDraftsByIntent(db, {
         profileId: current.profileId,
         cardId: current.card.id,
@@ -155,8 +191,10 @@ function createMessageFollowUpService({ db, generateDraft, now = () => new Date(
         messages: [message],
         createdAt: preparedAt
       })[0];
-      return preparedResult(current, draft, context, baseline.previousOutboundText);
+      return preparedResult(current, draft, context, baseline.previousOutboundText, warningCodes);
     });
+    qualityWarnings.set(qualityKey(candidate.profileId, candidate.jobId), prepared.draftQualityWarnings);
+    return prepared;
   }
 
   return { listCandidates, requireCandidate, savePreparedDraft };
@@ -177,8 +215,19 @@ function matchingDraft(candidate, baseline) {
   return null;
 }
 
-function preparedResult(candidate, draft, context, previousOutboundText) {
-  return { candidate, draft, context, previousOutboundText };
+function preparedResult(candidate, draft, context, previousOutboundText, draftQualityWarnings = []) {
+  return { candidate, draft, context, previousOutboundText, draftQualityWarnings };
+}
+
+function qualityKey(profileId, jobId) {
+  return `${Number(profileId)}:${Number(jobId)}`;
+}
+
+function qualityWarningCodes(assessment = {}) {
+  return Array.isArray(assessment.warnings)
+    && assessment.warnings.some((warning) => warning?.code === "MESSAGE_DRAFT_RECENTLY_SIMILAR")
+    ? ["MESSAGE_DRAFT_RECENTLY_SIMILAR"]
+    : [];
 }
 
 function normalizeSnapshot(candidate, value) {

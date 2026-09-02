@@ -5,6 +5,7 @@ const { createHash } = require("node:crypto");
 const {
   openDb,
   recordMessageReplyDrafts,
+  completeMessageReplyDraft,
   listOpenMessageReplyDrafts,
   saveMessageInboundContext,
   getMessageInboundContext,
@@ -139,6 +140,79 @@ async function main() {
     assert(listOpenMessageReplyDrafts(db, { profileId: fixture.profileId, cardId: fixture.cardId })
       .some((draft) => draft.id === refreshed.draft.id), "model failure must preserve the previous open draft");
 
+    const recentText = "您好，我对贵司岗位很感兴趣，期待沟通。";
+    const memorySeed = recordMessageReplyDrafts(db, {
+      profileId: fixture.profileId,
+      cardId: fixture.cardId,
+      jobId: fixture.jobId,
+      messageGroupKey: digest("follow-up-quality-memory"),
+      questionSummary: "历史沟通",
+      messageIntent: "general_communication",
+      messageCategory: "other",
+      messages: [recentText],
+      createdAt: "2026-09-03T07:30:00.000Z"
+    })[0];
+    completeMessageReplyDraft(db, {
+      profileId: fixture.profileId,
+      draftId: memorySeed.id,
+      finalText: recentText,
+      changedText: recentText,
+      completionKind: "copied",
+      extractedFacts: [],
+      completedAt: "2026-09-03T07:31:00.000Z"
+    });
+    let qualityCalls = 0;
+    const qualityService = createMessageFollowUpService({
+      db,
+      now: () => NOW,
+      generateDraft: async ({ draftQualityRevision }) => {
+        qualityCalls += 1;
+        if (qualityCalls === 1) {
+          assert.equal(draftQualityRevision, undefined);
+          return { messages: [recentText], missingFact: null };
+        }
+        assert(draftQualityRevision.reasonCodes.includes("MESSAGE_DRAFT_RECENTLY_SIMILAR"));
+        return { messages: ["您好，我对贵司岗位很感兴趣，也想了解团队目前的重点。"], missingFact: null };
+      }
+    });
+    const qualityPrepared = await qualityService.savePreparedDraft({
+      profileId: fixture.profileId,
+      planId: fixture.planId,
+      jobId: fixture.jobId,
+      snapshot: snapshot(fixture.sourceJobId, "378917037748762")
+    });
+    assert.equal(qualityCalls, 2, "a recently repeated opening should receive one revision attempt");
+    assert.equal(qualityPrepared.draft.currentText, "您好，我对贵司岗位很感兴趣，也想了解团队目前的重点。");
+    assert.deepEqual(qualityPrepared.draftQualityWarnings, ["MESSAGE_DRAFT_RECENTLY_SIMILAR"]);
+    assert.deepEqual(
+      qualityService.listCandidates({ profileId: fixture.profileId, planId: fixture.planId })[0].draftQualityWarnings,
+      ["MESSAGE_DRAFT_RECENTLY_SIMILAR"],
+      "quality warnings should remain available in the current process without being persisted"
+    );
+
+    let invalidCalls = 0;
+    const invalidService = createMessageFollowUpService({
+      db,
+      now: () => NOW,
+      generateDraft: async ({ draftQualityRevision }) => {
+        invalidCalls += 1;
+        if (invalidCalls === 2) assert(draftQualityRevision.reasonCodes.includes("MESSAGE_DRAFT_FACT_UNSUPPORTED"));
+        return { messages: [invalidCalls === 1 ? "我的手机号是 13800138000。" : "请联系 13900139000。"], missingFact: null };
+      }
+    });
+    await assert.rejects(
+      invalidService.savePreparedDraft({
+        profileId: fixture.profileId,
+        planId: fixture.planId,
+        jobId: fixture.jobId,
+        snapshot: snapshot(fixture.sourceJobId, "378917037748763")
+      }),
+      (error) => error.code === "FOLLOW_UP_DRAFT_FACT_REQUIRED"
+    );
+    assert.equal(invalidCalls, 2, "unsupported facts should receive only one revision attempt");
+    assert(listOpenMessageReplyDrafts(db, { profileId: fixture.profileId, cardId: fixture.cardId })
+      .some((draft) => draft.id === qualityPrepared.draft.id), "quality rejection must preserve the previous open draft");
+
     await assert.rejects(
       service.savePreparedDraft({
         profileId: fixture.profileId,
@@ -152,7 +226,7 @@ async function main() {
 
     const activeSend = createMessageReplySendBatch(db, {
       profileId: fixture.profileId,
-      items: [{ draftId: refreshed.draft.id, revision: refreshed.draft.revision }],
+      items: [{ draftId: qualityPrepared.draft.id, revision: qualityPrepared.draft.revision }],
       createdAt: NOW
     });
     assert.deepEqual(

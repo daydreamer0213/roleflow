@@ -68,6 +68,20 @@ async function main() {
   assert.equal(empty.output.sendable, false);
   assert.equal(empty.output.assessment.errors[0].code, "MESSAGE_DRAFT_EMPTY");
 
+  let manualCalls = 0;
+  const manual = await generateQualityCheckedDraft({
+    generate: async () => {
+      manualCalls += 1;
+      return { messages: [], missingFact: { key: "availability_date" } };
+    },
+    shouldAssess: (result) => !result.missingFact,
+    recentTexts: [],
+    evidenceTexts: []
+  });
+  assert.equal(manualCalls, 1, "a deliberate manual result must not be rewritten as an empty draft");
+  assert.equal(manual.sendable, true);
+  assert.equal(manual.assessment.skipped, true);
+
   const mixed = await runSequence([
     { messages: ["您好，想了解团队重点。", "我的手机号是 13800138000。"] },
     { messages: ["您好，想了解团队重点。", "也想了解这个岗位的协作方式。"] }

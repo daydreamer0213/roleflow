@@ -795,7 +795,7 @@ function createDashboardServer({
   });
   const followUpService = messageFollowUpService || createMessageFollowUpService({
     db,
-    async generateDraft({ candidate }) {
+    async generateDraft({ candidate, draftQualityRevision }) {
       if (!modelReady("deep_analysis")) {
         throw appError("FOLLOW_UP_MODEL_NOT_READY", "深度分析模型尚未就绪。", { statusCode: 409 });
       }
@@ -826,7 +826,8 @@ function createDashboardServer({
           salary: job.salary,
           experience: job.experience
         },
-        userProvidedFacts: listCandidateFacts(db, profile.id)
+        userProvidedFacts: listCandidateFacts(db, profile.id),
+        ...(draftQualityRevision ? { draftQualityRevision } : {})
       });
     }
   });

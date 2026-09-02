@@ -58,6 +58,7 @@ async function main() {
   await uniqueCandidateAndPrivacySmoke();
   await visibleCountersSmoke();
   await answerMemoryRefreshSmoke();
+  await messageDraftQualitySmoke();
   await unsafeModelPersistenceSmoke();
   await identityStopsSmoke();
   await threadAndContextResolutionSmoke();
@@ -2414,6 +2415,91 @@ async function answerMemoryRefreshSmoke() {
     sleepFn: async () => {}
   });
   assert.strictEqual(summary.processed, 2);
+}
+
+async function messageDraftQualitySmoke() {
+  const revised = createFixture({ suffix: "draft-quality-revised", title: "Draft Quality Revised Engineer" });
+  const recentText = "您好，我对贵司岗位很感兴趣，期待沟通。";
+  const memorySeed = recordMessageReplyDrafts(db, {
+    profileId: revised.profileId,
+    cardId: revised.card.id,
+    jobId: revised.jobId,
+    messageGroupKey: safeDigest(["draft-quality-memory"]),
+    questionSummary: "历史沟通",
+    messageIntent: "general_communication",
+    messageCategory: "other",
+    messages: [recentText],
+    createdAt: NOW
+  })[0];
+  completeMessageReplyDraft(db, {
+    profileId: revised.profileId,
+    draftId: memorySeed.id,
+    finalText: recentText,
+    changedText: recentText,
+    completionKind: "sent",
+    extractedFacts: [],
+    completedAt: NOW
+  });
+  let revisionCalls = 0;
+  const revisedSummary = await runBossMessageDiscovery({
+    db,
+    profileId: revised.profileId,
+    reader: fakeReader([selectedConversation({
+      title: revised.title,
+      messageId: "123456789012821",
+      messages: [message("friend", "123456789012821", "方便介绍一下项目吗？")]
+    })]),
+    classifyMessageGroup: async ({ draftQualityRevision }) => {
+      revisionCalls += 1;
+      if (revisionCalls === 1) {
+        assert.strictEqual(draftQualityRevision, undefined);
+        return classification({ messages: [recentText] });
+      }
+      assert(draftQualityRevision.reasonCodes.includes("MESSAGE_DRAFT_RECENTLY_SIMILAR"));
+      return classification({ messages: ["想结合您提到的项目，进一步介绍我负责的具体工作。"] });
+    },
+    now: () => NOW,
+    sleepFn: async () => {}
+  });
+  assert.strictEqual(revisionCalls, 2);
+  assert.deepStrictEqual(revisedSummary.results[0].messages, ["想结合您提到的项目，进一步介绍我负责的具体工作。"]);
+  assert.deepStrictEqual(revisedSummary.results[0].draftQualityWarnings, []);
+
+  const rejected = createFixture({ suffix: "draft-quality-rejected", title: "Draft Quality Rejected Engineer" });
+  const existing = recordMessageReplyDrafts(db, {
+    profileId: rejected.profileId,
+    cardId: rejected.card.id,
+    jobId: rejected.jobId,
+    messageGroupKey: safeDigest(["draft-quality-existing"]),
+    questionSummary: "已有待确认草稿",
+    messageIntent: "general_communication",
+    messageCategory: "other",
+    messages: ["这是已有草稿。"],
+    createdAt: NOW
+  })[0];
+  let invalidCalls = 0;
+  const rejectedSummary = await runBossMessageDiscovery({
+    db,
+    profileId: rejected.profileId,
+    reader: fakeReader([selectedConversation({
+      title: rejected.title,
+      messageId: "123456789012822",
+      messages: [message("friend", "123456789012822", "方便留个联系方式吗？")]
+    })]),
+    classifyMessageGroup: async ({ draftQualityRevision }) => {
+      invalidCalls += 1;
+      if (invalidCalls === 2) assert(draftQualityRevision.reasonCodes.includes("MESSAGE_DRAFT_FACT_UNSUPPORTED"));
+      return classification({ messages: [invalidCalls === 1 ? "我的手机号是 13800138000。" : "请联系 13900139000。"] });
+    },
+    now: () => NOW,
+    sleepFn: async () => {}
+  });
+  assert.strictEqual(invalidCalls, 2);
+  assert.deepStrictEqual(rejectedSummary.results[0].drafts, []);
+  assert.strictEqual(rejectedSummary.results[0].manualActionReason, "草稿里有系统找不到依据的个人信息，请修改后再发送");
+  assert.strictEqual(getMessageReplyDraft(db, { profileId: rejected.profileId, draftId: existing.id }).closedAt, "");
+  assert(!allText(db, "message_reply_drafts").includes("13800138000"));
+  assert(!allText(db, "message_reply_drafts").includes("13900139000"));
 }
 
 function fact(key, daysAgo) {
