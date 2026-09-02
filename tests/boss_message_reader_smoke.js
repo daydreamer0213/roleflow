@@ -349,6 +349,41 @@ function runGuardedExpression(expression, { innerText, unread = true, snapshotRe
   assert.strictEqual(initialIncomingBrowser.guardedDomClicks, 1,
     "a verified first incoming conversation must use the existing guarded DOM click");
 
+  const followUpRow = row(0, {
+    unread: false,
+    previewText: "已送达",
+    previewKind: "self_delivered",
+    conversationId: "follow-up-conversation",
+    sourceJobId: "boss:follow-up-job",
+    lastMessageId: "378917037748760",
+    lastMessageDirection: "myself",
+    lastMessageStatus: "delivered",
+    identityVerified: true
+  });
+  const followUpMessages = [{
+    direction: "myself",
+    messageId: "378917037748760",
+    text: "您好，想了解这个岗位。",
+    contentKind: "text"
+  }];
+  const followUpBrowser = fakeBrowser({
+    snapshots: [
+      snapshot({ rows: [followUpRow], messages: followUpMessages }),
+      guardedSuccess,
+      snapshot({ rows: [followUpRow], messages: followUpMessages })
+    ]
+  });
+  const followUpReader = createBossMessageReader({ browser: followUpBrowser, sleepFn: async () => {} });
+  const followUpScan = await followUpReader.scanConversationRows();
+  const followUpSelected = await followUpReader.openQueuedConversation({
+    ...followUpScan.rows[0],
+    operation: "follow_up",
+    tabId: followUpScan.tabId
+  });
+  assert.strictEqual(followUpSelected.messages.at(-1).direction, "myself");
+  assert.strictEqual(followUpSelected.messages.at(-1).messageId, "378917037748760");
+  assert.strictEqual(followUpBrowser.guardedDomClicks, 1);
+
   const previewDriftBrowser = fakeBrowser({
     snapshots: [
       previewChangedSnapshot,
