@@ -37,7 +37,7 @@
 - Produces: `isCandidateJobArchived(db, { profileId, jobId }) -> boolean`.
 - Extends: `listReportJobs()` rows with `archived` and `archivedAt`.
 
-- [ ] **Step 1: Write failing migration and behavior tests**
+- [x] **Step 1: Write failing migration and behavior tests**
 
 ```js
 assert.equal(SCHEMA_VERSION, 27);
@@ -52,13 +52,13 @@ assert.equal(job.archived, false);
 
 Also verify profile A cannot archive profile B's job through an unrelated plan, repeat archive/restore is idempotent, and migration backup/foreign-key checks still pass.
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 Run: `node tests/storage_migration_smoke.js && node tests/job_archive_store_smoke.js`
 
 Expected: FAIL because schema version 27 and archive functions are absent.
 
-- [ ] **Step 3: Add schema version 27**
+- [x] **Step 3: Add schema version 27**
 
 ```sql
 CREATE TABLE IF NOT EXISTS candidate_job_archives (
@@ -75,7 +75,7 @@ CREATE INDEX IF NOT EXISTS idx_candidate_job_archives_profile
 
 Register a single migration after version 26. The migration contains only this table and index.
 
-- [ ] **Step 4: Implement ownership, active-batch and idempotency checks**
+- [x] **Step 4: Implement ownership, active-batch and idempotency checks**
 
 Ownership requires the job to appear in the requested plan's observations or an existing progress card bound to that plan and profile. Before insert, query both active batch families:
 
@@ -98,7 +98,7 @@ LIMIT 1;
 
 Throw `JOB_ARCHIVE_ACTIVE_BATCH` before changing state. Use `INSERT ... ON CONFLICT DO UPDATE` for archive and `DELETE` for restore.
 
-- [ ] **Step 5: Project archive state without filtering analytics**
+- [x] **Step 5: Project archive state without filtering analytics**
 
 Add a profile-scoped left join or correlated subquery to `listReportJobs` and map:
 
@@ -109,7 +109,7 @@ archivedAt: row.archived_at || ""
 
 Do not add an implicit `WHERE archived_at IS NULL` to `listReportJobs` or `listDecisionPool`.
 
-- [ ] **Step 6: Run storage contracts and commit**
+- [x] **Step 6: Run storage contracts and commit**
 
 Run: `node tests/storage_migration_smoke.js && node tests/job_archive_store_smoke.js && node tests/job_store_contract_smoke.js && node tests/scan_store_contract_smoke.js`
 
@@ -138,7 +138,7 @@ git commit -m "feat: add reversible candidate job archives"
 - Consumes: `job.archived` from `listReportJobs`.
 - Produces: POST `/api/job-archive` with exact fields `{ profileId, planId, jobId, action }`, where action is `archive` or `restore`.
 
-- [ ] **Step 1: Write failing list and HTTP tests**
+- [x] **Step 1: Write failing list and HTTP tests**
 
 ```js
 archiveCandidateJob(db, { profileId, planId, jobId, archivedAt: NOW });
@@ -149,17 +149,17 @@ assert.equal(funnelService.getDashboard({ profileId, planId }).currentRound.star
 
 HTTP assertions must prove the normal jobs page hides archived cards, `archive=only` shows them, restore makes them visible, and an active batch returns 409 with a user-readable message.
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 Run: `node tests/job_archive_store_smoke.js && node tests/dashboard_job_archive_smoke.js && node tests/communication_smoke.js`
 
 Expected: FAIL because user-facing lists and routes do not yet filter archives.
 
-- [ ] **Step 3: Filter only action-producing lists**
+- [x] **Step 3: Filter only action-producing lists**
 
 Add `.filter((job) => !job.archived)` in `listDecisionQueue`, communication candidate building, workflow review inventory and message follow-up candidate building. Leave `listDecisionPool`, funnel entry reads and analytical snapshots unchanged.
 
-- [ ] **Step 4: Add archive and restore forms**
+- [x] **Step 4: Add archive and restore forms**
 
 The jobs page parses `archive=active|only|all`, with `active` as the default. Each active card gets a quiet “归档” button; archived cards get “恢复”。The handler validates exact keys and redirects back to the same plan/archive/filter view.
 
@@ -169,7 +169,7 @@ else if (params.action === "restore") restoreCandidateJob(db, params);
 else throw appError("JOB_ARCHIVE_ACTION_INVALID", "归档操作无效。", { statusCode: 400 });
 ```
 
-- [ ] **Step 5: Run focused tests and commit**
+- [x] **Step 5: Run focused tests and commit**
 
 Run: `node tests/dashboard_job_archive_smoke.js && node tests/communication_smoke.js && node tests/job_search_funnel_smoke.js`
 
@@ -191,7 +191,7 @@ git commit -m "feat: add job archive and restore controls"
 - Produces: `encodeJobExportCsv(jobs) -> string` including the UTF-8 BOM.
 - Produces: `jobExportFileName({ planName, date }) -> string`.
 
-- [ ] **Step 1: Write the failing encoder test**
+- [x] **Step 1: Write the failing encoder test**
 
 ```js
 const csv = encodeJobExportCsv([{
@@ -206,13 +206,13 @@ assert.match(csv, /"甲,乙公司"/);
 assert.match(csv, /"第一行\r\n第二行"/);
 ```
 
-- [ ] **Step 2: Run the test and verify RED**
+- [x] **Step 2: Run the test and verify RED**
 
 Run: `node tests/job_export_smoke.js`
 
 Expected: FAIL because `src/core/job_export.js` does not exist.
 
-- [ ] **Step 3: Implement the fixed column projection and encoder**
+- [x] **Step 3: Implement the fixed column projection and encoder**
 
 ```js
 const COLUMNS = [
@@ -240,7 +240,7 @@ const COLUMNS = [
 
 Normalize internal newlines to CRLF, double embedded quotes, quote every field and prefix formula-like trimmed values with `'`.
 
-- [ ] **Step 4: Run the encoder test and commit**
+- [x] **Step 4: Run the encoder test and commit**
 
 Run: `node tests/job_export_smoke.js`
 
@@ -263,7 +263,7 @@ git commit -m "feat: encode safe job CSV exports"
 - Consumes: `encodeJobExportCsv()` and the same normalized filters used by the jobs page.
 - Produces: GET `/jobs/export.csv` for current filters and POST `/api/jobs/export` for exact selected `jobIds`.
 
-- [ ] **Step 1: Write failing HTTP tests**
+- [x] **Step 1: Write failing HTTP tests**
 
 ```js
 const response = await request(base, `/jobs/export.csv?profileId=${profileId}&planId=${planId}&archive=active&pool=primary`);
@@ -275,13 +275,13 @@ assert.deepEqual(csvIds(response.body), [primaryJobId]);
 
 POST tests must reject an unknown job, a job from another profile, duplicate IDs and more than 500 IDs without returning a partial file.
 
-- [ ] **Step 2: Run the test and verify RED**
+- [x] **Step 2: Run the test and verify RED**
 
 Run: `node tests/dashboard_job_export_smoke.js`
 
 Expected: FAIL because export routes do not exist.
 
-- [ ] **Step 3: Implement server-owned selection**
+- [x] **Step 3: Implement server-owned selection**
 
 For current-filter export, call the same filter parser and job filtering function as the rendered jobs page. For selected export, load the current profile and plan, build a map from `listReportJobs({ profileId, planId, batch: "all", limit: 10000 })`, and require every submitted ID to exist in that map before encoding.
 
@@ -297,11 +297,11 @@ res.writeHead(200, {
 res.end(csv);
 ```
 
-- [ ] **Step 4: Add visible export controls**
+- [x] **Step 4: Add visible export controls**
 
 The jobs page always shows “导出当前结果”。When checkboxes contain at least one selected ID, enable “导出已选岗位”。Checkboxes submit IDs only; server reloads all text fields.
 
-- [ ] **Step 5: Run focused tests and commit**
+- [x] **Step 5: Run focused tests and commit**
 
 Run: `node tests/job_export_smoke.js && node tests/dashboard_job_export_smoke.js && node tests/dashboard_job_archive_smoke.js`
 
@@ -318,7 +318,7 @@ git commit -m "feat: export filtered and selected jobs"
 - Modify: `docs/NEXT_PHASE.md`
 - Modify: `docs/PROJECT_HANDOFF.md`
 
-- [ ] **Step 1: Run the complete archive/export gate**
+- [x] **Step 1: Run the complete archive/export gate**
 
 ```powershell
 node tests/storage_migration_smoke.js
@@ -335,11 +335,11 @@ git status --short
 
 Expected: focused tests print `ok`; full suite reports the current exact total; diff check has no output.
 
-- [ ] **Step 2: Update documentation**
+- [x] **Step 2: Update documentation**
 
 Record the reversible state model, unchanged funnel counts, CSV privacy boundary, exact test result and absence of real-platform access.
 
-- [ ] **Step 3: Commit documentation**
+- [x] **Step 3: Commit documentation**
 
 ```powershell
 git add docs/NEXT_PHASE.md docs/PROJECT_HANDOFF.md
