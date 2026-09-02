@@ -12,7 +12,7 @@ function profile(name) {
 }
 
 function document(hash, name) {
-  const text = `${name}\n个人总结\n参与企业知识库开发\n技能：Node.js`;
+  const text = `${name}\n个人总结\n参与企业知识库开发\n技能：Node.js\n手机号 13800138000\n邮箱 ${name === "候选人甲" ? "owner" : "other"}@example.com`;
   return {
     originalFileName: `${name}.txt`,
     format: "text",
@@ -211,6 +211,17 @@ try {
   assert.strictEqual(draft.suggestions[0].decision, "accepted");
   assert.strictEqual(draft.modelIdentity.provider, "scripted");
 
+  const nearlyUnchanged = service.saveDraft({
+    profileId: owner.profileId,
+    draftId: draft.id,
+    finalText: document("resume-owner", "候选人甲").text
+  });
+  assert.equal(nearlyUnchanged.integrity.valid, true);
+  assert(nearlyUnchanged.integrity.warnings.some((item) => item.code === "RESUME_NEARLY_UNCHANGED"));
+  const draftDashboard = service.dashboard({ profileId: owner.profileId, planId: owner.planId, draftId: draft.id });
+  assert.equal(draftDashboard.selectedIntegrity.valid, true);
+  assert(draftDashboard.selectedIntegrity.warnings.some((item) => item.code === "RESUME_NEARLY_UNCHANGED"));
+
   const saved = service.saveDraft({
     profileId: owner.profileId,
     draftId: draft.id,
@@ -218,6 +229,24 @@ try {
   });
   assert(saved.finalText.includes("用户补充：已校对"));
   assert(!saved.finalText.includes("参与企业知识库开发"));
+
+  const versionsBeforeFailure = storage.listCandidateResumeVersions(db, owner.profileId).length;
+  const roundsBeforeFailure = storage.listFunnelStrategyRounds(db, {
+    profileId: owner.profileId,
+    planId: owner.planId
+  }).length;
+  assert.throws(() => service.activateDraft({
+    profileId: owner.profileId,
+    planId: owner.planId,
+    draftId: draft.id,
+    finalText: saved.finalText.replace("13800138000", "13900139000")
+  }), (error) => error.code === "RESUME_ACTIVATION_INTEGRITY_FAILED"
+    && error.issues.some((item) => item.code === "RESUME_CONTACT_REMOVED"));
+  assert.strictEqual(storage.listCandidateResumeVersions(db, owner.profileId).length, versionsBeforeFailure);
+  assert.strictEqual(storage.listFunnelStrategyRounds(db, {
+    profileId: owner.profileId,
+    planId: owner.planId
+  }).length, roundsBeforeFailure);
 
   const activated = service.activateDraft({
     profileId: owner.profileId,
@@ -237,6 +266,11 @@ try {
   });
   assert.strictEqual(activated.strategyRoundId, strategyRound.id);
   assert.strictEqual(strategyRound.sourceKey, `resume_optimization:${draft.id}`);
+  assert.strictEqual(storage.listCandidateResumeVersions(db, owner.profileId).length, versionsBeforeFailure + 1);
+  assert.strictEqual(storage.listFunnelStrategyRounds(db, {
+    profileId: owner.profileId,
+    planId: owner.planId
+  }).length, roundsBeforeFailure + 1);
 
   const dashboard = service.dashboard({ profileId: owner.profileId, planId: owner.planId, draftId: draft.id });
   assert.strictEqual(dashboard.selectedDraft.id, draft.id);

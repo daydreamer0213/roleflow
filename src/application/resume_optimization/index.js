@@ -15,6 +15,7 @@ const { prepareResumeTextForModel } = require("../../core/resume_privacy");
 const {
   buildResumeEvidenceCatalog,
   validateResumeOptimizationDraft,
+  validateResumeActivationText,
   renderOptimizedResume,
   selectRepresentativeResumeJobs
 } = require("../../core/resume_optimization");
@@ -123,18 +124,28 @@ function createResumeOptimizationService({ db, adapter = null, funnelAnalysisSer
     const owned = getDraft({ profileId, draftId: draftId || optimizationId });
     if (!owned) throw serviceError("RESUME_OPTIMIZATION_NOT_FOUND", "定向简历草稿不存在");
     if (owned.status !== "draft") throw serviceError("RESUME_OPTIMIZATION_CLOSED", "已启用的定向简历不能继续修改");
-    return saveResumeOptimizationDraft(db, {
+    const saved = saveResumeOptimizationDraft(db, {
       profileId: owned.profileId,
       optimizationId: owned.id,
       finalText
     });
+    return { ...saved, integrity: integrityFor(saved, saved.finalText) };
   }
 
   function activateDraft({ profileId, planId, draftId, optimizationId, finalText } = {}) {
     const owned = getDraft({ profileId, draftId: draftId || optimizationId });
     if (!owned) throw serviceError("RESUME_OPTIMIZATION_NOT_FOUND", "定向简历草稿不存在");
     const plan = ownedPlan(owned.profileId, planId);
-    return activateResumeOptimization(db, {
+    let integrity = null;
+    if (owned.status === "draft") {
+      integrity = integrityFor(owned, finalText);
+      if (!integrity.valid) {
+        const error = serviceError("RESUME_ACTIVATION_INTEGRITY_FAILED", "当前简历仍有需要修改的问题，尚未启用");
+        error.issues = publicIssues(integrity.errors);
+        throw error;
+      }
+    }
+    const activated = activateResumeOptimization(db, {
       profileId: owned.profileId,
       planId: plan.id,
       optimizationId: owned.id,
@@ -145,6 +156,7 @@ function createResumeOptimizationService({ db, adapter = null, funnelAnalysisSer
         summary: owned.headline || "基于目标岗位证据生成并由用户确认的定向版本。"
       }
     });
+    return { ...activated, integrity };
   }
 
   function dashboard({ profileId, planId, draftId = null } = {}) {
@@ -164,8 +176,38 @@ function createResumeOptimizationService({ db, adapter = null, funnelAnalysisSer
       drafts,
       selectedDraft,
       selectedJobs: selectedDraft ? rowsForJobIds(selectedDraft.targetJobIds) : [],
+      selectedIntegrity: selectedDraft?.status === "draft"
+        ? integrityFor(selectedDraft, selectedDraft.finalText)
+        : null,
       funnelDiagnosis: compactDiagnosis(funnelAnalysis.getDashboard({ profileId: profile, planId: plan.id }))
     };
+  }
+
+  function integrityFor(draft, finalText) {
+    const source = ownedSource(draft.profileId, draft.sourceResumeVersionId);
+    const profile = getCandidateProfile(db, draft.profileId);
+    const answers = applicableAnswers(listCandidateAnswerMemories(db, {
+      profileId: draft.profileId,
+      activeOnly: true,
+      source: "user_edited_reply",
+      limit: 100
+    }), integrityJobs(draft.targetJobIds));
+    return validateResumeActivationText({
+      sourceText: source.text,
+      generatedText: draft.generatedText,
+      finalText,
+      candidateName: profile?.profile?.candidate?.name || profile?.displayName || "",
+      facts: listCandidateFacts(db, draft.profileId),
+      answerMemories: answers,
+      suggestions: draft.changeLedger
+    });
+  }
+
+  function integrityJobs(ids) {
+    if (!Array.isArray(ids) || !ids.length) return [];
+    const placeholders = ids.map(() => "?").join(",");
+    return db.prepare(`SELECT id, source_id, company FROM jobs WHERE id IN (${placeholders})`)
+      .all(...ids).map((row) => ({ id: Number(row.id), sourceId: row.source_id || "", company: row.company || "" }));
   }
 
   function ownedPlan(profileId, planId) {
@@ -230,7 +272,7 @@ function modelJob(job) {
 }
 
 function applicableAnswers(answers, jobs) {
-  const jobIds = new Set(jobs.map((job) => String(job.id)));
+  const jobIds = new Set(jobs.flatMap((job) => [job.id, job.sourceId].map((value) => String(value || "")).filter(Boolean)));
   const companies = new Set(jobs.map((job) => String(job.company || "").trim()).filter(Boolean));
   return answers.filter((answer) => {
     const scope = answer.scope || { kind: "global", key: "" };
@@ -239,6 +281,13 @@ function applicableAnswers(answers, jobs) {
     if (scope.kind === "company") return companies.has(String(scope.key || "").trim());
     return false;
   });
+}
+
+function publicIssues(items) {
+  return [...new Set((Array.isArray(items) ? items : []).map((item) => String(item?.code || ""))
+    .filter((code) => /^RESUME_[A-Z0-9_]+$/.test(code)))]
+    .slice(0, 8)
+    .map((code) => ({ code }));
 }
 
 function compactDiagnosis(value) {
