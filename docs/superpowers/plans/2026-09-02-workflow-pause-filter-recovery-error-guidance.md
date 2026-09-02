@@ -34,7 +34,7 @@
 - Keep `collectCards(..., onCards)` callback shape `{ cards, total }`; both values must stay within `maxCards`.
 - Keep `createSiteAccessController({ assertActive })`; call `assertActive()` immediately before every reservation attempt and after any wait, before reopening the transaction loop.
 
-- [ ] **Step 1: Add a failing over-limit card checkpoint regression**
+- [x] **Step 1: Add a failing over-limit card checkpoint regression**
 
 Extend `cardGrowthCheckpointSmoke` with a fake extraction that jumps from 2 visible cards to 7 while `maxCards` is 4:
 
@@ -51,7 +51,7 @@ assert.strictEqual(result.cards.length, 4);
 assert(batches.every((entry) => entry.total <= 4));
 ```
 
-- [ ] **Step 2: Add a failing immediate workflow-control regression**
+- [x] **Step 2: Add a failing immediate workflow-control regression**
 
 In `tests/site_access_budget_smoke.js`, create a controller with no active cooldown and an `assertActive` spy that throws `WORKFLOW_PAUSE_REQUESTED`. Assert `reserve("list_scroll")` rejects before `recordSiteAccessEvent` writes any ledger row.
 
@@ -63,7 +63,7 @@ await assert.rejects(
 assert.strictEqual(listSiteAccessEvents(db, { site: "boss", action: "list_scroll" }).length, 0);
 ```
 
-- [ ] **Step 3: Run both tests and verify RED**
+- [x] **Step 3: Run both tests and verify RED**
 
 Run: `node tests/source_acquisition_smoke.js`  
 Expected: FAIL because the final callback contains more than four cards or reports `total > 4`.
@@ -71,7 +71,7 @@ Expected: FAIL because the final callback contains more than four cards or repor
 Run: `node tests/site_access_budget_smoke.js`  
 Expected: FAIL because a normal reservation does not call `assertActive` before writing the access event.
 
-- [ ] **Step 4: Implement the minimal bounds and control checks**
+- [x] **Step 4: Implement the minimal bounds and control checks**
 
 Use the remaining capacity when merging:
 
@@ -99,7 +99,7 @@ while (true) {
 }
 ```
 
-- [ ] **Step 5: Run both tests and verify GREEN**
+- [x] **Step 5: Run both tests and verify GREEN**
 
 Run: `node tests/source_acquisition_smoke.js`  
 Expected: `source_acquisition_smoke ok`.
@@ -107,7 +107,7 @@ Expected: `source_acquisition_smoke ok`.
 Run: `node tests/site_access_budget_smoke.js`  
 Expected: `site_access_budget_smoke ok`.
 
-- [ ] **Step 6: Commit the browser-boundary fix**
+- [x] **Step 6: Commit the browser-boundary fix**
 
 ```powershell
 git add -- src/adapters/sites/boss.js src/core/site_access_budget.js tests/source_acquisition_smoke.js tests/site_access_budget_smoke.js
@@ -130,7 +130,7 @@ git commit -m "fix: stop workflow scans at safe browser boundaries"
 - Add optional adapter callback `assertSearchScope({ tabId, expectedUrl, targetKey, phase })`.
 - Add `BOSS_SEARCH_SCOPE_CHANGED` to the existing fatal, recoverable scan-stop set.
 
-- [ ] **Step 1: Write canonicalization and drift RED tests**
+- [x] **Step 1: Write canonicalization and drift RED tests**
 
 Add assertions proving parameter order/encoding/tracking differences are equal, while keyword, city, subway, salary, experience, education, job type, and unknown platform-filter differences are not.
 
@@ -152,12 +152,12 @@ await assert.rejects(
 assert.deepStrictEqual(checkpointJobs(checkpoints), ["before-change"]);
 ```
 
-- [ ] **Step 2: Run the acquisition test and verify RED**
+- [x] **Step 2: Run the acquisition test and verify RED**
 
 Run: `node tests/source_acquisition_smoke.js`  
 Expected: FAIL because the adapter does not validate the target URL between fresh list reads.
 
-- [ ] **Step 3: Implement target canonicalization without changing template semantics**
+- [x] **Step 3: Implement target canonicalization without changing template semantics**
 
 Keep `canonicalizeBossSearchTemplate` behavior unchanged. Share a private URL-normalization helper and expose a second function that preserves `query`:
 
@@ -169,7 +169,7 @@ function canonicalizeBossTargetUrl(rawUrl) {
 
 Do not treat `page`, `ka`, `source`, `from`, `src`, `trackId`, `lid`, `_`, `timestamp`, or `utm_*` as scope.
 
-- [ ] **Step 4: Validate immediately before card acceptance**
+- [x] **Step 4: Validate immediately before card acceptance**
 
 Compute the exact target URL once in `scanBrowser` and pass it through `collectCards`. Call the scope assertion after page identity checks and before each `__bossExtractCards` result is merged. This ordering ensures changed-page cards never enter `found` or a progress callback.
 
@@ -183,7 +183,7 @@ throw error;
 
 Existing login, risk, tab-loss, and browser failures remain higher priority because page identity is checked first.
 
-- [ ] **Step 5: Prove the checkpoint and stop reason**
+- [x] **Step 5: Prove the checkpoint and stop reason**
 
 Run: `node tests/source_acquisition_smoke.js`  
 Expected: `source_acquisition_smoke ok`.
@@ -191,7 +191,7 @@ Expected: `source_acquisition_smoke ok`.
 Run: `node tests/workflow_scan_smoke.js`  
 Expected: `workflow_scan_smoke ok`, including a fake-browser interruption whose persisted stop code is `BOSS_SEARCH_SCOPE_CHANGED` and whose checkpoint contains only pre-change jobs.
 
-- [ ] **Step 6: Commit scope-drift protection**
+- [x] **Step 6: Commit scope-drift protection**
 
 ```powershell
 git add -- src/core/inherited_search_scope.js src/adapters/sites/boss.js src/cli.js tests/source_acquisition_smoke.js tests/workflow_scan_smoke.js
@@ -218,7 +218,7 @@ git commit -m "fix: stop scans when BOSS search scope changes"
 - Inject `resolveCurrentSearchContext` into `resumeWorkflow`; it performs one serialized read-only inspection of the current fixed search tab.
 - Return `{ workflow, scopeChange }`, where `scopeChange` is `null` or a plain choice view; no process is spawned when a choice is returned.
 
-- [ ] **Step 1: Write the transaction RED tests**
+- [x] **Step 1: Write the transaction RED tests**
 
 Seed a paused/interrupted scanning workflow with a terminal scan run and batch, then call:
 
@@ -247,12 +247,12 @@ assert.deepStrictEqual(replaced.planner.scopeReplacements.at(-1), {
 
 Add rollback cases for active scan run/lease, non-scanning resume phase, existing analysis task, existing communication batch, terminal workflow, stale `expectedUpdatedAt`, and invalid new planner. Assert the workflow row is byte-for-byte unchanged and no scan run is created.
 
-- [ ] **Step 2: Run storage tests and verify RED**
+- [x] **Step 2: Run storage tests and verify RED**
 
 Run: `node tests/workflow_storage_smoke.js`  
 Expected: FAIL because `replaceWorkflowScanContext` does not exist.
 
-- [ ] **Step 3: Implement one `BEGIN IMMEDIATE` replacement transaction**
+- [x] **Step 3: Implement one `BEGIN IMMEDIATE` replacement transaction**
 
 Inside `replaceWorkflowScanContext`, re-read all preconditions and update only the existing workflow row:
 
@@ -275,7 +275,7 @@ The new planner is the complete frozen context plus an append-only, metadata-onl
 
 Export the new owner function through `src/core/storage.js`. Update the owner-contract expected export list and facade count; exclude this post-split function from the historical body-equivalence list rather than weakening the equivalence checks for existing functions.
 
-- [ ] **Step 4: Write application RED tests for read-only comparison and explicit replacement**
+- [x] **Step 4: Write application RED tests for read-only comparison and explicit replacement**
 
 Cover three resume outcomes:
 
@@ -296,7 +296,7 @@ assert.strictEqual(result.workflow.sequence, before.sequence);
 
 Also prove `scopeChoice: "new"` is refused if the live page changed again between the comparison and transaction input, or if any replacement precondition is no longer true. `scopeChoice: "original"` follows the existing frozen-plan resume path and never rewrites the planner.
 
-- [ ] **Step 5: Implement resume orchestration and the serialized live resolver**
+- [x] **Step 5: Implement resume orchestration and the serialized live resolver**
 
 For scan-phase resume only:
 
@@ -309,7 +309,7 @@ For scan-phase resume only:
 
 Keep analysis-only resume unchanged and do not require a BOSS scope comparison for local analysis.
 
-- [ ] **Step 6: Run application, dashboard, storage, and contract tests**
+- [x] **Step 6: Run application, dashboard, storage, and contract tests**
 
 Run: `node tests/workflow_storage_smoke.js`  
 Expected: `workflow storage smoke passed` or the file's existing success marker.
@@ -323,7 +323,7 @@ Expected: `workflow_dashboard_smoke ok`.
 Run: `node tests/workflow_store_contract_smoke.js`  
 Expected: `workflow_store_contract_smoke ok (5 owner contracts)`.
 
-- [ ] **Step 7: Commit same-round scope replacement**
+- [x] **Step 7: Commit same-round scope replacement**
 
 ```powershell
 git add -- src/storage/workflow_store.js src/core/storage.js src/application/workflow/index.js src/dashboard/server.js tests/workflow_storage_smoke.js tests/workflow_application_smoke.js tests/workflow_dashboard_smoke.js tests/workflow_store_contract_smoke.js
@@ -345,7 +345,7 @@ git commit -m "feat: restart a workflow with updated search filters"
 - Extend controls with `pauseRequestedVisible` and keep resume available only for true `paused`.
 - Extend interrupted phase with optional `scopeChange` containing `newScopeAction` and `originalScopeAction`; both post to the existing resume endpoint with an exact hidden `scopeChoice` value.
 
-- [ ] **Step 1: Write the pause-state RED regression**
+- [x] **Step 1: Write the pause-state RED regression**
 
 Render a scanning workflow with `controlState: "pause_requested"` and assert:
 
@@ -358,7 +358,7 @@ assert.doesNotMatch(html, />本轮已暂停</);
 
 Render the same row as `status: "paused", controlState: "none"` and assert the existing resume button appears.
 
-- [ ] **Step 2: Write the changed-scope choice RED regression**
+- [x] **Step 2: Write the changed-scope choice RED regression**
 
 Render the read-only resume result and assert user-first copy and exact actions:
 
@@ -371,12 +371,12 @@ assert.match(html, /name="scopeChoice" value="original"/);
 assert.match(html, /继续开始时的条件/);
 ```
 
-- [ ] **Step 3: Run page tests and verify RED**
+- [x] **Step 3: Run page tests and verify RED**
 
 Run: `node tests/workflow_page_migration_smoke.js`  
 Expected: FAIL because `pause_requested` still renders as ordinary running state and no scope-choice view exists.
 
-- [ ] **Step 4: Implement server-rendered states and client refresh behavior**
+- [x] **Step 4: Implement server-rendered states and client refresh behavior**
 
 Use one explicit control-state branch:
 
@@ -393,7 +393,7 @@ Render a non-interactive “正在暂停” group with stop still available if c
 
 Render changed-scope forms from the view model; do not infer authorization in client JavaScript and do not add a second confirmation.
 
-- [ ] **Step 5: Run both page/dashboard tests and verify GREEN**
+- [x] **Step 5: Run both page/dashboard tests and verify GREEN**
 
 Run: `node tests/workflow_page_migration_smoke.js`  
 Expected: `workflow_page_migration_smoke ok`.
@@ -401,7 +401,7 @@ Expected: `workflow_page_migration_smoke ok`.
 Run: `node tests/workflow_dashboard_smoke.js`  
 Expected: `workflow_dashboard_smoke ok`.
 
-- [ ] **Step 6: Commit the recovery UX**
+- [x] **Step 6: Commit the recovery UX**
 
 ```powershell
 git add -- src/dashboard/view_models/workflow.js src/dashboard/pages/workflow.js src/dashboard/assets/workflow.js tests/workflow_page_migration_smoke.js tests/workflow_dashboard_smoke.js
@@ -427,7 +427,7 @@ git commit -m "feat: guide paused workflow filter recovery"
 - Keep API fields `error`, `errorCode`, and `requestId`; `error` becomes directly displayable user text.
 - Put `errorCode`, `requestId`, and sanitized technical message inside a native `<details>` block.
 
-- [ ] **Step 1: Write mapping and rendering RED regressions**
+- [x] **Step 1: Write mapping and rendering RED regressions**
 
 Table-drive at least:
 
@@ -445,13 +445,13 @@ Assert the primary interrupted card does not print `UNKNOWN_PRIVATE_CODE · priv
 
 For `runtime.js`, simulate a non-2xx JSON response `{ error: "请先等待专用 Edge 准备完成。", errorCode, requestId }` and assert the visible message uses `payload.error` instead of the fixed fallback.
 
-- [ ] **Step 2: Run UI/runtime tests and verify RED**
+- [x] **Step 2: Run UI/runtime tests and verify RED**
 
 Run: `node tests/workflow_page_migration_smoke.js`  
 Run: `node tests/dashboard_runtime_smoke.js`  
 Expected: FAIL because technical codes are primary and the runtime client discards the server response body.
 
-- [ ] **Step 3: Implement the small presentation mapper**
+- [x] **Step 3: Implement the small presentation mapper**
 
 Keep the map local to dashboard presentation. Example entry:
 
@@ -465,7 +465,7 @@ BROWSER_TIMEOUT: {
 
 Use the conservative fallback from the approved design. Reuse existing communication/login/risk/model labels where already present instead of duplicating their state machines.
 
-- [ ] **Step 4: Preserve API payload details in the runtime client**
+- [x] **Step 4: Preserve API payload details in the runtime client**
 
 Throw the parsed payload, not only its code:
 
@@ -475,7 +475,7 @@ if (!response.ok) throw Object.assign(new Error(String(payload?.error || "请求
 
 In `catch (error)`, render `error.payload?.error || error.message || fallback`. Do not auto-retry an action POST; normal status polling may continue under existing rules.
 
-- [ ] **Step 5: Run targeted error tests and verify GREEN**
+- [x] **Step 5: Run targeted error tests and verify GREEN**
 
 Run: `node tests/workflow_page_migration_smoke.js`  
 Expected: `workflow_page_migration_smoke ok`.
@@ -486,7 +486,7 @@ Expected: `dashboard_runtime_smoke ok`.
 Run: `node tests/workflow_dashboard_smoke.js`  
 Expected: `workflow_dashboard_smoke ok`.
 
-- [ ] **Step 6: Commit user-facing errors**
+- [x] **Step 6: Commit user-facing errors**
 
 ```powershell
 git add -- src/dashboard/user_facing_errors.js src/dashboard/view_models/workflow.js src/dashboard/pages/workflow.js src/dashboard/server.js src/dashboard/assets/runtime.js tests/workflow_page_migration_smoke.js tests/dashboard_runtime_smoke.js tests/workflow_dashboard_smoke.js
@@ -501,7 +501,7 @@ git commit -m "fix: explain workflow failures in user language"
 - Modify if evidence changes: `docs/PROJECT_HANDOFF.md`
 - Modify: `docs/superpowers/plans/2026-09-02-workflow-pause-filter-recovery-error-guidance.md` checkboxes only
 
-- [ ] **Step 1: Run the combined high-risk regressions**
+- [x] **Step 1: Run the combined high-risk regressions**
 
 Run in this order:
 
@@ -520,7 +520,7 @@ node tests/scan_end_to_end_recovery_smoke.js
 
 Expected: every command exits 0 with its existing success marker. No test may connect to a real BOSS page.
 
-- [ ] **Step 2: Perform a read-only risk review**
+- [x] **Step 2: Perform a read-only risk review**
 
 Inspect the final diff against the approved design and explicitly verify:
 
@@ -533,12 +533,12 @@ Inspect the final diff against the approved design and explicitly verify:
 - technical codes remain available in diagnostics but are not primary user copy;
 - no external-write permission or communication path changed.
 
-- [ ] **Step 3: Run the fresh full offline gate**
+- [x] **Step 3: Run the fresh full offline gate**
 
 Run: `npm test`  
 Expected: `All <fresh-count> offline checks passed.` Record the actual count from this run; do not reuse the previous release count.
 
-- [ ] **Step 4: Run repository hygiene checks**
+- [x] **Step 4: Run repository hygiene checks**
 
 Run: `git diff --check`  
 Expected: no output and exit 0.
@@ -546,7 +546,7 @@ Expected: no output and exit 0.
 Run: `git status --short --branch`  
 Expected: only intentional plan/handoff checkbox changes remain before the final evidence commit.
 
-- [ ] **Step 5: Commit final evidence**
+- [x] **Step 5: Commit final evidence**
 
 ```powershell
 git add -- docs/PROJECT_HANDOFF.md docs/superpowers/plans/2026-09-02-workflow-pause-filter-recovery-error-guidance.md
