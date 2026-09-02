@@ -54,6 +54,7 @@ const tests = [
   "message_follow_up_smoke.js",
   "message_follow_up_service_smoke.js",
   "dashboard_message_follow_up_controller_smoke.js",
+  "dashboard_message_follow_up_smoke.js",
   "matching_card_smoke.js",
   "workflow_storage_smoke.js",
   "workflow_control_smoke.js",

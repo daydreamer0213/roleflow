@@ -55,7 +55,8 @@ function renderMessageDiscoveryPage({ db, searchParams, controller, replySendCon
   const recoveryMessages = messageDiscoveryRecoveryMessages();
   const reason = messageDiscoveryReasonText(status.reasonCode);
   const phaseNotice = messageDiscoveryPhaseText(status);
-  const resultViews = status.results.map((result, resultIndex) => {
+  const displayResults = status.results.filter((result) => result?.messageIntent !== "follow_up");
+  const resultViews = displayResults.map((result, resultIndex) => {
     const job = result.job || {};
     const manualActions = (result.manualActions || []).filter((item) => item?.kind === "resume_request");
     const durableDrafts = Array.isArray(result.drafts) ? result.drafts.filter((draft) => Number(draft?.id) > 0) : [];
@@ -125,9 +126,9 @@ function renderMessageDiscoveryPage({ db, searchParams, controller, replySendCon
     <form data-discovery-form method="post" action="/api/message-discovery"><input type="hidden" name="action" value="stop"><input type="hidden" name="profileId" value="${profileId}"><button class="secondary"${status.status === "running" ? "" : " disabled"}>安全停止</button></form>
     <form data-discovery-form method="post" action="/api/message-discovery"><input type="hidden" name="action" value="dismiss"><input type="hidden" name="profileId" value="${profileId}"><button class="secondary"${status.status !== "running" && status.results.length ? "" : " disabled"}>清除本次结果</button></form>
   </section>`;
-  const sendableDraftCount = status.results.reduce((count, result) => count
+  const sendableDraftCount = displayResults.reduce((count, result) => count
     + (Array.isArray(result.drafts) ? result.drafts.filter((draft) => Number(draft?.id) > 0).length : 0), 0);
-  const selectedDraftCount = status.results.reduce((count, result) => count
+  const selectedDraftCount = displayResults.reduce((count, result) => count
     + (Array.isArray(result.drafts) && result.drafts.some((draft) => Number(draft?.id) > 0) ? 1 : 0), 0);
   const sendBatchPanel = sendableDraftCount > 0 ? `<section class="message-send-batch" data-send-batch-panel data-state="idle" aria-label="确认发送">
     <div><strong data-send-batch-title>已选择 ${selectedDraftCount} 条草稿</strong><span data-send-batch-status>逐条确认目标后在后台串行发送</span></div>
@@ -353,6 +354,7 @@ function messageDiscoveryRecoveryMessages() {
 
 module.exports = {
   renderMessageDiscoveryPage,
+  messageDiscoveryClientScript,
   messageDiscoveryReasonText,
   messageIntentLabel
 };

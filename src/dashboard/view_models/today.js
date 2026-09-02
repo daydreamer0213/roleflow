@@ -54,6 +54,10 @@ function buildTodayViewModel(input = {}) {
       status: dependency.stale || dependency.matchingCardRequired ? "方案待确认" : "方案可用"
     },
     primary: buildPrimaryAction({ activeRun, nextPlan, dependency, runtimeBlock, profileId, planId, startBlocked }),
+    followUp: Number(input.followUp?.count) > 0 ? {
+      count: Math.floor(Number(input.followUp.count)),
+      href: String(input.followUp.href || `/follow-ups?profileId=${profileId}&planId=${planId}`)
+    } : null,
     metrics: {
       successfulToday: Number(workflow.successfulToday || 0),
       dailyTarget: Number(workflow.dailyTarget || 0),

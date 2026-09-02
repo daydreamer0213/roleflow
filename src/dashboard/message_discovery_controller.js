@@ -478,6 +478,7 @@ function createMessageDiscoveryController(deps = {}) {
     const byCard = new Map();
     const persistedDraft = db.prepare("SELECT 1 AS found FROM message_reply_drafts WHERE id = ? AND profile_id = ?");
     for (const draft of listOpenMessageReplyDrafts(db, { profileId, limit: 500 })) {
+      if (draft.messageIntent === "follow_up") continue;
       const values = byCard.get(draft.cardId) || [];
       values.push(draft);
       byCard.set(draft.cardId, values);
@@ -525,7 +526,8 @@ function createMessageDiscoveryController(deps = {}) {
   }
 
   function durableStatus(profileId) {
-    const drafts = listOpenMessageReplyDrafts(db, { profileId, limit: 500 });
+    const drafts = listOpenMessageReplyDrafts(db, { profileId, limit: 500 })
+      .filter((draft) => draft.messageIntent !== "follow_up");
     const inboundContexts = listMessageInboundContexts(db, { profileId, limit: 500 });
     const unresolved = listUnresolvedMessageDiscoveryItems(db, { profileId });
     if (!drafts.length && unresolved.length === 0) return emptyStatus(profileId);

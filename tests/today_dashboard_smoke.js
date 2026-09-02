@@ -246,6 +246,7 @@ function assertRendererIsPureAndEscapesHtml() {
     bossCatalog: null,
     bossFilterPreview: null,
     runtime: { browserMode: "portable", cdpPort: 9222 },
+    followUp: { count: 2, href: "/follow-ups?profileId=7&planId=12" },
     options: { cities: ["上海"], experience: [], jobTypes: [], degrees: [] }
   });
   assert.deepStrictEqual(JSON.parse(JSON.stringify(viewModel)), viewModel, "today VM must contain plain serializable display data only");
@@ -258,6 +259,8 @@ function assertRendererIsPureAndEscapesHtml() {
   assert.match(html, /class="[^"]*today-cycle/);
   assert.match(html, /class="[^"]*today-feedback-summary/);
   assert.match(html, /id="today-discovery"/);
+  assert.match(html, /有 2 个岗位可以考虑跟进/);
+  assert.match(html, /href="\/follow-ups\?profileId=7&amp;planId=12"/);
   assert.doesNotMatch(html, /不阻塞继续投递/);
   assert.strictEqual((html.match(/class="metric"/g) || []).length, 3, "first screen must keep only three result metrics");
   assert.doesNotMatch(html, /class="action-meta"/, "primary action must not repeat the same metrics");

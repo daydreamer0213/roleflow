@@ -194,6 +194,22 @@ h2{font-size:19px;font-weight:600}
   .message-list-item{border-right:1px solid var(--rf-rule)}
 }
 
+/* Follow-up: a compact Today cue opens a focused draft workspace. */
+.today-follow-up{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-top:12px;padding:13px 16px;color:var(--rf-ink);background:#f3f7f5;border:1px solid var(--rf-rule);border-left:4px solid var(--rf-teal);border-radius:var(--rf-radius);text-decoration:none}
+.today-follow-up:hover{background:#eaf2ee;border-color:var(--rf-teal)}
+.today-follow-up span:first-child{display:grid;gap:2px}
+.today-follow-up small{color:var(--rf-ink-soft)}
+.follow-up-main{max-width:980px}
+.follow-up-card{display:grid;gap:16px}
+.follow-up-card>header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}
+.follow-up-card>header h2{margin-bottom:3px}
+.follow-up-prior{padding:13px 15px;background:#f3f7f5;border-left:4px solid var(--rf-teal)}
+.follow-up-prior p{margin:6px 0 0;white-space:pre-wrap}
+.follow-up-empty{text-align:center;padding-block:34px}
+@media(max-width:620px){
+  .today-follow-up,.follow-up-card>header{align-items:flex-start;flex-direction:column}
+}
+
 /* Funnel: conclusion first, evidence second, mechanics on demand. */
 .funnel-focus{display:grid;gap:14px;margin-bottom:18px}
 .funnel-focus .funnel-evidence{margin:0}

@@ -6,6 +6,7 @@ function renderTodayPage(vm) {
   return renderDashboardFrame({ currentPath: page.todayPath, todayPath: page.todayPath, planId: page.planId, stage: "今日任务", brandHref: page.todayPath, content: `<main id="main-content" class="today-main">
   <section class="page-heading" aria-labelledby="today-title"><p class="eyebrow">${escapeHtml(vm.heading?.eyebrow || "")}</p><h1 id="today-title">${escapeHtml(vm.heading?.title || "今日任务")}</h1><p class="lede">${escapeHtml(vm.heading?.lede || "")}</p><div class="heading-meta"><span>${escapeHtml(vm.heading?.meta?.[0] || "")}</span><span>${escapeHtml(vm.heading?.meta?.[1] || "")}</span><span class="status ${vm.heading?.status === "方案可用" ? "good" : "waiting"}">${escapeHtml(vm.heading?.status || "")}</span></div></section>
   ${renderPrimaryPanel(vm)}
+  ${renderFollowUpEntry(vm.followUp)}
   ${vm.confirmation ? `<p class="notice" role="status">${escapeHtml(vm.confirmation)}</p>` : ""}
   ${(vm.blockers || []).length ? renderBlockers(vm.blockers) : ""}
   <div class="today-overview">
@@ -16,6 +17,11 @@ function renderTodayPage(vm) {
   ${renderPlanSettings(vm)}
   ${renderAdvancedScan(vm)}
 </main><p class="footer-note">本页只展示本地保存的任务状态。扫描仍遵守固定标签页、随机等待、预算和风控即停；不会自动沟通或投递。</p>` }) + renderClientScripts(vm.run?.state, ["form", "cooldown_override"].includes(vm.primary?.type), vm.runtime || {});
+}
+
+function renderFollowUpEntry(followUp) {
+  if (!followUp) return "";
+  return `<a class="today-follow-up" href="${escapeAttr(followUp.href)}"><span><strong>有 ${escapeHtml(followUp.count)} 个岗位可以考虑跟进</strong><small>查看岗位并准备跟进草稿</small></span><span aria-hidden="true">查看 →</span></a>`;
 }
 
 function renderPrimaryPanel(vm) {

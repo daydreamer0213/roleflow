@@ -295,9 +295,12 @@ const { EdgeControlAdapter } = require("../adapters/browser/edge_control");
 const { CdpBrowserAdapter } = require("../adapters/browser/cdp");
 const { createMessageDiscoveryController } = require("./message_discovery_controller");
 const { createMessageReplySendController } = require("./message_reply_send_controller");
+const { createMessageFollowUpController } = require("./message_follow_up_controller");
 const { renderMessageDiscoveryPage } = require("./message_discovery_view");
+const { renderMessageFollowUpPage } = require("./pages/message_follow_up");
 const { renderCommunicationProfilePage } = require("./communication_profile_view");
 const { createMessageReplyLearningService } = require("../application/message_learning");
+const { createMessageFollowUpService } = require("../application/message_follow_up");
 const { prepareInitialSearchPage } = require("../application/onboarding/initial_search_page");
 const { createModelAdapter } = require("../adapters/models");
 const boss = require("../adapters/sites/boss");
@@ -517,6 +520,9 @@ function createDashboardServer({
   messageDiscoveryDependencies = {},
   messageReplySendDependencies = {},
   messageReplyLearningService = null,
+  messageFollowUpService = null,
+  messageFollowUpController = null,
+  messageFollowUpDependencies = {},
   communicationAmbiguityReader = null,
   browserFactory = createDashboardBrowser,
   browserSupervisor = null,
@@ -783,6 +789,52 @@ function createDashboardServer({
     }),
     ...messageReplySendDependencies
   });
+  const followUpService = messageFollowUpService || createMessageFollowUpService({
+    db,
+    async generateDraft({ candidate }) {
+      if (!modelReady("deep_analysis")) {
+        throw appError("FOLLOW_UP_MODEL_NOT_READY", "深度分析模型尚未就绪。", { statusCode: 409 });
+      }
+      const profile = getCandidateProfile(db, candidate.profileId);
+      if (!profile) throw appError("FOLLOW_UP_PROFILE_NOT_FOUND", "候选人画像不存在。", { statusCode: 404 });
+      const job = candidate.job || {};
+      const analysis = job.analysis || {};
+      const { riskMessaging: _ignoredRiskMessaging, ...candidateFacts } = profile.profile || {};
+      const analyzer = createLlmAnalyzer({ modelConfig: getRuntimeModel("deep_analysis"), logger });
+      return analyzer.draftCommunication({
+        mode: "follow_up",
+        candidateProfile: candidateFacts,
+        resumeVersions: listCandidateResumeVersions(db, profile.id).filter((item) => item.isActive),
+        jobUnderstanding: {
+          jobId: job.sourceId || String(job.id || ""),
+          realRoleType: analysis.realRoleType || "unknown",
+          businessScenario: analysis.businessScenario || "",
+          coreRequirements: analysis.coreRequirements || [],
+          coreStack: analysis.coreStack || [],
+          hiddenRisks: analysis.hiddenRisks || [],
+          evidenceSnippets: analysis.evidence?.jd || []
+        },
+        matchDecision: analysis,
+        jobEvidence: {
+          title: job.title,
+          company: job.company,
+          description: job.description,
+          salary: job.salary,
+          experience: job.experience
+        },
+        userProvidedFacts: listCandidateFacts(db, profile.id)
+      });
+    }
+  });
+  const messageFollowUp = messageFollowUpController || createMessageFollowUpController({
+    db,
+    service: followUpService,
+    browserFactory: () => browserFactory({
+      browserMode: frozenBrowserAuthority.browserMode,
+      cdpPort: frozenBrowserAuthority.cdpPort
+    }),
+    ...messageFollowUpDependencies
+  });
   let workspaceRuntime = publicWorkspaceRuntimeSnapshot();
   const runtimeLogDir = resolveRuntimeLogDir({ dataRoot, logger });
   const runtimeDiagnostics = () => buildRuntimeDiagnostics({
@@ -964,7 +1016,7 @@ function createDashboardServer({
       if (req.method === "GET" && url.pathname === "/profile") return sendHtml(res, renderProfilePage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/resumes") return sendHtml(res, renderResumeVersionsPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/resume-file") return handleResumeFile(req, res, { db, root: dataRoot, searchParams: url.searchParams });
-      if (req.method === "GET" && url.pathname === "/plan") return sendHtml(res, renderPlanPage({ db, searchParams: url.searchParams, scanRuns, browserAuthority: frozenBrowserAuthority }));
+      if (req.method === "GET" && url.pathname === "/plan") return sendHtml(res, renderPlanPage({ db, searchParams: url.searchParams, scanRuns, browserAuthority: frozenBrowserAuthority, messageFollowUpService: followUpService }));
       if (req.method === "GET" && url.pathname === "/match-card") return sendHtml(res, renderMatchCardPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/workflow") return sendHtml(res, renderWorkflowDashboardPage({ db, searchParams: url.searchParams, logger, workflowHealth: resolvedWorkflowHealth }));
       if (req.method === "GET" && url.pathname === "/queue") return sendHtml(res, renderQueuePage({ db, searchParams: url.searchParams, logger, outcomeAnalyticsReader }));
@@ -985,6 +1037,13 @@ function createDashboardServer({
         db,
         searchParams: url.searchParams,
         controller: messageDiscovery,
+        replySendController: messageReplySend,
+        messageReplyActionToken,
+        helpers: messageDiscoveryViewHelpers()
+      }));
+      if (req.method === "GET" && url.pathname === "/follow-ups") return sendHtml(res, renderMessageFollowUpPage({
+        searchParams: url.searchParams,
+        service: followUpService,
         replySendController: messageReplySend,
         messageReplyActionToken,
         helpers: messageDiscoveryViewHelpers()
@@ -1158,6 +1217,10 @@ function createDashboardServer({
       if (req.method === "POST" && url.pathname === "/api/feedback") return handlePost(req, res, (body, type) => handleRecommendationFeedbackApi(db, body, type), { logger, requestId, action: "recommendation_feedback" });
       if (req.method === "POST" && url.pathname === "/api/communication") return handleCommunication(req, res, { db, modelConfig: getRuntimeModel("deep_analysis"), modelReady: modelReady("deep_analysis"), logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/message-reply-draft") return handleMessageReplyDraft(req, res, replyLearning);
+      if (req.method === "POST" && url.pathname === "/api/message-follow-up/prepare") {
+        await ensureManagedWorkspaceReady("message_follow_up_prepare");
+        return handleMessageFollowUpPrepare(req, res, messageFollowUp, { logger, requestId });
+      }
       if (req.method === "POST" && url.pathname === "/api/communication-profile") return handleCommunicationProfile(req, res, replyLearning);
       if (req.method === "POST" && url.pathname === "/api/progress") return handleProgress(req, res, db, messageDiscovery, replyLearning);
       if (req.method === "POST" && url.pathname === "/api/funnel/strategy-round") {
@@ -1254,6 +1317,7 @@ function createDashboardServer({
     const cleanups = [
       Promise.resolve().then(() => messageDiscovery.close()),
       Promise.resolve().then(() => messageReplySend.close()),
+      Promise.resolve().then(() => messageFollowUp.close()),
       Promise.resolve().then(() => browserSupervisor?.close?.())
     ];
     return closeHttpServer((serverError) => {
@@ -3949,6 +4013,34 @@ async function handleMessageReplyDraft(req, res, service) {
   }
 }
 
+async function handleMessageFollowUpPrepare(req, res, controller, { logger, requestId }) {
+  let params = {};
+  try {
+    params = parseBody(await readBody(req), req.headers["content-type"] || "");
+    const keys = Object.keys(params).sort();
+    if (keys.length !== 3 || keys.join(",") !== "jobId,planId,profileId"
+      || keys.some((key) => Array.isArray(params[key]))) {
+      throw appError("FOLLOW_UP_REQUEST_INVALID", "跟进请求无效，请从当前页面重新操作。", { statusCode: 400 });
+    }
+    await controller.prepare({
+      profileId: params.profileId,
+      planId: params.planId,
+      jobId: params.jobId
+    });
+    return redirect(res, `/follow-ups?profileId=${encodeURIComponent(params.profileId)}&planId=${encodeURIComponent(params.planId)}`);
+  } catch (error) {
+    const back = Number(params.profileId) > 0 && Number(params.planId) > 0
+      ? `/follow-ups?profileId=${encodeURIComponent(params.profileId)}&planId=${encodeURIComponent(params.planId)}`
+      : "/plan";
+    return respondUiError(res, error, back, {
+      logger,
+      requestId,
+      event: "message_follow_up_prepare_failed",
+      fallbackCode: "FOLLOW_UP_PREPARE_FAILED"
+    });
+  }
+}
+
 async function handleCommunicationProfile(req, res, service) {
   let profileId = 0;
   try {
@@ -5137,7 +5229,7 @@ const PLAN_EXPERIENCE_OPTIONS = PRODUCT_POLICY.searchPlan.experienceOptions;
 const PLAN_JOB_TYPE_OPTIONS = PRODUCT_POLICY.searchPlan.jobTypeOptions;
 const PLAN_DEGREE_OPTIONS = PRODUCT_POLICY.searchPlan.degreeOptions;
 
-function renderPlanPage({ db, searchParams, scanRuns, browserAuthority = { browserMode: "edge", cdpPort: null } }) {
+function renderPlanPage({ db, searchParams, scanRuns, browserAuthority = { browserMode: "edge", cdpPort: null }, messageFollowUpService = null }) {
   const profiles = listCandidateProfiles(db);
   const requestedPlan = getSearchPlan(db, searchParams.get("planId"));
   const profileId = Number(searchParams.get("profileId") || requestedPlan?.profileId || profiles[0]?.id || 0);
@@ -5158,6 +5250,9 @@ function renderPlanPage({ db, searchParams, scanRuns, browserAuthority = { brows
     ? "筛选方案已保存。当前任务继续使用启动时的条件；新条件会在下一次创建任务时生效。"
     : searchParams.get("saved") ? "本地筛选方案已保存。" : searchParams.get("created") ? "已根据简历生成画像和本地筛选方案。开始前，请先在固定 BOSS 搜索页补充城市、地铁或商圈等条件，再回来开始一轮岗位发现。" : searchParams.get("matchCardConfirmed") ? "匹配偏好卡已确认。开始前，请先在固定 BOSS 搜索页补充城市、地铁或商圈等条件，再回来开始一轮岗位发现。" : "";
   const matchingContext = getCandidateMatchingContext(db, profile.id);
+  const followUpCount = messageFollowUpService
+    ? messageFollowUpService.listCandidates({ profileId: profile.id, planId: planRecord.id }).length
+    : 0;
   const viewModel = buildTodayViewModel({
     profile,
     planRecord,
@@ -5180,6 +5275,10 @@ function renderPlanPage({ db, searchParams, scanRuns, browserAuthority = { brows
     bossSalaryOptions: bossCatalog?.fields?.salary?.options?.map((option) => option.label) || [],
     selectedBossSalaryLanes,
     matchingContext,
+    followUp: followUpCount > 0 ? {
+      count: followUpCount,
+      href: `/follow-ups?profileId=${profile.id}&planId=${planRecord.id}`
+    } : null,
     confirmation,
     runtime: browserAuthority,
     options: {
