@@ -10,6 +10,17 @@ const PRINCIPLE_LABELS = {
   structure: "结构调整"
 };
 
+const RESUME_INTEGRITY_MESSAGES = Object.freeze({
+  RESUME_PLACEHOLDER_PRESENT: "简历里还有待补充的占位内容。",
+  RESUME_CONTACT_REMOVED: "原简历中的姓名或联系方式被删除或改动。",
+  RESUME_FACT_UNSUPPORTED: "简历新增了系统找不到依据的日期、数字或联系方式。",
+  RESUME_TEXT_TOO_SHORT: "简历正文过短，请补充完整后再启用。",
+  RESUME_GENERATED_BASELINE_CHANGED: "系统生成基线与修改记录不一致，请重新生成这份定向简历。",
+  RESUME_NEARLY_UNCHANGED: "这份草稿与原简历非常接近，定向调整可能不明显。",
+  RESUME_LENGTH_INCREASED: "篇幅比原简历明显增加，建议再精简。",
+  RESUME_USER_EXTRA_EDIT: "当前全文包含你在系统优化后继续修改的内容。"
+});
+
 function renderResumeOptimizationPage({ dashboard = {}, modelReady = true } = {}) {
   const plan = dashboard.plan || {};
   const planId = Number(plan.id || 0);
@@ -86,8 +97,29 @@ function renderWholeDraft(dashboard, draft, evidence) {
     <input type="hidden" name="planId" value="${escapeAttr(planId)}"><input type="hidden" name="draftId" value="${escapeAttr(draft.id)}">
     <div class="resume-opt-section-head"><div><p class="section-label">完整简历草稿</p><h2>${draft.userEditedAt ? "用户已修改" : "系统生成版本"}</h2></div><button class="secondary" type="button" data-copy-resume>复制当前全文</button></div>
     <label class="resume-opt-full-editor" for="resume-opt-final-text">当前全文<textarea id="resume-opt-final-text" name="finalText" rows="22"${activated ? " readonly" : ""}>${escapeHtml(draft.finalText || draft.generatedText || "")}</textarea></label>
+    ${renderResumeIntegrity(dashboard.selectedIntegrity)}
     ${activated ? `<p class="notice">已创建新的简历版本 #${escapeHtml(draft.resultResumeVersionId || "")}；源简历仍保持原样。</p>` : `<div class="resume-opt-savebar"><span data-resume-save-status aria-live="polite">修改后会在 600 毫秒内自动保存。</span><div class="button-row"><button class="secondary" type="submit" data-resume-success-target="resume-opt-draft-title">保存草稿</button><button type="submit" formaction="/api/resume-optimization/activate" data-resume-success-target="resume-opt-activated">启用为新版本</button></div></div>`}
   </form>${renderChangeLedger(draft.changeLedger || draft.suggestions || [], evidence, Boolean(draft.userEditedAt))}</div>`;
+}
+
+function publicResumeIntegrityIssues(integrity = {}) {
+  const result = [];
+  const seen = new Set();
+  for (const [level, items] of [["error", integrity.errors], ["warning", integrity.warnings]]) {
+    for (const item of Array.isArray(items) ? items : []) {
+      const code = String(item?.code || "");
+      if (!RESUME_INTEGRITY_MESSAGES[code] || seen.has(code)) continue;
+      seen.add(code);
+      result.push({ code, message: RESUME_INTEGRITY_MESSAGES[code], level });
+    }
+  }
+  return result;
+}
+
+function renderResumeIntegrity(integrity) {
+  const issues = publicResumeIntegrityIssues(integrity);
+  const state = issues.some((item) => item.level === "error") ? "error" : "warning";
+  return `<div class="resume-opt-integrity" data-resume-integrity data-state="${state}" aria-live="polite"${issues.length ? "" : " hidden"}>${issues.length ? `<ul>${issues.map((item) => `<li>${escapeHtml(item.message)}</li>`).join("")}</ul>` : ""}</div>`;
 }
 
 function renderChangeLedger(changes, evidence, userEdited) {
@@ -114,6 +146,6 @@ function renderHistory(dashboard, selected) {
   return `<section class="card pad resume-opt-history"><p class="section-label">历史草稿</p><h2>保留每次源材料与处理结果</h2><ul>${history.map((draft) => `<li><a href="/resume-optimization?planId=${escapeAttr(planId)}&amp;draftId=${escapeAttr(draft.id)}">${escapeHtml(draft.headline || `定向简历草稿 ${draft.id}`)}</a><span>${draft.status === "activated" ? "已启用" : "草稿"}</span></li>`).join("")}</ul></section>`;
 }
 
-const RESUME_OPTIMIZATION_SCRIPT = `<script>(()=>{const reveal=()=>{const target=location.hash&&document.getElementById(location.hash.slice(1));if(target)setTimeout(()=>target.scrollIntoView({block:'start'}),0);};if(document.readyState==='complete')reveal();else addEventListener('load',reveal,{once:true});const form=document.querySelector('[data-resume-editor]');const editor=document.getElementById('resume-opt-final-text');const copy=document.querySelector('[data-copy-resume]');if(copy&&editor)copy.addEventListener('click',async()=>{try{await navigator.clipboard.writeText(editor.value);copy.textContent='已复制';}catch{copy.textContent='复制失败';}});const status=form?.querySelector('[data-resume-save-status]');const planId=form?.elements.planId?.value||'';const draftId=form?.elements.draftId?.value||'';let timer=0;let chain=Promise.resolve();let version=0;const setStatus=(text)=>{if(status)status.textContent=text;};const enqueue=(text,revision)=>{chain=chain.catch(()=>{}).then(async()=>{setStatus('正在保存…');const response=await fetch('/api/resume-optimization/save',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({planId,draftId,finalText:text})});if(!response.ok)throw new Error('save failed');if(revision===version)setStatus('已自动保存');else setStatus('有更新待保存');}).catch(()=>{if(revision===version)setStatus('自动保存失败，请点击“保存草稿”重试。');});return chain;};const navigate=(url,target)=>{const base=String(url||'').split('#')[0];const destination=base+(target?'#'+target:'');if(location.href.split('#')[0]===base){location.hash=target;location.reload();}else location.assign(destination);};if(form&&editor&&!editor.readOnly)editor.addEventListener('input',()=>{version+=1;const revision=version;const text=editor.value;setStatus('有修改待保存');clearTimeout(timer);timer=setTimeout(()=>enqueue(text,revision),600);});for(const submitForm of document.querySelectorAll('[data-resume-submit]'))submitForm.addEventListener('submit',async(event)=>{event.preventDefault();const button=event.submitter||submitForm.querySelector('button');const label=button?.textContent||'';const error=submitForm.querySelector('[data-resume-error]')||submitForm.querySelector('[data-resume-save-status]');if(error)error.textContent='';if(button){button.disabled=true;button.textContent='处理中…';}if(submitForm===form)clearTimeout(timer);const action=button?.getAttribute?.('formaction')||submitForm.getAttribute('action')||submitForm.action;const body=new URLSearchParams(new FormData(submitForm));const send=async()=>{const response=await fetch(action,{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body});if(!response.ok){const text=await response.text();let message='操作失败，请稍后重试。';try{message=JSON.parse(text).error||message}catch{}throw new Error(message);}const target=button?.dataset.resumeSuccessTarget||submitForm.dataset.resumeSuccessTarget||'';navigate(response.url||action,target);};try{if(submitForm===form)await chain.catch(()=>{}).then(send);else await send();}catch(failure){if(error)error.textContent=failure.message||'操作失败，请稍后重试。';if(button){button.disabled=false;button.textContent=label;}}});})();</script>`;
+const RESUME_OPTIMIZATION_SCRIPT = `<script>(()=>{const issueMessages=${JSON.stringify(RESUME_INTEGRITY_MESSAGES)};const reveal=()=>{const target=location.hash&&document.getElementById(location.hash.slice(1));if(target)setTimeout(()=>target.scrollIntoView({block:'start'}),0);};if(document.readyState==='complete')reveal();else addEventListener('load',reveal,{once:true});const form=document.querySelector('[data-resume-editor]');const editor=document.getElementById('resume-opt-final-text');const copy=document.querySelector('[data-copy-resume]');if(copy&&editor)copy.addEventListener('click',async()=>{try{await navigator.clipboard.writeText(editor.value);copy.textContent='已复制';}catch{copy.textContent='复制失败';}});const status=form?.querySelector('[data-resume-save-status]');const integrity=document.querySelector('[data-resume-integrity]');const planId=form?.elements.planId?.value||'';const draftId=form?.elements.draftId?.value||'';let timer=0;let chain=Promise.resolve();let version=0;const setStatus=(text)=>{if(status)status.textContent=text;};const updateIntegrity=(value={})=>{if(!integrity)return;const errors=Array.isArray(value.errors)?value.errors:[];const warnings=Array.isArray(value.warnings)?value.warnings:[];const seen=new Set();const messages=[];for(const item of [...errors,...warnings]){const code=String(item?.code||'');if(issueMessages[code]&&!seen.has(code)){seen.add(code);messages.push(issueMessages[code]);}}integrity.hidden=!messages.length;integrity.dataset.state=errors.some((item)=>issueMessages[String(item?.code||'')])?'error':'warning';integrity.innerHTML=messages.length?'<ul>'+messages.map((message)=>'<li>'+message+'</li>').join('')+'</ul>':'';};const readPayload=async(response)=>{const text=await response.text();try{return JSON.parse(text)}catch{return {};}};const enqueue=(text,revision)=>{chain=chain.catch(()=>{}).then(async()=>{setStatus('正在保存…');const response=await fetch('/api/resume-optimization/save',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({planId,draftId,finalText:text})});const payload=await readPayload(response);if(!response.ok)throw new Error('save failed');updateIntegrity(payload.integrity);if(revision===version)setStatus('已自动保存');else setStatus('有更新待保存');}).catch(()=>{if(revision===version)setStatus('自动保存失败，请点击“保存草稿”重试。');});return chain;};const navigate=(url,target)=>{const base=String(url||'').split('#')[0];const destination=base+(target?'#'+target:'');if(location.href.split('#')[0]===base){location.hash=target;location.reload();}else location.assign(destination);};if(form&&editor&&!editor.readOnly)editor.addEventListener('input',()=>{version+=1;const revision=version;const text=editor.value;setStatus('有修改待保存');clearTimeout(timer);timer=setTimeout(()=>enqueue(text,revision),600);});for(const submitForm of document.querySelectorAll('[data-resume-submit]'))submitForm.addEventListener('submit',async(event)=>{event.preventDefault();const button=event.submitter||submitForm.querySelector('button');const label=button?.textContent||'';const error=submitForm.querySelector('[data-resume-error]')||submitForm.querySelector('[data-resume-save-status]');if(error)error.textContent='';if(button){button.disabled=true;button.textContent='处理中…';}if(submitForm===form)clearTimeout(timer);const action=button?.getAttribute?.('formaction')||submitForm.getAttribute('action')||submitForm.action;const body=new URLSearchParams(new FormData(submitForm));const send=async()=>{const response=await fetch(action,{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body});if(!response.ok){const payload=await readPayload(response);const failure=new Error(payload.error||'操作失败，请稍后重试。');failure.issues=payload.issues;throw failure;}const target=button?.dataset.resumeSuccessTarget||submitForm.dataset.resumeSuccessTarget||'';navigate(response.url||action,target);};try{if(submitForm===form)await chain.catch(()=>{}).then(send);else await send();}catch(failure){if(Array.isArray(failure.issues))updateIntegrity({errors:failure.issues,warnings:[]});if(error)error.textContent=failure.message||'操作失败，请稍后重试。';if(button){button.disabled=false;button.textContent=label;}}});})();</script>`;
 
-module.exports = { renderResumeOptimizationPage, RESUME_OPTIMIZATION_SCRIPT };
+module.exports = { renderResumeOptimizationPage, RESUME_OPTIMIZATION_SCRIPT, publicResumeIntegrityIssues };

@@ -33,6 +33,14 @@ const logger = {
     }
   });
   const calls = { dashboard: [], create: [], save: [], activate: [] };
+  const warningIntegrity = {
+    valid: true,
+    errors: [],
+    warnings: [
+      { code: "RESUME_NEARLY_UNCHANGED", similarity: 0.98 },
+      { code: "RESUME_LENGTH_INCREASED", ratio: 1.3 }
+    ]
+  };
   const selectedDraft = {
     id: 41,
     profileId: owner.profileId,
@@ -80,6 +88,7 @@ const logger = {
         selectedJobs: [{ id: 71, title: "AI <应用> 工程师", company: "示例科技" }],
         drafts: [selectedDraft],
         selectedDraft,
+        selectedIntegrity: warningIntegrity,
         funnelDiagnosis: { strength: "facts", headline: "当前仅展示事实" }
       };
     },
@@ -92,15 +101,17 @@ const logger = {
     async saveDraft(input) {
       calls.save.push(input);
       if (saveGate) await saveGate;
-      return { ...selectedDraft, finalText: "个人总结\n参与 Node.js 知识库开发" };
+      return { ...selectedDraft, finalText: "个人总结\n参与 Node.js 知识库开发", integrity: warningIntegrity };
     },
     activateDraft(input) {
       calls.activate.push(input);
+      if (activateFailure) throw activateFailure;
       return { ...selectedDraft, status: "activated", resultResumeVersionId: 88 };
     }
   };
   let releaseSave;
   let saveGate = null;
+  let activateFailure = null;
   const server = createDashboardServer({
     db,
     forceMock: true,
@@ -135,6 +146,9 @@ const logger = {
     assert.match(page.body, /复制当前全文/);
     assert.match(page.body, /启用为新版本/);
     assert.doesNotMatch(page.body, /确认启用|二次确认/);
+    assert.match(page.body, /这份草稿与原简历非常接近，定向调整可能不明显。/);
+    assert.match(page.body, /篇幅比原简历明显增加，建议再精简。/);
+    assert.doesNotMatch(page.body.split("<script")[0], /RESUME_NEARLY_UNCHANGED|0\.98|30%/);
 
     const create = await request(baseUrl, "/api/resume-optimization", {
       method: "POST",
@@ -181,12 +195,32 @@ const logger = {
     releaseSave();
     const save = await savePromise;
     assert.equal(save.status, 200);
-    assert.deepEqual(JSON.parse(save.body), { ok: true });
+    assert.deepEqual(JSON.parse(save.body), { ok: true, integrity: warningIntegrity });
     assert.deepEqual(calls.save[0], {
       profileId: owner.profileId,
       draftId: 41,
       finalText: "自动保存中的旧文字"
     });
+
+    activateFailure = Object.assign(new Error("internal integrity failure"), {
+      code: "RESUME_ACTIVATION_INTEGRITY_FAILED",
+      issues: [{ code: "RESUME_PLACEHOLDER_PRESENT" }]
+    });
+    const blockedActivation = await request(baseUrl, "/api/resume-optimization/activate", {
+      method: "POST",
+      body: new URLSearchParams({
+        planId: String(owner.planId),
+        draftId: "41",
+        finalText: "仍包含 TODO 的文字"
+      }).toString()
+    });
+    assert.equal(blockedActivation.status, 409);
+    assert.deepEqual(JSON.parse(blockedActivation.body), {
+      error: "当前简历还不能启用，请先处理下面的问题。",
+      errorCode: "RESUME_ACTIVATION_INTEGRITY_FAILED",
+      issues: [{ code: "RESUME_PLACEHOLDER_PRESENT", message: "简历里还有待补充的占位内容。" }]
+    });
+    activateFailure = null;
 
     createFailure = new Error("simulated resume model failure");
     const unhandled = [];
@@ -269,6 +303,7 @@ async function resumeSubmitClientSmoke(markup) {
   const formHandlers = new Map();
   const fieldHandlers = new Map();
   const status = { textContent: "修改后会自动保存。" };
+  const integrity = { textContent: "", innerHTML: "", dataset: {} };
   const editor = {
     value: "失败后仍应保留的简历全文",
     readOnly: false,
@@ -287,6 +322,7 @@ async function resumeSubmitClientSmoke(markup) {
     elements: { planId: { value: "1" }, draftId: { value: "41" }, finalText: editor },
     querySelector(selector) {
       if (selector === "[data-resume-save-status]" || selector === "[data-resume-error]") return status;
+      if (selector === "[data-resume-integrity]") return integrity;
       return null;
     },
     getAttribute(name) { return name === "action" ? "/api/resume-optimization/save" : null; },
@@ -298,7 +334,16 @@ async function resumeSubmitClientSmoke(markup) {
       for (const [name, control] of Object.entries(this.source.elements)) yield [name, control.value];
     }
   }
-  let response = { ok: false, url: "", async text() { return JSON.stringify({ error: "模型生成失败，请直接重试。" }); } };
+  let response = {
+    ok: true,
+    url: "",
+    async text() {
+      return JSON.stringify({
+        ok: true,
+        integrity: { valid: true, errors: [], warnings: [{ code: "RESUME_LENGTH_INCREASED", ratio: 1.3 }] }
+      });
+    }
+  };
   const navigations = [];
   let reloads = 0;
   let revealedTarget = "";
@@ -315,6 +360,7 @@ async function resumeSubmitClientSmoke(markup) {
       querySelector(selector) {
         if (selector === "[data-resume-editor]") return form;
         if (selector === "[data-copy-resume]") return null;
+        if (selector === "[data-resume-integrity]") return integrity;
         return null;
       },
       querySelectorAll(selector) { return selector === "[data-resume-submit]" ? [form] : []; },
@@ -336,9 +382,27 @@ async function resumeSubmitClientSmoke(markup) {
   vm.runInNewContext(script, context);
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(revealedTarget, "resume-opt-activated", "a reloaded workflow result must be scrolled into view");
+  editor.value = "自动保存后需要更新完整性提示";
+  fieldHandlers.get("input")();
+  await new Promise((resolve) => setTimeout(resolve, 650));
+  assert.match(integrity.innerHTML || integrity.textContent, /篇幅比原简历明显增加，建议再精简。/);
+
+  response = {
+    ok: false,
+    url: "",
+    async text() {
+      return JSON.stringify({
+        error: "当前简历还不能启用，请先处理下面的问题。",
+        errorCode: "RESUME_ACTIVATION_INTEGRITY_FAILED",
+        issues: [{ code: "RESUME_PLACEHOLDER_PRESENT", message: "简历里还有待补充的占位内容。" }]
+      });
+    }
+  };
+  editor.value = "失败后仍应保留的简历全文";
   await formHandlers.get("submit")({ preventDefault() {}, submitter: button });
   assert.equal(editor.value, "失败后仍应保留的简历全文");
-  assert.match(status.textContent, /模型生成失败/);
+  assert.match(integrity.innerHTML || integrity.textContent, /简历里还有待补充的占位内容。/);
+  assert.match(status.textContent, /当前简历还不能启用/);
   assert.equal(button.disabled, false);
   assert.equal(button.textContent, "启用为新版本");
 

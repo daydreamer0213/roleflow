@@ -205,7 +205,7 @@ const { renderCommunicationPage: renderCommunicationDocument } = require("./page
 const { createFunnelAnalysisService } = require("../application/funnel_analysis");
 const { renderFunnelPage, FUNNEL_STRATEGY_SCRIPT } = require("./pages/funnel");
 const { createResumeOptimizationService } = require("../application/resume_optimization");
-const { renderResumeOptimizationPage, RESUME_OPTIMIZATION_SCRIPT } = require("./pages/resume_optimization");
+const { renderResumeOptimizationPage, RESUME_OPTIMIZATION_SCRIPT, publicResumeIntegrityIssues } = require("./pages/resume_optimization");
 const { createMockInterviewService } = require("../application/mock_interview");
 const { renderMockInterviewPage, MOCK_INTERVIEW_SCRIPT } = require("./pages/mock_interview");
 
@@ -5697,13 +5697,13 @@ async function handleResumeOptimizationSave(req, res, { db, resumeOptimization }
   const draftId = Number(params.draftId);
   const draft = resumeOptimization.getDraft({ profileId: plan.profileId, draftId });
   if (!draft) throw appError("RESUME_OPTIMIZATION_NOT_FOUND", "定向简历草稿不存在。", { statusCode: 404 });
-  await Promise.resolve(resumeOptimization.saveDraft({
+  const saved = await Promise.resolve(resumeOptimization.saveDraft({
     profileId: plan.profileId,
     draftId,
     finalText: String(params.finalText || "")
   }));
   if (contentType.includes("application/json") || String(req.headers.accept || "").includes("application/json")) {
-    return sendJson(res, 200, { ok: true });
+    return sendJson(res, 200, { ok: true, integrity: saved?.integrity || null });
   }
   redirect(res, `/resume-optimization?planId=${encodeURIComponent(plan.id)}&draftId=${encodeURIComponent(draftId)}#resume-opt-draft-title`);
 }
@@ -5712,12 +5712,23 @@ async function handleResumeOptimizationActivate(req, res, { db, resumeOptimizati
   const params = parseBody(await readBody(req), req.headers["content-type"] || "");
   const plan = requiredResumeOptimizationPlan(db, params.planId);
   const draftId = Number(params.draftId);
-  await Promise.resolve(resumeOptimization.activateDraft({
-    profileId: plan.profileId,
-    planId: plan.id,
-    draftId,
-    finalText: String(params.finalText || "")
-  }));
+  try {
+    await Promise.resolve(resumeOptimization.activateDraft({
+      profileId: plan.profileId,
+      planId: plan.id,
+      draftId,
+      finalText: String(params.finalText || "")
+    }));
+  } catch (error) {
+    if (error?.code !== "RESUME_ACTIVATION_INTEGRITY_FAILED") throw error;
+    const issues = publicResumeIntegrityIssues({ errors: error.issues })
+      .map(({ code, message }) => ({ code, message }));
+    return sendJson(res, 409, {
+      error: "当前简历还不能启用，请先处理下面的问题。",
+      errorCode: "RESUME_ACTIVATION_INTEGRITY_FAILED",
+      issues
+    });
+  }
   redirect(res, `/resume-optimization?planId=${encodeURIComponent(plan.id)}&draftId=${encodeURIComponent(draftId)}#resume-opt-activated`);
 }
 
