@@ -6,7 +6,8 @@ const JOB_EXPORTS = [
   "listCandidateJobEvents", "recordRecommendationFeedback", "markCandidateJob", "buildFeedbackSummary",
   "buildBatchSummary", "getLatestBatchId", "getLatestMainScanBatchId", "listDecisionPool",
   "getOutcomeAnalyticsSnapshot", "listDecisionQueue", "isJobAwaitingAction", "decisionBucket",
-  "applyJobQualityGovernance", "isActivityProbeDue", "sourceContentHash", "getModelCache", "saveModelCache"
+  "applyJobQualityGovernance", "isActivityProbeDue", "sourceContentHash", "getModelCache", "saveModelCache",
+  "archiveCandidateJob", "restoreCandidateJob", "isCandidateJobArchived"
 ].sort();
 
 const CANDIDATE_EXPORTS = [
@@ -27,9 +28,9 @@ const candidateStore = require("../src/storage/candidate_store");
 const storage = require("../src/core/storage");
 process.removeListener("warning", onWarning);
 
-assert.strictEqual(JOB_EXPORTS.length, 26);
+assert.strictEqual(JOB_EXPORTS.length, 29);
 assert.strictEqual(CANDIDATE_EXPORTS.length, 29);
-assert.strictEqual(Object.keys(storage).length, 188);
+assert.strictEqual(Object.keys(storage).length, 191);
 assert.deepStrictEqual(Object.keys(jobStore).sort(), JOB_EXPORTS);
 assert.deepStrictEqual(Object.keys(candidateStore).sort(), CANDIDATE_EXPORTS);
 for (const name of JOB_EXPORTS) assert.strictEqual(storage[name], jobStore[name], `${name} must be a direct facade reference`);

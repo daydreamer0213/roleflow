@@ -57,9 +57,9 @@ console.log("workflow_store_contract_smoke ok (5 owner contracts)");
 
 function contract01ExportsAndFacadeIdentity() {
   assert.deepEqual(Object.keys(workflowStore).sort(), WORKFLOW_EXPORTS);
-  assert.equal(Object.keys(storage).length, 188);
+  assert.equal(Object.keys(storage).length, 191);
   assert.equal(Object.keys(candidateStore).length, 29);
-  assert.equal(Object.keys(jobStore).length, 26);
+  assert.equal(Object.keys(jobStore).length, 29);
   assert.equal(Object.keys(scanStore).length, 39);
   assert.equal(Object.keys(communicationStore).length, 16);
   assert.equal(Object.keys(sharedStore).length, 9);
@@ -409,7 +409,7 @@ function contract04DirectHealthSnapshot() {
     ]);
     assert.deepEqual(Object.keys(snapshot.jobs[0]).sort(), [
       "activityObservedAt", "analysis", "applicationNote", "applicationReasonCode", "applicationStatus",
-      "applicationUpdatedAt", "batchId", "bossActiveDays", "bossActiveText", "company",
+      "applicationUpdatedAt", "archived", "archivedAt", "batchId", "bossActiveDays", "bossActiveText", "company",
       "daysSinceLastSeen", "decisionBucket", "description", "detailChanged", "education",
       "effectiveBossActiveDays", "experience", "feedback", "feedbackRank", "firstBatchId",
       "firstSeenAt", "followUpNote", "followUpUpdatedAt", "greeting", "id", "keyword",

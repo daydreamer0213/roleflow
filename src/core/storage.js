@@ -114,6 +114,19 @@ const {
 
 const VALID_CANDIDATE_STATUSES = new Set(OUTCOME_STATUSES);
 
+const CANDIDATE_JOB_ARCHIVES_SCHEMA = `
+CREATE TABLE IF NOT EXISTS candidate_job_archives (
+  profile_id INTEGER NOT NULL,
+  job_id INTEGER NOT NULL,
+  archived_at TEXT NOT NULL,
+  PRIMARY KEY(profile_id, job_id),
+  FOREIGN KEY(profile_id) REFERENCES candidate_profiles(id),
+  FOREIGN KEY(job_id) REFERENCES jobs(id)
+);
+CREATE INDEX IF NOT EXISTS idx_candidate_job_archives_profile
+  ON candidate_job_archives(profile_id, archived_at DESC, job_id);
+`;
+
 const COMMUNICATION_SCHEMA = `
 CREATE TABLE IF NOT EXISTS communication_batches (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1340,6 +1353,13 @@ const MIGRATIONS = [
     apply(db) {
       migrateWorkflowHardBoundaryClassification(db);
     }
+  },
+  {
+    version: 27,
+    name: "candidate_job_archives_v1",
+    apply(db) {
+      db.exec(CANDIDATE_JOB_ARCHIVES_SCHEMA);
+    }
   }
 ];
 
@@ -2391,6 +2411,9 @@ module.exports = {
   listDecisionPool: jobStore.listDecisionPool,
   getOutcomeAnalyticsSnapshot: jobStore.getOutcomeAnalyticsSnapshot,
   listDecisionQueue: jobStore.listDecisionQueue,
+  archiveCandidateJob: jobStore.archiveCandidateJob,
+  restoreCandidateJob: jobStore.restoreCandidateJob,
+  isCandidateJobArchived: jobStore.isCandidateJobArchived,
   isJobAwaitingAction: jobStore.isJobAwaitingAction,
   decisionBucket: jobStore.decisionBucket,
   applyJobQualityGovernance: jobStore.applyJobQualityGovernance,

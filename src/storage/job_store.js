@@ -45,6 +45,80 @@ function listDecisionQueue(db, { planId, limit = 15, buckets = null } = {}) {
     .slice(0, Math.max(1, Math.min(50, Number(limit) || 15)));
 }
 
+function archiveCandidateJob(db, { profileId, planId, jobId, archivedAt = nowIso() } = {}) {
+  const owner = requireArchiveOwnership(db, { profileId, planId, jobId });
+  if (candidateJobHasActiveBatch(db, owner)) {
+    throw storageError("JOB_ARCHIVE_ACTIVE_BATCH", "岗位正在沟通或发送消息，完成或停止后才能归档");
+  }
+  const timestamp = new Date(archivedAt);
+  if (Number.isNaN(timestamp.getTime())) throw new TypeError("archivedAt must be a valid date");
+  const normalizedAt = timestamp.toISOString();
+  db.prepare(`INSERT INTO candidate_job_archives(profile_id, job_id, archived_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(profile_id, job_id) DO UPDATE SET archived_at = excluded.archived_at`)
+    .run(owner.profileId, owner.jobId, normalizedAt);
+  return { jobId: owner.jobId, archived: true, archivedAt: normalizedAt };
+}
+
+function restoreCandidateJob(db, { profileId, planId, jobId } = {}) {
+  const owner = requireArchiveOwnership(db, { profileId, planId, jobId });
+  db.prepare("DELETE FROM candidate_job_archives WHERE profile_id = ? AND job_id = ?")
+    .run(owner.profileId, owner.jobId);
+  return { jobId: owner.jobId, archived: false, archivedAt: "" };
+}
+
+function isCandidateJobArchived(db, { profileId, jobId } = {}) {
+  const profile = optionalPositiveInteger(profileId, "profileId");
+  const job = optionalPositiveInteger(jobId, "jobId");
+  if (!profile || !job) return false;
+  return Boolean(db.prepare("SELECT 1 FROM candidate_job_archives WHERE profile_id = ? AND job_id = ?")
+    .get(profile, job));
+}
+
+function requireArchiveOwnership(db, { profileId, planId, jobId } = {}) {
+  const profile = optionalPositiveInteger(profileId, "profileId");
+  const plan = optionalPositiveInteger(planId, "planId");
+  const job = optionalPositiveInteger(jobId, "jobId");
+  if (!profile || !plan || !job) throw storageError("JOB_ARCHIVE_NOT_OWNED", "岗位不属于当前求职方案");
+  const owned = db.prepare(`SELECT 1
+    FROM search_plans plans
+    WHERE plans.id = ? AND plans.profile_id = ? AND (
+      EXISTS (
+        SELECT 1 FROM job_observations observations
+        JOIN batches ON batches.id = observations.batch_id
+        WHERE observations.job_id = ?
+          AND batches.profile_id = plans.profile_id
+          AND batches.search_plan_id = plans.id
+      )
+      OR EXISTS (
+        SELECT 1 FROM candidate_progress_cards cards
+        WHERE cards.profile_id = plans.profile_id
+          AND cards.plan_id = plans.id
+          AND cards.job_id = ?
+      )
+    )`).get(plan, profile, job, job);
+  if (!owned) throw storageError("JOB_ARCHIVE_NOT_OWNED", "岗位不属于当前求职方案");
+  return { profileId: profile, planId: plan, jobId: job };
+}
+
+function candidateJobHasActiveBatch(db, { profileId, jobId }) {
+  return Boolean(db.prepare(`SELECT 1 FROM (
+    SELECT items.id
+    FROM communication_batch_items items
+    JOIN communication_batches batches ON batches.id = items.batch_id
+    WHERE batches.profile_id = ? AND items.job_id = ?
+      AND batches.status IN ('confirmed','running','paused','stopping')
+      AND items.status NOT IN ('succeeded','already_communicated','job_unavailable','target_mismatch','action_unavailable','platform_rejected','transport_failed','ambiguous','stopped')
+    UNION ALL
+    SELECT items.id
+    FROM message_reply_send_items items
+    JOIN message_reply_send_batches batches ON batches.id = items.batch_id
+    WHERE batches.profile_id = ? AND items.job_id = ?
+      AND batches.status IN ('confirmed','running')
+      AND items.status IN ('pending','selecting','verified','filled','click_dispatched','ambiguous')
+  ) LIMIT 1`).get(profileId, jobId, profileId, jobId));
+}
+
 function getModelCache(db, cacheKey) {
   const row = db.prepare("SELECT * FROM model_cache WHERE cache_key = ?").get(String(cacheKey));
   return row ? {
@@ -202,6 +276,8 @@ function listReportJobs(db, options = {}) {
       (SELECT created_at FROM events WHERE events.job_id = jobs.id AND event_type = 'follow_up' ORDER BY created_at DESC, id DESC LIMIT 1) AS follow_up_updated_at
   `;
   const stateJoin = profileId ? `LEFT JOIN candidate_job_states states ON states.profile_id = ${Number(profileId)} AND states.job_id = jobs.id` : "";
+  const archiveSelect = profileId ? "archives.archived_at AS archived_at," : "NULL AS archived_at,";
+  const archiveJoin = profileId ? `LEFT JOIN candidate_job_archives archives ON archives.profile_id = ${Number(profileId)} AND archives.job_id = jobs.id` : "";
   const stmt = db.prepare(`
     ${cte}
     SELECT jobs.id AS id, jobs.source AS source, jobs.source_id AS source_id,
@@ -219,8 +295,9 @@ function listReportJobs(db, options = {}) {
       (SELECT attempt_number FROM job_refresh_attempts ra WHERE ra.job_id = jobs.id ORDER BY ra.created_at DESC, ra.id DESC LIMIT 1) AS refresh_attempt_number,
       (SELECT next_retry_at FROM job_refresh_attempts ra WHERE ra.job_id = jobs.id ORDER BY ra.created_at DESC, ra.id DESC LIMIT 1) AS refresh_next_retry_at,
       (SELECT created_at FROM job_refresh_attempts ra WHERE ra.job_id = jobs.id ORDER BY ra.created_at DESC, ra.id DESC LIMIT 1) AS refresh_attempted_at,
+      ${archiveSelect}
       ${stateSelect}
-    FROM ${observationSource} JOIN jobs ON jobs.id = o.job_id JOIN batches b ON b.id = o.batch_id ${stateJoin}
+    FROM ${observationSource} JOIN jobs ON jobs.id = o.job_id JOIN batches b ON b.id = o.batch_id ${stateJoin} ${archiveJoin}
     WHERE ${where} ORDER BY o.seen_at DESC, o.id DESC LIMIT ?
   `);
   const feedbackSummary = options.feedbackSummary || buildFeedbackSummary(db, { profileId });
@@ -538,7 +615,8 @@ function rowToJob(row) {
     refreshAttemptNumber: Number(row.refresh_attempt_number || 0), refreshNextRetryAt: row.refresh_next_retry_at || "", refreshAttemptedAt: row.refresh_attempted_at || "",
     batchId: row.batch_id, applicationStatus: row.application_status || "", applicationNote: row.application_note || "",
     applicationReasonCode: row.application_reason_code || "", applicationUpdatedAt: row.application_updated_at || "", reviewAt: row.review_at || "",
-    followUpNote: row.follow_up_note || "", followUpUpdatedAt: row.follow_up_updated_at || ""
+    followUpNote: row.follow_up_note || "", followUpUpdatedAt: row.follow_up_updated_at || "",
+    archived: Boolean(row.archived_at), archivedAt: row.archived_at || ""
   };
 }
 
@@ -719,5 +797,6 @@ module.exports = {
   reassessBatchObservations, addFollowUpNote, recordCandidateJobEvent, listCandidateJobEvents, recordRecommendationFeedback,
   markCandidateJob, buildFeedbackSummary, buildBatchSummary, getLatestBatchId, getLatestMainScanBatchId, listDecisionPool,
   getOutcomeAnalyticsSnapshot, listDecisionQueue, isJobAwaitingAction, decisionBucket, applyJobQualityGovernance,
-  isActivityProbeDue, sourceContentHash, getModelCache, saveModelCache
+  isActivityProbeDue, sourceContentHash, getModelCache, saveModelCache,
+  archiveCandidateJob, restoreCandidateJob, isCandidateJobArchived
 };

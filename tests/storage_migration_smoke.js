@@ -36,6 +36,7 @@ const FUNNEL_STRATEGY_ROUNDS_VERSION = 23;
 const RESUME_OPTIMIZATION_WHOLE_DRAFT_VERSION = 24;
 const MOCK_INTERVIEW_RESUME_GENERAL_VERSION = 25;
 const WORKFLOW_HARD_BOUNDARY_CLASSIFICATION_VERSION = 26;
+const CANDIDATE_JOB_ARCHIVES_VERSION = 27;
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-migration-"));
 let db;
@@ -73,10 +74,11 @@ try {
       { version: FUNNEL_STRATEGY_ROUNDS_VERSION, name: "funnel_strategy_rounds_v2", backup_path: null },
       { version: RESUME_OPTIMIZATION_WHOLE_DRAFT_VERSION, name: "resume_optimization_whole_draft_v2", backup_path: null },
       { version: MOCK_INTERVIEW_RESUME_GENERAL_VERSION, name: "mock_interview_resume_general_v3", backup_path: null },
-      { version: WORKFLOW_HARD_BOUNDARY_CLASSIFICATION_VERSION, name: "workflow_hard_boundary_classification_v1", backup_path: null }
+      { version: WORKFLOW_HARD_BOUNDARY_CLASSIFICATION_VERSION, name: "workflow_hard_boundary_classification_v1", backup_path: null },
+      { version: CANDIDATE_JOB_ARCHIVES_VERSION, name: "candidate_job_archives_v1", backup_path: null }
     ]
   );
-  assert.strictEqual(freshMigrations[freshMigrations.length - 1].name, "workflow_hard_boundary_classification_v1");
+  assert.strictEqual(freshMigrations[freshMigrations.length - 1].name, "candidate_job_archives_v1");
   assert.strictEqual(freshMigrations[freshMigrations.length - 1].version, SCHEMA_VERSION);
   assert(db.prepare("PRAGMA table_info(communication_batches)").all()
     .some((column) => column.name === "runtime_json"));
@@ -219,7 +221,7 @@ try {
   assert(SCHEMA_VERSION >= 3);
   assert.strictEqual(SHARED_BOSS_PACING_VERSION, 16);
   assert.strictEqual(MESSAGE_REPLY_LEARNING_VERSION, 17);
-  assert.strictEqual(SCHEMA_VERSION, WORKFLOW_HARD_BOUNDARY_CLASSIFICATION_VERSION);
+  assert.strictEqual(SCHEMA_VERSION, CANDIDATE_JOB_ARCHIVES_VERSION);
   assert.strictEqual(db.prepare("PRAGMA quick_check").get().quick_check, "ok");
   const planNow = "2026-08-16T00:00:00.000Z";
   const planProfileId = Number(db.prepare(`INSERT INTO candidate_profiles(
@@ -715,7 +717,8 @@ try {
       { version: FUNNEL_STRATEGY_ROUNDS_VERSION, name: "funnel_strategy_rounds_v2" },
       { version: RESUME_OPTIMIZATION_WHOLE_DRAFT_VERSION, name: "resume_optimization_whole_draft_v2" },
       { version: MOCK_INTERVIEW_RESUME_GENERAL_VERSION, name: "mock_interview_resume_general_v3" },
-      { version: WORKFLOW_HARD_BOUNDARY_CLASSIFICATION_VERSION, name: "workflow_hard_boundary_classification_v1" }
+      { version: WORKFLOW_HARD_BOUNDARY_CLASSIFICATION_VERSION, name: "workflow_hard_boundary_classification_v1" },
+      { version: CANDIDATE_JOB_ARCHIVES_VERSION, name: "candidate_job_archives_v1" }
     ]
   );
   assert.strictEqual(db.prepare("SELECT source FROM keyword_sources WHERE keyword = 'v1-preserved'").get().source, "migration-smoke");
