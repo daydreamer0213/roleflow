@@ -138,7 +138,10 @@ assert.equal(supportedRequestCountParaphrase.valid, true,
 for (const employerQuestion of [
   "想了解贵司团队目前有 20 人吗？",
   "这个岗位需要负责 3 个模块吗？",
-  "感谢您介绍这 2 个方向。"
+  "我想了解岗位负责 3 个模块吗？",
+  "感谢您介绍这 2 个方向。",
+  "感谢您介绍这 2 个方向，我很有兴趣。",
+  "这 2 个方向我都有兴趣。"
 ]) {
   const result = assessMessageDraftQuality({
     text: employerQuestion,
@@ -146,6 +149,20 @@ for (const employerQuestion of [
     evidenceTexts: []
   });
   assert.equal(result.valid, true, `${employerQuestion}: ${JSON.stringify(result.errors)}`);
+}
+
+for (const unsupportedCandidateClaim of [
+  "我有 100 个客户。",
+  "我做过 100 个项目。",
+  "100 个项目均已完成。"
+]) {
+  const result = assessMessageDraftQuality({
+    text: unsupportedCandidateClaim,
+    recentTexts: [],
+    evidenceTexts: []
+  });
+  assert.equal(result.valid, false, unsupportedCandidateClaim);
+  assert(result.errors.some((item) => item.kind === "numeric_achievement"));
 }
 
 console.log("message_draft_quality_smoke ok");
