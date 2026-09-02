@@ -31,7 +31,7 @@
 - Consumes: `projectFunnelEntry(entry, events, { now })` from `src/core/funnel_maturity.js`.
 - Produces: `projectMessageFollowUpCandidate(input) -> { eligible, reasonCode, matureAt, waitingSince, waitedHours }`.
 
-- [ ] **Step 1: Write the failing eligibility test**
+- [x] **Step 1: Write the failing eligibility test**
 
 ```js
 const projection = projectMessageFollowUpCandidate({
@@ -50,13 +50,13 @@ assert.equal(projectMessageFollowUpCandidate({ ...input, hasSentFollowUp: true }
 
 Add cases for the original 48-hour wait, weekend deferral, a new read that restarts the wait, an HR reply, terminal cards, missing thread identity, archived jobs and active/succeeded follow-up items.
 
-- [ ] **Step 2: Run the new test and verify RED**
+- [x] **Step 2: Run the new test and verify RED**
 
 Run: `node tests/message_follow_up_smoke.js`
 
 Expected: FAIL because `src/core/message_follow_up.js` does not exist.
 
-- [ ] **Step 3: Implement the minimal pure projection**
+- [x] **Step 3: Implement the minimal pure projection**
 
 ```js
 function projectMessageFollowUpCandidate(input = {}) {
@@ -77,13 +77,13 @@ function projectMessageFollowUpCandidate(input = {}) {
 
 Export only `projectMessageFollowUpCandidate`; keep database queries out of this file.
 
-- [ ] **Step 4: Run the test and verify GREEN**
+- [x] **Step 4: Run the test and verify GREEN**
 
 Run: `node tests/message_follow_up_smoke.js`
 
 Expected: `message_follow_up_smoke ok`.
 
-- [ ] **Step 5: Commit the projection**
+- [x] **Step 5: Commit the projection**
 
 ```powershell
 git add src/core/message_follow_up.js tests/message_follow_up_smoke.js tests/run_all.js
@@ -106,7 +106,7 @@ git commit -m "feat: project eligible message follow-ups"
 - Produces: `closeOpenMessageReplyDraftsByIntent(db, { profileId, cardId, messageIntent, closedAt }) -> number`.
 - Produces: `createMessageFollowUpService({ db, generateDraft, now })` with `listCandidates({ profileId, planId })`, `requireCandidate(...)`, and async `savePreparedDraft({ profileId, planId, jobId, snapshot })`.
 
-- [ ] **Step 1: Write failing storage and service tests**
+- [x] **Step 1: Write failing storage and service tests**
 
 ```js
 const service = createMessageFollowUpService({
@@ -127,13 +127,13 @@ assert.equal(saved.context.lastMessageId, lastMessageId);
 
 Verify a second preparation returns the same open draft, a changed last-message baseline closes only the old `follow_up` draft, and ordinary inbound reply drafts on the same card remain open.
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 Run: `node tests/message_learning_store_smoke.js && node tests/message_follow_up_service_smoke.js`
 
 Expected: FAIL because the intent-scoped close helper and service are absent.
 
-- [ ] **Step 3: Add the intent-scoped store helper**
+- [x] **Step 3: Add the intent-scoped store helper**
 
 ```js
 function closeOpenMessageReplyDraftsByIntent(db, { profileId, cardId, messageIntent, closedAt = nowIso() } = {}) {
@@ -147,7 +147,7 @@ function closeOpenMessageReplyDraftsByIntent(db, { profileId, cardId, messageInt
 
 Export it through `message_learning_store.js` and the existing `core/storage.js` facade. Update only the exact facade counts asserted by contract tests.
 
-- [ ] **Step 4: Implement the application service**
+- [x] **Step 4: Implement the application service**
 
 Use `projectMessageFollowUpCandidate()` for every row. Derive the group key from the immutable baseline:
 
@@ -161,13 +161,13 @@ function followUpGroupKey({ profileId, cardId, conversationKey, lastMessageId })
 
 Before the async model call, require eligibility. After the model call, enter one `immediateTransaction`, require eligibility again, close an older follow-up baseline only, save `message_inbound_contexts`, and save exactly one draft with `messageIntent: "follow_up"`. Reject `lastMessageDirection !== "myself"` as `FOLLOW_UP_CONVERSATION_CHANGED`.
 
-- [ ] **Step 5: Run service and facade tests**
+- [x] **Step 5: Run service and facade tests**
 
 Run: `node tests/message_learning_store_smoke.js && node tests/message_follow_up_service_smoke.js && node tests/scan_store_contract_smoke.js`
 
 Expected: all three print `ok` and exit 0.
 
-- [ ] **Step 6: Commit service and storage**
+- [x] **Step 6: Commit service and storage**
 
 ```powershell
 git add src/application/message_follow_up/index.js src/storage/message_learning_store.js src/core/storage.js tests/message_follow_up_service_smoke.js tests/message_learning_store_smoke.js tests/scan_store_contract_smoke.js tests/run_all.js
@@ -187,7 +187,7 @@ git commit -m "feat: persist prepared follow-up drafts"
 - Consumes: `createBossMessageReader`, `acquireSiteScanLease`, `releaseSiteScanLease`, `createSiteAccessController`, and `messageFollowUpService.savePreparedDraft()`.
 - Produces: `createMessageFollowUpController(deps)` with async `prepare({ profileId, planId, jobId })` and async `close()`.
 
-- [ ] **Step 1: Write failing reader and controller tests**
+- [x] **Step 1: Write failing reader and controller tests**
 
 The reader fixture must accept this exact guarded target:
 
@@ -199,17 +199,17 @@ assert.equal(selected.messages.at(-1).direction, "myself");
 
 The controller test must prove: it uses one BOSS lease, finds the row by both `threadKey` and `sourceJobId`, never calls a foreground method, passes the latest own message to the service, disconnects the browser, and does not call the model when the row now belongs to HR.
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 Run: `node tests/boss_message_reader_smoke.js && node tests/dashboard_message_follow_up_controller_smoke.js`
 
 Expected: FAIL because `follow_up` is not an allowed reader operation and the controller is absent.
 
-- [ ] **Step 3: Extend the guarded reader operation**
+- [x] **Step 3: Extend the guarded reader operation**
 
 Add only `"follow_up"` to `ALLOWED_OPERATIONS`. Do not weaken row signature, source job, last-message or selected-conversation checks.
 
-- [ ] **Step 4: Implement the controller**
+- [x] **Step 4: Implement the controller**
 
 ```js
 const exact = rows.filter((row) => row.identityVerified
@@ -222,13 +222,13 @@ const selected = await reader.openQueuedConversation({ ...exact[0], tabId, opera
 
 Reserve one existing `communication_visit` action immediately before the guarded selection. Recheck fixed tabs before and after selection through the reader. Always release the lease and disconnect in `finally`.
 
-- [ ] **Step 5: Run controller tests**
+- [x] **Step 5: Run controller tests**
 
 Run: `node tests/boss_message_reader_smoke.js && node tests/dashboard_message_follow_up_controller_smoke.js`
 
 Expected: both print `ok` and exit 0.
 
-- [ ] **Step 6: Commit the controller**
+- [x] **Step 6: Commit the controller**
 
 ```powershell
 git add src/adapters/sites/boss_message_reader.js src/dashboard/message_follow_up_controller.js tests/boss_message_reader_smoke.js tests/dashboard_message_follow_up_controller_smoke.js tests/run_all.js
@@ -253,7 +253,7 @@ git commit -m "feat: prepare follow-ups from the fixed message page"
 - Consumes: `messageFollowUpService.listCandidates()`, `messageFollowUpController.prepare()`, existing `/api/message-reply-draft`, `/api/message-reply-send-batch`, `/api/message-reply-send-status`, and `/api/message-reply-send-control`.
 - Produces: GET `/follow-ups?profileId=&planId=` and POST `/api/message-follow-up/prepare`.
 
-- [ ] **Step 1: Write failing HTTP and rendering tests**
+- [x] **Step 1: Write failing HTTP and rendering tests**
 
 ```js
 const today = await request(base, `/plan?profileId=${profileId}&planId=${planId}`);
@@ -266,13 +266,13 @@ assert.doesNotMatch(emptyToday.body, /可以考虑跟进/);
 
 After preparation, assert the page contains an editable autosave textarea, single-send control, batch selection, the exact confirmed previous outbound text when available, and the same local action token used by the existing reply sender.
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 Run: `node tests/dashboard_today_page_smoke.js && node tests/dashboard_message_follow_up_smoke.js`
 
 Expected: FAIL because the count, route and page do not exist.
 
-- [ ] **Step 3: Extract only the reusable draft controls**
+- [x] **Step 3: Extract only the reusable draft controls**
 
 Export focused helpers from `message_discovery_view.js`:
 
@@ -283,7 +283,7 @@ function messageReplyClientScript(scriptState) { }
 
 Keep the existing message page output byte-compatible except for the renamed internal helper call. Do not move unrelated discovery rendering.
 
-- [ ] **Step 4: Add the page and routes**
+- [x] **Step 4: Add the page and routes**
 
 Render one compact card per candidate. Unprepared rows submit `profileId`, `planId`, and `jobId` to `/api/message-follow-up/prepare`. Prepared rows use the shared editor/send controls. The API obtains profile and plan from server-side ownership checks; request fields cannot supply conversation identifiers or message text.
 
@@ -293,13 +293,13 @@ Pass `{ count, href }` into `buildTodayViewModel` and render the card only when 
 followUp: count > 0 ? { count, href: `/follow-ups?profileId=${profileId}&planId=${planId}` } : null
 ```
 
-- [ ] **Step 5: Verify direct-edit and immutable-send behavior**
+- [x] **Step 5: Verify direct-edit and immutable-send behavior**
 
 Run: `node tests/dashboard_message_follow_up_smoke.js && node tests/dashboard_message_reply_send_smoke.js && node tests/dashboard_today_page_smoke.js`
 
 Expected: all tests pass; client test proves autosaves complete before confirmation and only `{ draftId, revision }` reaches the confirmation API.
 
-- [ ] **Step 6: Commit the user flow**
+- [x] **Step 6: Commit the user flow**
 
 ```powershell
 git add src/dashboard/pages/message_follow_up.js src/dashboard/server.js src/dashboard/view_models/today.js src/dashboard/pages/today.js src/dashboard/message_discovery_view.js src/dashboard/assets/components.css tests/dashboard_message_follow_up_smoke.js tests/dashboard_today_page_smoke.js tests/dashboard_message_reply_send_smoke.js tests/run_all.js
@@ -320,7 +320,7 @@ git commit -m "feat: add the message follow-up workspace"
 - Consumes: a sent draft with `messageIntent === "follow_up"`.
 - Produces: idempotent `follow_up_sent` progress event without a new funnel entry.
 
-- [ ] **Step 1: Write the failing completion test**
+- [x] **Step 1: Write the failing completion test**
 
 ```js
 await service.completeVerifiedItem({ batchId, itemId });
@@ -330,17 +330,17 @@ await service.completeVerifiedItem({ batchId, itemId });
 assert.equal(countProgressEvents(db, cardId, "follow_up_sent"), 1);
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 Run: `node tests/dashboard_message_reply_send_smoke.js && node tests/message_reply_learning_smoke.js`
 
 Expected: FAIL because completion records only generic `reply_confirmed_sent`.
 
-- [ ] **Step 3: Record the intent-specific event in the existing completion transaction**
+- [x] **Step 3: Record the intent-specific event in the existing completion transaction**
 
 Load the draft intent before `learningService.completeDraft()`. Inside its existing `afterComplete()` callback, record `follow_up_sent` for follow-up drafts and keep `reply_confirmed_sent` for normal HR replies. Reuse `message-reply-send:${batch}:${item}` as the idempotency base and do not call `ensureFunnelEntry()`.
 
-- [ ] **Step 4: Run targeted and full gates**
+- [x] **Step 4: Run targeted and full gates**
 
 Run:
 
@@ -357,7 +357,7 @@ git status --short
 
 Expected: targeted tests print `ok`; the full suite prints the current exact offline-check total; `git diff --check` has no output.
 
-- [ ] **Step 5: Update current documentation and commit**
+- [x] **Step 5: Update current documentation and commit**
 
 Record the implemented user flow, exact tests, real-platform non-access, remaining real DOM assumption and exact commit sequence. Do not claim real follow-up sending was accepted.
 
