@@ -196,6 +196,7 @@ const { sendHtml, sendJson, escapeHtml, escapeAttr } = require("./http/response"
 const { renderPage: renderDashboardPage, renderFramedPage: renderDashboardFramedPage } = require("./ui/shell");
 const { renderNavigation } = require("./ui/navigation");
 const { buildTodayViewModel } = require("./view_models/today");
+const { encodeJobExportCsv, jobExportFileName } = require("../core/job_export");
 const { renderTodayPage } = require("./pages/today");
 const { buildWorkflowViewModel } = require("./view_models/workflow");
 const { renderWorkflowPage: renderWorkflowDocument } = require("./pages/workflow");
@@ -1059,6 +1060,7 @@ function createDashboardServer({
       }));
       if (req.method === "GET" && url.pathname === "/communication/new") return sendHtml(res, renderCommunicationBuilderPage({ db, searchParams: url.searchParams, browserAuthority: frozenBrowserAuthority }));
       if (req.method === "GET" && url.pathname === "/communication") return sendHtml(res, renderCommunicationCenterPage({ db, searchParams: url.searchParams }));
+      if (req.method === "GET" && url.pathname === "/jobs/export.csv") return handleFilteredJobExport(res, db, url.searchParams);
       if (req.method === "GET" && url.pathname === "/jobs") return sendHtml(res, renderDashboard(getDashboardData(db, url.searchParams)));
       if (req.method === "GET" && url.pathname === "/diagnostics") return sendHtml(res, renderDiagnosticsPage(logger.listRecent(), url.searchParams.get("events"), diagnosticsActionToken));
       if (req.method === "GET" && url.pathname === "/health") {
@@ -1217,6 +1219,7 @@ function createDashboardServer({
       if (req.method === "POST" && url.pathname === "/api/communication-resolve") return handleCommunicationResolve(req, res, db);
       if (req.method === "POST" && url.pathname === "/api/mark") return handlePost(req, res, (body, type) => handleMarkApi(db, body, type), { logger, requestId, action: "mark_job" });
       if (req.method === "POST" && url.pathname === "/api/job-archive") return handleJobArchive(req, res, db);
+      if (req.method === "POST" && url.pathname === "/api/jobs/export") return handleSelectedJobExport(req, res, db);
       if (req.method === "POST" && url.pathname === "/api/follow-up") return handlePost(req, res, (body, type) => handleFollowUpApi(db, body, type), { logger, requestId, action: "add_follow_up" });
       if (req.method === "POST" && url.pathname === "/api/feedback") return handlePost(req, res, (body, type) => handleRecommendationFeedbackApi(db, body, type), { logger, requestId, action: "recommendation_feedback" });
       if (req.method === "POST" && url.pathname === "/api/communication") return handleCommunication(req, res, { db, modelConfig: getRuntimeModel("deep_analysis"), modelReady: modelReady("deep_analysis"), logger, requestId });
@@ -3432,10 +3435,11 @@ async function handlePost(req, res, handler, { logger, requestId, action }) {
 
 function getDashboardData(db, searchParams = new URLSearchParams()) {
   const filters = parseFilters(searchParams);
+  const plan = filters.planId ? getSearchPlan(db, filters.planId) : null;
   const options = dashboardBatchOptions(db, filters);
   const jobs = filterJobs(listReportJobs(db, options), filters);
   return {
-    filters,
+    filters: { ...filters, profileId: plan?.profileId || null, exportEnabled: Boolean(plan) },
     jobs,
     latestBatchId: options.batchId || getLatestBatchId(db, options),
     summary: summarizeJobs(jobs, buildBatchSummary(db, options)),
@@ -3504,6 +3508,77 @@ function summarizeJobs(jobs, batchSummary) {
     else filtered.newJobs += 1;
   }
   return { ...batchSummary, filtered };
+}
+
+function handleFilteredJobExport(res, db, searchParams) {
+  try {
+    const filters = parseFilters(searchParams);
+    const plan = requireJobExportScope(db, {
+      profileId: searchParams.get("profileId"),
+      planId: filters.planId
+    });
+    const options = { ...dashboardBatchOptions(db, filters), profileId: plan.profileId, limit: 10000 };
+    const jobs = filterJobs(listReportJobs(db, options), filters);
+    return sendJobExport(res, jobs, plan.name);
+  } catch (error) {
+    const issue = publicError(error, { fallbackCode: "JOB_EXPORT_FAILED", statusCode: 400 });
+    return sendJson(res, issue.statusCode, { error: issue.message, errorCode: issue.code });
+  }
+}
+
+async function handleSelectedJobExport(req, res, db) {
+  try {
+    const params = parseBody(await readBody(req), req.headers["content-type"] || "");
+    const keys = Object.keys(params).sort();
+    if (keys.join(",") !== "jobIds,planId,profileId") {
+      throw appError("JOB_EXPORT_REQUEST_INVALID", "导出请求无效，请从岗位记录重新选择。", { statusCode: 400 });
+    }
+    const plan = requireJobExportScope(db, params);
+    const rawIds = arrayValue(params.jobIds);
+    if (!rawIds.length || rawIds.length > 500) {
+      throw appError("JOB_EXPORT_SELECTION_INVALID", "每次请选择 1 到 500 个岗位导出。", { statusCode: 400 });
+    }
+    const jobIds = rawIds.map((value) => Number(value));
+    if (jobIds.some((value) => !Number.isInteger(value) || value <= 0) || new Set(jobIds).size !== jobIds.length) {
+      throw appError("JOB_EXPORT_SELECTION_INVALID", "导出的岗位选择无效，请重新勾选。", { statusCode: 400 });
+    }
+    const jobsById = new Map(listReportJobs(db, {
+      profileId: plan.profileId,
+      planId: plan.id,
+      batch: "all",
+      limit: 10000
+    }).map((job) => [Number(job.id), job]));
+    const selected = jobIds.map((jobId) => jobsById.get(jobId));
+    if (selected.some((job) => !job)) {
+      throw appError("JOB_EXPORT_JOB_NOT_OWNED", "所选岗位不属于当前求职方案，请刷新后重新选择。", { statusCode: 400 });
+    }
+    return sendJobExport(res, selected, plan.name);
+  } catch (error) {
+    const issue = publicError(error, { fallbackCode: "JOB_EXPORT_FAILED", statusCode: 400 });
+    return sendJson(res, issue.statusCode, { error: issue.message, errorCode: issue.code });
+  }
+}
+
+function requireJobExportScope(db, { profileId, planId } = {}) {
+  const plan = getSearchPlan(db, Number(planId));
+  if (!plan) throw appError("JOB_EXPORT_PLAN_NOT_FOUND", "求职方案不存在，请返回岗位记录重新操作。", { statusCode: 404 });
+  if (profileId !== undefined && profileId !== null && String(profileId).trim()
+    && Number(profileId) !== Number(plan.profileId)) {
+    throw appError("JOB_EXPORT_SCOPE_MISMATCH", "求职方案与候选人不匹配，请返回岗位记录重新操作。", { statusCode: 404 });
+  }
+  return plan;
+}
+
+function sendJobExport(res, jobs, planName) {
+  const csv = encodeJobExportCsv(jobs);
+  const fileName = jobExportFileName({ planName });
+  res.writeHead(200, {
+    "content-type": "text/csv; charset=utf-8",
+    "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff"
+  });
+  res.end(csv);
 }
 
 async function handleJobArchive(req, res, db) {
@@ -6000,14 +6075,36 @@ function queueScopeForJob(job, latestMainBatchId) {
 
 function renderCompactDashboard(data) {
   const { jobs = [], filters = {}, latestBatchId, queue = null, title = "投递操作台", hint = "", outcomeAnalyticsPanel = "", currentPath = "", todayPath = "" } = data;
+  const exportControls = queue ? "" : renderCompactJobExportControls(filters);
+  const exportScript = queue ? "" : `(()=>{const boxes=[...document.querySelectorAll('[data-job-export]')];const button=document.querySelector('[data-job-export-submit]');const refresh=()=>{if(button)button.disabled=!boxes.some((box)=>box.checked)};boxes.forEach((box)=>box.addEventListener('change',refresh));refresh()})();`;
   const analysisRetry = queue?.pool === "analysis_pending" && Number(queue.counts.analysis_pending || 0) > 0
     ? `<section class="panel"><form method="post" action="/api/analyze-jobs"><input type="hidden" name="planId" value="${escapeAttr(filters.planId)}"><button class="apply">批量重试全部待分析岗位（${queue.counts.analysis_pending}）</button></form><p class="line">仅使用已保存的岗位详情，模型并发固定为 ${PRODUCT_POLICY.operations.modelAnalysis.retryConcurrency}，不会访问招聘网站。</p></section>`
     : "";
   return renderLegacyDashboardPage({ title, currentPath, todayPath, planId: filters.planId, stage: "岗位", body: `<style>
-body{margin:0;background:#f5f7f8;color:#1f2933;font-family:Segoe UI,Microsoft YaHei,sans-serif}main{max-width:1100px;margin:0 auto;padding:22px 18px 48px}nav{display:flex;gap:14px;margin-bottom:20px}a{color:#1265a8;text-decoration:none}a:hover{text-decoration:underline}h1{font-size:24px;margin:0 0 7px}.hint{color:#5b6773;margin:0 0 16px}.panel{background:#fff;border:1px solid #d8e0e6;border-radius:8px;padding:12px 14px;margin:12px 0}.pool-tabs{display:flex;flex-wrap:wrap;gap:8px}.pool-tabs+.pool-tabs{margin-top:9px}.pool-tab{padding:7px 10px;border:1px solid #ccd7df;border-radius:6px;background:#fff;color:#344450}.pool-tab.active{background:#e6f3f0;border-color:#68aa9b;color:#155f54;font-weight:700;text-decoration:none}.queue-summary{margin-top:10px;color:#5b6773;font-size:13px}.pager{display:flex;justify-content:center;align-items:center;gap:10px;margin-top:14px}.pager a,.pager span{padding:7px 10px;border:1px solid #ccd7df;border-radius:5px;background:#fff}.filters{display:grid;grid-template-columns:repeat(7,minmax(105px,1fr)) auto;gap:8px}.filters input,.filters select,input,select{box-sizing:border-box;min-width:0;padding:8px;border:1px solid #b9c5ce;border-radius:5px;background:#fff}.job{background:#fff;border:1px solid #d7e0e6;border-radius:8px;padding:14px 16px;margin:10px 0}.job-top{display:flex;justify-content:space-between;gap:14px;align-items:flex-start}.job-title{font-size:16px;font-weight:700;line-height:1.35}.job-meta,.job-reason,.job-risk,.line{margin-top:7px;font-size:14px;line-height:1.45;color:#53616d}.job-reason{color:#27604f}.job-risk{color:#9a4b42}.decision{display:inline-block;white-space:nowrap;border:1px solid #d8e0e6;border-radius:999px;padding:4px 8px;font-size:12px;font-weight:700}.decision.primary{background:#e6f3f0;border-color:#86b9ad;color:#155f54}.decision.apply{background:#eef4fa;border-color:#9cbcdc;color:#245b87}.decision.caution{background:#fff6df;border-color:#ead29a;color:#825b13}.analysis_pending{background:#f1f3f5;border-color:#b9c3cc;color:#46535e}.refresh{background:#f5f0fd;border-color:#c8b8e6;color:#64419b}.not_recommended{background:#f9e9e7;border-color:#e5b3ae;color:#9b3f37}.quick-actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}.quick-actions select{max-width:190px}button{padding:7px 10px;cursor:pointer;border:1px solid #aab8c2;border-radius:5px;background:#fff;color:#25313a}.apply{background:#176b5b;border-color:#176b5b;color:#fff}.skip{color:#8a3a33}.details{margin-top:11px;border-top:1px solid #e4e9ed;padding-top:9px}.details summary{cursor:pointer;color:#4f6170;font-size:13px}.detail-body{margin-top:10px}.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.chip{border:1px solid #d8dee4;border-radius:999px;padding:3px 7px;font-size:12px;background:#f6f8fa}.risk{background:#f9e9e7;border-color:#e5b3ae}.jd{white-space:pre-wrap;background:#f7f9fa;border-left:3px solid #2a7185;padding:9px 10px;font-size:13px;line-height:1.55}.detail-actions,.follow{display:flex;flex-wrap:wrap;gap:8px;align-items:end;margin-top:10px}.detail-actions input,.follow input{flex:1 1 220px}textarea{box-sizing:border-box;width:100%;min-height:52px;margin-top:8px;padding:8px;border:1px solid #b9c5ce;border-radius:5px;background:#fafcfd}@media(max-width:760px){.filters{grid-template-columns:1fr 1fr}.job-top{display:block}.decision{margin-top:7px}}</style><main id="main-content">
+body{margin:0;background:#f5f7f8;color:#1f2933;font-family:Segoe UI,Microsoft YaHei,sans-serif}main{max-width:1100px;margin:0 auto;padding:22px 18px 48px}nav{display:flex;gap:14px;margin-bottom:20px}a{color:#1265a8;text-decoration:none}a:hover{text-decoration:underline}h1{font-size:24px;margin:0 0 7px}.hint{color:#5b6773;margin:0 0 16px}.panel{background:#fff;border:1px solid #d8e0e6;border-radius:8px;padding:12px 14px;margin:12px 0}.pool-tabs{display:flex;flex-wrap:wrap;gap:8px}.pool-tabs+.pool-tabs{margin-top:9px}.pool-tab{padding:7px 10px;border:1px solid #ccd7df;border-radius:6px;background:#fff;color:#344450}.pool-tab.active{background:#e6f3f0;border-color:#68aa9b;color:#155f54;font-weight:700;text-decoration:none}.queue-summary{margin-top:10px;color:#5b6773;font-size:13px}.pager{display:flex;justify-content:center;align-items:center;gap:10px;margin-top:14px}.pager a,.pager span{padding:7px 10px;border:1px solid #ccd7df;border-radius:5px;background:#fff}.filters{display:grid;grid-template-columns:repeat(7,minmax(105px,1fr)) auto;gap:8px}.filters input,.filters select,input,select{box-sizing:border-box;min-width:0;padding:8px;border:1px solid #b9c5ce;border-radius:5px;background:#fff}.job{background:#fff;border:1px solid #d7e0e6;border-radius:8px;padding:14px 16px;margin:10px 0}.job-top{display:flex;justify-content:space-between;gap:14px;align-items:flex-start}.job-side{display:grid;justify-items:end;gap:8px}.job-export-choice{font-size:12px;color:#53616d;white-space:nowrap}.job-export-choice input{margin:0 4px 0 0}.job-title{font-size:16px;font-weight:700;line-height:1.35}.job-meta,.job-reason,.job-risk,.line{margin-top:7px;font-size:14px;line-height:1.45;color:#53616d}.job-reason{color:#27604f}.job-risk{color:#9a4b42}.decision{display:inline-block;white-space:nowrap;border:1px solid #d8e0e6;border-radius:999px;padding:4px 8px;font-size:12px;font-weight:700}.decision.primary{background:#e6f3f0;border-color:#86b9ad;color:#155f54}.decision.apply{background:#eef4fa;border-color:#9cbcdc;color:#245b87}.decision.caution{background:#fff6df;border-color:#ead29a;color:#825b13}.analysis_pending{background:#f1f3f5;border-color:#b9c3cc;color:#46535e}.refresh{background:#f5f0fd;border-color:#c8b8e6;color:#64419b}.not_recommended{background:#f9e9e7;border-color:#e5b3ae;color:#9b3f37}.quick-actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}.quick-actions select{max-width:190px}.export-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}.export-actions form{margin:0}button{padding:7px 10px;cursor:pointer;border:1px solid #aab8c2;border-radius:5px;background:#fff;color:#25313a}button:disabled{cursor:not-allowed;opacity:.55}.apply{background:#176b5b;border-color:#176b5b;color:#fff}.skip{color:#8a3a33}.details{margin-top:11px;border-top:1px solid #e4e9ed;padding-top:9px}.details summary{cursor:pointer;color:#4f6170;font-size:13px}.detail-body{margin-top:10px}.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.chip{border:1px solid #d8dee4;border-radius:999px;padding:3px 7px;font-size:12px;background:#f6f8fa}.risk{background:#f9e9e7;border-color:#e5b3ae}.jd{white-space:pre-wrap;background:#f7f9fa;border-left:3px solid #2a7185;padding:9px 10px;font-size:13px;line-height:1.55}.detail-actions,.follow{display:flex;flex-wrap:wrap;gap:8px;align-items:end;margin-top:10px}.detail-actions input,.follow input{flex:1 1 220px}textarea{box-sizing:border-box;width:100%;min-height:52px;margin-top:8px;padding:8px;border:1px solid #b9c5ce;border-radius:5px;background:#fafcfd}@media(max-width:760px){.filters{grid-template-columns:1fr 1fr}.job-top{display:block}.job-side{justify-items:start;margin-top:8px}.decision{margin-top:7px}}</style><main id="main-content">
 <h1>${escapeHtml(title)}</h1><p class="hint">${escapeHtml(hint)}${latestBatchId ? ` 主扫描批次 #${latestBatchId}` : ""}</p>
-  ${queue ? renderCompactPoolTabs(queue, filters.planId, queue.profileId) : renderCompactFilters(filters)}${outcomeAnalyticsPanel}${analysisRetry}
-<section class="job-ledger" aria-label="岗位记录">${jobs.map((job) => renderCompactJob(job, filters)).join("") || "<section class=\"panel\">这个分组目前没有岗位。</section>"}</section>${queue ? renderCompactPager(queue, filters.planId) : ""}</main><script>async function copyGreeting(id){const el=document.getElementById(id);if(el)await navigator.clipboard.writeText(el.value);}</script>` });
+  ${queue ? renderCompactPoolTabs(queue, filters.planId, queue.profileId) : renderCompactFilters(filters)}${exportControls}${outcomeAnalyticsPanel}${analysisRetry}
+<section class="job-ledger" aria-label="岗位记录">${jobs.map((job) => renderCompactJob(job, { ...filters, exportEnabled: !queue && filters.exportEnabled })).join("") || "<section class=\"panel\">这个分组目前没有岗位。</section>"}</section>${queue ? renderCompactPager(queue, filters.planId) : ""}</main><script>async function copyGreeting(id){const el=document.getElementById(id);if(el)await navigator.clipboard.writeText(el.value);}${exportScript}</script>` });
+}
+
+function renderCompactJobExportControls(filters) {
+  if (!filters.exportEnabled) return "";
+  return `<section class="panel export-actions"><form method="get" action="/jobs/export.csv">${jobExportFilterInputs(filters)}<button>导出当前结果</button></form><form id="job-export-selected" method="post" action="/api/jobs/export"><input type="hidden" name="profileId" value="${escapeAttr(filters.profileId)}"><input type="hidden" name="planId" value="${escapeAttr(filters.planId)}"><button type="submit" data-job-export-submit disabled>导出已选岗位</button></form></section>`;
+}
+
+function jobExportFilterInputs(filters) {
+  const values = {
+    profileId: filters.profileId,
+    planId: filters.planId,
+    outcome: filters.status,
+    decision: filters.decision,
+    level: filters.level,
+    fresh: filters.fresh,
+    archive: filters.archive,
+    batch: filters.batchId || filters.batch,
+    q: filters.q
+  };
+  return Object.entries(values).map(([name, value]) => `<input type="hidden" name="${escapeAttr(name)}" value="${escapeAttr(value || "")}">`).join("");
 }
 
 function renderCompactPoolTabs(queue, planId, profileId = "") {
@@ -6061,10 +6158,13 @@ function renderCompactJobBase(job, filters) {
   const hrReplyAction = `<form class="follow" method="post" action="/api/communication">${jobContext}<input type="hidden" name="mode" value="hr_reply"><textarea name="hrMessage" placeholder="粘贴 HR 原话" aria-label="HR 原话" required></textarea><button>生成 HR 回复</button></form>`;
   const feedbackAction = `<form class="follow" method="post" action="/api/feedback${query}">${jobContext}${feedbackReasonSelect("", true)}<input name="note" placeholder="具体哪里推荐错了（可选）" aria-label="推荐反馈说明"><button>提交推荐反馈</button></form>`;
   const archiveAction = `<form class="quick-actions" method="post" action="/api/job-archive">${jobContext}<button class="secondary" name="action" value="${job.archived ? "restore" : "archive"}">${job.archived ? "恢复" : "归档"}</button></form>`;
+  const exportSelection = filters.exportEnabled
+    ? `<label class="job-export-choice"><input type="checkbox" name="jobIds" value="${escapeAttr(job.id)}" form="job-export-selected" data-job-export>选择导出</label>`
+    : "";
   const retryAnalysisAction = job.decisionBucket === "analysis_pending" ? `<form class="quick-actions" method="post" action="/api/analyze-job">${jobContext}<button>重试语义分析</button></form>` : "";
   const roleEvidenceSummary = renderRoleEvidenceSummary(analysis, "line", "div");
   const narrative = compactJobNarrative(job, { salaryLabel, risk });
-  return `<article class="job"><div class="job-top"><div><div class="job-title">${escapeHtml(job.title)}${job.archived ? " · 已归档" : ""}${job.url ? ` · <a href="${escapeAttr(job.url)}" target="_blank">打开岗位</a>` : ""}</div><div class="job-meta">${escapeHtml(job.company || "")} · ${escapeHtml(job.location || "")} · ${escapeHtml(salaryLabel)} · ${escapeHtml(experienceLabel)} · ${escapeHtml(compactActivityLabel(job))}${escapeHtml(status)}</div><div class="job-meta">${escapeHtml(compactSeenLabel(job, filters.latestMainBatchId))}</div></div><span class="decision ${escapeAttr(job.decisionBucket || "backup")}">${escapeHtml(compactDecisionLabel(job.decisionBucket))}</span></div><div class="job-reason"><strong>结论：</strong>${escapeHtml(narrative.conclusion)}</div><div class="line"><strong>岗位：</strong>${escapeHtml(narrative.role)}</div><div class="line"><strong>公司与机会：</strong>${escapeHtml(narrative.companyOpportunity)}</div><div class="line"><strong>匹配：</strong>${escapeHtml(narrative.fit)}</div><div class="line"><strong>薪资：</strong>${escapeHtml(narrative.salary)}</div><div class="job-risk"><strong>需要确认：</strong>${escapeHtml(narrative.risk)}</div>${retryAnalysisAction}${job.followUpNote ? `<div class="line"><strong>沟通记录：</strong>${escapeHtml(job.followUpNote)}</div>` : ""}<form class="quick-actions" method="post" action="/api/mark${query}">${jobContext}<button class="apply" name="status" value="applied">已投</button><button name="status" value="review">待确认</button><button name="status" value="later">7 天后再看</button><button class="skip" name="status" value="skipped">跳过</button></form>${archiveAction}<details class="details"><summary>查看 JD、沟通与完整记录</summary><div class="detail-body">${roleEvidenceSummary}<div class="line">决策来源：${escapeHtml(compactDecisionSource(analysis))} · 工作节奏：${escapeHtml(compactScheduleLabel(analysis))} · 推荐简历：${escapeHtml(analysis.recommendedResumeVersionName || analysis.recommendedResumeVersion || "待确认")} · 主推项目：${escapeHtml((analysis.primaryProjects || []).join("、") || "待确认")}</div><div class="chips">${chips(visibleRisks, "risk")}${chips(job.qualityTags, "tag")}</div><div class="jd">${escapeHtml(String(job.description || "暂无完整 JD").slice(0, 1500))}</div>${greetingAction}${followUpAction}${hrReplyAction}<form class="detail-actions" method="post" action="/api/mark${query}">${jobContext}<input name="note" placeholder="状态备注（可选）" aria-label="岗位状态备注"><button name="status" value="no_reply">无回复待跟进</button><button name="status" value="interview">约面</button><button name="status" value="rejected">拒绝</button><button name="status" value="invalid">岗位无效</button><button name="status" value="salary_mismatch">薪资不匹配</button></form><form class="follow" method="post" action="/api/follow-up${query}">${jobContext}<input name="note" placeholder="记录沟通进展" aria-label="沟通跟进备注"><button>记录备注</button></form>${feedbackAction}</div></details></article>`;
+  return `<article class="job"><div class="job-top"><div><div class="job-title">${escapeHtml(job.title)}${job.archived ? " · 已归档" : ""}${job.url ? ` · <a href="${escapeAttr(job.url)}" target="_blank">打开岗位</a>` : ""}</div><div class="job-meta">${escapeHtml(job.company || "")} · ${escapeHtml(job.location || "")} · ${escapeHtml(salaryLabel)} · ${escapeHtml(experienceLabel)} · ${escapeHtml(compactActivityLabel(job))}${escapeHtml(status)}</div><div class="job-meta">${escapeHtml(compactSeenLabel(job, filters.latestMainBatchId))}</div></div><div class="job-side"><span class="decision ${escapeAttr(job.decisionBucket || "backup")}">${escapeHtml(compactDecisionLabel(job.decisionBucket))}</span>${exportSelection}</div></div><div class="job-reason"><strong>结论：</strong>${escapeHtml(narrative.conclusion)}</div><div class="line"><strong>岗位：</strong>${escapeHtml(narrative.role)}</div><div class="line"><strong>公司与机会：</strong>${escapeHtml(narrative.companyOpportunity)}</div><div class="line"><strong>匹配：</strong>${escapeHtml(narrative.fit)}</div><div class="line"><strong>薪资：</strong>${escapeHtml(narrative.salary)}</div><div class="job-risk"><strong>需要确认：</strong>${escapeHtml(narrative.risk)}</div>${retryAnalysisAction}${job.followUpNote ? `<div class="line"><strong>沟通记录：</strong>${escapeHtml(job.followUpNote)}</div>` : ""}<form class="quick-actions" method="post" action="/api/mark${query}">${jobContext}<button class="apply" name="status" value="applied">已投</button><button name="status" value="review">待确认</button><button name="status" value="later">7 天后再看</button><button class="skip" name="status" value="skipped">跳过</button></form>${archiveAction}<details class="details"><summary>查看 JD、沟通与完整记录</summary><div class="detail-body">${roleEvidenceSummary}<div class="line">决策来源：${escapeHtml(compactDecisionSource(analysis))} · 工作节奏：${escapeHtml(compactScheduleLabel(analysis))} · 推荐简历：${escapeHtml(analysis.recommendedResumeVersionName || analysis.recommendedResumeVersion || "待确认")} · 主推项目：${escapeHtml((analysis.primaryProjects || []).join("、") || "待确认")}</div><div class="chips">${chips(visibleRisks, "risk")}${chips(job.qualityTags, "tag")}</div><div class="jd">${escapeHtml(String(job.description || "暂无完整 JD").slice(0, 1500))}</div>${greetingAction}${followUpAction}${hrReplyAction}<form class="detail-actions" method="post" action="/api/mark${query}">${jobContext}<input name="note" placeholder="状态备注（可选）" aria-label="岗位状态备注"><button name="status" value="no_reply">无回复待跟进</button><button name="status" value="interview">约面</button><button name="status" value="rejected">拒绝</button><button name="status" value="invalid">岗位无效</button><button name="status" value="salary_mismatch">薪资不匹配</button></form><form class="follow" method="post" action="/api/follow-up${query}">${jobContext}<input name="note" placeholder="记录沟通进展" aria-label="沟通跟进备注"><button>记录备注</button></form>${feedbackAction}</div></details></article>`;
 }
 
 function compactJobNarrative(job, { salaryLabel, risk }) {
