@@ -265,3 +265,9 @@ Record blocking versus warning behavior, lack of second confirmation, exact vali
 git add docs/NEXT_PHASE.md docs/PROJECT_HANDOFF.md
 git commit -m "docs: record resume activation integrity delivery"
 ```
+
+### 收口复审补记
+
+- [x] 新增迁移 v28，把定向简历草稿绑定到候选人的搜索方案；唯一归属才回填，歧义旧数据保持未绑定。
+- [x] 生成、自动保存和启用都核对同一 `planId`，不能跨方案保存或启用。
+- [x] 并发资料保存的事务串行化与方案绑定回归均已纳入最终 142 项完整离线门禁。

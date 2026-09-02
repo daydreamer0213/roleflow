@@ -348,3 +348,9 @@ Update `docs/NEXT_PHASE.md` and `docs/PROJECT_HANDOFF.md` with the 20-message wi
 git add src/application/message_reply_sending/index.js src/dashboard/message_discovery_view.js src/dashboard/pages/message_follow_up.js tests/message_reply_learning_smoke.js tests/dashboard_message_reply_send_smoke.js tests/dashboard_message_follow_up_smoke.js docs/NEXT_PHASE.md docs/PROJECT_HANDOFF.md
 git commit -m "docs: record message draft quality delivery"
 ```
+
+### 收口复审补记
+
+- [x] 数值事实按语义含义而非逐字相同匹配，软件项目、调用次数、客户数量和客户问题处理均有正反样本。
+- [x] 岗位情况提问、礼貌表达与问题数量不会被误判为候选人个人成果；候选人经历陈述仍要求当前有效依据。
+- [x] 独立复审最终确认 Critical 0、Important 0；唯一非阻塞边角已记录到交接文档。

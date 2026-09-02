@@ -345,3 +345,9 @@ Record the reversible state model, unchanged funnel counts, CSV privacy boundary
 git add docs/NEXT_PHASE.md docs/PROJECT_HANDOFF.md
 git commit -m "docs: record job archive and export delivery"
 ```
+
+### 收口复审补记
+
+- [x] 归档岗位的页面入口仅保留查看、导出和恢复。
+- [x] 存储标记与进度接口同步拒绝归档岗位，旧页面和直接请求不能绕过只读边界。
+- [x] 相关修复提交为 `edb65ea`、`e4ae41d`，并已纳入最终 142 项完整离线门禁。
