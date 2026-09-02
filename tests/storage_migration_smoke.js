@@ -298,6 +298,23 @@ try {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+    CREATE TABLE batches (
+      id INTEGER PRIMARY KEY,
+      profile_id INTEGER,
+      search_plan_id INTEGER
+    );
+    CREATE TABLE search_plans (
+      id INTEGER PRIMARY KEY,
+      profile_id INTEGER
+    );
+    CREATE TABLE job_observations (
+      id INTEGER PRIMARY KEY,
+      batch_id INTEGER,
+      job_id INTEGER
+    );
+    INSERT INTO search_plans(id, profile_id) VALUES (91, 1), (92, 1);
+    INSERT INTO batches(id, profile_id, search_plan_id) VALUES (1, 1, 91), (2, 1, 92);
+    INSERT INTO job_observations(id, batch_id, job_id) VALUES (1, 1, 7), (2, 1, 8), (3, 2, 8);
     INSERT INTO resume_optimizations(
       profile_id, source_resume_version_id, source_resume_document_id,
       source_content_hash, source_text, target_job_ids_json, context_hash,
@@ -308,6 +325,16 @@ try {
       '[{"id":"R1","kind":"resume","text":"旧源简历"}]', '旧建议',
       '[{"id":"S1","decision":"accepted"}]', '旧最终简历', 'activated',
       '{}', '2026-08-28T10:00:00.000Z', '2026-08-28T09:00:00.000Z', '2026-08-28T10:00:00.000Z'
+    );
+    INSERT INTO resume_optimizations(
+      profile_id, source_resume_version_id, source_resume_document_id,
+      source_content_hash, source_text, target_job_ids_json, context_hash,
+      evidence_json, headline, suggestions_json, final_text, status,
+      model_identity_json, activated_at, created_at, updated_at
+    ) VALUES (
+      1, 2, 3, 'ambiguous-hash', '歧义源简历', '[8]', 'ambiguous-context',
+      '[]', '歧义建议', '[]', '歧义最终简历', 'draft',
+      '{}', NULL, '2026-08-28T09:00:00.000Z', '2026-08-28T10:00:00.000Z'
     );
     PRAGMA user_version = ${FUNNEL_STRATEGY_ROUNDS_VERSION};
   `);
@@ -320,6 +347,9 @@ try {
   assert.deepStrictEqual(migratedResume.changeLedger, [{ id: "S1", decision: "accepted" }]);
   assert.deepStrictEqual(migratedResume.suggestions, migratedResume.changeLedger);
   assert.strictEqual(migratedResume.sourceText, "旧源简历");
+  assert.strictEqual(migratedResume.planId, 91, "唯一可证明的历史方案必须回填");
+  const ambiguousResume = getResumeOptimization(db, { profileId: 1, optimizationId: 2 });
+  assert.strictEqual(ambiguousResume.planId, null, "跨多个方案的历史草稿不得猜测归属");
   db.close();
 
   const interviewV24Path = path.join(root, "mock-interview", "v24-completed.sqlite");
