@@ -10,7 +10,10 @@ const {
   parseBossFilterCatalog
 } = require("../src/adapters/sites/boss");
 const { resolveNativeFilterSnapshot, assertGeneratedFilterSelections } = require("../src/core/platform_filters");
-const { buildInheritedSearchScope } = require("../src/core/inherited_search_scope");
+const {
+  buildInheritedSearchScope,
+  canonicalizeBossTargetUrl
+} = require("../src/core/inherited_search_scope");
 const { compilePlatformRuntimePolicy } = require("../src/core/platform_runtime_policy");
 const { CITY_CODES } = require("../src/core/search_plan");
 const { PRODUCT_POLICY } = require("../src/core/product_policy");
@@ -134,12 +137,14 @@ const ambiguousNative = resolveNativeFilterSnapshot({
 assert.deepStrictEqual(ambiguousNative.unresolvedSelections, [{ field: "jobType", label: "全职" }]);
 
 (async () => {
+  searchTargetCanonicalizationSmoke();
   await preflightSmoke();
   await inheritedPageInspectionSmoke();
   await riskPreflightSmoke();
   await scrollSmoke();
   await cardGrowthCheckpointSmoke();
   await cardGrowthLimitCheckpointSmoke();
+  await searchScopeDriftBeforeCardMergeSmoke();
   await scanProgressEventOrderSmoke();
   await delayedAppendAtBottomSmoke();
   await confirmedListEndSmoke();
@@ -198,6 +203,16 @@ assert.deepStrictEqual(ambiguousNative.unresolvedSelections, [{ field: "jobType"
   console.error(error.stack || error.message);
   process.exitCode = 1;
 });
+
+function searchTargetCanonicalizationSmoke() {
+  const expected = canonicalizeBossTargetUrl("https://www.zhipin.com/web/geek/jobs?city=101280100&query=AI%20%E5%BA%94%E7%94%A8&multiSubway=101280100%3A1&utm_source=fixture&page=2");
+  const reordered = canonicalizeBossTargetUrl("https://www.zhipin.com/web/geek/jobs?query=AI+%E5%BA%94%E7%94%A8&multiSubway=101280100%3A1&city=101280100&ka=page-next");
+  const changedKeyword = canonicalizeBossTargetUrl("https://www.zhipin.com/web/geek/jobs?city=101280100&query=RAG&multiSubway=101280100%3A1");
+  const changedUnknownFilter = canonicalizeBossTargetUrl("https://www.zhipin.com/web/geek/jobs?city=101280100&query=AI%20%E5%BA%94%E7%94%A8&multiSubway=101280100%3A2");
+  assert.strictEqual(expected.url, reordered.url);
+  assert.notStrictEqual(expected.url, changedKeyword.url);
+  assert.notStrictEqual(expected.url, changedUnknownFilter.url);
+}
 
 async function preflightSmoke() {
   const oldSearch = { id: "old-search", active: false, url: "https://www.zhipin.com/web/geek/jobs?query=old" };
@@ -481,6 +496,40 @@ async function cardGrowthLimitCheckpointSmoke() {
   ]);
   assert.strictEqual(result.cards.length, 4);
   assert(batches.every((entry) => entry.total <= 4));
+}
+
+async function searchScopeDriftBeforeCardMergeSmoke() {
+  const expectedUrl = "https://www.zhipin.com/web/geek/jobs?city=101280100&query=RAG&multiSubway=101280100%3A1";
+  let currentUrl = expectedUrl;
+  let visible = 1;
+  const batches = [];
+  const browser = {
+    async evalValue(_tabId, expression) {
+      if (!expression.includes("__bossExtractCards")) return true;
+      return Array.from({ length: visible }, (_, index) => card(`scope-${index + 1}`));
+    }
+  };
+  const adapter = new BossSiteAdapter({ browser, sleepFn: async () => {} });
+  adapter.assertSearchPage = async () => ({ isSearchPage: true, url: currentUrl });
+  adapter.scrollList = async () => {
+    visible = 2;
+    currentUrl = "https://www.zhipin.com/web/geek/jobs?city=101280100&query=RAG&multiSubway=101280100%3A2";
+    return { moved: true, atBottom: false, scrollTop: 700 };
+  };
+  adapter.waitWithPacing = async () => {};
+
+  await assert.rejects(
+    () => adapter.collectCards(
+      "tab",
+      4,
+      null,
+      null,
+      ({ cards, total }) => batches.push({ ids: cards.map((entry) => entry.title), total }),
+      expectedUrl
+    ),
+    (error) => error.code === "BOSS_SEARCH_SCOPE_CHANGED"
+  );
+  assert.deepStrictEqual(batches, [{ ids: ["scope-1"], total: 1 }]);
 }
 
 async function scanProgressEventOrderSmoke() {

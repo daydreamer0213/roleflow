@@ -1,7 +1,10 @@
 const fs = require("fs");
 const { parseBossActivityText } = require("../../core/activity_status");
 const { mergeJobMetadata } = require("../../core/job_metadata");
-const { canonicalizeBossSearchTemplate } = require("../../core/inherited_search_scope");
+const {
+  canonicalizeBossSearchTemplate,
+  canonicalizeBossTargetUrl
+} = require("../../core/inherited_search_scope");
 const { normalizePlatformFilterCatalog } = require("../../core/platform_filters");
 const { PRODUCT_POLICY } = require("../../core/product_policy");
 const { isBrowserTabId, sameBrowserTabId } = require("../../core/browser_tab_identity");
@@ -1204,7 +1207,8 @@ class BossSiteAdapter {
                   detailTotal: 0,
                   jobs
                 });
-              }
+              },
+              url
             );
             throwIfAborted(options.signal);
             const collection = Array.isArray(collected)
@@ -1604,13 +1608,14 @@ class BossSiteAdapter {
     return refreshed;
   }
 
-  async collectCards(tabId, maxCards, signal = null, assertTabBindings = null, onCards = null) {
+  async collectCards(tabId, maxCards, signal = null, assertTabBindings = null, onCards = null, expectedUrl = "") {
     const found = new Map();
     let readinessAttempts = 0;
     while (!found.size && readinessAttempts < LIST_READY_ATTEMPTS) {
       throwIfAborted(signal);
       await assertRuntimeTabBindings(assertTabBindings);
-      await this.assertSearchPage(tabId);
+      const searchState = await this.assertSearchPage(tabId);
+      assertBossSearchTarget(searchState?.url, expectedUrl);
       await this.browser.evalValue(tabId, PAGE_HELPERS);
       const initialCards = await this.browser.evalValue(tabId, `(() => window.__bossExtractCards(${maxCards}))()`);
       const added = mergeUniqueCards(found, initialCards, maxCards);
@@ -1630,7 +1635,8 @@ class BossSiteAdapter {
     for (let round = 0; round < maxRounds && found.size < maxCards; round += 1) {
       throwIfAborted(signal);
       await assertRuntimeTabBindings(assertTabBindings);
-      await this.assertSearchPage(tabId);
+      const searchState = await this.assertSearchPage(tabId);
+      assertBossSearchTarget(searchState?.url, expectedUrl);
       await this.browser.evalValue(tabId, PAGE_HELPERS);
       const cards = await this.browser.evalValue(tabId, `(() => window.__bossExtractCards(${maxCards}))()`);
       const added = mergeUniqueCards(found, cards, maxCards);
@@ -1642,7 +1648,7 @@ class BossSiteAdapter {
       const scroll = await this.scrollList(tabId, signal, assertTabBindings);
       scrollRounds += 1;
       if (scroll?.atBottom) {
-        const growth = await this.waitForCardGrowth(tabId, maxCards, found, signal, assertTabBindings, onCards);
+        const growth = await this.waitForCardGrowth(tabId, maxCards, found, signal, assertTabBindings, onCards, expectedUrl);
         if (growth.grew) {
           growthRounds += 1;
           quietWindows = 0;
@@ -1669,7 +1675,7 @@ class BossSiteAdapter {
     };
   }
 
-  async waitForCardGrowth(tabId, maxCards, found, signal = null, assertTabBindings = null, onCards = null) {
+  async waitForCardGrowth(tabId, maxCards, found, signal = null, assertTabBindings = null, onCards = null, expectedUrl = "") {
     const timeoutMs = randomBetween(2400, 3400, this.random);
     const pollMs = randomBetween(350, 650, this.random);
     const maxPolls = Math.max(4, Math.ceil(timeoutMs / pollMs));
@@ -1679,7 +1685,8 @@ class BossSiteAdapter {
       await waitForAbortableSleep(this.sleep(pollMs), signal);
       throwIfAborted(signal);
       await assertRuntimeTabBindings(assertTabBindings);
-      await this.assertSearchPage(tabId);
+      const searchState = await this.assertSearchPage(tabId);
+      assertBossSearchTarget(searchState?.url, expectedUrl);
       await this.browser.evalValue(tabId, PAGE_HELPERS);
       const cards = await this.browser.evalValue(tabId, `(() => window.__bossExtractCards(${maxCards}))()`);
       const added = mergeUniqueCards(found, cards, maxCards);
@@ -1868,6 +1875,7 @@ class BossSiteAdapter {
 
   async assertSearchPage(tabId) {
     const state = await this.browser.evalValue(tabId, `(() => ({
+      url: location.href,
       path: location.pathname,
       title: document.title || "",
       isRiskPage: /\\/web\\/passport\\/zp\\/(?:verify|403)/i.test(location.pathname)
@@ -2794,6 +2802,12 @@ function mergeUniqueCards(found, cards, limit = Number.POSITIVE_INFINITY) {
   return added;
 }
 
+function assertBossSearchTarget(actualUrl, expectedUrl) {
+  if (!expectedUrl || !actualUrl) return;
+  if (canonicalizeBossTargetUrl(actualUrl).url === canonicalizeBossTargetUrl(expectedUrl).url) return;
+  throw bossError("BOSS_SEARCH_SCOPE_CHANGED", "当前 BOSS 搜索条件与本轮目标不同，已停止以避免混合岗位。");
+}
+
 function reusableDetailMatches(job, cached) {
   if (!cached?.description) return false;
   return ["title", "company", "location", "salary", "experience", "education"].every((field) => {
@@ -2952,6 +2966,7 @@ function selectBossPreflightReadError(errors) {
     "BROWSER_TIMEOUT",
     "BROWSER_COMMAND_FAILED",
     "BOSS_SEARCH_PAGE_LOST",
+    "BOSS_SEARCH_SCOPE_CHANGED",
     "BOSS_DETAIL_PAGE_LOST"
   ];
   return priority.map((code) => errors.find((error) => error?.code === code)).find(Boolean)

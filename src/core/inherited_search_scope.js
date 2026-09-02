@@ -7,8 +7,17 @@ const REMOVED_PARAMS = new Set([
   "query", "page", "ka", "source", "from", "src",
   "trackId", "lid", "_", "timestamp"
 ]);
+const TARGET_REMOVED_PARAMS = new Set([...REMOVED_PARAMS].filter((name) => name !== "query"));
 
 function canonicalizeBossSearchTemplate(rawUrl) {
+  return canonicalizeBossSearchUrl(rawUrl, REMOVED_PARAMS);
+}
+
+function canonicalizeBossTargetUrl(rawUrl) {
+  return canonicalizeBossSearchUrl(rawUrl, TARGET_REMOVED_PARAMS);
+}
+
+function canonicalizeBossSearchUrl(rawUrl, removedParams) {
   let url;
   try {
     url = new URL(String(rawUrl || ""));
@@ -20,7 +29,7 @@ function canonicalizeBossSearchTemplate(rawUrl) {
   }
   const grouped = new Map();
   for (const [name, value] of url.searchParams.entries()) {
-    if (REMOVED_PARAMS.has(name) || name.startsWith("utm_")) continue;
+    if (removedParams.has(name) || name.startsWith("utm_")) continue;
     if (!grouped.has(name)) grouped.set(name, []);
     grouped.get(name).push(String(value));
   }
@@ -157,6 +166,7 @@ function scopeError(code, message, cause) {
 
 module.exports = {
   canonicalizeBossSearchTemplate,
+  canonicalizeBossTargetUrl,
   buildInheritedSearchScope,
   assertInheritedAcquisitionScope,
   assertCompleteInheritedContext,
