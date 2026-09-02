@@ -29,7 +29,7 @@
 - Consumes: `extractHighRiskClaims()` and `normalizedMessageText()` from `src/core/message_draft_quality.js`.
 - Produces: `validateResumeActivationText({ sourceText, generatedText, finalText, candidateName, facts, answerMemories, suggestions }) -> { valid, errors, warnings }`.
 
-- [ ] **Step 1: Write failing contract tests**
+- [x] **Step 1: Write failing contract tests**
 
 ```js
 const result = validateResumeActivationText({
@@ -49,13 +49,13 @@ assert(result.errors.some((item) => item.code === "RESUME_FACT_UNSUPPORTED"));
 
 Add cases for removed name, changed phone/email/URL, new date/money/percentage/duration, facts supported by active answers, JD-only evidence rejected, empty/very short text, almost unchanged warning, 130% length warning and extra user edit warning.
 
-- [ ] **Step 2: Run the test and verify RED**
+- [x] **Step 2: Run the test and verify RED**
 
 Run: `node tests/resume_optimization_contract_smoke.js`
 
 Expected: FAIL because `validateResumeActivationText` is not exported.
 
-- [ ] **Step 3: Implement source identity and placeholder checks**
+- [x] **Step 3: Implement source identity and placeholder checks**
 
 ```js
 const PLACEHOLDER_PATTERNS = [
@@ -68,7 +68,7 @@ const PLACEHOLDER_PATTERNS = [
 
 Extract source phone, email and URL tokens using shared high-risk claim parsing. Every source token must still occur after normalization. If `candidateName` occurs in the source, it must remain in the final text.
 
-- [ ] **Step 4: Implement unsupported structured-fact checks**
+- [x] **Step 4: Implement unsupported structured-fact checks**
 
 Build candidate evidence from source text plus current facts and active answer text. Extract claims from final text, ignore tokens already present in source, and require each new claim in candidate evidence. Never add evidence catalog entries with `kind: "job"` or `kind: "diagnosis"`.
 
@@ -81,7 +81,7 @@ if (comparableText(expectedGenerated) !== comparableText(generatedText)) {
 }
 ```
 
-- [ ] **Step 5: Implement warnings**
+- [x] **Step 5: Implement warnings**
 
 - `RESUME_NEARLY_UNCHANGED` when normalized trigram similarity to source is at least `0.98`.
 - `RESUME_LENGTH_INCREASED` when non-whitespace final length exceeds source by more than 30%.
@@ -89,7 +89,7 @@ if (comparableText(expectedGenerated) !== comparableText(generatedText)) {
 
 Warnings never set `valid` to false.
 
-- [ ] **Step 6: Run the contract test and commit**
+- [x] **Step 6: Run the contract test and commit**
 
 Run: `node tests/resume_optimization_contract_smoke.js`
 
@@ -112,7 +112,7 @@ git commit -m "feat: validate complete optimized resumes"
 - Extends: `dashboard()` with `selectedIntegrity`.
 - Throws: `RESUME_ACTIVATION_INTEGRITY_FAILED` with public `issues` when activation errors are present.
 
-- [ ] **Step 1: Write failing service tests**
+- [x] **Step 1: Write failing service tests**
 
 ```js
 const saved = service.saveDraft({ profileId, draftId, finalText: nearlyUnchanged });
@@ -129,13 +129,13 @@ assert.equal(listFunnelStrategyRounds(db, { profileId, planId }).length, roundsB
 
 Add a successful activation with warnings and verify it still creates exactly one version and one active strategy round.
 
-- [ ] **Step 2: Run the service test and verify RED**
+- [x] **Step 2: Run the service test and verify RED**
 
 Run: `node tests/resume_optimization_service_smoke.js`
 
 Expected: FAIL because the service returns no integrity result and activation does not check it.
 
-- [ ] **Step 3: Add one private context builder**
+- [x] **Step 3: Add one private context builder**
 
 ```js
 function integrityFor(draft, finalText) {
@@ -159,11 +159,11 @@ function integrityFor(draft, finalText) {
 
 Do not accept evidence or source text from the request body.
 
-- [ ] **Step 4: Integrate save, dashboard and activate**
+- [x] **Step 4: Integrate save, dashboard and activate**
 
 Save the final text first through the existing storage method, then return `{ ...saved, integrity }`. Dashboard computes `selectedIntegrity` from the selected draft's current final text. Activation computes integrity from the submitted click-time text before calling `activateResumeOptimization`; on error attach only bounded public issue objects.
 
-- [ ] **Step 5: Run the service test and commit**
+- [x] **Step 5: Run the service test and commit**
 
 Run: `node tests/resume_optimization_service_smoke.js && node tests/resume_optimization_store_smoke.js`
 
@@ -179,14 +179,14 @@ git commit -m "feat: gate optimized resume activation"
 **Files:**
 - Modify: `src/dashboard/pages/resume_optimization.js`
 - Modify: `src/dashboard/server.js`
-- Modify: `src/dashboard/assets/components.css`
+- Modify: `src/dashboard/assets/roleflow.css`
 - Modify: `tests/dashboard_resume_optimization_smoke.js`
 
 **Interfaces:**
 - Consumes: `dashboard.selectedIntegrity` and JSON save response `{ ok, integrity }`.
 - Produces: inline `[data-resume-integrity]` error/warning list; activation failure JSON contains user-readable issues.
 
-- [ ] **Step 1: Write failing page and client tests**
+- [x] **Step 1: Write failing page and client tests**
 
 ```js
 assert.match(page.body, /这份草稿与原简历非常接近/);
@@ -196,13 +196,13 @@ assert.doesNotMatch(page.body, /0\.98|30%|RESUME_NEARLY_UNCHANGED/);
 
 Simulate autosave returning warnings and assert the inline region updates. Simulate activation returning `RESUME_ACTIVATION_INTEGRITY_FAILED` and assert the button is re-enabled, exact user message appears, the page does not navigate and no confirmation dialog is created.
 
-- [ ] **Step 2: Run the page test and verify RED**
+- [x] **Step 2: Run the page test and verify RED**
 
 Run: `node tests/dashboard_resume_optimization_smoke.js`
 
 Expected: FAIL because integrity messages are not rendered or returned.
 
-- [ ] **Step 3: Render stable public copy**
+- [x] **Step 3: Render stable public copy**
 
 Map codes on the server/page boundary:
 
@@ -219,11 +219,11 @@ const INTEGRITY_MESSAGES = Object.freeze({
 
 Do not send source text, claim tokens, evidence text or model suggestions in an error response.
 
-- [ ] **Step 4: Return integrity from autosave and activation errors**
+- [x] **Step 4: Return integrity from autosave and activation errors**
 
 `handleResumeOptimizationSave` returns `{ ok: true, integrity }`. The activation handler catches only `RESUME_ACTIVATION_INTEGRITY_FAILED` and returns 409 JSON when called by `fetch`; unrelated errors continue to the existing error boundary. The client waits for pending autosaves, submits click-time `finalText`, and navigates only on success.
 
-- [ ] **Step 5: Run page tests and commit**
+- [x] **Step 5: Run page tests and commit**
 
 Run: `node tests/dashboard_resume_optimization_smoke.js && node tests/resume_optimization_service_smoke.js`
 
@@ -240,7 +240,7 @@ git commit -m "feat: explain resume integrity before activation"
 - Modify: `docs/NEXT_PHASE.md`
 - Modify: `docs/PROJECT_HANDOFF.md`
 
-- [ ] **Step 1: Run the complete resume gate**
+- [x] **Step 1: Run the complete resume gate**
 
 ```powershell
 node tests/message_draft_quality_smoke.js
@@ -255,11 +255,11 @@ git status --short
 
 Expected: focused tests print `ok`; full suite reports the current exact total; diff check has no output.
 
-- [ ] **Step 2: Update current documentation**
+- [x] **Step 2: Update current documentation**
 
 Record blocking versus warning behavior, lack of second confirmation, exact validation results, no historical rewrite and real-platform non-access.
 
-- [ ] **Step 3: Commit documentation**
+- [x] **Step 3: Commit documentation**
 
 ```powershell
 git add docs/NEXT_PHASE.md docs/PROJECT_HANDOFF.md
