@@ -197,7 +197,7 @@ RoleFlow 是面向普通求职者的本地岗位筛选和投递决策助手。�
 - The private full-chain benchmark is a merge gate, not a daily scanning command.
 - Real inputs and outputs never belong in Git.
 
-- v1.1.0 注册 108 项离线检查，v1.2.0 注册 131 项，v1.2.1 注册 132 项，v1.2.2 候选注册 132 项；每次发布必须在标签所指精确提交上重新全部通过。启动边界测试使用注入的进程与 HTTP 探针，不再创建假的 `msedge.exe`。
+- v1.1.0 注册 108 项离线检查，v1.2.0 注册 131 项，v1.2.1 注册 132 项，v1.2.2 注册 132 项；每次发布必须在标签所指精确提交上重新全部通过。启动边界测试使用注入的进程与 HTTP 探针，不再创建假的 `msedge.exe`。
 - 31 条脱敏离线 fixture 通过；冻结真实 20 条岗位池必须另走私有 runner 验收，
   不得用离线 fixture 冒充真实模型结论。
 - 主数据库备份后迁移，`PRAGMA quick_check` 为 `ok`，岗位和人工决策数量不下降。
