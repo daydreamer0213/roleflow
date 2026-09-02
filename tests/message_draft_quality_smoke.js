@@ -160,6 +160,10 @@ for (const unsupportedCandidateClaim of [
   "我有 100 个优质客户。",
   "我有 100 个软件项目。",
   "我有 100 个落地项目。",
+  "解决了 100 个客户问题。",
+  "我解决过 100 个客户问题。",
+  "累计解决 100 个客户问题。",
+  "我有 100 个客户问题处理经验。",
   "我做过 100 个项目。",
   "100 个项目均已完成。"
 ]) {
@@ -171,5 +175,12 @@ for (const unsupportedCandidateClaim of [
   assert.equal(result.valid, false, unsupportedCandidateClaim);
   assert(result.errors.some((item) => item.kind === "numeric_achievement"));
 }
+
+const supportedSolvedProblems = assessMessageDraftQuality({
+  text: "累计解决 100 个客户问题。",
+  recentTexts: [],
+  evidenceTexts: ["处理过 100 个客户问题。"]
+});
+assert.equal(supportedSolvedProblems.valid, true, JSON.stringify(supportedSolvedProblems.errors));
 
 console.log("message_draft_quality_smoke ok");

@@ -47,16 +47,17 @@ function extractHighRiskClaims(text) {
 function likelyCandidateNumericAchievement(value) {
   const text = String(value || "");
   const quantity = "\\d+(?:\\.\\d+)?\\s*(?:个|人|位|名|家|次|万|千|项|篇|条|单|场)";
-  const before = "提升|增长|降低|减少|服务|处理|覆盖|完成|负责|响应|支持|管理|维护|交付|产出|实现|达成|达到|优化|节省|新增|转化|获得|拥有|做过|带领|组织|策划|撰写|发布";
-  const after = "提升|增长|降低|减少|完成|响应|支持|管理|维护|交付|产出|实现|达成|达到|优化|节省|新增|转化|获得|带领|组织|策划|撰写|发布";
+  const before = "提升|增长|降低|减少|服务|处理|解决|覆盖|完成|负责|响应|支持|管理|维护|交付|产出|实现|达成|达到|优化|节省|新增|转化|获得|拥有|做过|带领|组织|策划|撰写|发布";
+  const after = "提升|增长|降低|减少|完成|处理|解决|响应|支持|管理|维护|交付|产出|实现|达成|达到|优化|节省|新增|转化|获得|带领|组织|策划|撰写|发布";
   const achievementBeforeQuantity = new RegExp(`(?:${before})[^，。；\\n\\d]{0,16}${quantity}`);
   const achievementAfterQuantity = new RegExp(`${quantity}[^，。；\\n]{0,16}(?:${after})`);
   const ownership = new RegExp(`有[^，。；\\n\\d]{0,8}${quantity}([^，。；\\n]{0,20})`).exec(text);
   const ownedObject = /客户|用户|项目|请求|调用|门店|店铺|商家|企业|公司|订单|合同|文章|视频|员工|成员/;
   const communicationObject = /问题|疑问|方向|岗位|职位|选项|选择|事情|建议|想法|顾虑|要求|条件/;
   const ownershipTail = String(ownership?.[1] || "");
-  const ownedAchievement = Boolean(ownership && ownedObject.test(ownershipTail)
-    && !communicationObject.test(ownershipTail));
+  const communicationOnly = communicationObject.test(ownershipTail)
+    && !/处理|解决|完成|经验|成果/.test(ownershipTail);
+  const ownedAchievement = Boolean(ownership && ownedObject.test(ownershipTail) && !communicationOnly);
   if (!achievementBeforeQuantity.test(text) && !achievementAfterQuantity.test(text) && !ownedAchievement) return false;
   const candidateContext = /我|本人|曾|过往|此前|累计|参与|主导|项目经历|工作经历/;
   const personalHistory = /本人|我(?:曾|之前|此前|过去|做过|参与|主导|负责过)|曾|过往|此前|累计|项目经历|工作经历/;
