@@ -12,7 +12,7 @@ const CLAIM_PATTERNS = Object.freeze({
   salary: /(?:期望|薪资|月薪|年薪)[^，。；\n]{0,12}(?:\d+(?:\.\d+)?\s*[KkWw万千]?)/g,
   percentage: /[^，。；\n]{0,12}\d+(?:\.\d+)?%[^，。；\n]{0,12}/g,
   duration: /[^，。；\n]{0,12}\d+(?:\.\d+)?\s*(?:年|个月|月|天)[^，。；\n]{0,12}/g,
-  numeric_achievement: /[^，。；\n]{0,12}\d+(?:\.\d+)?\s*(?:个|人|位|名|家|次|万|千|项|篇|条|单|场)[^，。；\n]{0,12}/g,
+  numeric_achievement: /[^，。；\n]{0,16}\d+(?:\.\d+)?\s*(?:个|人|位|名|家|次|万|千|项|篇|条|单|场)[^，。；\n]{0,24}/g,
   arrival: /(?:本周|下周|这周|今天|明天|后天|周[一二三四五六日天]|随时|立即|一周内|两周后|两周内|一个月内|\d+天后|\d+周后)[^，。；\n]{0,8}(?:到岗|入职)/g,
   interview_availability: /(?:本周|下周|今天|明天|后天|周[一二三四五六日天])[^，。；\n]{0,10}(?:可以|可|方便|有空)?[^，。；\n]{0,4}(?:面试|沟通)/g,
   overtime: /(?:不接受|不考虑|不能|无法|拒绝|可以接受|可以|接受|愿意)[^，。；\n]{0,4}(?:加班|大小周|单休)/g,
@@ -46,6 +46,12 @@ function extractHighRiskClaims(text) {
 
 function likelyCandidateNumericAchievement(value) {
   const text = String(value || "");
+  const candidateContext = /我|本人|曾|过往|此前|累计|参与|主导|项目经历|工作经历/;
+  const personalHistory = /本人|我(?:曾|之前|此前|过去|做过|参与|主导|负责过|解决过|处理过)|曾|过往|此前|累计|项目经历|工作经历/;
+  const employerContext = /岗位|职位|贵司|公司|团队|招聘方|您介绍/;
+  const inquiry = /想了解|想请问|请问|想请教|请教|咨询|如何|怎么|怎样|是否/;
+  const communicationObject = /问题|疑问|方向|岗位|职位|选项|选择|事情|建议|想法|顾虑|要求|条件/;
+  if (inquiry.test(text) && communicationObject.test(text) && !personalHistory.test(text)) return false;
   const quantity = "\\d+(?:\\.\\d+)?\\s*(?:个|人|位|名|家|次|万|千|项|篇|条|单|场)";
   const before = "提升|增长|降低|减少|服务|处理|解决|覆盖|完成|负责|响应|支持|管理|维护|交付|产出|实现|达成|达到|优化|节省|新增|转化|获得|拥有|做过|带领|组织|策划|撰写|发布";
   const after = "提升|增长|降低|减少|完成|处理|解决|响应|支持|管理|维护|交付|产出|实现|达成|达到|优化|节省|新增|转化|获得|带领|组织|策划|撰写|发布";
@@ -53,17 +59,13 @@ function likelyCandidateNumericAchievement(value) {
   const achievementAfterQuantity = new RegExp(`${quantity}[^，。；\\n]{0,16}(?:${after})`);
   const ownership = new RegExp(`有[^，。；\\n\\d]{0,8}${quantity}([^，。；\\n]{0,20})`).exec(text);
   const ownedObject = /客户|用户|项目|请求|调用|门店|店铺|商家|企业|公司|订单|合同|文章|视频|员工|成员/;
-  const communicationObject = /问题|疑问|方向|岗位|职位|选项|选择|事情|建议|想法|顾虑|要求|条件/;
   const ownershipTail = String(ownership?.[1] || "");
   const communicationOnly = communicationObject.test(ownershipTail)
     && !/处理|解决|完成|经验|成果/.test(ownershipTail);
   const ownedAchievement = Boolean(ownership && ownedObject.test(ownershipTail) && !communicationOnly);
   if (!achievementBeforeQuantity.test(text) && !achievementAfterQuantity.test(text) && !ownedAchievement) return false;
-  const candidateContext = /我|本人|曾|过往|此前|累计|参与|主导|项目经历|工作经历/;
-  const personalHistory = /本人|我(?:曾|之前|此前|过去|做过|参与|主导|负责过)|曾|过往|此前|累计|项目经历|工作经历/;
-  const employerContext = /岗位|职位|贵司|公司|团队|招聘方|您介绍/;
-  const inquiry = /想了解|想请问|请问|咨询|请教|方便介绍|能否介绍|可以介绍|麻烦介绍/;
-  if (/[吗么呢？?]/.test(text) && inquiry.test(text) && employerContext.test(text) && !personalHistory.test(text)) return false;
+  const employerInquiry = /想了解|想请问|请问|咨询|请教|方便介绍|能否介绍|可以介绍|麻烦介绍/;
+  if (/[吗么呢？?]/.test(text) && employerInquiry.test(text) && employerContext.test(text) && !personalHistory.test(text)) return false;
   if (/[吗么呢？?]/.test(text) && !candidateContext.test(text)) return false;
   if (employerContext.test(text) && !candidateContext.test(text)) return false;
   return true;
