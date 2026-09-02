@@ -5,6 +5,7 @@ const {
   openDb,
   createBatch,
   upsertJob,
+  listDecisionQueue,
   listReportJobs,
   archiveCandidateJob,
   restoreCandidateJob,
@@ -17,6 +18,11 @@ const db = openDb(":memory:");
 try {
   const own = seedScope(db, "own");
   const foreign = seedScope(db, "foreign");
+  const actionable = seedScope(db, "actionable");
+  assert.equal(listDecisionQueue(db, { planId: actionable.planId }).some((item) => item.id === actionable.jobId), true);
+  archiveCandidateJob(db, { ...actionable, archivedAt: NOW });
+  assert.equal(listDecisionQueue(db, { planId: actionable.planId }).some((item) => item.id === actionable.jobId), false,
+    "archived jobs must leave action-producing queues");
   db.prepare(`INSERT INTO candidate_job_states(
     profile_id, job_id, plan_id, status, note, updated_at
   ) VALUES (?, ?, ?, 'applied', '保持原状态', ?)`)

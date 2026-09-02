@@ -66,6 +66,9 @@ const {
   getCandidateMatchingContext,
   listDecisionPool,
   listDecisionQueue,
+  archiveCandidateJob,
+  restoreCandidateJob,
+  isCandidateJobArchived,
   recordCandidateJobEvent,
   recordRecommendationFeedback,
   saveCandidateFact,
@@ -1213,6 +1216,7 @@ function createDashboardServer({
       if (req.method === "POST" && url.pathname === "/api/communication-rebind") return handleCommunicationRebind(req, res, { db, logger, browserFactory, communicationBrowserRebinder, browserAuthority: frozenBrowserAuthority, assertBrowserRuntimeReady });
       if (req.method === "POST" && url.pathname === "/api/communication-resolve") return handleCommunicationResolve(req, res, db);
       if (req.method === "POST" && url.pathname === "/api/mark") return handlePost(req, res, (body, type) => handleMarkApi(db, body, type), { logger, requestId, action: "mark_job" });
+      if (req.method === "POST" && url.pathname === "/api/job-archive") return handleJobArchive(req, res, db);
       if (req.method === "POST" && url.pathname === "/api/follow-up") return handlePost(req, res, (body, type) => handleFollowUpApi(db, body, type), { logger, requestId, action: "add_follow_up" });
       if (req.method === "POST" && url.pathname === "/api/feedback") return handlePost(req, res, (body, type) => handleRecommendationFeedbackApi(db, body, type), { logger, requestId, action: "recommendation_feedback" });
       if (req.method === "POST" && url.pathname === "/api/communication") return handleCommunication(req, res, { db, modelConfig: getRuntimeModel("deep_analysis"), modelReady: modelReady("deep_analysis"), logger, requestId });
@@ -3463,6 +3467,7 @@ function parseFilters(searchParams) {
     fresh: searchParams.get("fresh") || "all",
     decision: searchParams.get("decision") || "all",
     q: (searchParams.get("q") || "").trim(),
+    archive: ["active", "only", "all"].includes(searchParams.get("archive")) ? searchParams.get("archive") : "active",
     planId: Number(searchParams.get("planId") || 0) || null,
     batch: numericBatch ? "batchId" : batchRaw,
     batchId: searchParams.get("batchId") ? Number(searchParams.get("batchId")) : numericBatch
@@ -3472,6 +3477,8 @@ function parseFilters(searchParams) {
 function filterJobs(jobs, filters) {
   const q = filters.q.toLowerCase();
   return jobs.filter((job) => {
+    if (filters.archive === "active" && job.archived) return false;
+    if (filters.archive === "only" && !job.archived) return false;
     if (filters.status !== "all") {
       const status = job.applicationStatus || "pending";
       if (status !== filters.status) return false;
@@ -3497,6 +3504,27 @@ function summarizeJobs(jobs, batchSummary) {
     else filtered.newJobs += 1;
   }
   return { ...batchSummary, filtered };
+}
+
+async function handleJobArchive(req, res, db) {
+  try {
+    const params = parseBody(await readBody(req), req.headers["content-type"] || "");
+    const keys = Object.keys(params).sort();
+    if (keys.length !== 4 || keys.join(",") !== "action,jobId,planId,profileId"
+      || keys.some((key) => Array.isArray(params[key]))) {
+      throw appError("JOB_ARCHIVE_REQUEST_INVALID", "归档请求无效，请从岗位记录重新操作。", { statusCode: 400 });
+    }
+    if (params.action === "archive") archiveCandidateJob(db, params);
+    else if (params.action === "restore") restoreCandidateJob(db, params);
+    else throw appError("JOB_ARCHIVE_ACTION_INVALID", "归档操作无效。", { statusCode: 400 });
+    return redirect(res, refererPath(req));
+  } catch (error) {
+    const statusCode = error?.code === "JOB_ARCHIVE_ACTIVE_BATCH" ? 409
+      : error?.code === "JOB_ARCHIVE_NOT_OWNED" ? 404
+        : 400;
+    const issue = publicError(error, { fallbackCode: "JOB_ARCHIVE_FAILED", statusCode });
+    return sendJson(res, issue.statusCode, { error: issue.message, errorCode: issue.code });
+  }
 }
 
 function handleMarkApi(db, rawBody, contentType = "application/json") {
@@ -3940,6 +3968,7 @@ async function handleCommunication(req, res, { db, modelConfig, modelReady, logg
     if (!profile) throw new Error("候选人画像不存在。");
     const job = listDecisionPool(db, { planId: plan.id }).find((item) => Number(item.id) === Number(params.jobId));
     if (!job) throw new Error("岗位不存在或不属于当前筛选方案。");
+    if (job.archived) throw new Error("岗位已归档，请先恢复后再生成沟通草稿。");
     const mode = ["greeting", "hr_reply", "follow_up"].includes(params.mode) ? params.mode : "greeting";
     if (mode === "greeting" && !canGenerateGreeting(job)) throw new Error("只有证据完整的主投岗位可以生成定制招呼语；其他岗位请使用 BOSS 通用招呼语。");
     if (mode === "follow_up" && job.applicationStatus !== "no_reply") throw new Error("只有已标记为“无回复待跟进”的岗位可以生成跟进文案。");
@@ -5703,10 +5732,12 @@ function renderCompactQueuePage({ db, plan, searchParams, outcomeAnalyticsPanel 
     .map((card) => ({ ...card, hasOpenMessageDraft: hasOpenMessageReplyDraft(db, card.profileId, card.id) }));
   const progressByJob = new Map(progressCards.map((card) => [Number(card.jobId), card]));
   const decisionJobs = listDecisionPool(db, { planId: plan.id })
+    .filter((job) => !job.archived)
     .map((job) => ({ ...job, progressCard: progressByJob.get(Number(job.id)) || null }));
   const knownJobIds = new Set(decisionJobs.map((job) => Number(job.id)));
   const directProgressJobs = progressCards
-    .filter((card) => card.planId === plan.id && card.job && !knownJobIds.has(Number(card.jobId)))
+    .filter((card) => card.planId === plan.id && card.job && !knownJobIds.has(Number(card.jobId))
+      && !isCandidateJobArchived(db, { profileId: card.profileId, jobId: card.jobId }))
     .map((card) => ({
       ...card.job,
       profileId: card.profileId,
@@ -5973,7 +6004,7 @@ function renderCompactDashboard(data) {
     ? `<section class="panel"><form method="post" action="/api/analyze-jobs"><input type="hidden" name="planId" value="${escapeAttr(filters.planId)}"><button class="apply">批量重试全部待分析岗位（${queue.counts.analysis_pending}）</button></form><p class="line">仅使用已保存的岗位详情，模型并发固定为 ${PRODUCT_POLICY.operations.modelAnalysis.retryConcurrency}，不会访问招聘网站。</p></section>`
     : "";
   return renderLegacyDashboardPage({ title, currentPath, todayPath, planId: filters.planId, stage: "岗位", body: `<style>
-body{margin:0;background:#f5f7f8;color:#1f2933;font-family:Segoe UI,Microsoft YaHei,sans-serif}main{max-width:1100px;margin:0 auto;padding:22px 18px 48px}nav{display:flex;gap:14px;margin-bottom:20px}a{color:#1265a8;text-decoration:none}a:hover{text-decoration:underline}h1{font-size:24px;margin:0 0 7px}.hint{color:#5b6773;margin:0 0 16px}.panel{background:#fff;border:1px solid #d8e0e6;border-radius:8px;padding:12px 14px;margin:12px 0}.pool-tabs{display:flex;flex-wrap:wrap;gap:8px}.pool-tabs+.pool-tabs{margin-top:9px}.pool-tab{padding:7px 10px;border:1px solid #ccd7df;border-radius:6px;background:#fff;color:#344450}.pool-tab.active{background:#e6f3f0;border-color:#68aa9b;color:#155f54;font-weight:700;text-decoration:none}.queue-summary{margin-top:10px;color:#5b6773;font-size:13px}.pager{display:flex;justify-content:center;align-items:center;gap:10px;margin-top:14px}.pager a,.pager span{padding:7px 10px;border:1px solid #ccd7df;border-radius:5px;background:#fff}.filters{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr)) auto;gap:8px}.filters input,.filters select,input,select{box-sizing:border-box;min-width:0;padding:8px;border:1px solid #b9c5ce;border-radius:5px;background:#fff}.job{background:#fff;border:1px solid #d7e0e6;border-radius:8px;padding:14px 16px;margin:10px 0}.job-top{display:flex;justify-content:space-between;gap:14px;align-items:flex-start}.job-title{font-size:16px;font-weight:700;line-height:1.35}.job-meta,.job-reason,.job-risk,.line{margin-top:7px;font-size:14px;line-height:1.45;color:#53616d}.job-reason{color:#27604f}.job-risk{color:#9a4b42}.decision{display:inline-block;white-space:nowrap;border:1px solid #d8e0e6;border-radius:999px;padding:4px 8px;font-size:12px;font-weight:700}.decision.primary{background:#e6f3f0;border-color:#86b9ad;color:#155f54}.decision.apply{background:#eef4fa;border-color:#9cbcdc;color:#245b87}.decision.caution{background:#fff6df;border-color:#ead29a;color:#825b13}.analysis_pending{background:#f1f3f5;border-color:#b9c3cc;color:#46535e}.refresh{background:#f5f0fd;border-color:#c8b8e6;color:#64419b}.not_recommended{background:#f9e9e7;border-color:#e5b3ae;color:#9b3f37}.quick-actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}.quick-actions select{max-width:190px}button{padding:7px 10px;cursor:pointer;border:1px solid #aab8c2;border-radius:5px;background:#fff;color:#25313a}.apply{background:#176b5b;border-color:#176b5b;color:#fff}.skip{color:#8a3a33}.details{margin-top:11px;border-top:1px solid #e4e9ed;padding-top:9px}.details summary{cursor:pointer;color:#4f6170;font-size:13px}.detail-body{margin-top:10px}.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.chip{border:1px solid #d8dee4;border-radius:999px;padding:3px 7px;font-size:12px;background:#f6f8fa}.risk{background:#f9e9e7;border-color:#e5b3ae}.jd{white-space:pre-wrap;background:#f7f9fa;border-left:3px solid #2a7185;padding:9px 10px;font-size:13px;line-height:1.55}.detail-actions,.follow{display:flex;flex-wrap:wrap;gap:8px;align-items:end;margin-top:10px}.detail-actions input,.follow input{flex:1 1 220px}textarea{box-sizing:border-box;width:100%;min-height:52px;margin-top:8px;padding:8px;border:1px solid #b9c5ce;border-radius:5px;background:#fafcfd}@media(max-width:760px){.filters{grid-template-columns:1fr 1fr}.job-top{display:block}.decision{margin-top:7px}}</style><main id="main-content">
+body{margin:0;background:#f5f7f8;color:#1f2933;font-family:Segoe UI,Microsoft YaHei,sans-serif}main{max-width:1100px;margin:0 auto;padding:22px 18px 48px}nav{display:flex;gap:14px;margin-bottom:20px}a{color:#1265a8;text-decoration:none}a:hover{text-decoration:underline}h1{font-size:24px;margin:0 0 7px}.hint{color:#5b6773;margin:0 0 16px}.panel{background:#fff;border:1px solid #d8e0e6;border-radius:8px;padding:12px 14px;margin:12px 0}.pool-tabs{display:flex;flex-wrap:wrap;gap:8px}.pool-tabs+.pool-tabs{margin-top:9px}.pool-tab{padding:7px 10px;border:1px solid #ccd7df;border-radius:6px;background:#fff;color:#344450}.pool-tab.active{background:#e6f3f0;border-color:#68aa9b;color:#155f54;font-weight:700;text-decoration:none}.queue-summary{margin-top:10px;color:#5b6773;font-size:13px}.pager{display:flex;justify-content:center;align-items:center;gap:10px;margin-top:14px}.pager a,.pager span{padding:7px 10px;border:1px solid #ccd7df;border-radius:5px;background:#fff}.filters{display:grid;grid-template-columns:repeat(7,minmax(105px,1fr)) auto;gap:8px}.filters input,.filters select,input,select{box-sizing:border-box;min-width:0;padding:8px;border:1px solid #b9c5ce;border-radius:5px;background:#fff}.job{background:#fff;border:1px solid #d7e0e6;border-radius:8px;padding:14px 16px;margin:10px 0}.job-top{display:flex;justify-content:space-between;gap:14px;align-items:flex-start}.job-title{font-size:16px;font-weight:700;line-height:1.35}.job-meta,.job-reason,.job-risk,.line{margin-top:7px;font-size:14px;line-height:1.45;color:#53616d}.job-reason{color:#27604f}.job-risk{color:#9a4b42}.decision{display:inline-block;white-space:nowrap;border:1px solid #d8e0e6;border-radius:999px;padding:4px 8px;font-size:12px;font-weight:700}.decision.primary{background:#e6f3f0;border-color:#86b9ad;color:#155f54}.decision.apply{background:#eef4fa;border-color:#9cbcdc;color:#245b87}.decision.caution{background:#fff6df;border-color:#ead29a;color:#825b13}.analysis_pending{background:#f1f3f5;border-color:#b9c3cc;color:#46535e}.refresh{background:#f5f0fd;border-color:#c8b8e6;color:#64419b}.not_recommended{background:#f9e9e7;border-color:#e5b3ae;color:#9b3f37}.quick-actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}.quick-actions select{max-width:190px}button{padding:7px 10px;cursor:pointer;border:1px solid #aab8c2;border-radius:5px;background:#fff;color:#25313a}.apply{background:#176b5b;border-color:#176b5b;color:#fff}.skip{color:#8a3a33}.details{margin-top:11px;border-top:1px solid #e4e9ed;padding-top:9px}.details summary{cursor:pointer;color:#4f6170;font-size:13px}.detail-body{margin-top:10px}.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.chip{border:1px solid #d8dee4;border-radius:999px;padding:3px 7px;font-size:12px;background:#f6f8fa}.risk{background:#f9e9e7;border-color:#e5b3ae}.jd{white-space:pre-wrap;background:#f7f9fa;border-left:3px solid #2a7185;padding:9px 10px;font-size:13px;line-height:1.55}.detail-actions,.follow{display:flex;flex-wrap:wrap;gap:8px;align-items:end;margin-top:10px}.detail-actions input,.follow input{flex:1 1 220px}textarea{box-sizing:border-box;width:100%;min-height:52px;margin-top:8px;padding:8px;border:1px solid #b9c5ce;border-radius:5px;background:#fafcfd}@media(max-width:760px){.filters{grid-template-columns:1fr 1fr}.job-top{display:block}.decision{margin-top:7px}}</style><main id="main-content">
 <h1>${escapeHtml(title)}</h1><p class="hint">${escapeHtml(hint)}${latestBatchId ? ` 主扫描批次 #${latestBatchId}` : ""}</p>
   ${queue ? renderCompactPoolTabs(queue, filters.planId, queue.profileId) : renderCompactFilters(filters)}${outcomeAnalyticsPanel}${analysisRetry}
 <section class="job-ledger" aria-label="岗位记录">${jobs.map((job) => renderCompactJob(job, filters)).join("") || "<section class=\"panel\">这个分组目前没有岗位。</section>"}</section>${queue ? renderCompactPager(queue, filters.planId) : ""}</main><script>async function copyGreeting(id){const el=document.getElementById(id);if(el)await navigator.clipboard.writeText(el.value);}</script>` });
@@ -6004,7 +6035,7 @@ function queueHref(planId, pool, scope, page) {
 }
 
 function renderCompactFilters(filters) {
-  return `<form class="panel filters" method="get" action="/jobs"><input type="hidden" name="planId" value="${escapeAttr(filters.planId || "")}">${select("status", filters.status, [["pending", "未处理"], ["review", "待确认"], ["later", "保留"], ["applied", "已投"], ["skipped", "跳过"], ["all", "全部"]])}${select("decision", filters.decision, [["all", "全部投递池"], ["primary", "主投"], ["apply", "可投"], ["caution", "慎投"], ["analysis_pending", "待语义分析"], ["refresh", "待刷新"], ["not_recommended", "不推荐"]])}${select("level", filters.level, [["all", "全部级别"], ["优先", "优先"], ["可投", "可投"], ["可冲", "可冲"], ["谨慎", "谨慎"], ["不建议", "不建议"]])}${select("fresh", filters.fresh, [["all", "新增+重复"], ["new", "本批新增"], ["repeated", "重复出现"]])}${select("batch", filters.batchId ? String(filters.batchId) : filters.batch, [["latest", "最新批次"], ["all", "全部历史"]])}<input name="q" value="${escapeAttr(filters.q || "")}" placeholder="搜索标题/公司/地点" aria-label="搜索岗位"><button>过滤</button></form>`;
+  return `<form class="panel filters" method="get" action="/jobs"><input type="hidden" name="planId" value="${escapeAttr(filters.planId || "")}">${select("status", filters.status, [["pending", "未处理"], ["review", "待确认"], ["later", "保留"], ["applied", "已投"], ["skipped", "跳过"], ["all", "全部"]])}${select("decision", filters.decision, [["all", "全部投递池"], ["primary", "主投"], ["apply", "可投"], ["caution", "慎投"], ["analysis_pending", "待语义分析"], ["refresh", "待刷新"], ["not_recommended", "不推荐"]])}${select("level", filters.level, [["all", "全部级别"], ["优先", "优先"], ["可投", "可投"], ["可冲", "可冲"], ["谨慎", "谨慎"], ["不建议", "不建议"]])}${select("fresh", filters.fresh, [["all", "新增+重复"], ["new", "本批新增"], ["repeated", "重复出现"]])}${select("archive", filters.archive, [["active", "未归档"], ["only", "只看已归档"], ["all", "全部归档状态"]])}${select("batch", filters.batchId ? String(filters.batchId) : filters.batch, [["latest", "最新批次"], ["all", "全部历史"]])}<input name="q" value="${escapeAttr(filters.q || "")}" placeholder="搜索标题/公司/地点" aria-label="搜索岗位"><button>过滤</button></form>`;
 }
 
 function renderCompactJob(job, filters) {
@@ -6029,10 +6060,11 @@ function renderCompactJobBase(job, filters) {
   const followUpAction = job.applicationStatus === "no_reply" ? `<form class="detail-actions" method="post" action="/api/communication">${jobContext}<input type="hidden" name="mode" value="follow_up"><button>生成一次跟进文案</button></form>` : "";
   const hrReplyAction = `<form class="follow" method="post" action="/api/communication">${jobContext}<input type="hidden" name="mode" value="hr_reply"><textarea name="hrMessage" placeholder="粘贴 HR 原话" aria-label="HR 原话" required></textarea><button>生成 HR 回复</button></form>`;
   const feedbackAction = `<form class="follow" method="post" action="/api/feedback${query}">${jobContext}${feedbackReasonSelect("", true)}<input name="note" placeholder="具体哪里推荐错了（可选）" aria-label="推荐反馈说明"><button>提交推荐反馈</button></form>`;
+  const archiveAction = `<form class="quick-actions" method="post" action="/api/job-archive">${jobContext}<button class="secondary" name="action" value="${job.archived ? "restore" : "archive"}">${job.archived ? "恢复" : "归档"}</button></form>`;
   const retryAnalysisAction = job.decisionBucket === "analysis_pending" ? `<form class="quick-actions" method="post" action="/api/analyze-job">${jobContext}<button>重试语义分析</button></form>` : "";
   const roleEvidenceSummary = renderRoleEvidenceSummary(analysis, "line", "div");
   const narrative = compactJobNarrative(job, { salaryLabel, risk });
-  return `<article class="job"><div class="job-top"><div><div class="job-title">${escapeHtml(job.title)}${job.url ? ` · <a href="${escapeAttr(job.url)}" target="_blank">打开岗位</a>` : ""}</div><div class="job-meta">${escapeHtml(job.company || "")} · ${escapeHtml(job.location || "")} · ${escapeHtml(salaryLabel)} · ${escapeHtml(experienceLabel)} · ${escapeHtml(compactActivityLabel(job))}${escapeHtml(status)}</div><div class="job-meta">${escapeHtml(compactSeenLabel(job, filters.latestMainBatchId))}</div></div><span class="decision ${escapeAttr(job.decisionBucket || "backup")}">${escapeHtml(compactDecisionLabel(job.decisionBucket))}</span></div><div class="job-reason"><strong>结论：</strong>${escapeHtml(narrative.conclusion)}</div><div class="line"><strong>岗位：</strong>${escapeHtml(narrative.role)}</div><div class="line"><strong>公司与机会：</strong>${escapeHtml(narrative.companyOpportunity)}</div><div class="line"><strong>匹配：</strong>${escapeHtml(narrative.fit)}</div><div class="line"><strong>薪资：</strong>${escapeHtml(narrative.salary)}</div><div class="job-risk"><strong>需要确认：</strong>${escapeHtml(narrative.risk)}</div>${retryAnalysisAction}${job.followUpNote ? `<div class="line"><strong>沟通记录：</strong>${escapeHtml(job.followUpNote)}</div>` : ""}<form class="quick-actions" method="post" action="/api/mark${query}">${jobContext}<button class="apply" name="status" value="applied">已投</button><button name="status" value="review">待确认</button><button name="status" value="later">7 天后再看</button><button class="skip" name="status" value="skipped">跳过</button></form><details class="details"><summary>查看 JD、沟通与完整记录</summary><div class="detail-body">${roleEvidenceSummary}<div class="line">决策来源：${escapeHtml(compactDecisionSource(analysis))} · 工作节奏：${escapeHtml(compactScheduleLabel(analysis))} · 推荐简历：${escapeHtml(analysis.recommendedResumeVersionName || analysis.recommendedResumeVersion || "待确认")} · 主推项目：${escapeHtml((analysis.primaryProjects || []).join("、") || "待确认")}</div><div class="chips">${chips(visibleRisks, "risk")}${chips(job.qualityTags, "tag")}</div><div class="jd">${escapeHtml(String(job.description || "暂无完整 JD").slice(0, 1500))}</div>${greetingAction}${followUpAction}${hrReplyAction}<form class="detail-actions" method="post" action="/api/mark${query}">${jobContext}<input name="note" placeholder="状态备注（可选）" aria-label="岗位状态备注"><button name="status" value="no_reply">无回复待跟进</button><button name="status" value="interview">约面</button><button name="status" value="rejected">拒绝</button><button name="status" value="invalid">岗位无效</button><button name="status" value="salary_mismatch">薪资不匹配</button></form><form class="follow" method="post" action="/api/follow-up${query}">${jobContext}<input name="note" placeholder="记录沟通进展" aria-label="沟通跟进备注"><button>记录备注</button></form>${feedbackAction}</div></details></article>`;
+  return `<article class="job"><div class="job-top"><div><div class="job-title">${escapeHtml(job.title)}${job.archived ? " · 已归档" : ""}${job.url ? ` · <a href="${escapeAttr(job.url)}" target="_blank">打开岗位</a>` : ""}</div><div class="job-meta">${escapeHtml(job.company || "")} · ${escapeHtml(job.location || "")} · ${escapeHtml(salaryLabel)} · ${escapeHtml(experienceLabel)} · ${escapeHtml(compactActivityLabel(job))}${escapeHtml(status)}</div><div class="job-meta">${escapeHtml(compactSeenLabel(job, filters.latestMainBatchId))}</div></div><span class="decision ${escapeAttr(job.decisionBucket || "backup")}">${escapeHtml(compactDecisionLabel(job.decisionBucket))}</span></div><div class="job-reason"><strong>结论：</strong>${escapeHtml(narrative.conclusion)}</div><div class="line"><strong>岗位：</strong>${escapeHtml(narrative.role)}</div><div class="line"><strong>公司与机会：</strong>${escapeHtml(narrative.companyOpportunity)}</div><div class="line"><strong>匹配：</strong>${escapeHtml(narrative.fit)}</div><div class="line"><strong>薪资：</strong>${escapeHtml(narrative.salary)}</div><div class="job-risk"><strong>需要确认：</strong>${escapeHtml(narrative.risk)}</div>${retryAnalysisAction}${job.followUpNote ? `<div class="line"><strong>沟通记录：</strong>${escapeHtml(job.followUpNote)}</div>` : ""}<form class="quick-actions" method="post" action="/api/mark${query}">${jobContext}<button class="apply" name="status" value="applied">已投</button><button name="status" value="review">待确认</button><button name="status" value="later">7 天后再看</button><button class="skip" name="status" value="skipped">跳过</button></form>${archiveAction}<details class="details"><summary>查看 JD、沟通与完整记录</summary><div class="detail-body">${roleEvidenceSummary}<div class="line">决策来源：${escapeHtml(compactDecisionSource(analysis))} · 工作节奏：${escapeHtml(compactScheduleLabel(analysis))} · 推荐简历：${escapeHtml(analysis.recommendedResumeVersionName || analysis.recommendedResumeVersion || "待确认")} · 主推项目：${escapeHtml((analysis.primaryProjects || []).join("、") || "待确认")}</div><div class="chips">${chips(visibleRisks, "risk")}${chips(job.qualityTags, "tag")}</div><div class="jd">${escapeHtml(String(job.description || "暂无完整 JD").slice(0, 1500))}</div>${greetingAction}${followUpAction}${hrReplyAction}<form class="detail-actions" method="post" action="/api/mark${query}">${jobContext}<input name="note" placeholder="状态备注（可选）" aria-label="岗位状态备注"><button name="status" value="no_reply">无回复待跟进</button><button name="status" value="interview">约面</button><button name="status" value="rejected">拒绝</button><button name="status" value="invalid">岗位无效</button><button name="status" value="salary_mismatch">薪资不匹配</button></form><form class="follow" method="post" action="/api/follow-up${query}">${jobContext}<input name="note" placeholder="记录沟通进展" aria-label="沟通跟进备注"><button>记录备注</button></form>${feedbackAction}</div></details></article>`;
 }
 
 function compactJobNarrative(job, { salaryLabel, risk }) {
@@ -6208,7 +6240,7 @@ function compactQuery(filters) {
 }
 
 function select(name, value, options) {
-  const labels = { status: "岗位状态", decision: "投递池", level: "岗位级别", fresh: "岗位新鲜度", batch: "批次范围" };
+  const labels = { status: "岗位状态", decision: "投递池", level: "岗位级别", fresh: "岗位新鲜度", archive: "归档状态", batch: "批次范围" };
   return `<select name="${escapeAttr(name)}"${labels[name] ? ` aria-label="${escapeAttr(labels[name])}"` : ""}>${options.map(([v, label]) => `<option value="${escapeAttr(v)}"${String(value) === String(v) ? " selected" : ""}>${escapeHtml(label)}</option>`).join("")}</select>`;
 }
 

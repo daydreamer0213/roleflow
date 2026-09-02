@@ -542,7 +542,7 @@ function hasUserApplicationStatus(job) {
 }
 
 function isCommunicationJobEligible(db, job) {
-  if (!job || !ALLOWED_BUCKETS.has(job.decisionBucket) || !isBossJobUrl(job.url) || hasUserApplicationStatus(job)) {
+  if (!job || job.archived || !ALLOWED_BUCKETS.has(job.decisionBucket) || !isBossJobUrl(job.url) || hasUserApplicationStatus(job)) {
     return false;
   }
   if ((job.qualityTags || []).some((tag) => COMMUNICATION_ELIGIBILITY_BLOCKERS.has(tag))) return false;

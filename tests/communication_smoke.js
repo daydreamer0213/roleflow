@@ -267,6 +267,23 @@ let server;
     assert(bulkJobs.every((job) => job.analysis.semanticStatus === "rule_only"));
     assert.strictEqual(db.prepare("SELECT keyword FROM batches ORDER BY id DESC LIMIT 1").get().keyword, "analysis-retry-bulk");
     assert.strictEqual(getLatestMainScanBatchId(db, { planId: saved.planId }), failedBatchId, "bulk analysis retry must not become the latest main scan");
+
+    const funnelCountBeforeArchive = Number(db.prepare("SELECT COUNT(*) AS count FROM candidate_funnel_entries WHERE profile_id = ?")
+      .get(saved.profileId).count);
+    const archivedResponse = await post(base, "/api/job-archive", {
+      action: "archive",
+      jobId,
+      profileId: saved.profileId,
+      planId: saved.planId
+    });
+    assert.strictEqual(archivedResponse.status, 303);
+    const archivedQueueHtml = await (await fetch(`${base}/queue?planId=${saved.planId}&pool=no_reply`)).text();
+    assert(!archivedQueueHtml.includes("AI应用开发工程师"), "archived jobs must leave communication action lists");
+    assert.strictEqual(
+      Number(db.prepare("SELECT COUNT(*) AS count FROM candidate_funnel_entries WHERE profile_id = ?").get(saved.profileId).count),
+      funnelCountBeforeArchive,
+      "archiving must not change funnel samples"
+    );
     console.log("communication_smoke ok");
   } finally {
     if (server) await new Promise((resolve) => server.close(resolve));

@@ -70,6 +70,7 @@ function listWorkflowInventory(db, { planId, now = new Date().toISOString() } = 
   const communicationStates = latestCommunicationStates(db, getSearchPlan(db, planId)?.profileId);
   const progressCards = progressCardsByJob(db, planId);
   return listDecisionPool(db, { planId })
+    .filter((job) => !job.archived)
     .map((job) => {
       const result = workflowEligibility(job, {
         now,
@@ -95,6 +96,7 @@ function listWorkflowReviewCandidates(db, workflowRunId, { now = new Date().toIS
   const communicationStates = latestCommunicationStates(db, workflow.profileId);
   const progressCards = progressCardsByJob(db, workflow.planId);
   const candidates = listDecisionPool(db, { planId: workflow.planId })
+    .filter((job) => !job.archived)
     .map((job) => {
       const communicationStatus = communicationStates.get(Number(job.id)) || "";
       if (VERIFIED_COMMUNICATION_STATUSES.has(communicationStatus)) return null;

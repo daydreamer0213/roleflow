@@ -40,7 +40,7 @@ function listDecisionQueue(db, { planId, limit = 15, buckets = null } = {}) {
   const now = new Date().toISOString();
   const wantedBuckets = Array.isArray(buckets) && buckets.length ? new Set(buckets) : null;
   return listDecisionPool(db, { planId: plan.id })
-    .filter((job) => isJobAwaitingAction(job, now) && decisionState(job) === "ready" && (!wantedBuckets || wantedBuckets.has(job.decisionBucket)))
+    .filter((job) => !job.archived && isJobAwaitingAction(job, now) && decisionState(job) === "ready" && (!wantedBuckets || wantedBuckets.has(job.decisionBucket)))
     .sort((a, b) => queueRank(a) - queueRank(b) || compareReportJobs(a, b))
     .slice(0, Math.max(1, Math.min(50, Number(limit) || 15)));
 }

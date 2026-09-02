@@ -45,6 +45,7 @@ const tests = [
   "message_reply_learning_smoke.js",
   "job_store_contract_smoke.js",
   "job_archive_store_smoke.js",
+  "dashboard_job_archive_smoke.js",
   "workflow_store_contract_smoke.js",
   "candidate_progress_storage_smoke.js",
   "funnel_threshold_policy_smoke.js",
