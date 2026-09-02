@@ -106,7 +106,7 @@ try {
     document: document("resume-v1", "A".repeat(6100)),
     searchPlan: plan()
   }));
-  assert.deepStrictEqual(initialSave.statements, ["BEGIN", "COMMIT"]);
+  assert.deepStrictEqual(initialSave.statements, ["BEGIN IMMEDIATE", "COMMIT"], "profile save must reserve its write slot before reading so concurrent dashboard work cannot invalidate the snapshot");
   const saved = initialSave.value;
   assert(saved.profileId > 0 && saved.profileVersionId > 0 && saved.resumeVersionId > 0 && saved.resumeDocumentId > 0 && saved.planId > 0);
   assert.strictEqual(storage.getCandidateProfile(db, saved.profileId).displayName, "Candidate One");
@@ -303,7 +303,7 @@ try {
     .map((table) => db.prepare(`SELECT count(*) AS count FROM ${table}`).get().count);
   db.exec("CREATE TRIGGER fail_late_profile_save BEFORE INSERT ON search_plans WHEN NEW.name = 'rollback' BEGIN SELECT RAISE(ABORT, 'forced rollback'); END");
   const rollback = observeTransaction(() => assert.throws(() => storage.saveProfileAnalysis(db, { profile: profile("Rollback Candidate"), document: document("rollback"), searchPlan: plan("rollback") }), /forced rollback/));
-  assert.deepStrictEqual(rollback.statements, ["BEGIN", "ROLLBACK"]);
+  assert.deepStrictEqual(rollback.statements, ["BEGIN IMMEDIATE", "ROLLBACK"]);
   assert.deepStrictEqual(["candidate_profiles", "resume_documents", "profile_versions", "candidate_resume_versions", "search_plans"]
     .map((table) => db.prepare(`SELECT count(*) AS count FROM ${table}`).get().count), countsBeforeRollback);
 

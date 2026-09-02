@@ -15,7 +15,7 @@ function saveProfileAnalysis(db, {
 }) {
   const now = nowIso();
   const displayName = safeDisplayName(requestedDisplayName || profile?.candidate?.name);
-  db.exec("BEGIN");
+  db.exec("BEGIN IMMEDIATE");
   try {
     let id = Number(profileId || 0);
     if (id && db.prepare("SELECT id FROM candidate_profiles WHERE id = ?").get(id)) {
