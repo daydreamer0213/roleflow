@@ -588,6 +588,16 @@ async function main() {
   assert.deepStrictEqual(scopedMemoryResult.usedMemoryIds, [20, 21, 23]);
   assert.deepStrictEqual(scopedMemoryAdapterInput.answerMemories.map((memory) => memory.id), [20, 21, 23], "answer memories must stay inside their saved scope");
 
+  const qualityMock = new MockModelAdapter();
+  const defaultMockDraft = await qualityMock.draftMessageGroup({
+    messages: [{ messageKey: "sha256:" + "6".repeat(64), text: "可以继续沟通吗？" }]
+  });
+  const revisedMockDraft = await qualityMock.draftMessageGroup({
+    messages: [{ messageKey: "sha256:" + "5".repeat(64), text: "可以继续沟通吗？" }],
+    draftQualityRevision: { reasonCodes: ["MESSAGE_DRAFT_RECENTLY_SIMILAR"] }
+  });
+  assert.notStrictEqual(revisedMockDraft.messages[0], defaultMockDraft.messages[0], "mock adapter must exercise the bounded revision path");
+
   console.log("message_reply_contract_smoke ok");
 }
 

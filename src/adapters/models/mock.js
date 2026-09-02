@@ -230,7 +230,7 @@ class MockModelAdapter {
     };
   }
 
-  async draftCommunication({ mode = "greeting", candidateProfile = {}, jobUnderstanding = {}, matchDecision = {}, hrMessage = "", userProvidedFacts = [] } = {}) {
+  async draftCommunication({ mode = "greeting", candidateProfile = {}, jobUnderstanding = {}, matchDecision = {}, hrMessage = "", userProvidedFacts = [], draftQualityRevision = null } = {}) {
     const kind = ["greeting", "hr_reply", "follow_up"].includes(mode) ? mode : "greeting";
     const jobEvidence = (matchDecision.evidence?.jd || jobUnderstanding.evidenceSnippets || []).slice(0, 2);
     const resumeEvidence = (matchDecision.evidence?.resume || (candidateProfile.skills || []).map((skill) => skill.name || skill)).slice(0, 2);
@@ -248,9 +248,14 @@ class MockModelAdapter {
     }
     const role = jobUnderstanding.businessScenario || jobUnderstanding.realRoleType || "岗位核心工作";
     const project = matchDecision.primaryProjects?.[0] || "相关项目";
+    const reviseOpening = draftQualityRevision?.reasonCodes?.includes("MESSAGE_DRAFT_RECENTLY_SIMILAR");
     const message = kind === "follow_up"
-      ? `您好，补充一下：我在${project}中有与${role}相关的实践，和岗位职责比较贴近。如岗位仍在推进，希望能进一步沟通。`
-      : `您好，我在${project}中做过与${role}相关的工作，和这个岗位的核心职责比较贴近，希望进一步沟通。`;
+      ? reviseOpening
+        ? `想补充说明一下，我在${project}中有与${role}相关的实践，和岗位职责比较贴近。如岗位仍在推进，希望能进一步沟通。`
+        : `您好，补充一下：我在${project}中有与${role}相关的实践，和岗位职责比较贴近。如岗位仍在推进，希望能进一步沟通。`
+      : reviseOpening
+        ? `想结合岗位再补充一点：我在${project}中做过与${role}相关的工作，和核心职责比较贴近。`
+        : `您好，我在${project}中做过与${role}相关的工作，和这个岗位的核心职责比较贴近，希望进一步沟通。`;
     return { kind, jobId: jobUnderstanding.jobId || "", messages: [message], missingFact: null, evidence: { jd: jobEvidence, resume: resumeEvidence }, tone: "自然、稳健、不夸大" };
   }
 
@@ -493,7 +498,8 @@ MockModelAdapter.prototype.draftMessageGroup = async function draftMessageGroup(
   job,
   messages = [],
   facts = [],
-  answerMemories = []
+  answerMemories = [],
+  draftQualityRevision = null
 } = {}) {
   const text = messages.map((message) => String(message.text || "")).join(" ");
   const descriptiveInterviewContext = /(?:线上面试|面试).{0,12}(?:能力|功能|系统|平台|管理|项目)/i.test(text);
@@ -566,7 +572,10 @@ MockModelAdapter.prototype.draftMessageGroup = async function draftMessageGroup(
     responseItems: required.map((id) => ({ id, kind: "question", required: true })),
     coverage: required.map((id) => ({ responseItemId: id, covered: factMap.has(id) })),
     missingFact: missing ? { key: missing, question: "请确认到岗相关事实" } : null,
-    messages: manualOnly || missing ? [] : [matchingMemory?.finalAnswer || "mock message reply draft"],
+    messages: manualOnly || missing ? [] : [matchingMemory?.finalAnswer
+      || (draftQualityRevision?.reasonCodes?.includes("MESSAGE_DRAFT_RECENTLY_SIMILAR")
+        ? "想进一步了解这个岗位目前最关注的工作重点。"
+        : "mock message reply draft")],
     progressUpdate: {
       stage: manualOnly || missing ? "needs_user_action" : "reply_ready",
       nextAction: "ignored provider text"
