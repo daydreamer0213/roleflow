@@ -34,6 +34,7 @@ function extractHighRiskClaims(text) {
   for (const [kind, pattern] of Object.entries(CLAIM_PATTERNS)) {
     for (const match of source.matchAll(pattern)) {
       const value = String(match[0] || "").trim().slice(0, 160);
+      if (kind === "numeric_achievement" && !likelyCandidateNumericAchievement(value)) continue;
       const key = `${kind}:${claimSignature({ kind, value })}`;
       if (!value || seen.has(key)) continue;
       seen.add(key);
@@ -41,6 +42,16 @@ function extractHighRiskClaims(text) {
     }
   }
   return claims;
+}
+
+function likelyCandidateNumericAchievement(value) {
+  const text = String(value || "");
+  const achievement = /提升|增长|降低|减少|服务|处理|覆盖|完成|负责|响应|支持|管理|维护|交付|产出|实现|达成|优化|节省|新增|转化|获得|拥有|带领|组织|策划|撰写|发布/;
+  if (!achievement.test(text)) return false;
+  const candidateContext = /我|本人|曾|过往|此前|累计|参与|主导|项目经历|工作经历/;
+  if (/[吗么呢？?]/.test(text) && !candidateContext.test(text)) return false;
+  if (/岗位|职位|贵司|招聘方|您介绍/.test(text) && !candidateContext.test(text)) return false;
+  return true;
 }
 
 function assessMessageDraftQuality({ text, recentTexts = [], evidenceTexts = [] } = {}) {

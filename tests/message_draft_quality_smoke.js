@@ -135,4 +135,17 @@ const supportedRequestCountParaphrase = assessMessageDraftQuality({
 assert.equal(supportedRequestCountParaphrase.valid, true,
   JSON.stringify(supportedRequestCountParaphrase.errors));
 
+for (const employerQuestion of [
+  "想了解贵司团队目前有 20 人吗？",
+  "这个岗位需要负责 3 个模块吗？",
+  "感谢您介绍这 2 个方向。"
+]) {
+  const result = assessMessageDraftQuality({
+    text: employerQuestion,
+    recentTexts: [],
+    evidenceTexts: []
+  });
+  assert.equal(result.valid, true, `${employerQuestion}: ${JSON.stringify(result.errors)}`);
+}
+
 console.log("message_draft_quality_smoke ok");
