@@ -95,6 +95,7 @@ function createResumeOptimizationService({ db, adapter = null, funnelAnalysisSer
     const generatedText = renderOptimizedResume(source.text, validated.suggestions);
     return createResumeOptimization(db, {
       profileId,
+      planId: plan.id,
       sourceResumeVersionId: source.id,
       targetDirection,
       targetJobIds: jobs.map((job) => job.id),
@@ -136,6 +137,9 @@ function createResumeOptimizationService({ db, adapter = null, funnelAnalysisSer
     const owned = getDraft({ profileId, draftId: draftId || optimizationId });
     if (!owned) throw serviceError("RESUME_OPTIMIZATION_NOT_FOUND", "定向简历草稿不存在");
     const plan = ownedPlan(owned.profileId, planId);
+    if (owned.planId !== plan.id) {
+      throw serviceError("RESUME_OPTIMIZATION_PLAN_MISMATCH", "这份定向简历不属于当前投递方案，请返回原方案启用");
+    }
     let integrity = null;
     if (owned.status === "draft") {
       integrity = integrityFor(owned, finalText);
@@ -163,10 +167,11 @@ function createResumeOptimizationService({ db, adapter = null, funnelAnalysisSer
     const profile = requiredId(profileId, "profileId");
     const plan = ownedPlan(profile, planId);
     const jobs = listDecisionPool(db, { planId: plan.id }).filter(isCompleteJob);
-    const drafts = listResumeOptimizations(db, profile, 30);
+    const drafts = listResumeOptimizations(db, profile, 30).filter((draft) => draft.planId === plan.id);
     const selectedDraft = draftId
       ? getResumeOptimization(db, { profileId: profile, optimizationId: draftId })
       : drafts[0] || null;
+    const scopedDraft = selectedDraft?.planId === plan.id ? selectedDraft : null;
     return {
       profile: getCandidateProfile(db, profile),
       plan,
@@ -174,10 +179,10 @@ function createResumeOptimizationService({ db, adapter = null, funnelAnalysisSer
       jobs,
       directions: Array.isArray(plan.plan?.directions) ? plan.plan.directions : [],
       drafts,
-      selectedDraft,
-      selectedJobs: selectedDraft ? rowsForJobIds(selectedDraft.targetJobIds) : [],
-      selectedIntegrity: selectedDraft?.status === "draft"
-        ? integrityFor(selectedDraft, selectedDraft.finalText)
+      selectedDraft: scopedDraft,
+      selectedJobs: scopedDraft ? rowsForJobIds(scopedDraft.targetJobIds) : [],
+      selectedIntegrity: scopedDraft?.status === "draft"
+        ? integrityFor(scopedDraft, scopedDraft.finalText)
         : null,
       funnelDiagnosis: compactDiagnosis(funnelAnalysis.getDashboard({ profileId: profile, planId: plan.id }))
     };

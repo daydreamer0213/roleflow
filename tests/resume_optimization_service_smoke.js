@@ -248,6 +248,22 @@ try {
     planId: owner.planId
   }).length, roundsBeforeFailure);
 
+  const otherOwnerPlanId = Number(db.prepare(`INSERT INTO search_plans(
+    profile_id, name, plan_json, is_active, created_at, updated_at
+  ) VALUES (?, 'Owner second plan', ?, 0, ?, ?)`)
+    .run(owner.profileId, JSON.stringify({ directions: ["AI 应用工程师"] }), now, now).lastInsertRowid);
+  assert.throws(() => service.activateDraft({
+    profileId: owner.profileId,
+    planId: otherOwnerPlanId,
+    draftId: draft.id,
+    finalText: saved.finalText
+  }), (error) => error.code === "RESUME_OPTIMIZATION_PLAN_MISMATCH");
+  assert.strictEqual(storage.listCandidateResumeVersions(db, owner.profileId).length, versionsBeforeFailure);
+  assert.strictEqual(storage.listFunnelStrategyRounds(db, {
+    profileId: owner.profileId,
+    planId: otherOwnerPlanId
+  }).length, 0);
+
   const activated = service.activateDraft({
     profileId: owner.profileId,
     planId: owner.planId,

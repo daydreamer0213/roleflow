@@ -42,6 +42,7 @@ try {
 
   assert.throws(() => storage.createResumeOptimization(db, {
     profileId: owner.profileId,
+    planId: owner.planId,
     sourceResumeVersionId: other.resumeVersionId,
     targetDirection: "AI 应用工程师",
     targetJobIds: [8],
@@ -64,6 +65,7 @@ try {
   const generatedText = "个人总结\n参与 Node.js 企业知识库开发\n技能：Node.js";
   const draft = storage.createResumeOptimization(db, {
     profileId: owner.profileId,
+    planId: owner.planId,
     sourceResumeVersionId: owner.resumeVersionId,
     targetDirection: "AI 应用工程师",
     targetJobIds: [12, 7, 12],
@@ -77,6 +79,7 @@ try {
   });
 
   assert.strictEqual(draft.profileId, owner.profileId);
+  assert.strictEqual(draft.planId, owner.planId);
   assert.strictEqual(draft.sourceResumeVersionId, owner.resumeVersionId);
   assert.strictEqual(draft.sourceResumeDocumentId, owner.resumeDocumentId);
   assert.strictEqual(draft.sourceText, sourceText);
@@ -187,6 +190,7 @@ try {
 
   const rollbackDraft = storage.createResumeOptimization(db, {
     profileId: owner.profileId,
+    planId: owner.planId,
     sourceResumeVersionId: owner.resumeVersionId,
     targetDirection: "AI 应用工程师",
     targetJobIds: [99],

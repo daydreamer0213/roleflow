@@ -1023,6 +1023,7 @@ const RESUME_OPTIMIZATION_SCHEMA = `
 CREATE TABLE IF NOT EXISTS resume_optimizations (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   profile_id INTEGER NOT NULL,
+  plan_id INTEGER,
   source_resume_version_id INTEGER NOT NULL,
   source_resume_document_id INTEGER NOT NULL,
   source_content_hash TEXT NOT NULL,
@@ -1046,6 +1047,7 @@ CREATE TABLE IF NOT EXISTS resume_optimizations (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   FOREIGN KEY(profile_id) REFERENCES candidate_profiles(id),
+  FOREIGN KEY(plan_id) REFERENCES search_plans(id),
   FOREIGN KEY(source_resume_version_id) REFERENCES candidate_resume_versions(id),
   FOREIGN KEY(source_resume_document_id) REFERENCES resume_documents(id),
   FOREIGN KEY(result_resume_document_id) REFERENCES resume_documents(id),
@@ -1360,8 +1362,60 @@ const MIGRATIONS = [
     apply(db) {
       db.exec(CANDIDATE_JOB_ARCHIVES_SCHEMA);
     }
+  },
+  {
+    version: 28,
+    name: "resume_optimization_plan_binding_v3",
+    apply(db) {
+      migrateResumeOptimizationPlanBinding(db);
+    }
   }
 ];
+
+function migrateResumeOptimizationPlanBinding(db) {
+  db.exec(RESUME_OPTIMIZATION_SCHEMA);
+  const columns = new Set(db.prepare("PRAGMA table_info(resume_optimizations)")
+    .all().map((column) => column.name));
+  if (!columns.has("plan_id")) {
+    db.exec("ALTER TABLE resume_optimizations ADD COLUMN plan_id INTEGER REFERENCES search_plans(id)");
+  }
+  const hasStrategyRounds = db.prepare(`SELECT 1 FROM sqlite_master
+    WHERE type = 'table' AND name = 'candidate_funnel_strategy_rounds'`).get();
+  if (hasStrategyRounds) {
+    db.exec(`UPDATE resume_optimizations
+      SET plan_id = (
+        SELECT rounds.plan_id FROM candidate_funnel_strategy_rounds rounds
+        WHERE rounds.id = resume_optimizations.strategy_round_id
+      )
+      WHERE plan_id IS NULL AND strategy_round_id IS NOT NULL`);
+  }
+  const hasObservations = db.prepare(`SELECT 1 FROM sqlite_master
+    WHERE type = 'table' AND name = 'job_observations'`).get();
+  const hasBatches = db.prepare(`SELECT 1 FROM sqlite_master
+    WHERE type = 'table' AND name = 'batches'`).get();
+  if (hasObservations && hasBatches) {
+    db.exec(`UPDATE resume_optimizations AS optimization
+      SET plan_id = (
+        SELECT MIN(batch.search_plan_id)
+        FROM json_each(optimization.target_job_ids_json) target
+        JOIN job_observations observation ON observation.job_id = CAST(target.value AS INTEGER)
+        JOIN batches batch ON batch.id = observation.batch_id
+        WHERE batch.profile_id = optimization.profile_id
+          AND batch.search_plan_id IS NOT NULL
+      )
+      WHERE optimization.plan_id IS NULL
+        AND 1 = (
+          SELECT COUNT(DISTINCT batch.search_plan_id)
+          FROM json_each(optimization.target_job_ids_json) target
+          JOIN job_observations observation ON observation.job_id = CAST(target.value AS INTEGER)
+          JOIN batches batch ON batch.id = observation.batch_id
+          WHERE batch.profile_id = optimization.profile_id
+            AND batch.search_plan_id IS NOT NULL
+        )`);
+  }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_resume_optimizations_plan
+    ON resume_optimizations(profile_id, plan_id, status, updated_at DESC, id DESC)`);
+}
 
 function migrateWorkflowHardBoundaryClassification(db) {
   const hasWorkflowTasks = db.prepare(`SELECT 1

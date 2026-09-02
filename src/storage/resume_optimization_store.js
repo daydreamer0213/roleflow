@@ -40,6 +40,7 @@ function optimizationRow(row) {
   return {
     id: Number(row.id),
     profileId: Number(row.profile_id),
+    planId: row.plan_id == null ? null : Number(row.plan_id),
     sourceResumeVersionId: Number(row.source_resume_version_id),
     sourceResumeDocumentId: Number(row.source_resume_document_id),
     sourceContentHash: row.source_content_hash,
@@ -68,6 +69,9 @@ function optimizationRow(row) {
 
 function createResumeOptimization(db, input = {}) {
   const profileId = positiveId(input.profileId, "profileId");
+  const planId = positiveId(input.planId, "planId");
+  const plan = db.prepare("SELECT id FROM search_plans WHERE id = ? AND profile_id = ?").get(planId, profileId);
+  if (!plan) throw storageError("RESUME_OPTIMIZATION_PLAN_NOT_OWNED", "搜索计划不存在或不属于当前候选人");
   const sourceResumeVersionId = positiveId(input.sourceResumeVersionId, "sourceResumeVersionId");
   const source = db.prepare(`SELECT rv.id, rv.resume_document_id, rd.content_hash, rd.resume_text
     FROM candidate_resume_versions rv
@@ -85,6 +89,7 @@ function createResumeOptimization(db, input = {}) {
   const sourceContentHash = String(source.content_hash || sha256(sourceText));
   const contextHash = sha256(JSON.stringify({
     profileId,
+    planId,
     sourceResumeVersionId,
     sourceContentHash,
     targetDirection,
@@ -93,13 +98,14 @@ function createResumeOptimization(db, input = {}) {
   }));
   const now = nowIso();
   const result = db.prepare(`INSERT INTO resume_optimizations(
-    profile_id, source_resume_version_id, source_resume_document_id,
+    profile_id, plan_id, source_resume_version_id, source_resume_document_id,
     source_content_hash, source_text, target_direction, target_job_ids_json, context_hash,
     evidence_json, headline, suggestions_json, generated_text, final_text, draft_format, status,
     result_resume_document_id, result_resume_version_id, model_identity_json,
     strategy_round_id, activated_at, created_at, updated_at
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'whole_draft', 'draft', NULL, NULL, ?, NULL, NULL, ?, ?)`).run(
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'whole_draft', 'draft', NULL, NULL, ?, NULL, NULL, ?, ?)`).run(
     profileId,
+    planId,
     sourceResumeVersionId,
     Number(source.resume_document_id),
     sourceContentHash,
@@ -166,6 +172,9 @@ function activateResumeOptimization(db, input = {}) {
     const row = db.prepare("SELECT * FROM resume_optimizations WHERE id = ? AND profile_id = ?")
       .get(optimizationId, profileId);
     if (!row) throw storageError("RESUME_OPTIMIZATION_NOT_FOUND", "定向简历草稿不存在");
+    if (Number(row.plan_id || 0) !== planId) {
+      throw storageError("RESUME_OPTIMIZATION_PLAN_MISMATCH", "这份定向简历不属于当前投递方案，请返回原方案启用");
+    }
     if (row.status === "activated") {
       if (row.final_text !== requestedFinalText) {
         throw storageError("RESUME_OPTIMIZATION_CLOSED", "已启用的定向简历不能再修改");
