@@ -21,6 +21,7 @@ const {
   withdrawCandidateAnswerMemory,
   listCandidateFactRevisions,
   deleteCandidateFact,
+  closeOpenMessageReplyDraftsByIntent,
   closeMessageReplyDrafts
 } = messageLearningStore;
 const workflowStore = require("../storage/workflow_store");
@@ -2225,6 +2226,7 @@ module.exports = {
   withdrawCandidateAnswerMemory,
   listCandidateFactRevisions,
   deleteCandidateFact,
+  closeOpenMessageReplyDraftsByIntent,
   closeMessageReplyDrafts,
   saveMessageInboundContext: messageReplySendStore.saveMessageInboundContext,
   getMessageInboundContext: messageReplySendStore.getMessageInboundContext,

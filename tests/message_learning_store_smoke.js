@@ -9,6 +9,7 @@ const {
   listCandidateAnswerMemories,
   withdrawCandidateAnswerMemory,
   listCandidateFactRevisions,
+  closeOpenMessageReplyDraftsByIntent,
   closeMessageReplyDrafts,
   saveMessageInboundContext,
   getMessageInboundContext,
@@ -367,6 +368,50 @@ try {
 
   const openBeforeClose = listOpenMessageReplyDrafts(db, { profileId: fixture.profileId });
   assert(openBeforeClose.some((draft) => draft.id === drafts[1].id), "copied unchanged draft remains available");
+  const followUpGroupKey = digest("follow-up-group");
+  const followUpDraft = recordMessageReplyDrafts(db, {
+    profileId: fixture.profileId,
+    cardId: fixture.cardId,
+    jobId: fixture.jobId,
+    messageGroupKey: followUpGroupKey,
+    questionSummary: "该岗位已等待回复，可以礼貌跟进。",
+    messageIntent: "follow_up",
+    messageCategory: "other",
+    messages: ["您好，想确认一下这个岗位目前是否仍在推进。"],
+    createdAt: "2026-08-28T01:09:56.000Z"
+  })[0];
+  saveMessageInboundContext(db, {
+    profileId: fixture.profileId,
+    cardId: fixture.cardId,
+    messageGroupKey: followUpGroupKey,
+    conversationKey: digest("follow-up-conversation"),
+    sourceJobId: `boss:learning-${fixture.jobId}`,
+    lastMessageId: "378917037748761",
+    messageIntent: "follow_up",
+    messageCategory: "other",
+    inboundMessages: [{ kind: "text", text: "您好，想了解这个岗位。" }],
+    manualActions: [],
+    createdAt: "2026-08-28T01:09:56.000Z",
+    updatedAt: "2026-08-28T01:09:56.000Z"
+  });
+  assert.strictEqual(closeOpenMessageReplyDraftsByIntent(db, {
+    profileId: fixture.profileId,
+    cardId: fixture.cardId,
+    messageIntent: "follow_up",
+    closedAt: "2026-08-28T01:09:57.000Z"
+  }), 1, "intent-scoped close must close only the open follow-up draft");
+  assert.strictEqual(getMessageReplyDraft(db, {
+    profileId: fixture.profileId,
+    draftId: followUpDraft.id
+  }).closedAt, "2026-08-28T01:09:57.000Z");
+  assert(openBeforeClose.some((draft) => draft.id === drafts[1].id));
+  assert(listOpenMessageReplyDrafts(db, { profileId: fixture.profileId })
+    .some((draft) => draft.id === drafts[1].id), "ordinary reply drafts must remain open");
+  assert.strictEqual(getMessageInboundContext(db, {
+    profileId: fixture.profileId,
+    cardId: fixture.cardId,
+    messageGroupKey: followUpGroupKey
+  }), null, "closing the last follow-up draft must purge only its snapshot");
   closeMessageReplyDrafts(db, {
     profileId: fixture.profileId,
     cardId: fixture.cardId,

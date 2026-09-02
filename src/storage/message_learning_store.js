@@ -20,7 +20,7 @@ function recordMessageReplyDrafts(db, input = {}) {
     : [];
   assertDraftOwner(db, { profileId, cardId, jobId });
   if (!messages.length) return [];
-  return immediateTransaction(db, () => {
+  return storeTransaction(db, () => {
     const insert = db.prepare(`INSERT INTO message_reply_drafts(
       profile_id, card_id, job_id, message_group_key, draft_index,
       question_summary, message_intent, message_category,
@@ -314,6 +314,31 @@ function closeMessageReplyDrafts(db, {
   });
 }
 
+function closeOpenMessageReplyDraftsByIntent(db, {
+  profileId,
+  cardId,
+  messageIntent,
+  closedAt = nowIso()
+} = {}) {
+  const profile = positiveInteger(profileId, "profileId");
+  const card = positiveInteger(cardId, "cardId");
+  const intent = inlineText(messageIntent, 80);
+  const at = isoText(closedAt, "closedAt");
+  if (!intent) throw new TypeError("messageIntent is required");
+  if (!db.prepare(`SELECT id FROM candidate_progress_cards
+    WHERE id = ? AND profile_id = ?`).get(card, profile)) {
+    throw storageError("MESSAGE_REPLY_DRAFT_OWNER_INVALID", "message reply draft owner is invalid");
+  }
+  return storeTransaction(db, () => {
+    const changes = Number(db.prepare(`UPDATE message_reply_drafts
+      SET closed_at = COALESCE(closed_at, ?), updated_at = ?
+      WHERE profile_id = ? AND card_id = ? AND message_intent = ? AND closed_at IS NULL`)
+      .run(at, at, profile, card, intent).changes);
+    purgeClosedInboundContexts(db, { profileId: profile, cardId: card });
+    return changes;
+  });
+}
+
 function projectCandidateFact(db, profileId, factKey, projectedAt) {
   const revision = db.prepare(`SELECT r.*
     FROM candidate_fact_revisions r
@@ -549,6 +574,10 @@ function isoText(value, label) {
   return new Date(text).toISOString();
 }
 
+function storeTransaction(db, work) {
+  return db.isTransaction ? work() : immediateTransaction(db, work);
+}
+
 module.exports = {
   recordMessageReplyDrafts,
   getMessageReplyDraft,
@@ -561,5 +590,6 @@ module.exports = {
   listCandidateFactRevisions,
   recordCandidateFactValue,
   deleteCandidateFact,
+  closeOpenMessageReplyDraftsByIntent,
   closeMessageReplyDrafts
 };
