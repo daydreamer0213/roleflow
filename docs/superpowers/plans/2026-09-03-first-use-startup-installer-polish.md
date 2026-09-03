@@ -19,7 +19,7 @@
 - Modify: `tests/workspace_tabs_smoke.js`
 - Modify: `src/core/workspace_tabs.js`
 
-- [ ] **Step 1: 写失败测试，描述可恢复状态**
+- [x] **Step 1: 写失败测试，描述可恢复状态**
 
   将现有“所有非 ready 状态都不创建页面”的用例拆开：
 
@@ -27,13 +27,13 @@
   - `login_required`、`risk_control`、`browser_unavailable`、`not_ready`：仍不创建消息页。
   - 已有消息页时不得重复创建。
 
-- [ ] **Step 2: 运行定向测试，确认 RED**
+- [x] **Step 2: 运行定向测试，确认 RED**
 
   Run: `node tests/workspace_tabs_smoke.js`
 
   Expected: 新增用例失败，显示 `search_page_required` 分支没有创建消息页。
 
-- [ ] **Step 3: 最小实现**
+- [x] **Step 3: 最小实现**
 
   在 `prepareWorkspaceTabs()` 中把提前返回条件收窄为真正不可继续的状态；`search_page_required` 继续执行固定拓扑补齐，但保留原 readiness 结果：
 
@@ -48,13 +48,13 @@
 
   页面创建仍走现有 `createPage()`、同窗校验与后台行为，不引入第二套拓扑逻辑。
 
-- [ ] **Step 4: 运行定向测试，确认 GREEN**
+- [x] **Step 4: 运行定向测试，确认 GREEN**
 
   Run: `node tests/workspace_tabs_smoke.js`
 
   Expected: 全部通过。
 
-- [ ] **Step 5: 提交行为改动**
+- [x] **Step 5: 提交行为改动**
 
   ```powershell
   git add tests/workspace_tabs_smoke.js src/core/workspace_tabs.js
@@ -71,7 +71,7 @@
 - Reuse: `src/storage/candidate_store.js`
 - Reuse: `src/storage/onboarding_store.js`
 
-- [ ] **Step 1: 写失败测试覆盖真实首次使用缺口**
+- [x] **Step 1: 写失败测试覆盖真实首次使用缺口**
 
   新增或扩展测试，至少覆盖：
 
@@ -84,13 +84,13 @@
 
   测试注入一个立即执行但可观测的调度器，避免依赖真实计时。
 
-- [ ] **Step 2: 运行定向测试，确认 RED**
+- [x] **Step 2: 运行定向测试，确认 RED**
 
   Run: `node tests/onboarding_progress_ui_smoke.js`
 
   Expected: 当前实现找不到 onboarding run 时不会准备关键词，且没有自动复检，因此新增断言失败。
 
-- [ ] **Step 3: 最小实现候选选择与单次执行**
+- [x] **Step 3: 最小实现候选选择与单次执行**
 
   在 `createDashboardServer()` 内复用现有 profile/plan 读取方式：
 
@@ -108,7 +108,7 @@
 
   只有工作区为 `ready`，或为 `search_page_required` 且已有 `communicationTabId` 时，才进入准备。异常和失败不加入成功集合。
 
-- [ ] **Step 4: 成功后排队一次工作区复检**
+- [x] **Step 4: 成功后排队一次工作区复检**
 
   复用现有 `reconcileWorkspace()`，通过可注入的零延迟调度器在当前浏览器任务完成后调用：
 
@@ -123,7 +123,7 @@
 
   `initial_search_prepared` 不属于 catch-up 触发原因，避免递归；不得在 `runBrowserRead()` 内同步嵌套另一个 `runBrowserRead()`。
 
-- [ ] **Step 5: 保留不覆盖用户选择的既有契约**
+- [x] **Step 5: 保留不覆盖用户选择的既有契约**
 
   确认 `prepareInitialSearchPage()` 仍满足：
 
@@ -133,7 +133,7 @@
 
   如既有用例已覆盖，不重复添加低价值测试。
 
-- [ ] **Step 6: 运行相关测试，确认 GREEN**
+- [x] **Step 6: 运行相关测试，确认 GREEN**
 
   Run:
 
@@ -145,7 +145,7 @@
 
   Expected: 全部通过；准备失败仍能重试，准备成功只复检一次。
 
-- [ ] **Step 7: 提交首次启动编排改动**
+- [x] **Step 7: 提交首次启动编排改动**
 
   ```powershell
   git add tests/onboarding_progress_ui_smoke.js src/dashboard/server.js
@@ -159,7 +159,7 @@
 - Modify: `installer/RoleFlow.iss`
 - Verify: `tests/windows_installer_smoke.js`
 
-- [ ] **Step 1: 修改 Inno Setup 原生配置**
+- [x] **Step 1: 修改 Inno Setup 原生配置**
 
   在 `[Setup]` 中加入：
 
@@ -170,7 +170,7 @@
 
   默认仍为 `%LOCALAPPDATA%\Programs\RoleFlow`；升级用户默认展示上次路径，但可以点“浏览”修改。
 
-- [ ] **Step 2: 运行安装器离线 smoke**
+- [x] **Step 2: 运行安装器离线 smoke**
 
   Run: `node tests/windows_installer_smoke.js`
 
@@ -178,7 +178,7 @@
 
   注：目录页是否可见属于 Inno Setup 原生行为，不添加只匹配两行文本的伪行为测试；最终通过编译成功和人工安装页验收确认。
 
-- [ ] **Step 3: 提交安装器配置**
+- [x] **Step 3: 提交安装器配置**
 
   ```powershell
   git add installer/RoleFlow.iss
@@ -196,7 +196,7 @@
 - Update: `docs/superpowers/specs/2026-09-03-first-use-startup-installer-polish-design.md`
 - Update: `docs/superpowers/plans/2026-09-03-first-use-startup-installer-polish.md`
 
-- [ ] **Step 1: 用本地页面和 D 盘测试资料测量冷/热启动**
+- [x] **Step 1: 用本地页面和 D 盘测试资料测量冷/热启动**
 
   使用独立测试 profile 和本地页面记录：
 
@@ -207,11 +207,11 @@
 
   不读取真实 BOSS 页面内容，不清理用户 profile。
 
-- [ ] **Step 2: 仅在证据充分时做单变量 A/B**
+- [x] **Step 2: 仅在证据充分时做单变量 A/B**
 
   保留后台可靠性相关参数。只有某一个候选参数在本地冷/热测试中有稳定、明显收益且不破坏现有 smoke，才修改 `startup-identity.ps1` 并先写失败测试；否则记录“首启浏览器自身冷加载，无代码改动”。
 
-- [ ] **Step 3: 运行关键回归**
+- [x] **Step 3: 运行关键回归**
 
   Run:
 
@@ -226,13 +226,13 @@
 
   Expected: 全部通过。
 
-- [ ] **Step 4: 运行新鲜完整门禁**
+- [x] **Step 4: 运行新鲜完整门禁**
 
   Run: `npm test`
 
   Expected: 所有离线检查通过；记录实际总数，不沿用旧结果。
 
-- [ ] **Step 5: 完成只读复审**
+- [x] **Step 5: 完成只读复审**
 
   逐项检查：
 
@@ -245,11 +245,11 @@
   - 安装升级仍默认上次目录且允许修改；
   - 没有引入无证据的 Edge 参数。
 
-- [ ] **Step 6: 更新权威文档和复选框**
+- [x] **Step 6: 更新权威文档和复选框**
 
   写清用户可见变化、根因、性能测量、验证总数、未验证前提、真实平台访问情况和后续人工验收入口。
 
-- [ ] **Step 7: 最终静态检查**
+- [x] **Step 7: 最终静态检查**
 
   Run:
 
@@ -260,14 +260,14 @@
 
   Expected: 无空白错误；只有本阶段预期文档改动尚未提交。
 
-- [ ] **Step 8: 提交最终文档**
+- [x] **Step 8: 提交最终文档**
 
   ```powershell
   git add docs/PROJECT_HANDOFF.md docs/NEXT_PHASE.md docs/superpowers/specs/2026-09-03-first-use-startup-installer-polish-design.md docs/superpowers/plans/2026-09-03-first-use-startup-installer-polish.md
   git commit -m "docs: close first-use startup polish"
   ```
 
-- [ ] **Step 9: 在精确最终 SHA 上复跑风险相称的最终验证**
+- [x] **Step 9: 在精确最终 SHA 上复跑风险相称的最终验证**
 
   Run:
 
