@@ -27,6 +27,7 @@ PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 LicenseFile={#StageDir}\LICENSE
+SetupIconFile={#StageDir}\assets\RoleFlow.ico
 OutputDir={#OutputDir}
 OutputBaseFilename=RoleFlow-Setup-{#AppVersion}
 Compression=lzma2/max
@@ -34,6 +35,7 @@ SolidCompression=yes
 WizardStyle=modern
 SetupLogging=yes
 UninstallDisplayName=RoleFlow
+UninstallDisplayIcon={app}\assets\RoleFlow.ico
 CloseApplications=no
 RestartApplications=no
 
@@ -48,10 +50,10 @@ Type: files; Name: "{app}\src\core\llm.js"
 Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\RoleFlow"; Filename: "{#PowerShellExe}"; Parameters: "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\scripts\launch-installed.ps1"""; WorkingDir: "{app}"
+Name: "{group}\RoleFlow"; Filename: "{#PowerShellExe}"; Parameters: "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\scripts\launch-installed.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\assets\RoleFlow.ico"
 Name: "{group}\RoleFlow 使用说明"; Filename: "{app}\README.md"; WorkingDir: "{app}"
 Name: "{group}\卸载 RoleFlow"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\RoleFlow"; Filename: "{#PowerShellExe}"; Parameters: "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\scripts\launch-installed.ps1"""; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{autodesktop}\RoleFlow"; Filename: "{#PowerShellExe}"; Parameters: "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\scripts\launch-installed.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\assets\RoleFlow.ico"; Tasks: desktopicon
 
 [Run]
 Filename: "{#PowerShellExe}"; Parameters: "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\scripts\launch-installed.ps1"""; Description: "启动 RoleFlow"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent runhidden

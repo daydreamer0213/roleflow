@@ -27,6 +27,7 @@ try {
 function runSuite() {
   const requiredFiles = [
     "BuildInstaller.bat",
+    "assets/RoleFlow.ico",
     "installer/RoleFlow.iss",
     "scripts/build-installer.ps1",
     "scripts/installed-self-check.ps1",
@@ -39,6 +40,7 @@ function runSuite() {
   }
 
   const inno = read("installer/RoleFlow.iss");
+  assertWindowsIcon(readBuffer("assets/RoleFlow.ico"));
   const innoLines = inno.split(/\r?\n/);
   assert.strictEqual(
     innoLines.filter((line) => line.trim() === "[InstallDelete]").length,
@@ -60,11 +62,13 @@ function runSuite() {
   assert.match(inno, /PrivilegesRequired=lowest/);
   assert.match(inno, /DefaultDirName=\{localappdata\}\\Programs\\RoleFlow/);
   assert.match(inno, /AppId=\{\{[0-9A-F-]+\}/i);
+  assert.match(inno, /SetupIconFile=\{#StageDir\}\\assets\\RoleFlow\.ico/i);
+  assert.match(inno, /UninstallDisplayIcon=\{app\}\\assets\\RoleFlow\.ico/i);
   assert.match(inno, /\[Icons\]/);
   assert.match(inno, /\{autodesktop\}/);
   assert.match(inno, /Name:\s*"desktopicon"[^\r\n]*Flags:\s*checkedonce/i);
-  assert.match(inno, /Name:\s*"\{autodesktop\}\\RoleFlow"[^\r\n]*launch-installed\.ps1[^\r\n]*WorkingDir:\s*"\{app\}"[^\r\n]*Tasks:\s*desktopicon/i);
-  assert.match(inno, /Name:\s*"\{group\}\\RoleFlow"[^\r\n]*launch-installed\.ps1[^\r\n]*WorkingDir:\s*"\{app\}"/i);
+  assert.match(inno, /Name:\s*"\{autodesktop\}\\RoleFlow"[^\r\n]*launch-installed\.ps1[^\r\n]*WorkingDir:\s*"\{app\}"[^\r\n]*IconFilename:\s*"\{app\}\\assets\\RoleFlow\.ico"[^\r\n]*Tasks:\s*desktopicon/i);
+  assert.match(inno, /Name:\s*"\{group\}\\RoleFlow"[^\r\n]*launch-installed\.ps1[^\r\n]*WorkingDir:\s*"\{app\}"[^\r\n]*IconFilename:\s*"\{app\}\\assets\\RoleFlow\.ico"/i);
   assert.match(inno, /Flags:\s*nowait\s+postinstall\s+skipifsilent\s+runhidden/i);
   assert.match(inno, /\{uninstallexe\}/);
   assert.match(inno, /launch-installed\.ps1/);
@@ -86,6 +90,7 @@ function runSuite() {
   assert.match(build, /installer\\RoleFlow\.iss/);
   assert.match(build, /Get-FileHash/);
   assert.match(build, /runtime\\node/);
+  assert.match(build, /assets\\RoleFlow\.ico/);
   assert.match(build, /\[switch\]\$StageOnly/);
   assert.doesNotMatch(build, /vendor\\edge-control-bridge/i);
 
@@ -660,6 +665,7 @@ function assertStandardInstallerStageBoundary() {
     const stageDir = stageMatch[1].trim();
     assert(fs.existsSync(path.join(stageDir, "scripts", "migrate-browser-profile.ps1")), "installer stage must include explicit profile migration");
     assert(fs.existsSync(path.join(stageDir, "scripts", "prepare-user-data.ps1")), "installer stage must include stable user-data preparation");
+    assertWindowsIcon(fs.readFileSync(path.join(stageDir, "assets", "RoleFlow.ico")));
     for (const relativePath of [
       "Install.bat",
       "Start.bat",
@@ -688,6 +694,23 @@ function assertStandardInstallerStageBoundary() {
     assert.deepStrictEqual(forbidden, [], `installer stage contains forbidden paths:\n${forbidden.join("\n")}`);
   } finally {
     removeUniqueChild(fixture.fixtureRoot, fixture.testRoot);
+  }
+}
+
+function assertWindowsIcon(icon) {
+  assert(icon.length >= 6, "RoleFlow icon must contain an ICO header");
+  assert.strictEqual(icon.readUInt16LE(0), 0, "RoleFlow icon reserved field must be zero");
+  assert.strictEqual(icon.readUInt16LE(2), 1, "RoleFlow icon must use the ICO image type");
+  const count = icon.readUInt16LE(4);
+  assert(count >= 4, "RoleFlow icon must include at least four Windows sizes");
+  const sizes = [];
+  for (let index = 0; index < count; index += 1) {
+    const offset = 6 + (index * 16);
+    assert(offset + 16 <= icon.length, "RoleFlow icon directory must be complete");
+    sizes.push(icon[offset] || 256);
+  }
+  for (const size of [16, 32, 48, 256]) {
+    assert(sizes.includes(size), `RoleFlow icon must include a ${size}px image`);
   }
 }
 
@@ -986,4 +1009,8 @@ function combined(result) {
 
 function read(relativePath) {
   return fs.readFileSync(path.join(root, relativePath), "utf8");
+}
+
+function readBuffer(relativePath) {
+  return fs.readFileSync(path.join(root, relativePath));
 }

@@ -115,6 +115,7 @@ foreach ($RelativePath in @(
   "CODE_OF_CONDUCT.md",
   "package.json",
   "package-lock.json",
+  "assets\RoleFlow.ico",
   "run.ps1"
 )) {
   Copy-ProjectItem -RelativePath $RelativePath
