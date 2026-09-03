@@ -319,7 +319,9 @@ async function prepareWorkspaceTabs({
         status: readiness.status
       });
     }
-    if (readiness?.status !== "ready") {
+    const canPrepareTopology = readiness?.status === "ready"
+      || readiness?.status === "search_page_required";
+    if (!canPrepareTopology) {
       return workspaceResult({
         guidanceTab: current.guidanceTab,
         communicationTab: current.fixedTabs?.communicationTab || null,

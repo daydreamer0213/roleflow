@@ -605,7 +605,51 @@ function dedicatedBrowser(initialTabs, createdTabs = []) {
   assert.deepStrictEqual(loginBrowser.state.createCalls, []);
   assert.deepStrictEqual(loginBrowser.state.frontCalls, [loginTab.id]);
 
-  for (const readiness of ["risk_control", "search_page_required", "browser_unavailable", "not_ready"]) {
+  const searchPageRequired = dedicatedBrowser([{ ...boss, active: true }], [
+    { id: "CDP-search-required-chat", windowId: 42, active: false },
+    { id: "CDP-search-required-dashboard", windowId: 42, active: false }
+  ]);
+  const searchPageRequiredResult = await prepareWorkspaceTabs({
+    browser: searchPageRequired,
+    dashboardUrl: dashboard.url,
+    bootstrapDedicatedTabs: true,
+    allowStartupGuidance: false,
+    inspectReadiness: async ({ guidanceTab, fixedTabs }) => {
+      assert.strictEqual(guidanceTab.id, boss.id);
+      assert.strictEqual(fixedTabs, null);
+      return { status: "search_page_required" };
+    }
+  });
+  assert.deepStrictEqual(searchPageRequiredResult, {
+    bossTabId: boss.id,
+    communicationTabId: "CDP-search-required-chat",
+    dashboardTabId: "CDP-search-required-dashboard",
+    windowId: 42,
+    status: "search_page_required"
+  });
+  assert.deepStrictEqual(searchPageRequired.state.createCalls, [
+    { openerTabId: boss.id, url: "https://www.zhipin.com/web/geek/chat" },
+    { openerTabId: boss.id, url: dashboard.url }
+  ]);
+  assert.deepStrictEqual(searchPageRequired.state.frontCalls, []);
+
+  const completeSearchPageRequired = dedicatedBrowser([
+    { ...boss, active: true },
+    { ...fixedCommunication, active: false },
+    { ...dashboard, active: false }
+  ]);
+  const completeSearchPageRequiredResult = await prepareWorkspaceTabs({
+    browser: completeSearchPageRequired,
+    dashboardUrl: dashboard.url,
+    bootstrapDedicatedTabs: true,
+    allowStartupGuidance: false,
+    inspectReadiness: async () => ({ status: "search_page_required" })
+  });
+  assert.strictEqual(completeSearchPageRequiredResult.status, "search_page_required");
+  assert.strictEqual(completeSearchPageRequiredResult.communicationTabId, fixedCommunication.id);
+  assert.deepStrictEqual(completeSearchPageRequired.state.createCalls, []);
+
+  for (const readiness of ["risk_control", "browser_unavailable", "not_ready"]) {
     const stopped = dedicatedBrowser([{ ...boss, active: true }]);
     const result = await prepareWorkspaceTabs({
       browser: stopped,
