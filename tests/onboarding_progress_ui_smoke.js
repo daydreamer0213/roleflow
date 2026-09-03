@@ -3,7 +3,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { EventEmitter } = require("node:events");
-const { openDb } = require("../src/core/storage");
+const { openDb, saveProfileAnalysis } = require("../src/core/storage");
 const { createDashboardServer } = require("../src/dashboard/server");
 const { getOnboardingRun } = require("../src/storage/onboarding_store");
 const { processOnboardingRun } = require("../src/core/onboarding_run");
@@ -268,7 +268,95 @@ async function main() {
   await testAsynchronousChildFailureStaysRecoverable();
   await testNonzeroChildExitStaysRecoverable();
   await testStatusPollingRecoversStaleRun();
+  await testActivePlanCatchUpWithoutOnboardingRun();
   console.log("onboarding_progress_ui_smoke ok");
+}
+
+async function testActivePlanCatchUpWithoutOnboardingRun() {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-active-plan-search-catch-up-"));
+  const fixtureDbPath = path.join(fixtureRoot, "jobs.sqlite");
+  const fixtureDb = openDb(fixtureDbPath);
+  const saved = saveProfileAnalysis(fixtureDb, {
+    profile: {
+      candidate: { name: "首次使用候选人", targetTitles: ["AI 应用工程师"] },
+      skills: [{ name: "Node.js" }],
+      projects: [{ name: "知识库" }]
+    },
+    document: {
+      originalFileName: "resume.txt",
+      format: "text",
+      contentHash: "active-plan-search-catch-up",
+      text: "参与知识库开发",
+      diagnostics: {}
+    },
+    searchPlan: {
+      name: "当前有效方案",
+      cities: ["广州"],
+      directions: ["AI 应用工程师"],
+      keywords: [{ word: "AI 应用", priority: "A" }]
+    }
+  });
+  assert.strictEqual(fixtureDb.prepare("SELECT COUNT(*) AS count FROM onboarding_runs").get().count, 0);
+
+  const prepareCalls = [];
+  const reconcileCalls = [];
+  const scheduledRechecks = [];
+  const fixtureServer = createDashboardServer({
+    db: fixtureDb,
+    browserAuthority: { browserMode: "edge", cdpPort: null, profilePath: "" },
+    root: fixtureRoot,
+    dataRoot: fixtureRoot,
+    dbPath: fixtureDbPath,
+    forceMock: true,
+    logger: quietLogger(),
+    browserFactory() {
+      return { fixture: "active-plan-browser" };
+    },
+    browserSupervisor: {
+      getSnapshot() { return { ready: true }; }
+    },
+    async workspaceReconciler(input) {
+      reconcileCalls.push(input);
+      return input.reason === "initial_search_prepared"
+        ? { status: "ready", communicationTabId: "chat-1", message: "工作区已就绪。" }
+        : { status: "search_page_required", communicationTabId: "chat-1", message: "请设置搜索条件。" };
+    },
+    workspacePostPrepareSchedule(callback) {
+      scheduledRechecks.push(callback);
+      return { unref() {} };
+    },
+    async initialSearchPreparer(input) {
+      prepareCalls.push(input);
+      return { status: "prepared", keyword: "AI 应用" };
+    }
+  });
+  try {
+    await listen(fixtureServer);
+    await fixtureServer.reconcileWorkspace({ startupGuidance: false, reason: "user_reconcile" });
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(prepareCalls.length, 1,
+      "an active search plan must prepare the search page even without an onboarding run");
+    assert.strictEqual(prepareCalls[0].plan.id, saved.planId);
+    assert.strictEqual(prepareCalls[0].browser.fixture, "active-plan-browser");
+    assert.strictEqual(scheduledRechecks.length, 1,
+      "a prepared keyword must schedule one workspace recheck after the browser task");
+
+    await scheduledRechecks.shift()();
+    assert.deepStrictEqual(reconcileCalls.map((input) => input.reason), [
+      "user_reconcile",
+      "initial_search_prepared"
+    ]);
+
+    await fixtureServer.reconcileWorkspace({ startupGuidance: false, reason: "user_reconcile" });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(prepareCalls.length, 1, "the same handled plan must not be prepared twice");
+    assert.strictEqual(scheduledRechecks.length, 0, "the recheck must not create a preparation loop");
+  } finally {
+    await new Promise((resolve) => fixtureServer.close(resolve));
+    fixtureDb.close();
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
 }
 
 async function testSpawnFailureStaysRecoverable() {

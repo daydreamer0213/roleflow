@@ -535,6 +535,8 @@ function createDashboardServer({
   workspaceLoginCancel = clearTimeout,
   workspaceLoginNow = Date.now,
   workspaceLoginRandom = Math.random,
+  workspacePostPrepareSchedule = setImmediate,
+  workspacePostPrepareCancel = clearImmediate,
   communicationBrowserRebinder = inspectAndBindCommunicationBrowser,
   initialSearchPreparer = prepareInitialSearchPage,
   planRescore = rescorePlanObservations,
@@ -852,7 +854,9 @@ function createDashboardServer({
   let workspaceLoginTimer = null;
   let workspaceLoginStartedAt = null;
   let workspaceClosing = false;
-  let initialSearchCatchUpAttempted = false;
+  let initialSearchPreparationInFlight = null;
+  let workspacePostPrepareTimer = null;
+  const handledInitialSearchPlanRevisions = new Set();
   const stopWorkspaceLoginMonitor = () => {
     if (workspaceLoginTimer !== null) workspaceLoginCancel(workspaceLoginTimer);
     workspaceLoginTimer = null;
@@ -896,7 +900,9 @@ function createDashboardServer({
       .then((workspace) => {
         workspaceRuntime = publicWorkspaceRuntimeSnapshot(workspace);
         updateWorkspaceLoginMonitor(workspace);
-        if (workspace?.status === "ready"
+        const initialSearchCatchUpAllowed = workspace?.status === "ready"
+          || (workspace?.status === "search_page_required" && workspace?.communicationTabId != null);
+        if (initialSearchCatchUpAllowed
           && ["initial_startup", "login_monitor", "user_recovery", "user_reconcile"].includes(String(input?.reason || ""))) {
           Promise.resolve()
             .then(() => runInitialSearchCatchUp())
@@ -944,44 +950,104 @@ function createDashboardServer({
         : "BOSS_WORKSPACE_NOT_READY";
     throw appError(code, publicWorkspace.message, { statusCode: 409 });
   };
-  const prepareCompletedOnboardingSearch = (runId, requestId, source = "onboarding_completion") => runBrowserRead(async () => {
+  const initialSearchPlanRevision = (plan) => `${Number(plan?.id || 0)}:${String(plan?.updatedAt || "")}`;
+  const initialSearchPreparationHandled = (result) => {
+    const status = String(result?.status || "").trim();
+    const reason = String(result?.reason || "").trim();
+    return status === "prepared"
+      || (status === "skipped" && ["query_present", "keyword_missing"].includes(reason));
+  };
+  const queueWorkspacePostPrepareRecheck = () => {
+    if (workspaceClosing || workspacePostPrepareTimer !== null) return;
+    const callback = async () => {
+      workspacePostPrepareTimer = null;
+      if (workspaceClosing) return null;
+      try {
+        return await reconcileWorkspace({
+          startupGuidance: false,
+          reason: "initial_search_prepared"
+        });
+      } catch (error) {
+        logger.warn("onboarding_initial_search_workspace_recheck_failed", {
+          errorCode: String(error?.code || "WORKSPACE_RECONCILIATION_FAILED")
+        });
+        return null;
+      }
+    };
+    workspacePostPrepareTimer = workspacePostPrepareSchedule(callback);
+    workspacePostPrepareTimer?.unref?.();
+  };
+  const prepareInitialSearchPlan = ({ plan, completedRun = null, requestId, source }) => {
+    const revision = initialSearchPlanRevision(plan);
+    if (handledInitialSearchPlanRevisions.has(revision)) {
+      return Promise.resolve({ status: "skipped", reason: "already_handled" });
+    }
+    if (initialSearchPreparationInFlight) return initialSearchPreparationInFlight;
+    const pending = runBrowserRead(async () => {
+      assertBrowserRuntimeReady();
+      const browser = browserFactory(frozenBrowserAuthority);
+      const accessController = createSiteAccessController({
+        db,
+        site: "boss",
+        runId: completedRun ? `onboarding-search:${completedRun.id}` : `active-plan-search:${plan.id}`,
+        logger
+      });
+      const adapter = new boss.BossSiteAdapter({ browser, logger, accessController });
+      const result = await initialSearchPreparer({ plan, browser, adapter });
+      if (completedRun) {
+        recordInitialSearchPreparationHandled(db, { run: completedRun, source, result });
+      }
+      if (initialSearchPreparationHandled(result)) {
+        handledInitialSearchPlanRevisions.add(revision);
+      }
+      if (String(result?.status || "") === "prepared") {
+        queueWorkspacePostPrepareRecheck();
+      }
+      logger.info("onboarding_initial_search_prepare_finished", {
+        requestId,
+        runId: completedRun?.id || "",
+        planId: Number(plan.id),
+        source,
+        status: String(result?.status || "unknown"),
+        reason: String(result?.reason || "")
+      });
+      return result;
+    });
+    initialSearchPreparationInFlight = pending;
+    const clear = () => {
+      if (initialSearchPreparationInFlight === pending) initialSearchPreparationInFlight = null;
+    };
+    pending.then(clear, clear);
+    return pending;
+  };
+  const prepareCompletedOnboardingSearch = (runId, requestId, source = "onboarding_completion") => {
     const completedRun = getOnboardingRun(db, runId);
     if (!completedRun || completedRun.status !== "completed" || !completedRun.searchPlanId) {
-      return { status: "skipped", reason: "onboarding_incomplete" };
+      return Promise.resolve({ status: "skipped", reason: "onboarding_incomplete" });
     }
     const plan = getSearchPlan(db, completedRun.searchPlanId);
-    if (!plan) return { status: "skipped", reason: "plan_missing" };
+    if (!plan) return Promise.resolve({ status: "skipped", reason: "plan_missing" });
     if (Number(plan.profileVersionId || 0) !== Number(completedRun.profileVersionId || 0)) {
-      return { status: "skipped", reason: "existing_plan_reused" };
+      return Promise.resolve({ status: "skipped", reason: "existing_plan_reused" });
     }
-    assertBrowserRuntimeReady();
-    const browser = browserFactory(frozenBrowserAuthority);
-    const accessController = createSiteAccessController({
-      db,
-      site: "boss",
-      runId: `onboarding-search:${completedRun.id}`,
-      logger
-    });
-    const adapter = new boss.BossSiteAdapter({ browser, logger, accessController });
-    const result = await initialSearchPreparer({ plan, browser, adapter });
-    recordInitialSearchPreparationHandled(db, { run: completedRun, source, result });
-    logger.info("onboarding_initial_search_prepare_finished", {
+    return prepareInitialSearchPlan({
+      plan,
+      completedRun,
       requestId,
-      runId: completedRun.id,
-      source,
-      status: String(result?.status || "unknown"),
-      reason: String(result?.reason || "")
+      source
     });
-    return result;
-  });
+  };
   const runInitialSearchCatchUp = () => {
-    if (initialSearchCatchUpAttempted) {
-      return Promise.resolve({ status: "skipped", reason: "already_attempted" });
-    }
-    initialSearchCatchUpAttempted = true;
     const run = getInitialSearchCatchUpCandidate(db);
-    if (!run) return Promise.resolve({ status: "skipped", reason: "not_eligible" });
-    return prepareCompletedOnboardingSearch(run.id, "startup-catch-up", "upgrade_catch_up");
+    if (run) return prepareCompletedOnboardingSearch(run.id, "startup-catch-up", "upgrade_catch_up");
+    const profile = listCandidateProfiles(db)[0] || null;
+    const plan = profile ? getActiveSearchPlan(db, profile.id) : null;
+    if (!plan) return Promise.resolve({ status: "skipped", reason: "not_eligible" });
+    return prepareInitialSearchPlan({
+      plan,
+      requestId: "startup-catch-up",
+      source: "active_plan_catch_up"
+    });
   };
   const dashboardServer = http.createServer(async (req, res) => {
     const requestId = logger.requestId();
@@ -1322,6 +1388,10 @@ function createDashboardServer({
   dashboardServer.close = (callback) => {
     workspaceClosing = true;
     stopWorkspaceLoginMonitor();
+    if (workspacePostPrepareTimer !== null) {
+      workspacePostPrepareCancel(workspacePostPrepareTimer);
+      workspacePostPrepareTimer = null;
+    }
     const cleanups = [
       Promise.resolve().then(() => messageDiscovery.close()),
       Promise.resolve().then(() => messageReplySend.close()),
