@@ -31,7 +31,7 @@
 - Consumes: `progressSnapshot.controls.canStop: boolean`、`workflow.communicationBatchId: number|null`、现有 `/api/workflow-control` 表单。
 - Produces: `controls.stopOnlyVisible: boolean`；页面上的 `data-control-group="stop-only"`，复用现有 `data-action="stop-preview"` 和确认表单。
 
-- [ ] **Step 1: 为缺失入口写失败回归**
+- [x] **Step 1: 为缺失入口写失败回归**
 
 在 `tests/workflow_page_migration_smoke.js` 增加与真实服务端一致的控制快照辅助函数：
 
@@ -64,13 +64,13 @@ assert.doesNotMatch(interrupted, /data-action="stop-preview"/);
 
 这样同时证明：无沟通批次时后端允许停止就展示入口；即使控制快照允许停止，已关联沟通批次的页面也不会展示通用入口。
 
-- [ ] **Step 2: 运行页面回归并确认它按预期失败**
+- [x] **Step 2: 运行页面回归并确认它按预期失败**
 
 Run: `node tests/workflow_page_migration_smoke.js`
 
 Expected: FAIL，因为无沟通批次的 `review_required` 和 `interrupted` 页面尚未渲染 `stop-only` 操作组。
 
-- [ ] **Step 3: 在视图模型中计算单独结束入口**
+- [x] **Step 3: 在视图模型中计算单独结束入口**
 
 在 `controlView()` 中以当前权威快照和沟通边界计算展示字段：
 
@@ -91,7 +91,7 @@ return {
 
 `created`、`scanning`、`analyzing` 和 `paused` 继续使用现有运行/暂停操作组，不重复显示 `stop-only`。
 
-- [ ] **Step 4: 复用现有确认面板渲染停止专用操作组**
+- [x] **Step 4: 复用现有确认面板渲染停止专用操作组**
 
 放宽 `renderPrimaryCommand()` 的早退条件，并在三个现有操作组之后添加：
 
@@ -112,13 +112,13 @@ if (!controlVisible) return "";
 
 仅在 `controls.stopOnlyVisible` 为真时输出该节点。按钮继续打开现有 `data-stop-confirmation`，确认表单继续提交 `action=stop` 和 `confirmStop=1`。
 
-- [ ] **Step 5: 运行页面回归并确认通过**
+- [x] **Step 5: 运行页面回归并确认通过**
 
 Run: `node tests/workflow_page_migration_smoke.js`
 
 Expected: PASS；扫描、暂停、复核、中断、已确认沟通和沟通执行页面的主操作断言全部保持成立。
 
-- [ ] **Step 6: 提交页面入口改动**
+- [x] **Step 6: 提交页面入口改动**
 
 ```powershell
 git add src/dashboard/view_models/workflow.js src/dashboard/pages/workflow.js tests/workflow_page_migration_smoke.js
@@ -135,7 +135,7 @@ git commit -m "fix: keep workflow stop available before communication"
 - Consumes: `requestWorkflowStop(db, { workflowRunId, confirmStop: true, now })` 与 `finalizeWorkflowControl(db, { workflowRunId, now })`。
 - Produces: 中断且遗留 `pause_requested` 的本轮最终为 `{ status: "stopped", controlState: "none" }`；保留已完成任务，将未完成任务标记为 `stopped`。
 
-- [ ] **Step 1: 增加中断本轮停止的状态回归**
+- [x] **Step 1: 增加中断本轮停止的状态回归**
 
 在 `tests/workflow_control_smoke.js` 新增并调用 `testStopSupersedesInterruptedPauseRequest()`：
 
@@ -180,19 +180,19 @@ function testStopSupersedesInterruptedPauseRequest() {
 }
 ```
 
-- [ ] **Step 2: 运行控制层回归**
+- [x] **Step 2: 运行控制层回归**
 
 Run: `node tests/workflow_control_smoke.js`
 
 Expected: PASS，因为现有后端链路已经支持用停止请求替换遗留暂停请求；若失败，只在 `workflow_control.js` 修复暴露出的具体状态结清缺陷，不增加新状态或新接口。
 
-- [ ] **Step 3: 运行相关执行与恢复回归**
+- [x] **Step 3: 运行相关执行与恢复回归**
 
 Run: `node tests/scan_cli_lifecycle_smoke.js; node tests/workflow_analysis_executor_smoke.js; node tests/workflow_recovery_smoke.js`
 
 Expected: 三项 PASS，证明活动扫描仍协作式停止、暂停恢复不倒退、精确租约结清不影响其他本轮。
 
-- [ ] **Step 4: 提交状态语义回归**
+- [x] **Step 4: 提交状态语义回归**
 
 ```powershell
 git add tests/workflow_control_smoke.js src/core/workflow_control.js
@@ -212,7 +212,7 @@ git commit -m "test: cover stopping interrupted workflow runs"
 - Consumes: `normalizeScanProgress(value, execution)` 内的规范化计数器和冻结目标。
 - Produces: `SCAN_PROGRESS_INVALID` 的 `error.details`，形状为 `{ category, violations, counters, bounds }`；CLI 日志事件 `scan_checkpoint_rejected`。
 
-- [ ] **Step 1: 为每类边界错误写失败回归**
+- [x] **Step 1: 为每类边界错误写失败回归**
 
 将 `tests/scan_recovery_smoke.js` 的越界循环改为具名场景，并断言错误详情：
 
@@ -252,13 +252,13 @@ for (const scenario of invalidProgressCases) {
 
 继续保留无效时间戳与事务完整回滚断言。
 
-- [ ] **Step 2: 运行扫描恢复回归并确认它按预期失败**
+- [x] **Step 2: 运行扫描恢复回归并确认它按预期失败**
 
 Run: `node tests/scan_recovery_smoke.js`
 
 Expected: FAIL，因为 `SCAN_PROGRESS_INVALID` 当前没有 `details`。
 
-- [ ] **Step 3: 在边界校验点生成结构化去敏详情**
+- [x] **Step 3: 在边界校验点生成结构化去敏详情**
 
 在 `normalizeScanProgress()` 中建立所有已触发的不变量列表：
 
@@ -295,7 +295,7 @@ if (violations.length) {
 
 不在 `details` 中加入 `targetKey`、关键词、岗位内容或页面内容。
 
-- [ ] **Step 4: 在现有工作流日志上下文中记录拒绝原因**
+- [x] **Step 4: 在现有工作流日志上下文中记录拒绝原因**
 
 在 `onTargetComplete` 和 `onProgressCheckpoint` 的 catch 中，包装为 `SCAN_CHECKPOINT_FAILED` 前加入：
 
@@ -309,13 +309,13 @@ scanLogger.warn("scan_checkpoint_rejected", {
 
 目标完成检查点使用 `checkpointKind: "target_complete"`。`scanLogger` 已绑定 `workflowRunId`、`scanRunId` 和 `scanBatchId`，`errorMeta()` 会经过现有日志去敏器。
 
-- [ ] **Step 5: 运行诊断与事务回归**
+- [x] **Step 5: 运行诊断与事务回归**
 
 Run: `node tests/scan_recovery_smoke.js; node tests/scan_store_contract_smoke.js; node tests/scan_cli_lifecycle_smoke.js; node tests/observability_smoke.js; node tests/observability_context_smoke.js`
 
 Expected: 五项 PASS；越界写入仍回滚，错误详情不含目标键或用户内容，现有日志去敏契约保持成立。
 
-- [ ] **Step 6: 提交诊断改动**
+- [x] **Step 6: 提交诊断改动**
 
 ```powershell
 git add src/storage/scan_store.js src/cli.js tests/scan_recovery_smoke.js
@@ -333,19 +333,19 @@ git commit -m "fix: diagnose rejected scan progress checkpoints"
 - Consumes: Tasks 1-3 的精确提交与测试结果。
 - Produces: 已完成状态、可复核的测试证据和最终 Git 状态；不产生发布包或真实平台访问。
 
-- [ ] **Step 1: 运行风险相关定向门禁**
+- [x] **Step 1: 运行风险相关定向门禁**
 
 Run: `node tests/workflow_page_migration_smoke.js; node tests/workflow_dashboard_smoke.js; node tests/workflow_control_smoke.js; node tests/workflow_progress_smoke.js; node tests/workflow_recovery_smoke.js; node tests/scan_recovery_smoke.js; node tests/scan_cli_lifecycle_smoke.js`
 
 Expected: 七项 PASS。
 
-- [ ] **Step 2: 运行完整离线测试**
+- [x] **Step 2: 运行完整离线测试**
 
 Run: `npm test`
 
 Expected: 所有离线检查通过；记录本次实际通过总数，不复用旧版本的 `142` 项结果。
 
-- [ ] **Step 3: 更新状态和交接证据**
+- [x] **Step 3: 更新状态和交接证据**
 
 将设计文档状态改为“已实现”，勾选本计划已经执行的复选框，并在 `docs/PROJECT_HANDOFF.md` 记录：
 
@@ -358,20 +358,20 @@ Expected: 所有离线检查通过；记录本次实际通过总数，不复用�
 
 同时写入本次实际测试总数和实现提交 SHA；不得把未运行项目写成通过。
 
-- [ ] **Step 4: 检查文档和工作树**
+- [x] **Step 4: 检查文档和工作树**
 
 Run: `git diff --check; git status --short --branch`
 
 Expected: `git diff --check` 无输出；状态只包含本任务预期的文档改动。
 
-- [ ] **Step 5: 提交最终文档**
+- [x] **Step 5: 提交最终文档**
 
 ```powershell
 git add docs/superpowers/specs/2026-09-03-workflow-safe-stop-coverage-design.md docs/superpowers/plans/2026-09-03-workflow-safe-stop-coverage.md docs/PROJECT_HANDOFF.md
 git commit -m "docs: close workflow safe stop fix"
 ```
 
-- [ ] **Step 6: 在精确最终提交上复跑最终门禁**
+- [x] **Step 6: 在精确最终提交上复跑最终门禁**
 
 Run: `npm test; git diff --check; git status --short --branch; git rev-parse HEAD`
 
