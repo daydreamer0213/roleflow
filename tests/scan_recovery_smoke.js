@@ -219,19 +219,37 @@ function boundedScanProgressIsMergedAndValidated(database, context) {
   assert.deepStrictEqual(getBatch(database, batchId).filterSnapshot, before);
   assert.strictEqual(count(database, "SELECT COUNT(*) AS count FROM jobs WHERE source_id = 'must-roll-back'"), 0);
 
-  for (const scanProgress of [
-    { ...runtime.scanProgress, targetDiscovered: 7 },
-    { ...runtime.scanProgress, detailPosition: 5, detailTotal: 4 },
-    { ...runtime.scanProgress, updatedAt: "not-a-date" }
-  ]) {
+  const invalidProgressCases = [
+    { name: "target_position_mismatch", progress: { ...runtime.scanProgress, targetPosition: 2 }, actual: 2, limit: 1 },
+    { name: "target_total_mismatch", progress: { ...runtime.scanProgress, targetTotal: 2 }, actual: 2, limit: 1 },
+    { name: "target_discovered_exceeds_card_limit", progress: { ...runtime.scanProgress, targetDiscovered: 7 }, actual: 7, limit: 6 },
+    { name: "detail_position_exceeds_detail_total", progress: { ...runtime.scanProgress, detailPosition: 5, detailTotal: 4 }, actual: 5, limit: 4 },
+    { name: "detail_total_exceeds_target_discovered", progress: { ...runtime.scanProgress, detailTotal: 7 }, actual: 7, limit: 6 }
+  ];
+  for (const scenario of invalidProgressCases) {
     assert.throws(() => checkpointScanProgress(database, {
       runId,
       batchId,
       leaseOwner: context.owner,
       jobs: [],
-      runtime: { scanProgress }
-    }), (error) => error.code === "SCAN_PROGRESS_INVALID");
+      runtime: { scanProgress: scenario.progress }
+    }), (error) => {
+      assert.strictEqual(error.code, "SCAN_PROGRESS_INVALID");
+      assert.strictEqual(error.details.category, "scan_progress_bounds");
+      assert.ok(error.details.violations.some((item) =>
+        item.name === scenario.name && item.actual === scenario.actual && item.limit === scenario.limit
+      ));
+      assert.ok(!JSON.stringify(error.details).includes(targetKey));
+      return true;
+    });
   }
+  assert.throws(() => checkpointScanProgress(database, {
+    runId,
+    batchId,
+    leaseOwner: context.owner,
+    jobs: [],
+    runtime: { scanProgress: { ...runtime.scanProgress, updatedAt: "not-a-date" } }
+  }), (error) => error.code === "SCAN_PROGRESS_INVALID");
   assert.deepStrictEqual(getBatch(database, batchId).filterSnapshot, before);
   finishScanRun(database, { runId, leaseOwner: context.owner, status: "completed" });
 }

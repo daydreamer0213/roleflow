@@ -1400,9 +1400,15 @@ async function scan(
       if (["SCAN_LEASE_LOST", "SCAN_RUN_LEASE_MISMATCH"].includes(error?.code)) {
         throw error;
       }
+      scanLogger.warn("scan_checkpoint_rejected", {
+        batchId,
+        checkpointKind: "target_complete",
+        error: errorMeta(error)
+      });
       const checkpointError = new Error(`扫描目标 ${result.targetKey} 保存失败：${error.message}`);
       checkpointError.code = "SCAN_CHECKPOINT_FAILED";
       checkpointError.cause = error;
+      if (error?.details) checkpointError.details = error.details;
       throw checkpointError;
     }
     scanLogger.info("scan_target_checkpointed", {
@@ -1454,9 +1460,15 @@ async function scan(
         if (["SCAN_LEASE_LOST", "SCAN_RUN_LEASE_MISMATCH"].includes(error?.code)) {
           throw error;
         }
+        scanLogger.warn("scan_checkpoint_rejected", {
+          batchId,
+          checkpointKind: "progress",
+          error: errorMeta(error)
+        });
         const checkpointError = new Error(`扫描进度 ${result.targetKey || ""} 保存失败：${error.message}`);
         checkpointError.code = "SCAN_CHECKPOINT_FAILED";
         checkpointError.cause = error;
+        if (error?.details) checkpointError.details = error.details;
         throw checkpointError;
       }
     },

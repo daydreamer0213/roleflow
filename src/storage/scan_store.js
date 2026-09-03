@@ -659,12 +659,33 @@ function normalizeScanProgress(value, execution) {
   const detailPosition = integer(value.detailPosition);
   const detailTotal = integer(value.detailTotal);
   const frozenPosition = targets.findIndex((entry) => String(entry?.targetKey || "") === targetKey) + 1;
-  if (targetPosition !== frozenPosition
-    || targetTotal !== targets.length
-    || targetDiscovered > Number(target.cardLimit || 0)
-    || detailPosition > detailTotal
-    || detailTotal > targetDiscovered) {
-    throw scanRunError("SCAN_PROGRESS_INVALID", "scan progress counters exceed the frozen target bounds");
+  const cardLimit = Number(target.cardLimit || 0);
+  const violations = [
+    targetPosition !== frozenPosition
+      ? { name: "target_position_mismatch", actual: targetPosition, limit: frozenPosition }
+      : null,
+    targetTotal !== targets.length
+      ? { name: "target_total_mismatch", actual: targetTotal, limit: targets.length }
+      : null,
+    targetDiscovered > cardLimit
+      ? { name: "target_discovered_exceeds_card_limit", actual: targetDiscovered, limit: cardLimit }
+      : null,
+    detailPosition > detailTotal
+      ? { name: "detail_position_exceeds_detail_total", actual: detailPosition, limit: detailTotal }
+      : null,
+    detailTotal > targetDiscovered
+      ? { name: "detail_total_exceeds_target_discovered", actual: detailTotal, limit: targetDiscovered }
+      : null
+  ].filter(Boolean);
+  if (violations.length) {
+    const error = scanRunError("SCAN_PROGRESS_INVALID", "scan progress counters exceed the frozen target bounds");
+    error.details = {
+      category: "scan_progress_bounds",
+      violations,
+      counters: { targetPosition, targetTotal, targetDiscovered, detailPosition, detailTotal },
+      bounds: { frozenPosition, frozenTargetTotal: targets.length, cardLimit }
+    };
+    throw error;
   }
   return {
     version: 1,
