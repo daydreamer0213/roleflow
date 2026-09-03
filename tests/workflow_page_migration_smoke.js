@@ -114,6 +114,15 @@ function fixture(overrides = {}) {
   };
 }
 
+function progressSnapshotFor(status, { canStop = true } = {}) {
+  const snapshot = fixture().progressSnapshot;
+  return {
+    ...snapshot,
+    workflow: { ...snapshot.workflow, status, controlState: "none" },
+    controls: { ...snapshot.controls, canPause: false, canResume: false, canStop }
+  };
+}
+
 function assertRendererContracts(vm) {
   const unsafe = buildWorkflowViewModel(fixture({ workflow: { status: "interrupted", errorMessage: `<img src=x onerror=alert(1)>` } }));
   const unsafeHtml = renderWorkflowPage(unsafe);
@@ -169,18 +178,22 @@ function assertRendererContracts(vm) {
   assert.match(pauseRequested, /data-control-group="paused" hidden/);
   assert.match(pauseRequested, /data-action="resume" disabled/);
 
-  const review = renderWorkflowPage(buildWorkflowViewModel(fixture({ workflow: { status: "review_required" }, progressSnapshot: null, reviewCandidates: [{ id: 71, url: "https://example.test/immutable", title: "候选岗位", company: "甲公司", salary: "20K", experience: "3年", analysis: {}, workflowTier: "primary", defaultChecked: true }], quota: { remaining: 1 } })));
+  const review = renderWorkflowPage(buildWorkflowViewModel(fixture({ workflow: { status: "review_required" }, progressSnapshot: progressSnapshotFor("review_required"), reviewCandidates: [{ id: 71, url: "https://example.test/immutable", title: "候选岗位", company: "甲公司", salary: "20K", experience: "3年", analysis: {}, workflowTier: "primary", defaultChecked: true }], quota: { remaining: 1 } })));
   assert.match(review, /id="workflow-review-form"/);
   assertSinglePrimary(review, "review", "确认清单");
   assert.match(review, /data-workflow-primary="true"[^>]*>确认清单/);
+  assert.match(review, /data-control-group="stop-only"/);
+  assert.match(review, /data-action="stop-preview"/);
   assert.ok(review.indexOf('id="workflow-confirm"') < review.indexOf('class="workflow-list"'), "review confirmation must precede the full job list");
   assert.match(review, /name="jobIds" value="71" checked/);
   assert.match(review, /href="https:\/\/example\.test\/immutable"/);
 
-  const confirmed = renderWorkflowPage(buildWorkflowViewModel(fixture({ workflow: { status: "review_required", communicationBatchId: 41 }, progressSnapshot: null, communication: { batch: { id: 41, status: "confirmed" }, calibration: { executionEnabled: true }, summary: { total: 2, statusCounts: {}, terminal: 0 } } })));
+  const confirmed = renderWorkflowPage(buildWorkflowViewModel(fixture({ workflow: { status: "review_required", communicationBatchId: 41 }, progressSnapshot: progressSnapshotFor("review_required"), communication: { batch: { id: 41, status: "confirmed" }, calibration: { executionEnabled: true }, summary: { total: 2, statusCounts: {}, terminal: 0 } } })));
   assertSinglePrimary(confirmed, "confirmed", "开始沟通");
   assert.match(confirmed, /name="batchId" value="41"/);
   assert.match(confirmed, /name="action" value="start"/);
+  assert.doesNotMatch(confirmed, /data-control-group="stop-only"/);
+  assert.doesNotMatch(confirmed, /data-action="stop-preview"/);
 
   const communicating = renderWorkflowPage(buildWorkflowViewModel(fixture({ workflow: { status: "communicating", communicationBatchId: 41 }, progressSnapshot: null, communication: { batch: { id: 41, status: "running" }, calibration: { executionEnabled: true }, summary: { total: 2, statusCounts: { click_dispatched: 1 }, terminal: 0 } } })));
   assertSinglePrimary(communicating, "communicating", "查看执行明细");
@@ -197,11 +210,13 @@ function assertRendererContracts(vm) {
   assertSinglePrimary(completed, "completed", "返回今日任务");
   assert.match(completed, /本轮已完成/);
 
-  const interrupted = renderWorkflowPage(buildWorkflowViewModel(fixture({ workflow: { status: "interrupted", communicationBatchId: 41, errorCode: "SAFE_STOP" }, progressSnapshot: null })));
+  const interrupted = renderWorkflowPage(buildWorkflowViewModel(fixture({ workflow: { status: "interrupted", communicationBatchId: 41, errorCode: "SAFE_STOP" }, progressSnapshot: progressSnapshotFor("interrupted") })));
   assertSinglePrimary(interrupted, "interrupted", "检查沟通中断项");
   assert.match(interrupted, /检查沟通中断项/);
   assert.match(interrupted, /data-workflow-primary="true"/);
   assert.match(interrupted, /communication\?batchId=41/);
+  assert.doesNotMatch(interrupted, /data-control-group="stop-only"/);
+  assert.doesNotMatch(interrupted, /data-action="stop-preview"/);
 
   const actionNotTriggered = renderWorkflowPage(buildWorkflowViewModel(fixture({
     workflow: {
@@ -218,8 +233,10 @@ function assertRendererContracts(vm) {
   assert.match(unsafeUrl, /不安全链接/);
   assert.doesNotMatch(unsafeUrl, /href="javascript:/i, "review must not create executable links from an unsafe URL");
 
-  const resumable = renderWorkflowPage(buildWorkflowViewModel(fixture({ workflow: { status: "interrupted", communicationBatchId: null, errorCode: "SAFE_STOP" }, progressSnapshot: null })));
+  const resumable = renderWorkflowPage(buildWorkflowViewModel(fixture({ workflow: { status: "interrupted", communicationBatchId: null, errorCode: "SAFE_STOP" }, progressSnapshot: progressSnapshotFor("interrupted") })));
   assertSinglePrimary(resumable, "resumable interrupted", "继续本轮");
+  assert.match(resumable, /data-control-group="stop-only"/);
+  assert.match(resumable, /name="action" value="stop"/);
 
   const browserTimeout = renderWorkflowPage(buildWorkflowViewModel(fixture({
     workflow: {

@@ -231,12 +231,14 @@ function controlView(snapshot, workflow, stopPreview) {
   const controlState = String(snapshot?.workflow?.controlState || workflow.controlState || "none");
   const pauseRequested = ["created", "scanning", "analyzing"].includes(status)
     && controlState === "pause_requested";
+  const canStop = Boolean(snapshot?.controls?.canStop);
   const access = stopPreview.access || {};
   return {
-    canPause: Boolean(snapshot?.controls?.canPause), canResume: Boolean(snapshot?.controls?.canResume), canStop: Boolean(snapshot?.controls?.canStop),
+    canPause: Boolean(snapshot?.controls?.canPause), canResume: Boolean(snapshot?.controls?.canResume), canStop,
     runningVisible: ["created", "scanning", "analyzing"].includes(status) && !pauseRequested,
     pauseRequestedVisible: pauseRequested,
     pausedVisible: status === "paused",
+    stopOnlyVisible: canStop && !workflow.communicationBatchId && ["review_required", "interrupted"].includes(status),
     pauseReason: String(workflow.errorCode || "本轮已安全暂停"), endpoint: "/api/workflow-control", runId: String(workflow.id || ""),
     stopPreview: { collected: number(stopPreview.collected), analyzed: number(stopPreview.analyzed), failed: number(stopPreview.failed), unfinished: number(stopPreview.unfinished), access: { details: number(access.details), pages: number(access.pages), scrolls: number(access.scrolls) }, consumesRunSlot: Boolean(stopPreview.consumesRunSlot) }
   };
