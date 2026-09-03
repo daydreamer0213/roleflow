@@ -43,6 +43,7 @@ try {
   testActiveRunBlocksButIsNotDoubleCounted();
   testStopPreviewIsDatabaseDerived();
   testFinalizePauseDoesNotTouchInterrupted();
+  testStopSupersedesInterruptedPauseRequest();
   console.log("workflow_control_smoke ok");
 } finally {
   db.close();
@@ -661,6 +662,45 @@ function testFinalizePauseDoesNotTouchInterrupted() {
   assert.strictEqual(result.controlState, "pause_requested");
   assert.strictEqual(result.errorCode, "SCAN_RUN_ORPHANED");
   assert.strictEqual(getWorkflowRun(db, scenario.workflow.id).status, "interrupted");
+}
+
+function testStopSupersedesInterruptedPauseRequest() {
+  const { profileId, planId } = seedPlan(db);
+  const scenario = seedAnalyzingWorkflow(db, {
+    profileId,
+    planId,
+    localDay: "2026-09-03",
+    taskStates: [
+      { status: "succeeded", attempts: 1, totalAttempts: 1 },
+      { status: "pending" }
+    ]
+  });
+  transitionWorkflowRun(db, {
+    id: scenario.workflow.id,
+    status: "interrupted",
+    controlState: "pause_requested",
+    resumePhase: "scanning",
+    errorCode: "SCAN_CHECKPOINT_FAILED"
+  });
+  db.prepare("UPDATE workflow_runs SET platform_access_started_at = ? WHERE id = ?")
+    .run("2026-09-03T01:00:00.000Z", scenario.workflow.id);
+
+  const requested = requestWorkflowStop(db, {
+    workflowRunId: scenario.workflow.id,
+    confirmStop: true,
+    now: "2026-09-03T02:00:00.000Z"
+  });
+  assert.strictEqual(requested.workflow.controlState, "stop_requested");
+  assert.strictEqual(requested.stopConsumesRunSlot, true);
+
+  const stopped = finalizeWorkflowControl(db, {
+    workflowRunId: scenario.workflow.id,
+    now: "2026-09-03T02:00:01.000Z"
+  });
+  assert.strictEqual(stopped.status, "stopped");
+  assert.strictEqual(stopped.controlState, "none");
+  assert.deepStrictEqual(workflowTasks(db, stopped.id).map((task) => task.status), ["succeeded", "stopped"]);
+  assert.strictEqual(getActiveWorkflowRun(db, { profileId, planId }), null);
 }
 
 function seedPlan(database) {

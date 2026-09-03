@@ -133,7 +133,7 @@ function requestWorkflowStop(db, { workflowRunId, confirmStop, now }) {
     const run = requiredWorkflowRun(db, workflowRunId);
     if (TERMINAL_STATUSES.has(run.status)) {
       if (run.status === "stopped") {
-        return { workflow: run, stopConsumesRunSlot: workflowRunConsumesSlot(run) };
+        return { workflow: run, stopConsumesRunSlot: workflowRunConsumesSlot({ ...run, status: "stopped" }) };
       }
       throw controlError("WORKFLOW_RUN_TERMINAL", "workflow run is already terminal and cannot be stopped");
     }
@@ -144,7 +144,7 @@ function requestWorkflowStop(db, { workflowRunId, confirmStop, now }) {
       );
     }
     if (run.controlState === "stop_requested") {
-      return { workflow: run, stopConsumesRunSlot: workflowRunConsumesSlot(run) };
+      return { workflow: run, stopConsumesRunSlot: workflowRunConsumesSlot({ ...run, status: "stopped" }) };
     }
     db.prepare(`
       UPDATE workflow_runs SET
@@ -155,7 +155,7 @@ function requestWorkflowStop(db, { workflowRunId, confirmStop, now }) {
       WHERE id = ?
     `).run(clock, clock, run.id);
     const workflow = getWorkflowRun(db, run.id);
-    return { workflow, stopConsumesRunSlot: workflowRunConsumesSlot(run) };
+    return { workflow, stopConsumesRunSlot: workflowRunConsumesSlot({ ...run, status: "stopped" }) };
   });
 }
 
