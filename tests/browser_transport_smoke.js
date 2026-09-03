@@ -257,6 +257,7 @@ async function main() {
 
     state.cdpExtraPage = true;
     websocket.messages.length = 0;
+    await new Promise((resolve) => setTimeout(resolve, 40));
     await cdp.evalValue("cdp-tab", "document.title");
     assert.strictEqual(
       websocket.messages.filter((message) => message.method === "Runtime.evaluate"
@@ -743,6 +744,14 @@ function installFakeWebSocket() {
     send(message) {
       const payload = JSON.parse(message);
       control.messages.push(payload);
+      if (control.mode === "windowless-blank-target"
+        && payload.method === "Browser.getWindowForTarget"
+        && payload.params.targetId === "cdp-tab") {
+        setTimeout(() => this.emit("message", {
+          data: JSON.stringify({ id: payload.id, result: { windowId: 42 } })
+        }), 25);
+        return;
+      }
       queueMicrotask(() => {
         const dispatchCount = control.messages.filter((item) => item.method === "Input.dispatchMouseEvent").length;
         let result = {};

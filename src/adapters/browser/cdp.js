@@ -26,6 +26,7 @@ class CdpBrowserAdapter {
     const pageTabs = pages.filter((page) => page.type === "page"
       && page.webSocketDebuggerUrl
       && (scope !== "boss" || isBossPageTarget(page)));
+    let firstError = null;
     const listedTabs = await Promise.all(pageTabs.map(async (page) => {
       try {
         const windowId = await this.windowIdForTarget(page.id);
@@ -40,9 +41,11 @@ class CdpBrowserAdapter {
         };
       } catch (error) {
         if (isWindowlessEdgeInternalTarget(page, error)) return null;
-        throw error;
+        firstError ||= error;
+        return null;
       }
     }));
+    if (firstError) throw firstError;
     return listedTabs.filter(Boolean);
   }
 
