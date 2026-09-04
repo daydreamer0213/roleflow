@@ -2335,8 +2335,8 @@ class BossSiteAdapter {
       await this.browser.evalValue(tabId, PAGE_HELPERS);
       throwIfAborted(signal);
       this.communicationDispatchedJobIds.add(expectedJob.jobId);
-      await this.browser.cdp(tabId, "Emulation.setFocusEmulationEnabled", { enabled: true });
       try {
+        await this.browser.cdp(tabId, "Emulation.setFocusEmulationEnabled", { enabled: true });
         if (this.communicationTabsBound) await this.assertBoundCommunicationTabs({ requireSearchPage: false });
         const clickTarget = await this.browser.evalValue(tabId, guardedBossCommunicationClickExpression(expectedJob));
         if (clickTarget?.ready !== true || clickTarget?.jobId !== expectedJob.jobId) {

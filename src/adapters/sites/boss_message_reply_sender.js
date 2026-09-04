@@ -74,8 +74,8 @@ function createBossMessageReplySender({ browser, reader, sleepFn = sleep } = {})
     let inserted = false;
     try {
       await reader.assertActiveBindings();
-      await browser.cdp(inspected.tabId, "Emulation.setFocusEmulationEnabled", { enabled: true });
       try {
+        await browser.cdp(inspected.tabId, "Emulation.setFocusEmulationEnabled", { enabled: true });
         const focus = normalizeProbe(await browser.evalValue(
           inspected.tabId,
           buildEditorFocusExpression(inspected.item)
@@ -135,15 +135,17 @@ function createBossMessageReplySender({ browser, reader, sleepFn = sleep } = {})
     }
 
     await reader.assertActiveBindings();
-    await browser.cdp(prepared.tabId, "Emulation.setFocusEmulationEnabled", { enabled: true });
-    prepared.state = "dispatched";
     try {
-      await browser.clickAt(prepared.tabId, guard.point);
-    } catch (cause) {
-      throw Object.assign(
-        senderError("BOSS_MESSAGE_REPLY_CLICK_AMBIGUOUS", "reply send click outcome is ambiguous"),
-        { cause }
-      );
+      await browser.cdp(prepared.tabId, "Emulation.setFocusEmulationEnabled", { enabled: true });
+      prepared.state = "dispatched";
+      try {
+        await browser.clickAt(prepared.tabId, guard.point);
+      } catch (cause) {
+        throw Object.assign(
+          senderError("BOSS_MESSAGE_REPLY_CLICK_AMBIGUOUS", "reply send click outcome is ambiguous"),
+          { cause }
+        );
+      }
     } finally {
       await browser.cdp(prepared.tabId, "Emulation.setFocusEmulationEnabled", { enabled: false });
     }

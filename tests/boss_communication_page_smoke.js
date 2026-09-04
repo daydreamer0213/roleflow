@@ -304,6 +304,7 @@ function fakeBrowser({
   createStarted = null,
   loseFocusAfterGuardedClick = false,
   clickAtError = null,
+  focusEnableError = null,
   startNetworkLogError = null,
   preserveClickContext = false
 } = {}) {
@@ -352,6 +353,7 @@ function fakeBrowser({
       calls.focusEmulation.push([tabId, enabled]);
       if (enabled) focusEmulatedTabs.add(tabId);
       else focusEmulatedTabs.delete(tabId);
+      if (enabled && focusEnableError) throw focusEnableError;
       return {};
     },
     async navigate(tabId, url) {
@@ -1160,6 +1162,25 @@ function assertNoPreparationAction(browser, before) {
   assert.strictEqual(clickFailureBrowser.calls.clickAt.length, 1);
   assert.strictEqual(clickFailureBrowser.context("communication-created").__bossCommunicationClickReceipt, undefined);
   assert.strictEqual(clickFailureBrowser.calls.stopNetworkLog.length, 1);
+
+  const focusEnableFailure = Object.assign(new Error("focus emulation enable failed"), { code: "BROWSER_COMMAND_FAILED" });
+  const focusEnableFailureBrowser = fakeBrowser({
+    tabs: [{ id: "search", url: searchUrl, windowId: "window-1", active: false }],
+    focusEnableError: focusEnableFailure
+  });
+  const focusEnableFailureAdapter = new BossSiteAdapter({ browser: focusEnableFailureBrowser, sleepFn: async () => {} });
+  const focusEnableFailureInspection = await focusEnableFailureAdapter.inspectCommunicationJob(expectedJob);
+  await assert.rejects(
+    () => focusEnableFailureAdapter.dispatchCommunication(focusEnableFailureInspection),
+    (error) => error === focusEnableFailure
+  );
+  assert.deepStrictEqual(focusEnableFailureBrowser.calls.focusEmulation, [
+    ["communication-created", true],
+    ["communication-created", false]
+  ]);
+  assert.strictEqual(focusEnableFailureBrowser.calls.clickAt.length, 0);
+  assert.strictEqual(focusEnableFailureBrowser.calls.stopNetworkLog.length, 1);
+  assert(focusEnableFailureBrowser.calls.evalValue.some(([, expression]) => expression.includes("__bossCloseCommunicationOutcomeObserver")));
 
   const observedSuccessBrowser = fakeBrowser({
     tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],

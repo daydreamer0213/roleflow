@@ -96,9 +96,11 @@ function fakeBrowser({
   outgoingFailed = false,
   clearRows = null,
   focusRows = null,
-  readbackRows = null
+  readbackRows = null,
+  focusEnableErrors = []
 } = {}) {
   const calls = [];
+  const queuedFocusEnableErrors = [...focusEnableErrors];
   let insertedText = "";
   let clicked = false;
   const pageSnapshot = snapshot({ rows, messages: detailMessages, selectedJobId });
@@ -202,6 +204,10 @@ function fakeBrowser({
     },
     async cdp(tabId, method, params) {
       calls.push(["cdp", tabId, method, params]);
+      if (method === "Emulation.setFocusEmulationEnabled" && params?.enabled === true) {
+        const error = queuedFocusEnableErrors.shift();
+        if (error) throw error;
+      }
       if (method === "Input.insertText") insertedText = String(params?.text || "");
       return {};
     },
@@ -324,6 +330,44 @@ function setup(options = {}) {
   );
   assert.strictEqual(focusDrift.browser.calls.filter((call) => call[0] === "cdp" && call[2] === "Input.insertText").length, 0,
     "conversation drift before focus must stop before inserting text");
+
+  const fillFocusEnableError = Object.assign(new Error("focus emulation enable failed"), { code: "BROWSER_COMMAND_FAILED" });
+  const fillFocusEnableFailure = setup({ focusEnableErrors: [fillFocusEnableError] });
+  const fillFocusEnableInspection = await fillFocusEnableFailure.sender.inspectReplyTarget(item);
+  await assert.rejects(
+    () => fillFocusEnableFailure.sender.fillReply(fillFocusEnableInspection, item.replyText),
+    (error) => error === fillFocusEnableError
+  );
+  assert.deepStrictEqual(
+    fillFocusEnableFailure.browser.calls.filter((call) => call[0] === "cdp").map((call) => [call[2], call[3]]),
+    [
+      ["Emulation.setFocusEmulationEnabled", { enabled: true }],
+      ["Emulation.setFocusEmulationEnabled", { enabled: false }]
+    ]
+  );
+  assert.strictEqual(fillFocusEnableFailure.browser.calls.filter((call) => call[0] === "cdp" && call[2] === "Input.insertText").length, 0);
+  assert.strictEqual(fillFocusEnableFailure.browser.calls.filter((call) => call[0] === "clickAt").length, 0);
+
+  const sendFocusEnableError = Object.assign(new Error("focus emulation enable failed"), { code: "BROWSER_COMMAND_FAILED" });
+  const sendFocusEnableFailure = setup({ focusEnableErrors: [null, sendFocusEnableError] });
+  const sendFocusEnableInspection = await sendFocusEnableFailure.sender.inspectReplyTarget(item);
+  const sendFocusEnablePreparation = await sendFocusEnableFailure.sender.fillReply(sendFocusEnableInspection, item.replyText);
+  await assert.rejects(
+    () => sendFocusEnableFailure.sender.dispatchReply(sendFocusEnablePreparation),
+    (error) => error === sendFocusEnableError
+  );
+  assert.deepStrictEqual(
+    sendFocusEnableFailure.browser.calls.filter((call) => call[0] === "cdp").map((call) => [call[2], call[3]]),
+    [
+      ["Emulation.setFocusEmulationEnabled", { enabled: true }],
+      ["Input.insertText", { text: item.replyText }],
+      ["Emulation.setFocusEmulationEnabled", { enabled: false }],
+      ["Emulation.setFocusEmulationEnabled", { enabled: true }],
+      ["Emulation.setFocusEmulationEnabled", { enabled: false }]
+    ]
+  );
+  assert.strictEqual(sendFocusEnableFailure.browser.calls.filter((call) => call[0] === "clickAt").length, 0);
+  assert.deepStrictEqual(await sendFocusEnableFailure.sender.clearPreparedReply(sendFocusEnablePreparation), { cleared: true });
 
   const readbackDrift = setup({
     readbackRows: [verifiedRow({ conversationKey: safeDigest(["conversation", "id:other-readback-target"]) })]
