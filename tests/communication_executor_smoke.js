@@ -53,11 +53,23 @@ async function singleItemCheckpointSmoke() {
     adapter: {
       async inspectCommunicationJob() { return { state: "ready" }; },
       async dispatchCommunication() { dispatches += 1; },
-      async verifyCommunicationResult() { return { state: "succeeded" }; }
+      async verifyCommunicationResult() {
+        return { state: "succeeded", evidence: { endpoints: [], pageState: "succeeded", diagnostics: {
+          clickObserved: true, trustedClick: true, focusedAtGuard: true, focusedAtClick: true,
+          documentReadyState: "complete", actionState: "continue", dialogVisible: false, pendingRequests: 0,
+          messageBody: "private success message"
+        } } };
+      }
     },
     sleepFn: async () => {}
   });
   assert.strictEqual(dispatches, 1);
+  const successEvidence = listCommunicationBatchItems(fixture.db, fixture.batch.id)[0].evidence;
+  assert.deepStrictEqual(successEvidence.outcome.diagnostics, {
+    clickObserved: true, trustedClick: true, focusedAtGuard: true, focusedAtClick: true,
+    documentReadyState: "complete", actionState: "continue", dialogVisible: false, pendingRequests: 0
+  });
+  assert(!JSON.stringify(successEvidence).includes("private"));
   assert.deepStrictEqual(
     listCommunicationBatchItems(fixture.db, fixture.batch.id)
       .map((item) => [item.id, item.status, item.clickCount]),

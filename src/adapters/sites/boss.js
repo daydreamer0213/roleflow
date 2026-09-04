@@ -2456,7 +2456,7 @@ class BossSiteAdapter {
           return {
             state: "succeeded",
             jobId: dispatch.jobId,
-            evidence: communicationOutcomeEvidence(network, "succeeded")
+            evidence: communicationOutcomeEvidence(network, "succeeded", diagnostics)
           };
         }
         if (snapshot?.intermediateDialog?.visible === true) {

@@ -1175,7 +1175,8 @@ function assertNoPreparationAction(browser, before) {
     jobId: "fake123",
     evidence: {
       endpoints: [{ endpointKind: "friend_add", httpStatus: 200, businessCode: "0", businessCategory: "success", elapsedMs: 291 }],
-      pageState: "succeeded"
+      pageState: "succeeded",
+      diagnostics: { documentReadyState: "complete", actionState: "continue", dialogVisible: false }
     }
   });
   assert(!JSON.stringify(observedSuccess).includes("fixture-security"));
@@ -1241,6 +1242,21 @@ function assertNoPreparationAction(browser, before) {
   assert.strictEqual(receiptBrowser.context("communication-created").__bossCommunicationClickReceipt, undefined,
     "receipt and listener must be cleared after verification");
   assert.strictEqual(receiptBrowser.calls.clickAt.length, 1);
+
+  const successReceiptBrowser = fakeBrowser({
+    tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],
+    preserveClickContext: true,
+    networkLogs: [{ ...acceptedNetworkLog(), meta: { pendingRequests: 0 } }]
+  });
+  const successReceiptAdapter = new BossSiteAdapter({ browser: successReceiptBrowser, sleepFn: async () => {} });
+  await successReceiptAdapter.dispatchCommunication(await successReceiptAdapter.inspectCommunicationJob(expectedJob));
+  const successReceipt = await successReceiptAdapter.verifyCommunicationResult(expectedJob);
+  assert.strictEqual(successReceipt.state, "succeeded");
+  assert.deepStrictEqual(successReceipt.evidence.diagnostics, {
+    clickObserved: true, trustedClick: true, focusedAtGuard: true, focusedAtClick: true,
+    documentReadyState: "complete", actionState: "communicate", dialogVisible: false, pendingRequests: 0
+  }, "accepted results must retain the same diagnostic evidence as uncertain results");
+  assert.strictEqual(successReceiptBrowser.context("communication-created").__bossCommunicationClickReceipt, undefined);
 
   const staleReceiptBrowser = fakeBrowser({
     tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],
