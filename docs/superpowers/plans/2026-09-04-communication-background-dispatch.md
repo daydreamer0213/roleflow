@@ -21,7 +21,7 @@
 **Interfaces:** 消费并保持 `cdp(tabId, method, params)` / `clickAt(tabId, point)`；只改变内部连接存活时间。
 
 - [x] 基线 browser_transport、boss_communication_page、communication_executor 通过。
-- [ ] 新增双本地页回归，先看到焦点断言失败：
+- [x] 新增双本地页回归，先看到焦点断言失败：
 
 ```js
 await adapter.cdp(targetId, 'Emulation.setFocusEmulationEnabled', { enabled: true });
@@ -32,9 +32,9 @@ assert.equal(await page.evaluate(() => window.clicks.length), 1);
 await adapter.cdp(targetId, 'Emulation.setFocusEmulationEnabled', { enabled: false });
 ```
 
-- [ ] 最小实现：启用时保留连接，作用域内复用；关闭/错误释放，禁止断开重发。
-- [ ] 测试关闭、异常和断开；运行 browser_transport、cdp_focus_scope、source_acquisition、boss_message_reply_sender、boss_communication_page。
-- [ ] 检查差异后提交实现与测试。
+- [x] 最小实现：启用时保留连接，作用域内复用；关闭/错误释放，禁止断开重发。异常连接保留失败标记至显式关闭，防止后续命令静默换连接继续。
+- [x] 测试关闭、异常和断开；运行 browser_transport、cdp_focus_scope、source_acquisition、boss_message_reply_sender、boss_communication_page，全部通过。
+- [x] 检查差异后提交实现与测试（`a160e7c`、`216238c`），Task 1 独立复审通过。
 
 ## Task 2: 脱敏诊断与准确提示
 
@@ -44,14 +44,16 @@ await adapter.cdp(targetId, 'Emulation.setFocusEmulationEnabled', { enabled: fal
 
 补充代码取证：`CdpNetworkLog.read` 过滤掉未结束请求，导致“在途”与“没有请求”不可区分。`src/adapters/browser/cdp_network_log.js` 只追加 `meta.pendingRequests` 计数；Task 1 的 transport 检查负责验证开始为 1、完成为 0，Task 2 验证其落库及无元数据兼容。计数不改变沟通判定。
 
-- [ ] 先写失败测试：真实守卫注册的监听器收到目标点击后产生布尔回执；无回执不推断成功。
-- [ ] 执行器回归注入额外私密字段，验证最终数据库仅保存已列出的布尔值和枚举；后续岗位仍为 pending、零点击。
-- [ ] 最小实现回执清理、最终按钮/文档/弹层状态和白名单保存；沿现有界面改提示。
-- [ ] 跑 boss_communication_page、communication_executor、dashboard_communication_batch、workflow_page_migration。
+- [x] 先写失败测试：真实守卫注册的监听器收到目标点击后产生布尔回执；无回执不推断成功。
+- [x] 执行器回归注入额外私密字段，验证最终数据库仅保存已列出的布尔值和枚举；后续岗位仍为 pending、零点击。
+- [x] 最小实现回执清理、最终按钮/文档/弹层状态和白名单保存；沿现有界面改提示。独立复审发现成功路径遗漏诊断，`c44e723` 补齐并通过复核。
+- [x] 跑 boss_communication_page、communication_executor、dashboard_communication_batch、workflow_page_migration；最后一项在严格 Playwright 环境通过。
 
 ## Task 3: 最终验证与交接
 
-- [ ] 独立只读复审当前差异，修复可达的问题。
-- [ ] 在严格 Playwright 环境跑新鲜完整 npm test，记录实际总数。
-- [ ] 更新 NEXT_PHASE / PROJECT_HANDOFF 和本计划结果，不改写过去的真实验收结论。
-- [ ] git diff --check，提交，精确 SHA 聚焦复验；保持本地分支，不推送或安装。
+- [x] 独立只读复审当前差异，修复可达的问题。最后一次修复 `14e2a88` 把沟通/回复焦点启用纳入现有清理范围，复核无剩余问题。
+- [x] 在严格 Playwright 环境跑新鲜完整 npm test，记录实际总数。第一轮 `216238c` 144/144；最后修复后 `14e2a88` 重新完整执行，仍为 144/144、退出码 0。
+- [x] 更新 NEXT_PHASE / PROJECT_HANDOFF 和本计划结果，不改写过去的真实验收结论。
+- [x] 实现已提交并在精确 `14e2a887aec63ed1a8628e3f78a6a537f469df13` 完整验证；交接仅整理文档和临时审查材料，执行差异检查及提交后风险复验，保持本地分支，不推送或安装。
+
+最终结果、修改文件、命令环境和未验证边界见 `docs/superpowers/reports/2026-09-04-communication-background-dispatch.md`。本次没有打包，stage 路径不适用；真实诊断仅只读，开发和自动测试均未访问真实 BOSS。
