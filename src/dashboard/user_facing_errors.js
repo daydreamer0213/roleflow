@@ -40,6 +40,26 @@ const ERROR_GUIDANCE = Object.freeze({
     title: "BOSS 要求安全验证",
     impact: "RoleFlow 已立即停止页面访问，不会自动重试。",
     nextAction: "请先人工完成安全验证，再重新检查工作区。"
+  },
+  BOSS_COMMUNICATION_SCOPE_MISMATCH: {
+    title: "上次沟通被搜索条件检查拦住",
+    impact: "已确认的岗位清单仍然保留。",
+    nextAction: "无需恢复旧搜索条件；确认 BOSS 工作区就绪后，点击继续沟通。"
+  },
+  COMMUNICATION_ACTION_NOT_TRIGGERED: {
+    title: "平台没有响应本次点击",
+    impact: "沟通已停止，系统不会自动重试这次点击。",
+    nextAction: "打开沟通明细，先核对该岗位在 BOSS 上的实际结果，再处理剩余岗位。"
+  },
+  COMMUNICATION_RESULT_AMBIGUOUS: {
+    title: "沟通结果需要人工核对",
+    impact: "系统已发出操作，但无法确认平台是否接受；这不代表发送失败。",
+    nextAction: "在 BOSS 核对对应岗位的结果，再到沟通明细填写处理依据。"
+  },
+  COMMUNICATION_PROCESS_FAILED: {
+    title: "沟通过程意外中断",
+    impact: "已保存的岗位结果仍然保留。",
+    nextAction: "先查看沟通明细；如有待确认结果，请先核对，再继续剩余岗位。"
   }
 });
 
@@ -59,4 +79,9 @@ function userFacingError(code, technicalMessage = "") {
   };
 }
 
-module.exports = { userFacingError };
+function communicationStopError(batch = {}) {
+  if (!["interrupted", "failed"].includes(batch.status)) return null;
+  return userFacingError(batch.stopCode || "COMMUNICATION_PROCESS_FAILED", batch.stopMessage);
+}
+
+module.exports = { userFacingError, communicationStopError };

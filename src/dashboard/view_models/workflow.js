@@ -2,7 +2,7 @@
 
 const { scopeShortId } = require("../../core/inherited_search_scope");
 const { communicationAmbiguityState } = require("../../core/communication_ambiguity");
-const { userFacingError } = require("../user_facing_errors");
+const { userFacingError, communicationStopError } = require("../user_facing_errors");
 
 const ANALYSIS_STATUS_LABELS = Object.freeze({
   pending: "等待分析",
@@ -31,7 +31,7 @@ function buildWorkflowViewModel({
       currentPath: `/workflow?runId=${encodeURIComponent(workflow.id || "")}`
     },
     header: {
-      statusLabel: workflowStatusLabel(status), sequence: number(workflow.sequence), localDay: String(workflow.localDay || ""),
+      statusLabel: phase.communication?.error ? "沟通已中断" : workflowStatusLabel(status), sequence: number(workflow.sequence), localDay: String(workflow.localDay || ""),
       targetSuccessCount: number(workflow.targetSuccessCount), successfulCount: number(workflow.successfulCount),
       todaySuccessful: number(daily.successfulToday), dailyTarget: number(daily.dailyTarget), inventoryCount: number(workflow.inventoryCount)
     },
@@ -187,26 +187,29 @@ function overviewView({ workflow, progress, phase, controls, runtimeBlock }) {
   const scan = progress?.scanTargets || {};
   const details = progress?.details || {};
   return {
-    currentPhase: workflowStatusLabel(workflow.status),
+    currentPhase: phase.communication?.error ? "沟通已中断" : workflowStatusLabel(workflow.status),
     overallProgress: progress?.visible
       ? `第 ${number(progress.stageIndex)} / ${number(progress.stageCount)} 阶段`
       : target ? `${successful} / ${target}` : "等待状态更新",
     usableRecommendations: phase.kind === "review" ? number(phase.review.defaultCount) : number(workflow.inventoryCount),
     acquisitionProgress: `搜索目标 ${number(scan.processed)} / ${number(scan.total)} · 已获取 ${number(details.collected)} 个岗位`,
     jdProgress: `已读取 ${number(details.read)} / ${number(details.required)} · 待补 ${number(details.pending)}`,
-    remainingWork: progress?.visible
+    remainingWork: phase.communication
+      ? `还有 ${Math.max(0, phase.communication.summary.total - phase.communication.summary.terminal)} 个沟通条目待处理`
+      : progress?.visible
       ? progress.remainingWorkLabel
       : phase.kind === "review"
         ? `已准备 ${phase.review.rows.length} 个候选岗位，等待你确认清单`
         : "本轮没有未完成工作",
     estimatedContinuation: cooldown.active ? `安全冷却至 ${cooldown.retryAtLabel}` : progress?.etaLabel || "当前阶段不估算剩余时间",
-    blocker: blockerView({ workflow, cooldown, runtimeBlock }),
+    blocker: blockerView({ workflow, cooldown, runtimeBlock, communicationError: phase.communication?.error }),
     nextAction: nextActionLabel(phase, controls),
     cooldown
   };
 }
 
-function blockerView({ workflow, cooldown, runtimeBlock }) {
+function blockerView({ workflow, cooldown, runtimeBlock, communicationError }) {
+  if (communicationError) return { label: communicationError.title, detail: communicationError.impact, recovery: communicationError.nextAction };
   if (cooldown.active) return { label: "安全冷却中", detail: cooldown.reason, recovery: "到达重试时间后等待本地状态刷新" };
   if (runtimeBlock) return { label: "运行环境已阻塞", detail: runtimeBlockLabel(runtimeBlock.reasonCode), recovery: "检查运行环境后再查看本轮状态" };
   if (workflow.status === "paused") return { label: "本轮已暂停", detail: String(workflow.errorCode || "安全暂停"), recovery: "检查原因后继续本轮" };
@@ -218,6 +221,7 @@ function blockerView({ workflow, cooldown, runtimeBlock }) {
 }
 
 function nextActionLabel(phase, controls) {
+  if (phase.communication?.error) return phase.communication.error.nextAction;
   if (phase.kind === "active") return controls.pausedVisible ? "检查暂停原因后继续本轮" : "系统正在继续处理，无需操作";
   return {
     review: "确认清单", confirmed: phase.communication?.actionLabel || phase.communication?.detailsLabel,
@@ -283,7 +287,7 @@ function communicationView(communication, runtimeBlock) {
   const ambiguousItem = ambiguity.firstItemId == null ? null : (communication?.items || []).find((item) => item?.id === ambiguity.firstItemId);
   const action = ambiguity.blocked ? "" : status === "confirmed" ? "start" : ["paused", "interrupted"].includes(status) ? "resume" : "";
   const detailsHref = batch.id ? `/communication?batchId=${encodeURIComponent(batch.id)}${ambiguousItem ? `#communication-item-${encodeURIComponent(ambiguousItem.id)}` : ""}` : "";
-  return { batchId: String(batch.id || ""), status, action, actionLabel: action === "resume" ? "继续沟通" : action === "start" ? "开始沟通" : "", executionEnabled: Boolean(action && communication?.calibration?.executionEnabled && !runtimeBlock), summary, runtimeBlock: runtimeBlock ? String(runtimeBlock.reasonCode || "") : "", detailsHref, detailsLabel: ambiguity.blocked ? (ambiguousItem ? "处理不明确结果" : "沟通记录不一致，请刷新") : "检查清单详情" };
+  return { batchId: String(batch.id || ""), status, action, actionLabel: action === "resume" ? "继续沟通" : action === "start" ? "开始沟通" : "", executionEnabled: Boolean(action && communication?.calibration?.executionEnabled && !runtimeBlock), summary, error: communicationStopError(batch), runtimeBlock: runtimeBlock ? String(runtimeBlock.reasonCode || "") : "", detailsHref, detailsLabel: ambiguity.blocked ? (ambiguousItem ? "处理不明确结果" : "沟通记录不一致，请刷新") : "检查清单详情" };
 }
 
 function resumeView(workflow) {

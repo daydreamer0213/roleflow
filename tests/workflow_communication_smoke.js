@@ -100,7 +100,10 @@ async function workflowCommunicationSmoke() {
         items: [{ id: 41, status: "ambiguous" }, { id: 42, status: "pending" }]
       }
     }).phase.communication;
-    assert.deepStrictEqual(interruptedCommunication, {
+    const { error: interruption, ...communicationControls } = interruptedCommunication;
+    assert.strictEqual(interruption.code, "COMMUNICATION_PROCESS_FAILED");
+    assert.strictEqual(typeof interruption.nextAction, "string");
+    assert.deepStrictEqual(communicationControls, {
       batchId: "91",
       status: "interrupted",
       action: "",

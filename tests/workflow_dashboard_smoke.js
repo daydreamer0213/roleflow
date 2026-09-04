@@ -36,6 +36,7 @@ const {
   createCommunicationBatch,
   listCommunicationBatchItems,
   setCommunicationBatchStatus,
+  resumeInterruptedCommunicationBatch,
   transitionCommunicationItem
 } = require("../src/core/communication_batches");
 const {
@@ -1184,10 +1185,24 @@ let server;
   assert.match(confirmedPage.body, /清单已确认/);
   assert.match(confirmedPage.body, /name="action" value="start"/);
   const communicationBatchId = getWorkflowRun(db, workflow.id).communicationBatchId;
+  setCommunicationBatchStatus(db, { batchId: communicationBatchId, status: "running" });
+  setCommunicationBatchStatus(db, {
+    batchId: communicationBatchId, status: "interrupted",
+    stopCode: "BOSS_COMMUNICATION_SCOPE_MISMATCH",
+    stopMessage: "当前 BOSS 搜索页筛选条件与本轮冻结范围不一致。"
+  });
+  const preExecutionFailure = await getText(baseUrl, confirmed.location);
+  assert.strictEqual(getWorkflowRun(db, workflow.id).status, "review_required");
+  assert.match(preExecutionFailure.body, /沟通已中断/);
+  assert.match(preExecutionFailure.body, /上次沟通被搜索条件检查拦住/);
+  assert.match(preExecutionFailure.body, /无需恢复旧搜索条件/);
+  assert.match(preExecutionFailure.body, /<details[^>]*><summary>技术信息<\/summary>/);
+  assert.match(preExecutionFailure.body, /name="action" value="resume"/);
+  assert.doesNotMatch(preExecutionFailure.body, /没有阻塞/);
+  resumeInterruptedCommunicationBatch(db, { batchId: communicationBatchId });
   const ambiguousCommunicationItem = db.prepare(`
     SELECT id, batch_id, job_id FROM communication_batch_items WHERE batch_id = ? ORDER BY position LIMIT 1
   `).get(communicationBatchId);
-  setCommunicationBatchStatus(db, { batchId: communicationBatchId, status: "running" });
   transitionCommunicationItem(db, { itemId: ambiguousCommunicationItem.id, expectedStatus: "pending", status: "opening" });
   transitionCommunicationItem(db, { itemId: ambiguousCommunicationItem.id, expectedStatus: "opening", status: "verified" });
   transitionCommunicationItem(db, {

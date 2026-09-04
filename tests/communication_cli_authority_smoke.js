@@ -8,7 +8,7 @@ const {
   transitionWorkflowRun,
   attachWorkflowCommunication
 } = require("../src/core/storage");
-const { getCommunicationBatch } = require("../src/core/communication_batches");
+const { getCommunicationBatch, setCommunicationBatchStatus } = require("../src/core/communication_batches");
 const { communicate } = require("../src/cli");
 
 const root = path.join(__dirname, "..");
@@ -374,7 +374,7 @@ let db;
   attachWorkflowCommunication(db, { id: driftWorkflow.id, communicationBatchId: driftBatchId });
   let driftBound = 0;
   let driftRun = 0;
-  await assert.rejects(
+  await assert.doesNotReject(
     () => communicate(db, { batch: driftBatchId, browser: "edge", "single-item": "1" }, {
       createBrowserFn: () => edgeBrowser,
       createSiteAdapterFn: () => ({
@@ -389,12 +389,40 @@ let db;
         async restoreCommunicationSearchPage() {}
       }),
       runCommunicationBatchFn: async () => { driftRun += 1; return { terminal: 0, total: 0 }; }
-    }),
-    (error) => error.code === "BOSS_COMMUNICATION_SCOPE_MISMATCH"
+    })
   );
-  assert.strictEqual(driftBound, 0);
-  assert.strictEqual(driftRun, 0);
-  assert.deepStrictEqual(getCommunicationBatch(db, driftBatchId).runtime, {});
+  assert.strictEqual(driftBound, 1);
+  assert.strictEqual(driftRun, 1);
+  assert.strictEqual(getCommunicationBatch(db, driftBatchId).runtime.browser.searchReturnUrl, searchUrl);
+  assert.strictEqual(getCommunicationBatch(db, driftBatchId).runtime.browser.searchScrollTop, 240);
+
+  const nextSearchUrl = "https://www.zhipin.com/web/geek/jobs?query=新的关键词";
+  const changedPageDeps = {
+    createBrowserFn: () => ({ ...edgeBrowser, async listTabs() {
+      return (await edgeBrowser.listTabs()).map((tab) => tab.id === 1995685534 ? { ...tab, url: nextSearchUrl } : tab);
+    } }),
+    createSiteAdapterFn: () => ({ ...edgeAdapter,
+      async preflight({ tabId }) {
+        return tabId === 1995685619
+          ? { tabId, url: "https://www.zhipin.com/web/geek/chat", isSearchPage: false }
+          : { tabId, url: nextSearchUrl, isSearchPage: true };
+      },
+      async captureCommunicationSearchState() { return { url: nextSearchUrl, scrollTop: 60 }; }
+    }),
+    runCommunicationBatchFn: async () => { driftRun += 1; return { terminal: 0, total: 0 }; }
+  };
+  setCommunicationBatchStatus(db, { batchId: driftBatchId, status: "running" });
+  setCommunicationBatchStatus(db, { batchId: driftBatchId, status: "paused" });
+  await communicate(db, { batch: driftBatchId, browser: "edge", "single-item": "1" }, changedPageDeps);
+  assert.strictEqual(driftRun, 2, "a paused CLI batch can recapture its current page without changing the confirmed jobs");
+  assert.strictEqual(getCommunicationBatch(db, driftBatchId).runtime.browser.bindingGeneration, 2);
+  assert.strictEqual(getCommunicationBatch(db, driftBatchId).runtime.browser.searchReturnUrl, new URL(nextSearchUrl).toString());
+  assert.strictEqual(getCommunicationBatch(db, driftBatchId).runtime.browser.searchScrollTop, 60);
+  setCommunicationBatchStatus(db, { batchId: driftBatchId, status: "running" });
+  await assert.rejects(() => communicate(db, { batch: driftBatchId, browser: "edge", "single-item": "1" }, {
+    createBrowserFn: () => edgeBrowser, createSiteAdapterFn: () => edgeAdapter,
+    runCommunicationBatchFn: async () => { throw new Error("must not execute after a running binding changed"); }
+  }), (error) => error.code === "COMMUNICATION_BROWSER_BINDING_MISMATCH");
 
   console.log("communication_cli_authority_smoke ok");
 })().catch((error) => {

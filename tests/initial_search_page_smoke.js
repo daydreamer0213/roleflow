@@ -80,11 +80,46 @@ function fixture({ searchUrl = "https://www.zhipin.com/web/geek/jobs?city=101280
   assert.deepStrictEqual(prepared.state.assertions, ["boss-search"]);
   assert.strictEqual(prepared.state.bindingChecks, 1);
 
+  const workflow = {
+    keywords: [{ word: "本轮关键词", priority: "A" }],
+    planner: { searchScope: { templateUrl: "https://www.zhipin.com/web/geek/jobs?city=101280100&multiSubway=100006%3A353369_353370" } }
+  };
+  const restarted = fixture({ searchUrl: "https://www.zhipin.com/web/geek/jobs" });
+  await prepareInitialSearchPage({ plan: { keywords: ["新方案关键词"] }, workflow, ...restarted });
+  const restoredUrl = new URL(restarted.state.navigations[0].url);
+  assert.strictEqual(restoredUrl.searchParams.get("city"), "101280100");
+  assert.strictEqual(restoredUrl.searchParams.get("multiSubway"), "100006:353369_353370");
+  assert.strictEqual(restoredUrl.searchParams.get("query"), "本轮关键词");
+
+  const generated = fixture({ searchUrl: "https://www.zhipin.com/web/geek/jobs" });
+  await prepareInitialSearchPage({ plan: { keywords: ["新方案关键词"] }, workflow: {
+    keywords: ["冻结的通用关键词"], planner: {
+      acquisitionMode: "generated", cityScopes: [{ city: "广州", cityCode: "101280100" }],
+      nativeFilters: { params: {}, lanes: [
+        { params: { salary: ["404"], jobType: ["1901"] } },
+        { params: { salary: ["405"], jobType: ["1901"] } }
+      ] }
+    }
+  }, ...generated });
+  const generatedUrl = new URL(generated.state.navigations[0].url);
+  assert.strictEqual(generatedUrl.searchParams.get("query"), "冻结的通用关键词");
+  assert.strictEqual(generatedUrl.searchParams.get("city"), "101280100");
+  assert.strictEqual(generatedUrl.searchParams.get("salary"), "404");
+  assert.strictEqual(generatedUrl.searchParams.get("jobType"), "1901");
+
+  const editedFilters = fixture({ searchUrl: "https://www.zhipin.com/web/geek/jobs?city=101010100" });
+  await prepareInitialSearchPage({ plan: { keywords: ["新方案关键词"] }, workflow, ...editedFilters });
+  const editedUrl = new URL(editedFilters.state.navigations[0].url);
+  assert.strictEqual(editedUrl.searchParams.get("city"), "101010100");
+  assert.strictEqual(editedUrl.searchParams.has("multiSubway"), false);
+  assert.strictEqual(editedUrl.searchParams.get("query"), "新方案关键词");
+
   const existing = fixture({
     searchUrl: "https://www.zhipin.com/web/geek/jobs?query=%E4%BA%A7%E5%93%81%E8%BF%90%E8%90%A5&city=101280100&page=2"
   });
   assert.deepStrictEqual(await prepareInitialSearchPage({
     plan: { keywords: [{ word: "电商运营", priority: "A" }] },
+    workflow,
     browser: existing.browser,
     adapter: existing.adapter
   }), { status: "skipped", reason: "query_present" });
