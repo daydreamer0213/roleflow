@@ -2,6 +2,7 @@
 
 const { communicationAmbiguityState } = require("../../core/communication_ambiguity");
 const { isBossJobUrl } = require("../../core/scoring");
+const { communicationStopError } = require("../user_facing_errors");
 
 const COMPLETED_BATCH_STATUSES = new Set(["completed", "stopped", "failed"]);
 const POLLING_TERMINAL_BATCH_STATUSES = new Set(["completed", "stopped", "interrupted", "failed"]);
@@ -61,6 +62,7 @@ function buildCommunicationViewModel({
     page,
     source: directBatch ? "direct_orphan" : "workflow_history",
     state,
+    error: communicationStopError(batch),
     batch: batchView(batch, summary),
     items,
     quota: quotaView(current.quota),

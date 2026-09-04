@@ -280,7 +280,6 @@ const PROGRESS_ACTIONS = Object.freeze({
 });
 const {
   buildInheritedSearchScope,
-  canonicalizeBossSearchTemplate,
   canonicalizeBossTargetUrl,
   assertInheritedAcquisitionScope,
   assertCompleteInheritedContext,
@@ -993,7 +992,8 @@ function createDashboardServer({
         logger
       });
       const adapter = new boss.BossSiteAdapter({ browser, logger, accessController });
-      const result = await initialSearchPreparer({ plan, browser, adapter });
+      const workflow = getActiveWorkflowRun(db, { profileId: plan.profileId, planId: plan.id });
+      const result = await initialSearchPreparer({ plan, workflow, browser, adapter });
       if (completedRun) {
         recordInitialSearchPreparationHandled(db, { run: completedRun, source, result });
       }
@@ -4507,7 +4507,6 @@ async function inspectAndBindCommunicationBrowser({
     inspectTab: (tabId) => adapter.preflight({ tabId })
   });
   const captured = await adapter.captureCommunicationSearchState(inspected.searchTab.id);
-  assertCommunicationRebindScope(db, batch, captured.url);
   return bindCommunicationBatchRuntime(db, {
     batchId: batch.id,
     browser: {
@@ -4521,26 +4520,6 @@ async function inspectAndBindCommunicationBrowser({
     },
     rebind: true
   });
-}
-
-function assertCommunicationRebindScope(db, batch, returnUrl) {
-  const workflow = getWorkflowRunByCommunicationBatch(db, batch.id);
-  const expectedUrl = String(
-    workflow?.planner?.searchScope?.templateUrl
-    || batch.runtime?.browser?.searchReturnUrl
-    || ""
-  );
-  let actual;
-  let expected;
-  try {
-    actual = canonicalizeBossSearchTemplate(returnUrl).url;
-    expected = canonicalizeBossSearchTemplate(expectedUrl).url;
-  } catch (cause) {
-    throw appError("BOSS_COMMUNICATION_SCOPE_MISMATCH", "无法确认当前 BOSS 搜索页与原筛选范围一致。", { statusCode: 409, cause });
-  }
-  if (actual !== expected) {
-    throw appError("BOSS_COMMUNICATION_SCOPE_MISMATCH", "当前 BOSS 搜索页筛选条件与原批次范围不一致。", { statusCode: 409 });
-  }
 }
 
 function startCommunicationProcess({ db, root, dataRoot = root, dbPath, batch, singleItemId = null, logger, requestId, spawnProcess = spawn }) {

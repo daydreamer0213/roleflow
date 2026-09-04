@@ -3,7 +3,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { EventEmitter } = require("node:events");
-const { openDb, saveProfileAnalysis } = require("../src/core/storage");
+const { openDb, saveProfileAnalysis, createWorkflowRun } = require("../src/core/storage");
 const { createDashboardServer } = require("../src/dashboard/server");
 const { getOnboardingRun } = require("../src/storage/onboarding_store");
 const { processOnboardingRun } = require("../src/core/onboarding_run");
@@ -269,10 +269,11 @@ async function main() {
   await testNonzeroChildExitStaysRecoverable();
   await testStatusPollingRecoversStaleRun();
   await testActivePlanCatchUpWithoutOnboardingRun();
+  await testActivePlanCatchUpWithoutOnboardingRun({ pendingRun: true });
   console.log("onboarding_progress_ui_smoke ok");
 }
 
-async function testActivePlanCatchUpWithoutOnboardingRun() {
+async function testActivePlanCatchUpWithoutOnboardingRun({ pendingRun = false } = {}) {
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-active-plan-search-catch-up-"));
   const fixtureDbPath = path.join(fixtureRoot, "jobs.sqlite");
   const fixtureDb = openDb(fixtureDbPath);
@@ -297,6 +298,11 @@ async function testActivePlanCatchUpWithoutOnboardingRun() {
     }
   });
   assert.strictEqual(fixtureDb.prepare("SELECT COUNT(*) AS count FROM onboarding_runs").get().count, 0);
+  const workflow = pendingRun ? createWorkflowRun(fixtureDb, {
+    profileId: saved.profileId, planId: saved.planId, localDay: "2026-09-04", sequence: 1,
+    targetSuccessCount: 1, candidateGap: 1, scanNeeded: true, keywords: ["AI 应用"],
+    planner: { browserMode: "edge", searchScope: { templateUrl: "https://www.zhipin.com/web/geek/jobs?city=101280100&multiSubway=100006%3A353369" } }
+  }) : null;
 
   const prepareCalls = [];
   const reconcileCalls = [];
@@ -338,6 +344,7 @@ async function testActivePlanCatchUpWithoutOnboardingRun() {
     assert.strictEqual(prepareCalls.length, 1,
       "an active search plan must prepare the search page even without an onboarding run");
     assert.strictEqual(prepareCalls[0].plan.id, saved.planId);
+    assert.strictEqual(prepareCalls[0].workflow?.id || null, workflow?.id || null);
     assert.strictEqual(prepareCalls[0].browser.fixture, "active-plan-browser");
     assert.strictEqual(scheduledRechecks.length, 1,
       "a prepared keyword must schedule one workspace recheck after the browser task");

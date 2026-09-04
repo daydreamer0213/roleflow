@@ -3,6 +3,7 @@
 const { escapeAttr, escapeHtml } = require("../http/response");
 const { renderDashboardFrame } = require("../ui/shell");
 const { communicationStatusLabel, communicationErrorLabel } = require("../status_labels");
+const { renderCommunicationStop } = require("../ui/communication_stop");
 
 const ACTIVE_ITEM_STATUSES = new Set(["opening", "verified", "click_dispatched"]);
 
@@ -12,12 +13,12 @@ function renderCommunicationPage(vm = {}) {
   const pollingAttributes = polling ? ` data-communication-batch-id="${number(polling.batchId)}" data-communication-item-ids="${escapeAttr((polling.itemIds || []).join(","))}" data-communication-batch-status="${escapeAttr(polling.batchStatus)}" data-communication-polling-interval="${number(polling.intervalMs) || 2500}"` : "";
   const script = polling ? '<script src="/assets/communication.js"></script>' : "";
   return renderDashboardFrame({ currentPath: page.currentPath, todayPath: page.planHref, planId: page.planId, stage: "自动沟通", brandHref: page.planHref || "/plan", content: `<main id="main-content" class="communication-shell" data-communication-page${pollingAttributes}>
-    ${header(vm)}${primary(vm)}${currentBatch(vm)}${history(vm)}
+    ${header(vm)}${renderCommunicationStop(vm.error)}${primary(vm)}${currentBatch(vm)}${history(vm)}
   </main>${script}` });
 }
 
 function header(vm) {
-  const state = stateLabel(vm.state);
+  const state = batchStateLabel(vm);
   return `<header class="page-heading communication-heading"><p class="eyebrow">沟通中心</p><h1>自动沟通</h1><p class="lede">在这里核对已确认清单、处理不明确结果，并查看串行执行进度。确认后系统串行执行；不会自主发送。</p><div class="heading-meta"><span class="status ${statusClass(vm.state)}">${escapeHtml(state)}</span>${vm.page?.planName ? `<span>筛选方案：${escapeHtml(vm.page.planName)}</span>` : ""}</div></header>`;
 }
 
@@ -38,11 +39,11 @@ function primary(vm) {
   const discard = ["confirmed", "paused"].includes(vm.batch?.status) ? `<form method="post" action="/api/communication-control"><input type="hidden" name="batchId" value="${number(vm.batch?.id)}"><button class="communication-discard" name="action" value="discard" data-communication-control>安全撤回</button></form>` : "";
   const heading = singleItemId
     ? `${escapeHtml(vm.controls.singleItemTitle || "未保存岗位")} / ${escapeHtml(vm.controls.singleItemCompany || "未保存公司")}`
-    : "确认后按固定清单串行执行";
+    : vm.error ? "继续处理已确认清单" : "确认后按固定清单串行执行";
   const copy = singleItemId
     ? "本次只处理这个岗位，随后自动暂停；结果不明不会重试。"
-    : "开始前仍会检查校准、身份、配额、冷却、无重复点击和范围一致性。“重新检查”只读取现有固定标签并更新本地绑定，不会启动沟通。";
-  return `<section class="action-panel"><p class="section-label">${singleItemId ? "下一次仅验收 1 个岗位" : "等待人工确认"}</p><h2>${heading}</h2><p class="muted">${copy}</p><div class="button-row">${execute}${discard}${rebind}</div></section>`;
+    : "只处理已确认清单中的岗位，不受搜索页筛选条件变化影响。“重新检查”只检查现有固定页面，不会启动沟通。";
+  return `<section class="action-panel"><p class="section-label">${singleItemId ? "下一次仅验收 1 个岗位" : vm.error ? "等待继续" : "等待人工确认"}</p><h2>${heading}</h2><p class="muted">${copy}</p><div class="button-row">${execute}${discard}${rebind}</div></section>`;
 }
 
 function currentBatch(vm) {
@@ -51,7 +52,7 @@ function currentBatch(vm) {
   const outcomes = vm.outcomes || {};
   const runtime = vm.runtimeBlock ? `<div class="alert" role="alert"><strong>运行环境已阻止执行</strong><p>${escapeHtml(vm.runtimeBlock.reasonCode)}${vm.runtimeBlock.blockedUntil ? ` · ${escapeHtml(vm.runtimeBlock.blockedUntil)}` : ""}</p></div>` : "";
   const calibration = vm.calibration || {};
-  return `<section class="communication-current"><div class="card-head"><div><p class="section-label">当前批次</p><h2>批次 #${number(vm.batch.id)}</h2></div><span class="status ${statusClass(vm.state)}">${escapeHtml(stateLabel(vm.state))}</span></div><div class="card-body">${runtime}<div class="communication-progress"><label id="communication-progress-label" for="communication-progress-meter">逐岗位沟通进度</label><progress id="communication-progress-meter" data-communication-meter aria-labelledby="communication-progress-label" value="${number(vm.batch.terminal)}" max="${Math.max(1, number(vm.batch.total))}"></progress><p data-communication-error role="alert" hidden>无法读取沟通状态</p></div><div class="communication-metrics" aria-label="批次统计"><div><span>已确认岗位</span><strong>${number(vm.batch.total)}</strong></div><div><span>已完成条目</span><strong data-communication-terminal>${number(vm.batch.terminal)}</strong></div><div><span>已核验成功</span><strong data-communication-success>${number(outcomes.succeeded)}</strong></div><div><span>剩余待处理</span><strong data-communication-remaining>${number(vm.batch.remaining)}</strong></div></div><div class="communication-ledger"><section><h3>安全操作额度</h3><p>已用 ${number(quota.used)} · 已预留 ${number(quota.reserved)} · 剩余 ${number(quota.remaining)} / ${number(quota.limit)}</p></section><section><h3>已核验沟通结果</h3><p>成功 ${number(outcomes.succeeded)} · 已沟通 ${number(outcomes.alreadyCommunicated)} · 停止 ${number(outcomes.stopped)} · 未成功 ${number(outcomes.failed)}</p></section><section><h3>沟通校准</h3><p>实施：${escapeHtml(calibration.implementation === "implemented" ? "已实现" : calibration.implementation || "未知")} · 校准：${escapeHtml(calibration.calibration === "calibrated" ? "已完成" : calibration.calibration || "未知")}</p><p>端到端验收：${escapeHtml(calibration.acceptance === "e2e_pending" ? "待人工 E2E 验收（e2e_pending）" : calibration.acceptance || "未知")} · 技术执行门：${calibration.executionEnabled ? "已启用" : "未启用"}</p></section></div><div class="communication-items">${(vm.items || []).map(item).join("") || "<p class=\"hint\">该批次没有可显示的条目。</p>"}</div></div></section>`;
+  return `<section class="communication-current"><div class="card-head"><div><p class="section-label">当前批次</p><h2>批次 #${number(vm.batch.id)}</h2></div><span class="status ${statusClass(vm.state)}">${escapeHtml(batchStateLabel(vm))}</span></div><div class="card-body">${runtime}<div class="communication-progress"><label id="communication-progress-label" for="communication-progress-meter">逐岗位沟通进度</label><progress id="communication-progress-meter" data-communication-meter aria-labelledby="communication-progress-label" value="${number(vm.batch.terminal)}" max="${Math.max(1, number(vm.batch.total))}"></progress><p data-communication-error role="alert" hidden>无法读取沟通状态</p></div><div class="communication-metrics" aria-label="批次统计"><div><span>已确认岗位</span><strong>${number(vm.batch.total)}</strong></div><div><span>已完成条目</span><strong data-communication-terminal>${number(vm.batch.terminal)}</strong></div><div><span>已核验成功</span><strong data-communication-success>${number(outcomes.succeeded)}</strong></div><div><span>剩余待处理</span><strong data-communication-remaining>${number(vm.batch.remaining)}</strong></div></div><div class="communication-ledger"><section><h3>安全操作额度</h3><p>已用 ${number(quota.used)} · 已预留 ${number(quota.reserved)} · 剩余 ${number(quota.remaining)} / ${number(quota.limit)}</p></section><section><h3>已核验沟通结果</h3><p>成功 ${number(outcomes.succeeded)} · 已沟通 ${number(outcomes.alreadyCommunicated)} · 停止 ${number(outcomes.stopped)} · 未成功 ${number(outcomes.failed)}</p></section><section><h3>沟通校准</h3><p>实施：${escapeHtml(calibration.implementation === "implemented" ? "已实现" : calibration.implementation || "未知")} · 校准：${escapeHtml(calibration.calibration === "calibrated" ? "已完成" : calibration.calibration || "未知")}</p><p>端到端验收：${escapeHtml(calibration.acceptance === "e2e_pending" ? "待人工 E2E 验收（e2e_pending）" : calibration.acceptance || "未知")} · 技术执行门：${calibration.executionEnabled ? "已启用" : "未启用"}</p></section></div><div class="communication-items">${(vm.items || []).map(item).join("") || "<p class=\"hint\">该批次没有可显示的条目。</p>"}</div></div></section>`;
 }
 
 function item(row = {}) {
@@ -67,6 +68,7 @@ function history(vm) {
 }
 
 function number(value) { const parsed = Number(value); return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : 0; }
+function batchStateLabel(vm) { return vm.error && vm.state !== "needs_resolution" ? "沟通已中断" : stateLabel(vm.state); }
 function stateLabel(state) { return { pending_review: "等待确认", running: "串行执行中", needs_resolution: "等待人工确认", completed: "已结束", no_batch: "尚无批次", integrity_blocked: "范围已阻止" }[state] || "处理中"; }
 function itemStatusLabel(status) { return communicationStatusLabel(status); }
 function tierLabel(tier) { return { primary: "主投", apply: "可投", caution: "慎投" }[tier] || tier || "未保存"; }

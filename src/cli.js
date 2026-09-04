@@ -100,7 +100,6 @@ const { resolveBossRiskWindow } = require("./core/boss_risk_window");
 const { stableHash } = require("./core/analysis_revision");
 const { matchingCardRevision } = require("./core/matching_card");
 const {
-  canonicalizeBossSearchTemplate,
   buildInheritedSearchScope,
   assertInheritedAcquisitionScope,
   assertCompleteInheritedContext,
@@ -337,10 +336,10 @@ async function communicate(
       throw codedError("BOSS_COMMUNICATION_BINDING_REQUIRED", "Communication adapter is missing its fixed-tab lifecycle.");
     }
     const captured = await adapter.captureCommunicationSearchState(inspected.searchTab.id);
-    assertCommunicationSearchScope(workflowRun, captured.url);
     const current = getCommunicationBatch(db, batchId);
     const bound = bindCommunicationBatchRuntime(db, {
       batchId,
+      rebind: current.status === "paused" && Boolean(current.runtime?.browser),
       browser: {
         mode: browserMode,
         windowId: inspected.windowId,
@@ -436,22 +435,6 @@ function settleCommunicationProcessFailure(db, batchId, error, communicationLogg
       error: errorMeta(settlementError)
     });
     return getCommunicationBatch(db, batchId);
-  }
-}
-
-function assertCommunicationSearchScope(workflowRun, returnUrl) {
-  const expected = String(workflowRun?.planner?.searchScope?.templateUrl || "");
-  if (!expected) return;
-  let actual;
-  try {
-    actual = canonicalizeBossSearchTemplate(returnUrl).url;
-  } catch (cause) {
-    const error = codedError("BOSS_COMMUNICATION_SCOPE_MISMATCH", "当前 BOSS 搜索页不是本轮冻结的筛选范围。");
-    error.cause = cause;
-    throw error;
-  }
-  if (actual !== expected) {
-    throw codedError("BOSS_COMMUNICATION_SCOPE_MISMATCH", "当前 BOSS 搜索页筛选条件与本轮冻结范围不一致。");
   }
 }
 
