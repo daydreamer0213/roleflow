@@ -14,7 +14,8 @@
 以下文档需要与当前代码持续保持一致：
 
 - [`../README.md`](../README.md)：项目定位、安装方式、主要能力和快速开始。
-- [`releases/v1.3.0.md`](releases/v1.3.0.md)：当前正式版 v1.3.0 的用户变化、验证边界和下载文件说明。
+- [`releases/v1.3.1.md`](releases/v1.3.1.md)：本次 v1.3.1 的用户变化、验证边界和下载文件说明；公开状态以 Release 页面为准。
+- [`releases/v1.3.0.md`](releases/v1.3.0.md)：上一正式版的用户变化与验证记录。
 - [`releases/v1.2.2.md`](releases/v1.2.2.md)：已发布 v1.2.2 的历史版本说明；不代表当前正式版。
 - [`releases/v1.2.1.md`](releases/v1.2.1.md)：已发布 v1.2.1 的历史版本说明；不代表当前正式版。
 - [`releases/v1.2.0.md`](releases/v1.2.0.md)：已发布 v1.2.0 的历史版本说明；不代表当前 source candidate。

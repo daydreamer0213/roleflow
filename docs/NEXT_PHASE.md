@@ -46,6 +46,8 @@
 
 ## 当前门禁
 
+当前新增任务是用户已授权的 v1.3.1 推送、发布与新用户模拟验收。发布候选和最终回执以 `docs/superpowers/plans/2026-09-04-roleflow-v1.3.1-release.md` 为准；下方集成门禁不是新版标签的最终门禁。模拟只用独立 D: 数据与示例简历，不接管真实 BOSS 批次。
+
 当前集成提交为 `ae9d1805f7e6f8ff9e3545e48e8f6f51e18e4104`，已快进进入本地 `main`；该精确 SHA 的严格 `npm test` 为 **143/143 通过、退出码 0**，13 项关键回归与独立复审通过。由同一提交构建的本地安装器位于 `D:\DevData\RoleFlow-acceptance-fixes-20260904\output\RoleFlow-Setup-1.3.0.exe`；2,621 个暂存文件哈希一致、禁入项 0、sidecar 一致、独立数据自检 `SELF_CHECK_OK`。没有推送或公开发布，尚未替换真实安装版。完整路径、哈希和边界见 `docs/superpowers/plans/2026-09-04-acceptance-fixes-integration.md`。
 
 ### 历史分支门禁（不能替代当前集成结果）

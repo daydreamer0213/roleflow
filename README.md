@@ -1,6 +1,6 @@
 # RoleFlow
 
-[![Release: v1.3.0](https://img.shields.io/badge/release-v1.3.0-2563eb)](https://github.com/daydreamer0213/roleflow/releases/tag/v1.3.0)
+[![Release: v1.3.1](https://img.shields.io/badge/release-v1.3.1-2563eb)](https://github.com/daydreamer0213/roleflow/releases/tag/v1.3.1)
 [![CI](https://github.com/daydreamer0213/roleflow/actions/workflows/ci.yml/badge.svg)](https://github.com/daydreamer0213/roleflow/actions/workflows/ci.yml)
 [![License: AGPL-3.0-only](https://img.shields.io/badge/license-AGPL--3.0--only-0f766e)](LICENSE)
 
@@ -12,9 +12,9 @@ RoleFlow 的筛选规则由搜索关键词、城市、薪资和经验范围驱�
 
 ## 发布状态
 
-`v1.3.0` 是当前正式版；普通用户应从 [v1.3.0 下载页](https://github.com/daydreamer0213/roleflow/releases/tag/v1.3.0) 获取安装器，并以该版本的发布说明为准。安装器尚未代码签名，Windows 可能显示信誉或 SmartScreen 提示。
+`v1.3.1` 是本次发布版本；普通用户应从 [v1.3.1 下载页](https://github.com/daydreamer0213/roleflow/releases/tag/v1.3.1) 获取安装器，正式可用状态以该页公开资产为准。安装器尚未代码签名，Windows 可能显示信誉或 SmartScreen 提示。
 
-v1.3.0 默认使用“RoleFlow 专用 Edge（推荐）”，登录资料固定保存在 `%LOCALAPPDATA%\RoleFlow\BrowserProfile`。本版新增无回复跟进、岗位归档/恢复与 CSV 导出，并收紧消息草稿事实质量和定向简历启用完整性；用户亲自修改的文字仍直接生效，不增加二次确认。
+v1.3.1 默认使用“RoleFlow 专用 Edge（推荐）”。本版改善首次页面准备、安装目录选择、结束本轮和沟通续接，增加猴子产品图标与默认关闭的“接受兼职”；新方案薪资留空，已有用户保存值不自动删除。此前无回复跟进、岗位归档/导出、消息学习和简历优化能力保留。
 
 ## 核心能力
 
@@ -26,7 +26,7 @@ v1.3.0 默认使用“RoleFlow 专用 Edge（推荐）”，登录资料固定�
 - 按 48 小时和周末顺延规则分析 30/50/70 档求职反馈；策略改变后开启新轮，不混用修改前后的投递数据。
 - 基于原简历和目标方向生成整份可编辑定向简历，并提供基于简历证据的通用模拟面试。
 - 沟通前必须由用户确认清单；登录失效、页面漂移或结果不明确时停止操作。
-- v1.3.0 发布线注册 142 项离线检查；标签发布已在精确版本提交上重新执行全部检查。测试不访问真实 BOSS，也不会创建假的 `msedge.exe`。
+- v1.3.1 发布线注册 143 项离线检查；标签发布会在精确版本提交上重新执行全部检查。测试不访问真实 BOSS，也不会创建假的 `msedge.exe`。
 
 RoleFlow 每天最多由用户手动启动三轮任务，前两轮是主要工作轮次，第三轮只在候选库存明显不足时追加。每轮都要经过清单确认才会串行点击沟通；不会后台定时运行，也不会绕过用户确认直接执行。
 
@@ -34,19 +34,19 @@ RoleFlow 每天最多由用户手动启动三轮任务，前两轮是主要工�
 
 Windows 普通用户：
 
-> **请前往 [v1.3.0 下载页](https://github.com/daydreamer0213/roleflow/releases/tag/v1.3.0)，下载 `RoleFlow-Setup-1.3.0.exe`。**
+> **请前往 [v1.3.1 下载页](https://github.com/daydreamer0213/roleflow/releases/tag/v1.3.1)，下载 `RoleFlow-Setup-1.3.1.exe`。**
 >
-> 同页的 `RoleFlow-Setup-1.3.0.exe.sha256` 用于核对文件完整性；GitHub 自动生成的 Source code 压缩包不是安装程序。
+> 同页的 `RoleFlow-Setup-1.3.1.exe.sha256` 用于核对文件完整性；GitHub 自动生成的 Source code 压缩包不是安装程序。
 
 安装后的日常路径如下：
 
-1. 在当前源码或候选暂存目录运行 `Install.bat`，再双击 `Start.bat`。默认会启动“RoleFlow 专用 Edge（推荐）”，不需要 Edge Control 或浏览器连接组件。
+1. 运行安装器，选择程序安装目录；完成后从桌面或开始菜单的猴子图标启动 RoleFlow。默认会准备“RoleFlow 专用 Edge（推荐）”，不需要 Edge Control。只有使用便携包时，才先运行 `Install.bat`，再双击 `Start.bat`。
 2. 第一次在“RoleFlow 专用 Edge（推荐）”中登录 BOSS。登录资料保存在 `%LOCALAPPDATA%\RoleFlow\BrowserProfile`，覆盖升级或更换安装目录后仍会复用；不要把这个目录放进发布包或提交到 Git。
 3. 在同一个“RoleFlow 专用 Edge（推荐）”窗口保留一个 `BOSS-SEARCH` 搜索页和一个 `BOSS-COMMUNICATION` 沟通页。启动助手可在就绪检查后引导一次前台；此后的扫描、JD 读取、分析、消息发现和沟通都保持后台。
 4. 在“模型设置”选择 DeepSeek、通义千问、OpenAI 或自定义兼容接口，填写 Key，并执行“测试连接并保存”。
 5. 上传 TXT、MD、DOCX、PDF 简历，检查候选人画像和搜索方案，手工选择求职城市并保存方案。
 6. RoleFlow 会只读检查登录、风控、窗口归属和页面身份；失败时停止并给出处理建议，不会自动切换浏览器。消息发现优先复用本地完整 JD；只有新会话缺少完整可信 JD 时，才允许串行打开一个同窗口、`active: false` 的后台临时详情页，检查并保存后立即关闭。
-7. 只有明确要复用日常 Edge 时，才显式运行高级模式：
+7. 只有明确要复用日常 Edge 时，才使用高级模式。下列命令仅适用于源码或便携包，普通安装版继续使用推荐的专用 Edge：
 
    ```text
    Start.bat -BrowserMode edge
@@ -61,7 +61,7 @@ Windows 普通用户：
 
 当前版本默认使用“RoleFlow 专用 Edge（推荐）”，不依赖 Edge Control。Edge Control 扩展和桥接只服务于“使用当前 Edge（高级，需要浏览器连接组件）”，不进入普通安装包，也不会自动下载；高级模式缺少组件时会停止，不会切换浏览器 authority（浏览器控制权）。
 
-卸载时 RoleFlow 会先核对 8787 端口、`/health` 返回的安装目录和监听进程，只停止属于当前安装目录的工作台。普通卸载和静默卸载都保留 `%LOCALAPPDATA%\RoleFlow\BrowserProfile`；交互卸载只有在独立确认“删除专用浏览器登录资料”后才删除它。岗位数据库、简历、模型设置、日志和报告仍位于各自安装目录，不会因为浏览器登录资料稳定就悄悄迁移到新的安装目录。
+卸载时 RoleFlow 会先核对 8787 端口、`/health` 返回的安装目录和监听进程，只停止属于当前安装目录的工作台。普通卸载和静默卸载都保留 `%LOCALAPPDATA%\RoleFlow\BrowserProfile`；交互卸载只有在独立确认“删除专用浏览器登录资料”后才删除它。安装版的岗位数据库、简历、模型设置、日志和报告保存在 `%LOCALAPPDATA%\RoleFlow\Data`，独立于程序目录；同一 Windows 用户覆盖升级继续复用。
 
 仓库源码和便携 ZIP 仍保留 `Install.bat` / `Start.bat`，用于开发、便携使用和故障恢复。`Install.bat` 不是标准 Windows 安装器，也不再把完整开发回归测试作为用户安装步骤。
 
