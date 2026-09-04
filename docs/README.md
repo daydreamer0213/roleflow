@@ -15,6 +15,7 @@
 
 - [`../README.md`](../README.md)：项目定位、安装方式、主要能力和快速开始。
 - [`releases/v1.3.2.md`](releases/v1.3.2.md)：本次 v1.3.2 发布的用户变化、验证边界和下载文件说明；公开状态以 GitHub Release 为准。
+- [`superpowers/reports/2026-09-04-v1.3.2-release-acceptance.md`](superpowers/reports/2026-09-04-v1.3.2-release-acceptance.md)：v1.3.2 精确版本发布、目录问题诊断和两轮人工验收环境准备回执。
 - [`releases/v1.3.1.md`](releases/v1.3.1.md)：已发布 v1.3.1 的历史版本说明。
 - [`superpowers/reports/2026-09-04-v1.3.1-release-acceptance.md`](superpowers/reports/2026-09-04-v1.3.1-release-acceptance.md)：v1.3.1 磁盘清理、精确版本发布和新用户模拟验收回执，不代表 v1.3.2 验收结果。
 - [`releases/v1.3.0.md`](releases/v1.3.0.md)：已发布 v1.3.0 的历史版本说明与验证记录。
