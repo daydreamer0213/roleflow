@@ -5,8 +5,8 @@
 按以下顺序读取，不要先加载历史聊天或整个 `superpowers` 目录：
 
 1. [`../AGENTS.md`](../AGENTS.md)：长期安全、质量、浏览器和数据边界。
-2. [`PROJECT_HANDOFF.md`](PROJECT_HANDOFF.md)：当前未发布 source candidate 的状态和交接协议。
-3. [`NEXT_PHASE.md`](NEXT_PHASE.md)：当前候选的后续门禁、发布边界和待办。
+2. [`PROJECT_HANDOFF.md`](PROJECT_HANDOFF.md)：当前发布/候选状态和交接协议。
+3. [`NEXT_PHASE.md`](NEXT_PHASE.md)：当前验证边界和后续待办。
 4. 当前任务直接涉及的源码、测试和一份对应设计。
 
 ## 当前产品文档
@@ -14,7 +14,8 @@
 以下文档需要与当前代码持续保持一致：
 
 - [`../README.md`](../README.md)：项目定位、安装方式、主要能力和快速开始。
-- [`releases/v1.3.1.md`](releases/v1.3.1.md)：本次 v1.3.1 的用户变化、验证边界和下载文件说明；公开状态以 Release 页面为准。
+- [`releases/v1.3.1.md`](releases/v1.3.1.md)：当前正式版 v1.3.1 的用户变化、验证边界和下载文件说明。
+- [`superpowers/reports/2026-09-04-v1.3.1-release-acceptance.md`](superpowers/reports/2026-09-04-v1.3.1-release-acceptance.md)：本次磁盘清理、精确版本发布和新用户模拟验收回执。
 - [`releases/v1.3.0.md`](releases/v1.3.0.md)：上一正式版的用户变化与验证记录。
 - [`releases/v1.2.2.md`](releases/v1.2.2.md)：已发布 v1.2.2 的历史版本说明；不代表当前正式版。
 - [`releases/v1.2.1.md`](releases/v1.2.1.md)：已发布 v1.2.1 的历史版本说明；不代表当前正式版。
