@@ -19,6 +19,7 @@ const TERMINAL_ITEM_STATUSES = new Set(["succeeded", "already_communicated", "jo
 const ALLOWED_BUCKETS = new Set(["primary", "apply", "caution"]);
 const COMMUNICATION_ELIGIBILITY_BLOCKERS = new Set([
   "internship_role",
+  "part_time_role",
   "cohort_mismatch",
   "student_status_mismatch",
   "eligibility_review"

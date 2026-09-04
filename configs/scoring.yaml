@@ -10,11 +10,7 @@
     "alternating_weekend_penalty": 3,
     "single_weekend_penalty": 6
   },
-  "salary": {
-    "preferred_max_k": 24,
-    "hard_max_k": 35,
-    "experience_flex_max_k": 18
-  },
+  "salary": {},
   "positive_keywords": [],
   "risk_rules": [],
   "exclude_words": []

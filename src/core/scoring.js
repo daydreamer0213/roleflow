@@ -44,6 +44,7 @@ function scoreJob(job, configs) {
   const enforceJobTypes = configs.targetPolicy?.enforceJobTypes !== false;
   const eligibility = evaluateJobEligibility(job, {
     candidateProfile: configs.candidateProfile,
+    allowPartTime: configs.targetPolicy?.allowPartTime === true,
     targetJobTypes: enforceJobTypes ? targetJobTypes : unique([...targetJobTypes, "实习"])
   });
   const salary = salaryRangeK(job.salary);
@@ -136,10 +137,17 @@ function scoreJob(job, configs) {
     qualityTags.push("work_schedule_unknown");
   }
 
-  if (salary.max !== null && salary.max <= (scoring.salary?.preferred_max_k || 24)) score += 2;
+  const preferredSalaryMax = Number(scoring.salary?.preferred_max_k || 0);
+  const hardSalaryMax = Number(scoring.salary?.hard_max_k || 0);
+  const salaryFlexMax = Number(scoring.salary?.experience_flex_max_k || 0);
+  const salaryPreferenceSet = Number(scoring.salary?.expected_min_k || 0) > 0 || Number(scoring.salary?.expected_max_k || 0) > 0;
+  if (preferredSalaryMax > 0 && salary.max !== null && salary.max <= preferredSalaryMax) score += 2;
   if (salary.min === null || salary.max === null) {
     qualityTags.push("salary_unverified");
-    risks.push("薪资待确认");
+    if (salaryPreferenceSet) {
+      qualityTags.push("salary_preference_unverified");
+      risks.push("薪资待确认");
+    }
   }
   if (salary.max !== null && Number(scoring.salary?.expected_min_k || 0) > 0 && salary.max < Number(scoring.salary.expected_min_k)) {
     score -= 8;
@@ -156,7 +164,7 @@ function scoreJob(job, configs) {
       risks.push("薪资低于期望下限，不在严格范围内");
     }
   }
-  if (salary.max !== null && salary.max > (scoring.salary?.hard_max_k || 35)) {
+  if (hardSalaryMax > 0 && salary.max !== null && salary.max > hardSalaryMax) {
     score -= 8;
     risks.push("薪资上限偏高，可能偏资深");
   }
@@ -189,8 +197,7 @@ function scoreJob(job, configs) {
   const stretchEligible = stretchRequested
     && !experienceSalaryAboveTarget
     && !experienceSalaryOverlap
-    && salary.max !== null
-    && salary.max <= Number(scoring.salary?.experience_flex_max_k || 18)
+    && (salaryFlexMax <= 0 || (salary.max !== null && salary.max <= salaryFlexMax))
     && score >= 6
     && eligibility.status !== "blocked"
     && (!job.detailRequired || job.detailRead);
@@ -211,7 +218,7 @@ function scoreJob(job, configs) {
     risks.push("3-5年薪资区间与目标部分重叠，需结合完整职责判断");
   } else if (stretchEligible) {
     qualityTags.push("experience_stretch");
-    qualityTags.push("experience_stretch_low_salary");
+    if (salaryFlexMax > 0) qualityTags.push("experience_stretch_low_salary");
     risks.push("经验范围可冲刺");
   } else if (experienceFit.stretch) {
     score -= 6;
@@ -231,7 +238,7 @@ function scoreJob(job, configs) {
   if (canStretch) {
     matches.push("3-5年可冲");
     qualityTags.push("experience_stretch");
-    qualityTags.push("experience_stretch_low_salary");
+    if (salaryFlexMax > 0) qualityTags.push("experience_stretch_low_salary");
   } else if (scoring.allowExperienceStretch !== false
     && !experienceFit.configured
     && /3-5年|3年以上|三年以上|5年以上|五年以上/.test(`${job.experience || ""} ${job.description || ""}`)) {
@@ -333,6 +340,7 @@ function decisionState(job) {
     "inactive_boss",
     "hard_exclude",
     "internship_role",
+    "part_time_role",
     "cohort_mismatch",
     "student_status_mismatch",
     "salary_out_of_range",

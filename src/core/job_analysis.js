@@ -675,7 +675,8 @@ function hardBoundaryReason(job, qualityTags) {
   const selectors = [
     ["cohort_mismatch", /届|毕业年份/],
     ["student_status_mismatch", /在校|已毕业/],
-    ["internship_role", /实习/]
+    ["internship_role", /实习/],
+    ["part_time_role", /兼职|小时/]
   ];
   for (const [tag, pattern] of selectors) {
     if (!qualityTags.has(tag)) continue;

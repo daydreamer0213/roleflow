@@ -55,6 +55,10 @@ try {
     qualityTags: ["experience_overrange"]
   }), scanBatchId);
   const atomicId = upsertJob(db, job("atomic"), scanBatchId);
+  const partTimeId = upsertJob(db, job("part-time", {
+    qualityTags: ["part_time_role"], analysis: completeAnalysis("primary")
+  }), scanBatchId);
+  assert.throws(() => createCommunicationBatch(db, { planId, jobIds: [partTimeId], browserMode: "edge" }));
   const notRecommendedId = upsertJob(db, job("not-recommended", {
     title: "Not recommended role",
     level: "不建议",

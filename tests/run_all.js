@@ -9,6 +9,7 @@ const tests = [
   "background_process_visibility_smoke.js",
   "scoring_url_smoke.js",
   "job_eligibility_smoke.js",
+  "screening_preferences_smoke.js",
   "browser_transport_smoke.js",
   "browser_supervisor_smoke.js",
   "portable_edge_runtime_smoke.js",

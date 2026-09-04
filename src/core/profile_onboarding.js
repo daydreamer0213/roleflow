@@ -46,7 +46,17 @@ async function analyzeResumeProfile({
 async function recommendPlanForProfile({ modelConfig, profile, logger = null }) {
   const analyzer = createLlmAnalyzer({ modelConfig, logger });
   const rawPlan = await analyzer.recommendSearchPlan({ candidateProfile: profile });
-  return normalizeSearchPlan(rawPlan, profile);
+  return normalizeSearchPlan({
+    ...rawPlan,
+    salary: { minK: 0, maxK: 0 },
+    salaryMinK: 0,
+    salaryMaxK: 0,
+    allowPartTime: false,
+    platform: {
+      ...rawPlan.platform,
+      generated: { ...rawPlan.platform?.generated, salaryLanes: [] }
+    }
+  }, profile);
 }
 
 async function buildCandidateMatchCard({ modelConfig, profile, logger = null, adapter = null }) {

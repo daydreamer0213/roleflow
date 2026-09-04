@@ -160,7 +160,7 @@ async function assertPriorityPanelStaysCompactAtDesktopWidth() {
     await page.route("http://roleflow.test/**", async (route) => {
       const requestUrl = new URL(route.request().url());
       if (requestUrl.pathname === "/plan") {
-        return route.fulfill({ status: 200, contentType: "text/html", body: html });
+        return route.fulfill({ status: 200, contentType: "text/html; charset=utf-8", body: html });
       }
       if (requestUrl.pathname === "/api/browser-readiness") {
         return route.fulfill({
@@ -216,6 +216,16 @@ async function assertPriorityPanelStaysCompactAtDesktopWidth() {
     await page.goto("http://roleflow.test/plan");
     await page.waitForFunction(() => document.querySelector("[data-browser-readiness-button]")?.disabled === false);
     assert.strictEqual(await page.locator("[data-early-scan-dialog]").isVisible(), false);
+    await page.locator('#plan-settings > summary').click();
+    const partTime = page.getByLabel('接受兼职', { exact: true });
+    assert.strictEqual(await partTime.isChecked(), false);
+    await partTime.check();
+    assert.strictEqual(await partTime.isChecked(), true);
+    assert.strictEqual(await page.locator('[name="salaryMinK"]').inputValue(), '');
+    assert.strictEqual(await page.locator('[name="salaryMaxK"]').inputValue(), '');
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
+    assert.strictEqual(overflow, false, 'expanded screening fields must fit desktop width');
+    await page.locator('#plan-settings > summary').click();
     await page.locator("[data-early-scan-open]").click();
     assert.strictEqual(await page.locator("[data-early-scan-dialog]").isVisible(), true);
     assert.strictEqual(await page.locator('input[name="confirmEarlyScan"]').inputValue(), "1");
@@ -251,6 +261,8 @@ function assertRendererIsPureAndEscapesHtml() {
   });
   assert.deepStrictEqual(JSON.parse(JSON.stringify(viewModel)), viewModel, "today VM must contain plain serializable display data only");
   const html = renderTodayPage(viewModel);
+  assert.match(html, /name="allowPartTime"[^>]*>/);
+  assert.doesNotMatch(html, /name="allowPartTime"[^>]*checked/);
   assert.match(html, /&lt;script&gt;bad\(\)&lt;\/script&gt;/);
   assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/, "today page must prefer the local display name");
   assert.doesNotMatch(html, /<script>bad\(\)<\/script>/);
@@ -544,8 +556,9 @@ async function savePlanAndAssertMode(baseUrl, db, saved, acquisitionMode) {
       experience: "1-3年",
       jobTypes: "全职",
       degrees: "本科",
-      salaryMinK: "15",
-      salaryMaxK: "25",
+      salaryMinK: acquisitionMode === "generated" ? "" : "15",
+      salaryMaxK: acquisitionMode === "generated" ? "" : "25",
+      ...(acquisitionMode === "generated" ? { allowPartTime: "on" } : {}),
       salaryMode: "strict",
       bossActiveDays: "3",
       allowExperienceStretch: "on",
@@ -562,10 +575,21 @@ async function savePlanAndAssertMode(baseUrl, db, saved, acquisitionMode) {
   const row = db.prepare("SELECT plan_json FROM search_plans WHERE id = ?").get(saved.planId);
   const plan = JSON.parse(row.plan_json);
   assert.strictEqual(plan.acquisitionMode, acquisitionMode);
+  assert.strictEqual(plan.allowPartTime, acquisitionMode === "generated");
+  assert.deepStrictEqual(plan.salary, acquisitionMode === "generated" ? { minK: 0, maxK: 0 } : { minK: 15, maxK: 25 });
   assert.deepStrictEqual(plan.platform.generated.cities, ["上海"]);
   assert.strictEqual(Object.hasOwn(plan, "cities"), false);
   assert.strictEqual(Object.hasOwn(plan.platform, "salaryLanes"), false);
   const page = await getText(baseUrl, `/plan?planId=${saved.planId}`);
+  if (acquisitionMode === "generated") {
+    assert.match(page.body, /name="allowPartTime" checked/);
+    assert.match(page.body, /name="salaryMinK" value=""/);
+    assert.match(page.body, /name="salaryMaxK" value=""/);
+    assert.match(page.body, /薪资不限/);
+  } else {
+    assert.doesNotMatch(page.body, /name="allowPartTime"[^>]*checked/);
+    assert.match(page.body, /name="salaryMinK" value="15"/);
+  }
   assert.match(page.body, new RegExp(`name="acquisitionMode" value="${acquisitionMode}" checked`));
   const otherMode = acquisitionMode === "generated" ? "inherited" : "generated";
   assert.match(page.body, new RegExp(`data-acquisition-panel="${otherMode}"[^>]*hidden`));

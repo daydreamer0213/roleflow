@@ -48,8 +48,8 @@ function normalizeSearchPlan(input = {}, candidateProfile = {}) {
   const keywords = list(keywordInput).map(normalizeKeyword).filter((item) => item.word).slice(0, 18);
   const fallbackKeywords = keywords.length ? keywords : defaultKeywords(candidateProfile);
   const salary = object(input.salary);
-  const minK = number(input.salaryMinK ?? salary.minK, inferSalary(candidate.expectedSalary).min);
-  const maxK = number(input.salaryMaxK ?? salary.maxK, inferSalary(candidate.expectedSalary).max);
+  const minK = number(input.salaryMinK ?? salary.minK, 0);
+  const maxK = number(input.salaryMaxK ?? salary.maxK, 0);
   const experience = generated.experience ?? input.experience;
   const normalized = {
     name: text(input.name || `${city[0] || "目标城市"}岗位筛选计划`),
@@ -71,6 +71,7 @@ function normalizeSearchPlan(input = {}, candidateProfile = {}) {
       ? input.salaryMode
       : policy.defaultSalaryMode,
     allowExperienceStretch: input.allowExperienceStretch !== false,
+    allowPartTime: input.allowPartTime === true,
     bossActiveDays: normalizeBossActiveDays(input.bossActiveDays),
     workSchedulePreference: normalizeWorkSchedulePreference(input.workSchedulePreference),
     directions: strings(input.directions || candidate.targetTitles, 10),

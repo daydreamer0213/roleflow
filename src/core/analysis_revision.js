@@ -5,7 +5,7 @@ const { normalizeThinkingMode, normalizeReasoningEffort } = require("./model_set
 const PIPELINE_VERSIONS = Object.freeze({
   understandJob: "job-understanding-v19",
   matchJob: "match-decision-v44",
-  decisionRules: "four-tier-weighted-v4.8",
+  decisionRules: "four-tier-weighted-v4.8-screening-v1",
   communication: "communication-v2"
 });
 
@@ -59,6 +59,7 @@ function modelSearchPlanContext(searchPlan = {}) {
     cities: searchPlan.cities || [],
     experience: searchPlan.experience || [],
     jobTypes: searchPlan.jobTypes || [],
+    allowPartTime: searchPlan.allowPartTime === true,
     directions: searchPlan.directions || []
   };
 }

@@ -53,6 +53,7 @@ function profileToRuntimeConfigs(configs, candidateProfile, searchPlan, resumeVe
     matchingCard: matchingCard || null,
     analysisContext: runtimeAnalysisContext(candidateProfile, plan, matchingCard),
     targetPolicy: {
+      allowPartTime: plan.allowPartTime === true,
       jobTypes: platformJobTypes.length ? platformJobTypes : ["全职"],
       directions: plan.directions || candidate.targetTitles || [],
       skills: (candidateProfile?.skills || []).map((item) => typeof item === "string" ? item : item.name).filter(Boolean)
@@ -91,11 +92,11 @@ function profileToRuntimeConfigs(configs, candidateProfile, searchPlan, resumeVe
       salary: {
         ...configs.scoring?.salary,
         mode: plan.salaryMode === "strict" ? "strict" : "wide",
-        preferred_max_k: Number(salary.maxK || configs.scoring?.salary?.preferred_max_k || 24),
-        hard_max_k: Number(salary.maxK || configs.scoring?.salary?.hard_max_k || 35) + PRODUCT_POLICY.matching.salaryHardMaxMarginK,
+        preferred_max_k: Number(salary.maxK || 0),
+        hard_max_k: Number(salary.maxK || 0) > 0 ? Number(salary.maxK) + PRODUCT_POLICY.matching.salaryHardMaxMarginK : 0,
         expected_min_k: Number(salary.minK || 0),
         expected_max_k: Number(salary.maxK || 0),
-        experience_flex_max_k: Number(salary.maxK || configs.scoring?.salary?.experience_flex_max_k || 18)
+        experience_flex_max_k: Number(salary.maxK || 0)
       },
       experience_stretch_keywords: [...new Set([...(plan.directions || []), ...planKeywords(plan), ...(candidateProfile?.skills || []).map((item) => item.name || item)])],
       exclude_words: [...new Set([...(plan.hardExcludes || [])])]
@@ -166,6 +167,7 @@ function resolveScanPolicy(plan = {}, requestedMode = "daily") {
     salary: plan.salary || {},
     salaryMode: plan.salaryMode || planPolicy.defaultSalaryMode,
     allowExperienceStretch: plan.allowExperienceStretch !== false,
+    allowPartTime: plan.allowPartTime === true,
     excludeWords: plan.excludeWords || [],
     hardExcludes: plan.hardExcludes || [],
     bossActiveDays: safeActiveDays(plan.bossActiveDays),

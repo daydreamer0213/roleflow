@@ -13,11 +13,13 @@ function acquisitionModeOf(plan = {}) {
 
 function generatedPlatformOf(plan = {}) {
   const nested = plan?.platform?.generated || {};
+  const jobTypes = strings(nested.jobTypes ?? plan.jobTypes ?? plan.jobType);
+  if (plan.allowPartTime === true && jobTypes.length && !jobTypes.includes("兼职")) jobTypes.push("兼职");
   return {
     cities: strings(nested.cities ?? plan.cities),
     salaryLanes: strings(nested.salaryLanes ?? plan?.platform?.salaryLanes),
     experience: strings(nested.experience ?? plan.experience),
-    jobTypes: strings(nested.jobTypes ?? plan.jobTypes ?? plan.jobType),
+    jobTypes,
     degrees: strings(nested.degrees ?? plan.degrees ?? plan.degree)
   };
 }
@@ -32,6 +34,7 @@ function canonicalSearchPlanV2(plan = {}) {
     salary: clone(plan.salary || {}),
     salaryMode: plan.salaryMode,
     allowExperienceStretch: plan.allowExperienceStretch !== false,
+    allowPartTime: plan.allowPartTime === true,
     bossActiveDays: plan.bossActiveDays,
     workSchedulePreference: plan.workSchedulePreference,
     directions: strings(plan.directions),

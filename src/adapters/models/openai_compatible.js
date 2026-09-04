@@ -232,6 +232,7 @@ class OpenAICompatibleAdapter {
       "你是中文求职投递助手中的搜索计划模块。根据候选人画像生成初始 SearchPlan JSON，不执行任何搜索。",
       "这是用户意图的初始建议，不是技术配置：薪资和经验应贴近简历明确目标；城市只有在简历明确写出求职地点时才能预填，没有明确地点时 cities 输出空数组，交给用户选择；经验默认保留经验不限、0-3年、1-3年，并可保留低门槛的 3-5 年可冲岗位。",
       "bossCityCode 是系统内部字段，省略即可；bossActiveDays 固定输出 3。不要输出抓取数量或其他实现细节。",
+      "初次方案不代替用户设置薪资筛选：salary 固定输出 {minK:0,maxK:0}，不根据画像、市场或经验推测薪资范围。用户会在筛选方案中自行填写。",
       "关键词优先给“岗位名称”“业务场景 + 技术组合”，避免只堆 Docker、数据库等单项工具；每个关键词必须能从候选人目标或项目中找到依据。",
       "输出字段：name、cities、salary{minK,maxK}、experience、allowExperienceStretch、bossActiveDays、directions、keywords[{word,priority:A/B/C,reason}]、excludeWords、hardExcludes。不要把不存在的经历包装成关键词。"
     ].join("\n");

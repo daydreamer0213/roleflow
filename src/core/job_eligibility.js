@@ -3,7 +3,8 @@ const EXCLUSIVE_QUALIFIER = /仅限|只招|仅招|限定|仅面向|只接受|仅
 
 function evaluateJobEligibility(job = {}, {
   candidateProfile = {},
-  targetJobTypes = ["全职"]
+  targetJobTypes = ["全职"],
+  allowPartTime = false
 } = {}) {
   const jobEvidence = [];
   const candidateEvidence = [];
@@ -15,6 +16,12 @@ function evaluateJobEligibility(job = {}, {
 
   let reasonCode = "";
   let status = "eligible";
+  if ((employment.type === "part_time" || employment.partTime) && allowPartTime !== true) {
+    status = "blocked";
+    reasonCode = "part_time_role";
+    qualityTags.push(reasonCode);
+    risks.push("岗位为兼职或按小时计薪，当前未选择接受兼职");
+  }
   if (employment.type === "internship" && !targetAcceptsInternship) {
     status = "blocked";
     reasonCode = "internship_role";
@@ -86,8 +93,9 @@ function employmentTypeOf(job) {
   ].filter(Boolean).join(" "));
   const description = normalized(job.description);
   const combined = `${title} ${structured} ${description}`;
+  const partTime = partTimeEmployment(title, structured, description, job.salary);
   const mixed = combined.match(/(?:全职|社招).{0,10}(?:或|\/|、|均可|皆可).{0,10}实习(?:生)?|实习(?:生)?.{0,10}(?:或|\/|、|均可|皆可).{0,10}(?:全职|社招)|(?:可接受|欢迎)实习生/);
-  if (mixed) return { type: "mixed", evidence: [mixed[0]] };
+  if (mixed) return partTime || { type: "mixed", evidence: [mixed[0]] };
 
   const metadata = `${title} ${structured}`;
   const metadataInternship = /实习经验|实习经历/.test(metadata)
@@ -95,12 +103,33 @@ function employmentTypeOf(job) {
     : metadata.match(/实习生?|intern(?:ship)?/i);
   const descriptionInternship = internshipDescriptionEvidence(description);
   const internship = metadataInternship?.[0]?.trim() || descriptionInternship;
-  if (internship) return { type: "internship", evidence: [internship] };
+  if (internship) return { type: "internship", partTime: partTime?.type === "part_time", evidence: [internship, ...(partTime?.evidence || [])] };
+  if (partTime) return partTime;
 
   const fullTime = combined.match(/全职(?:岗位|职位)?|社会招聘|社招岗位/);
   return fullTime
     ? { type: "full_time", evidence: [fullTime[0]] }
     : { type: "unknown", evidence: [] };
+}
+
+function partTimeEmployment(title, structured, description, salary) {
+  const clauses = [title, structured, ...semanticClauses(description)].map((clause) => clause
+    .replace(/(?:不(?:是|接受|考虑|招(?:聘)?|需要|支持)|拒绝|谢绝|非)\s*兼职/g, "")
+    .replace(/(?:非|不(?:接受|考虑|招(?:聘)?))\s*全职/g, "")
+    .replace(/(?:负责|协助|岗位职责[:：]?)\s*(?:招聘|管理|培训|协调)(?:和管理)?\s*兼职(?:人员|员工|团队|老师)/g, "")
+    .replace(/兼职(?:人员|员工|团队|老师)(?:招聘|管理|培训|协调)/g, "")
+    .replace(/兼职.{0,8}(?:经验|经历)/g, ""));
+  const mixed = clauses.find(clause => /全职\s*(?:[\/、或和]|与)\s*兼职|兼职\s*(?:[\/、或和]|与)\s*全职|(?:全职兼职|兼职全职)\s*(?:均可|皆可|不限)/.test(clause));
+  if (mixed) return { type: "mixed", evidence: [mixed] };
+  const metadata = `${clauses[0]} ${clauses[1]}`;
+  const explicit = metadata.match(/兼职|part[ _-]?time/i)?.[0]
+    || clauses.slice(2).find(clause => /(?:岗位|职位|工作性质|合作形式|工作周期).{0,12}兼职|(?:长期|短期|线上|线下|周末|远程)兼职|兼职(?:岗位|职位)|^(?:招聘|招募|只招|仅招)兼职/.test(clause));
+  if (explicit) return { type: "part_time", evidence: [explicit] };
+  const fullTime = /全职|full[ _-]?time/i.test(metadata)
+    || clauses.slice(2).some(clause => /(?:岗位|职位|工作性质).{0,8}全职|全职(?:岗位|职位)|仅招全职/.test(clause));
+  const hourlySalary = normalized(salary).match(/^\d+(?:\.\d+)?(?:\s*[-~—–至]\s*\d+(?:\.\d+)?)?\s*元\s*\/\s*(?:小时|时|h)$/i);
+  if (hourlySalary && !fullTime) return { type: "part_time", evidence: [`岗位薪资：${hourlySalary[0]}`] };
+  return null;
 }
 
 function internshipDescriptionEvidence(description) {
@@ -215,4 +244,4 @@ function unique(values) {
   return [...new Set(values.filter(Boolean))];
 }
 
-module.exports = { evaluateJobEligibility };
+module.exports = { evaluateJobEligibility, employmentTypeOf };

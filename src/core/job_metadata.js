@@ -1,7 +1,8 @@
-function extractJobMetadata(value = "") {
+function extractJobMetadata(value = "", { allowUnitSalary = true } = {}) {
   const text = Array.isArray(value) ? value.filter(Boolean).join("\n") : String(value || "");
   const normalized = text.replace(/\s+/g, " ").trim();
-  const salary = normalized.match(/\d+\s*[-~—]\s*\d+\s*[kK](?:\s*[·.]\s*\d+\s*薪)?|\d+\s*[kK](?:\s*[·.]\s*\d+\s*薪)?|面议/)?.[0] || "";
+  const unitSalary = allowUnitSalary && normalized.match(/\d+(?:\.\d+)?(?:\s*[-~—–至]\s*\d+(?:\.\d+)?)?\s*元\s*[/／]\s*(?:小时|时|天|月)/)?.[0];
+  const salary = unitSalary || normalized.match(/\d+\s*[-~—]\s*\d+\s*[kK](?:\s*[·.]\s*\d+\s*薪)?|\d+\s*[kK](?:\s*[·.]\s*\d+\s*薪)?|面议/)?.[0] || "";
   const experience = findExperience(normalized);
   const education = normalized.match(/学历不限|大专(?:及以上)?|本科(?:及以上)?|硕士(?:及以上)?|博士(?:及以上)?/)?.[0] || "";
   return { salary: clean(salary), experience: clean(experience), education: clean(education) };
@@ -13,13 +14,14 @@ function mergeJobMetadata(job = {}, ...sources) {
     job.experience,
     job.education,
     ...(job.tags || []),
-    job.cardText,
-    ...sources
+    job.cardText
   ]);
+  // Arbitrary JD text may describe overtime pay, not the role's salary.
+  const details = extractJobMetadata(sources, { allowUnitSalary: false });
   return {
-    salary: clean(job.salary) || metadata.salary,
-    experience: clean(job.experience) || metadata.experience,
-    education: clean(job.education) || metadata.education
+    salary: clean(job.salary) || metadata.salary || details.salary,
+    experience: clean(job.experience) || metadata.experience || details.experience,
+    education: clean(job.education) || metadata.education || details.education
   };
 }
 

@@ -771,7 +771,7 @@ function qualityRank(job) {
   if (tags.has("possible_duplicate")) value += 6;
   if (tags.has("duplicate_seen")) value += 2;
   if (tags.has("experience_stretch")) value += 1;
-  if (tags.has("salary_unverified")) value += 2;
+  if (tags.has("salary_preference_unverified")) value += 2;
   if (tags.has("experience_unverified")) value += 2;
   if (tags.has("core_stack_mismatch")) value += 12;
   if (tags.has("java_backend_heavy")) value += 6;

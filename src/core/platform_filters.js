@@ -113,7 +113,11 @@ function resolveFieldOptions(fieldName, field, plan, generated, overrides) {
     ? selectSalaryOptions(field.options, plan.salary || {}, generated.salaryLanes)
     : [];
   if (fieldName === "experience") return selectExperienceOptions(field.options, generated.experience);
-  if (fieldName === "jobType") return selectChoiceOptions(field.options, generated.jobTypes);
+  if (fieldName === "jobType") {
+    const selected = selectChoiceOptions(field.options, generated.jobTypes);
+    // 单选平台不能表达多类型；使用不限，再由本地资格和类型检查筛选。
+    return field.selection === "single" && selected.length > 1 ? [] : selected;
+  }
   if (fieldName === "degree") return selectChoiceOptions(field.options, generated.degrees);
   return [];
 }

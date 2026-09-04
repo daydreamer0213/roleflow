@@ -1,5 +1,6 @@
 const { stableHash, runtimeAnalysisContext } = require("./analysis_revision");
 const { normalizePlatformFilterCatalog, salaryRange } = require("./platform_filters");
+const { employmentTypeOf } = require("./job_eligibility");
 
 const NATIONWIDE_CITY_CODE = "100010000";
 
@@ -296,11 +297,7 @@ function isDegreeLabel(value) {
 }
 
 function jobTypeLabel(job) {
-  const text = `${job.title || ""} ${(job.tags || []).join(" ")} ${job.description || ""}`;
-  if (/实习(?:生)?|intern/i.test(text)) return "实习";
-  if (/兼职/.test(text)) return "兼职";
-  if (/全职/.test(text)) return "全职";
-  return "";
+  return { internship: "实习", part_time: "兼职", full_time: "全职" }[employmentTypeOf(job).type] || "";
 }
 
 function jobTypeChoice(value) {
