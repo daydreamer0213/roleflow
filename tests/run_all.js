@@ -11,6 +11,7 @@ const tests = [
   "job_eligibility_smoke.js",
   "screening_preferences_smoke.js",
   "browser_transport_smoke.js",
+  "cdp_focus_scope_smoke.js",
   "browser_supervisor_smoke.js",
   "portable_edge_runtime_smoke.js",
   "runtime_paths_smoke.js",

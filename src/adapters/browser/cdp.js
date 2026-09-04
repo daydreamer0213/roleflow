@@ -13,6 +13,7 @@ class CdpBrowserAdapter {
     this.port = Number(port || 9222);
     this.timeoutMs = positiveTimeout(timeoutMs);
     this.networkObservers = new Map();
+    this.focusScopes = new Map();
   }
 
   async listTabs({ scope = "all" } = {}) {
@@ -183,6 +184,7 @@ class CdpBrowserAdapter {
   }
 
   async closeTab(tabId) {
+    this.releaseFocusScope(tabId);
     await this.stopNetworkLog(tabId);
     const result = await this.browserCommand("Target.closeTarget", { targetId: tabId });
     if (result?.success !== true) {
@@ -248,8 +250,41 @@ class CdpBrowserAdapter {
   }
 
   async cdp(tabId, method, params = {}) {
-    const tab = await this.findTab(tabId);
-    return sendCdp(tab.webSocketDebuggerUrl, method, params, this.timeoutMs);
+    let tab;
+    try {
+      tab = await this.findTab(tabId);
+    } catch (error) {
+      this.releaseFocusScope(tabId);
+      throw error;
+    }
+    const isFocusCommand = method === "Emulation.setFocusEmulationEnabled";
+    const isFocusEnable = isFocusCommand && params?.enabled === true;
+    const isFocusDisable = isFocusCommand && params?.enabled === false;
+    let scope = this.focusScopes.get(tab.id);
+    if (isFocusEnable && !scope) {
+      scope = await openCdpConnection(tab.webSocketDebuggerUrl, this.timeoutMs, method);
+      scope.onFatal = () => this.releaseFocusScope(tab.id, scope);
+      this.focusScopes.set(tab.id, scope);
+    }
+    if (!scope) return sendCdp(tab.webSocketDebuggerUrl, method, params, this.timeoutMs);
+    try {
+      return await scope.command(method, params);
+    } catch (error) {
+      this.releaseFocusScope(tab.id, scope);
+      throw error;
+    } finally {
+      if (isFocusDisable) this.releaseFocusScope(tab.id, scope);
+    }
+  }
+
+  releaseFocusScope(tabId, expectedScope = null) {
+    const entry = expectedScope
+      ? [tabId, expectedScope]
+      : [...this.focusScopes].find(([id]) => sameBrowserTabId(id, tabId));
+    if (!entry) return;
+    const [id, scope] = entry;
+    if (this.focusScopes.get(id) === scope) this.focusScopes.delete(id);
+    scope.close();
   }
 
   async evalValue(tabId, expression) {
@@ -331,68 +366,164 @@ function isBossPageTarget(page) {
   }
 }
 
-function sendCdp(wsUrl, method, params, timeoutMs) {
-  return new Promise((resolve, reject) => {
-    const id = 1;
-    let settled = false;
-    let timer;
-    let ws;
+async function sendCdp(wsUrl, method, params, timeoutMs) {
+  const connection = await openCdpConnection(wsUrl, timeoutMs, method);
+  try {
+    return await connection.command(method, params);
+  } finally {
+    connection.close();
+  }
+}
 
-    const finish = (error, value) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      tryClose(ws);
-      if (error) reject(error);
-      else resolve(value);
-    };
+async function openCdpConnection(wsUrl, timeoutMs, method) {
+  const connection = new CdpConnection(wsUrl, timeoutMs);
+  try {
+    await connection.open(method);
+    return connection;
+  } catch (error) {
+    connection.close();
+    throw error;
+  }
+}
 
-    try {
-      ws = new WebSocket(wsUrl);
-      timer = setTimeout(() => {
-        finish(browserError("BROWSER_TIMEOUT", `${method} timed out after ${timeoutMs}ms.`));
-      }, timeoutMs);
+class CdpConnection {
+  constructor(wsUrl, timeoutMs) {
+    this.wsUrl = wsUrl;
+    this.timeoutMs = timeoutMs;
+    this.socket = null;
+    this.opened = false;
+    this.closed = false;
+    this.commandId = 0;
+    this.pending = new Map();
+    this.listeners = [];
+    this.onFatal = null;
+  }
 
-      ws.addEventListener("open", () => {
-        try {
-          ws.send(JSON.stringify({ id, method, params }));
-        } catch (error) {
-          finish(browserError("BROWSER_DISCONNECTED", `${method} could not be sent because the browser disconnected.`, error));
+  open(method) {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const timer = setTimeout(() => finish(browserError(
+        "BROWSER_TIMEOUT",
+        `${method} timed out after ${this.timeoutMs}ms.`
+      )), this.timeoutMs);
+      const finish = (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (error) reject(error);
+        else resolve();
+      };
+      try {
+        this.socket = new WebSocket(this.wsUrl);
+        this.listen("open", () => {
+          this.opened = true;
+          finish();
+        });
+        this.listen("message", (event) => {
+          Promise.resolve(readMessageData(event.data)).then(
+            (text) => this.handleMessage(text),
+            (error) => this.fail(browserError("BROWSER_COMMAND_FAILED", "CDP websocket response could not be read.", error))
+          );
+        });
+        this.listen("error", (event) => {
+          const error = browserError("BROWSER_DISCONNECTED", "CDP websocket error.", event?.error);
+          this.fail(error);
+          finish(error);
+        });
+        this.listen("close", (event) => {
+          const detail = event?.code ? ` (code ${event.code}${event.reason ? `: ${event.reason}` : ""})` : "";
+          const error = browserError("BROWSER_DISCONNECTED", `CDP websocket closed before a response${detail}.`);
+          this.fail(error);
+          finish(error);
+        });
+      } catch (error) {
+        const connectionError = browserError("BROWSER_DISCONNECTED", `${method} websocket could not connect.`, error);
+        this.fail(connectionError);
+        finish(connectionError);
+      }
+    });
+  }
+
+  command(method, params) {
+    if (!this.opened || this.closed || !this.socket) {
+      return Promise.reject(browserError("BROWSER_DISCONNECTED", `${method} websocket is not available.`));
+    }
+    return new Promise((resolve, reject) => {
+      const id = ++this.commandId;
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(browserError("BROWSER_TIMEOUT", `${method} timed out after ${this.timeoutMs}ms.`));
+      }, this.timeoutMs);
+      this.pending.set(id, {
+        method,
+        resolve: (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
         }
       });
+      try {
+        this.socket.send(JSON.stringify({ id, method, params }));
+      } catch (error) {
+        this.fail(browserError("BROWSER_DISCONNECTED", `${method} could not be sent because the browser disconnected.`, error));
+      }
+    });
+  }
 
-      ws.addEventListener("message", (event) => {
-        Promise.resolve(readMessageData(event.data)).then((text) => {
-          let data;
-          try {
-            data = JSON.parse(text);
-          } catch (error) {
-            finish(browserError("BROWSER_COMMAND_FAILED", `${method} returned invalid JSON.`, error));
-            return;
-          }
-          if (data.id !== id) return;
-          if (data.error) {
-            finish(browserError("BROWSER_COMMAND_FAILED", `${method} failed: ${JSON.stringify(data.error)}`));
-          } else {
-            finish(null, data.result ?? data);
-          }
-        }, (error) => {
-          finish(browserError("BROWSER_COMMAND_FAILED", `${method} response could not be read.`, error));
-        });
-      });
-
-      ws.addEventListener("error", (event) => {
-        finish(browserError("BROWSER_DISCONNECTED", `${method} websocket error.`, event?.error));
-      });
-
-      ws.addEventListener("close", (event) => {
-        const detail = event?.code ? ` (code ${event.code}${event.reason ? `: ${event.reason}` : ""})` : "";
-        finish(browserError("BROWSER_DISCONNECTED", `${method} websocket closed before a response${detail}.`));
-      });
+  handleMessage(text) {
+    let data;
+    try {
+      data = JSON.parse(text);
     } catch (error) {
-      finish(browserError("BROWSER_DISCONNECTED", `${method} websocket could not connect.`, error));
+      this.fail(browserError("BROWSER_COMMAND_FAILED", "CDP websocket returned invalid JSON.", error));
+      return;
     }
-  });
+    const pending = this.pending.get(data.id);
+    if (!pending) return;
+    this.pending.delete(data.id);
+    if (data.error) {
+      pending.reject(browserError("BROWSER_COMMAND_FAILED", `${pending.method} failed: ${JSON.stringify(data.error)}`));
+    } else {
+      pending.resolve(data.result ?? data);
+    }
+  }
+
+  close() {
+    if (this.closed) return;
+    this.closed = true;
+    this.opened = false;
+    this.rejectPending(browserError("BROWSER_DISCONNECTED", "CDP websocket was closed."));
+    this.removeListeners();
+    tryClose(this.socket);
+  }
+
+  fail(error) {
+    if (this.closed) return;
+    this.closed = true;
+    this.opened = false;
+    this.rejectPending(error);
+    this.removeListeners();
+    tryClose(this.socket);
+    this.onFatal?.();
+  }
+
+  rejectPending(error) {
+    for (const pending of this.pending.values()) pending.reject(error);
+    this.pending.clear();
+  }
+
+  listen(type, listener) {
+    this.socket.addEventListener(type, listener);
+    this.listeners.push([type, listener]);
+  }
+
+  removeListeners() {
+    for (const [type, listener] of this.listeners) this.socket?.removeEventListener?.(type, listener);
+    this.listeners = [];
+  }
 }
 
 async function readMessageData(data) {

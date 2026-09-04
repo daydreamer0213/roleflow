@@ -425,6 +425,34 @@ async function main() {
       "BROWSER_COMMAND_FAILED"
     );
 
+    websocket.mode = "respond";
+    websocket.messages.length = 0;
+    await cdp.cdp("cdp-tab", "Emulation.setFocusEmulationEnabled", { enabled: true });
+    const focusScopeSocket = latestSocket(websocket, "/devtools/page/cdp-tab");
+    assert.strictEqual(focusScopeSocket.closed, false, "enabling focus emulation must retain its websocket scope");
+    await cdp.evalValue("cdp-tab", "document.hasFocus()");
+    assert.deepStrictEqual(focusScopeSocket.messages.map((message) => message.id), [1, 2],
+      "commands inside a focus scope must share one socket with distinct request ids");
+    await cdp.cdp("cdp-tab", "Emulation.setFocusEmulationEnabled", { enabled: false });
+    assert.strictEqual(focusScopeSocket.closed, true, "disabling focus emulation must release its websocket scope");
+    assert.strictEqual(cdp.focusScopes.size, 0);
+
+    websocket.mode = "respond";
+    await cdp.cdp("cdp-tab", "Emulation.setFocusEmulationEnabled", { enabled: true });
+    const idleDisconnectedFocusScope = latestSocket(websocket, "/devtools/page/cdp-tab");
+    idleDisconnectedFocusScope.emit("close", { code: 1006, reason: "focus scope disconnect" });
+    assert.strictEqual(idleDisconnectedFocusScope.closed, true, "an idle focus scope disconnect must close its websocket");
+    assert.strictEqual(cdp.focusScopes.size, 0, "an idle focus scope disconnect must release stale focus state");
+
+    websocket.mode = "respond";
+    await cdp.cdp("cdp-tab", "Emulation.setFocusEmulationEnabled", { enabled: true });
+    const disconnectedFocusScope = latestSocket(websocket, "/devtools/page/cdp-tab");
+    websocket.mode = "disconnect-eval";
+    await rejectsWithCode(() => cdp.evalValue("cdp-tab", "document.hasFocus()"), "BROWSER_DISCONNECTED");
+    assert.strictEqual(disconnectedFocusScope.closed, true, "a scoped command disconnect must release the focus websocket");
+    assert.strictEqual(cdp.focusScopes.size, 0, "a scoped command disconnect must not retain stale focus state");
+    assert.strictEqual(disconnectedFocusScope.messages.length, 2, "a scoped command disconnect must not reconnect or replay the command");
+
     websocket.mode = "fail-third-dispatch";
     websocket.messages.length = 0;
     await rejectsWithCode(() => cdp.clickAt("cdp-tab", { x: 120, y: 48 }), "BROWSER_COMMAND_FAILED");
@@ -542,6 +570,23 @@ async function main() {
     assert.strictEqual(boundedSocket.closed, true);
     assert(countMethod(websocket.messages, "Network.disable") >= 2);
     await rejectsWithCode(() => cdp.getNetworkLogMark("cdp-tab"), "BROWSER_COMMAND_FAILED");
+
+    await cdp.startNetworkLog("cdp-tab", networkLogOptions());
+    const pendingObserver = latestSocket(websocket, "/devtools/page/cdp-tab");
+    emitNetworkRequest(pendingObserver, {
+      requestId: "pending-observed-request",
+      url: "https://www.zhipin.com/wapi/zpgeek/friend/add.json?securityId=private-pending",
+      type: "Fetch"
+    });
+    await flushAsyncEvents();
+    const pendingRead = await cdp.readNetworkLog("cdp-tab", { sinceSequence: 0 });
+    assert(Object.hasOwn(pendingRead, "meta"), "network reads must distinguish an in-flight matching request from no request");
+    assert.strictEqual(pendingRead.meta.pendingRequests, 1);
+    emitNetworkFinished(pendingObserver, "pending-observed-request");
+    await flushAsyncEvents();
+    const completedRead = await cdp.readNetworkLog("cdp-tab", { sinceSequence: 0 });
+    assert.strictEqual(completedRead.meta.pendingRequests, 0);
+    await cdp.stopNetworkLog("cdp-tab");
 
     await cdp.startNetworkLog("cdp-tab", networkLogOptions());
     const disconnectedObserver = latestSocket(websocket, "/devtools/page/cdp-tab");
@@ -731,6 +776,7 @@ function installFakeWebSocket() {
       this.url = url;
       this.listeners = new Map();
       this.closed = false;
+      this.messages = [];
       control.instances.push(this);
       queueMicrotask(() => this.emit("open", {}));
     }
@@ -743,6 +789,7 @@ function installFakeWebSocket() {
 
     send(message) {
       const payload = JSON.parse(message);
+      this.messages.push(payload);
       control.messages.push(payload);
       if (control.mode === "windowless-blank-target"
         && payload.method === "Browser.getWindowForTarget"
