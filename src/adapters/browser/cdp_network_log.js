@@ -60,11 +60,10 @@ class CdpNetworkLog {
     const limit = positiveInteger(maxEntries, this.maxEntries, 1, this.maxEntries);
     const requestedTypes = resourceTypes === undefined ? this.resourceTypes : allowedResourceTypes(resourceTypes);
     const requestedPaths = urlIncludes === undefined ? this.urlPaths : allowedPaths(urlIncludes);
-    const selected = this.entries.filter((entry) => entry.sequence > minimumSequence
-      && entry.completedAt
+    const matching = this.entries.filter((entry) => entry.sequence > minimumSequence
       && requestedTypes.has(entry.resourceType)
-      && requestedPaths.has(new URL(entry.url).pathname))
-      .slice(0, limit);
+      && requestedPaths.has(new URL(entry.url).pathname));
+    const selected = matching.filter((entry) => entry.completedAt).slice(0, limit);
     const entries = selected.map((entry) => publicEntry(entry, includeBodies === true));
     if (consume === true) {
       const consumed = new Set(selected);
@@ -73,7 +72,7 @@ class CdpNetworkLog {
         if (consumed.has(entry)) this.byRequestId.delete(requestId);
       }
     }
-    return { entries };
+    return { entries, meta: { pendingRequests: matching.filter((entry) => !entry.completedAt).length } };
   }
 
   async stop() {

@@ -560,7 +560,12 @@ async function ambiguousAndFatalStopSmoke() {
                       elapsedMs: 7
                     }))
                   : [],
-                pageState: code === "COMMUNICATION_ACTION_NOT_TRIGGERED" ? "no_matching_request" : "confirmation_dialog"
+                pageState: code === "COMMUNICATION_ACTION_NOT_TRIGGERED" ? "no_matching_request" : "confirmation_dialog",
+                diagnostics: {
+                  clickObserved: true, trustedClick: true, focusedAtGuard: false, focusedAtClick: true,
+                  documentReadyState: "complete", actionState: "communicate", dialogVisible: false, pendingRequests: 1,
+                  messageBody: "private chat text", url: "https://private.invalid/?token=secret"
+                }
               }
             };
           }
@@ -574,6 +579,11 @@ async function ambiguousAndFatalStopSmoke() {
     assert.deepStrictEqual(items.map((item) => item.status), ["ambiguous", "pending"]);
     assert.deepStrictEqual(items.map((item) => item.clickCount), [1, 0]);
     assert.strictEqual(items[0].errorCode, code);
+    assert.deepStrictEqual(items[0].evidence.outcome.diagnostics, {
+      clickObserved: true, trustedClick: true, focusedAtGuard: false, focusedAtClick: true,
+      documentReadyState: "complete", actionState: "communicate", dialogVisible: false, pendingRequests: 1
+    });
+    assert(!JSON.stringify(items[0].evidence).includes("private"));
     assert.strictEqual(getCommunicationBatch(diagnostic.db, diagnostic.batch.id).stopCode, code);
     assert.strictEqual(getWorkflowRun(diagnostic.db, workflow.id).status, "interrupted");
     assert.strictEqual(getWorkflowRun(diagnostic.db, workflow.id).errorCode, code);

@@ -827,7 +827,7 @@ async function assertCommunicationClient() {
   assert.match(ambiguousReview.body, /name="evidenceNote"[^>]*required/);
   assert.doesNotMatch(ambiguousReview.body, /name="action" value="resume"/);
   assert.match(ambiguousReview.body, /等待人工确认沟通结果/);
-  assert.match(ambiguousReview.body, /平台没有响应本次点击，RoleFlow 已停止且不会自动重试。/);
+  assert.match(ambiguousReview.body, /未能确认本次沟通结果，不代表发送失败；RoleFlow 已停止且不会自动重试。/);
   assert.match(ambiguousReview.body, /COMMUNICATION_ACTION_NOT_TRIGGERED/);
   assert.doesNotMatch(ambiguousReview.body, /重新检查浏览器页面/);
   assert.match(ambiguousReview.body, new RegExp(`href="/communication\\?batchId=${batchId}#communication-item-${ambiguousItem.id}"`));

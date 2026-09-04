@@ -47,8 +47,8 @@ const ERROR_GUIDANCE = Object.freeze({
     nextAction: "无需恢复旧搜索条件；确认 BOSS 工作区就绪后，点击继续沟通。"
   },
   COMMUNICATION_ACTION_NOT_TRIGGERED: {
-    title: "平台没有响应本次点击",
-    impact: "沟通已停止，系统不会自动重试这次点击。",
+    title: "未能确认本次沟通结果",
+    impact: "尚未获得可确认的沟通结果，不代表发送失败；系统已停止，不会自动重试。",
     nextAction: "打开沟通明细，先核对该岗位在 BOSS 上的实际结果，再处理剩余岗位。"
   },
   COMMUNICATION_RESULT_AMBIGUOUS: {

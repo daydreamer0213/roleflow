@@ -183,6 +183,7 @@ function fixtureForUrl(url, fixtures) {
 
 function snapshotContext(url, fixtures, onActionClick = () => {}, transport = null) {
   const fixture = fixtureForUrl(url, fixtures);
+  const listeners = new Map();
   let context;
   for (const action of fixture.actions || []) action.click = () => onActionClick(context);
   const actionRoot = testNode({ actions: fixture.actions });
@@ -220,6 +221,10 @@ function snapshotContext(url, fixtures, onActionClick = () => {}, transport = nu
   }
   if (fixture.jobStatus !== undefined) nodes[".job-status"] = testNode({ text: fixture.jobStatus });
   const document = {
+    hasFocus() { return true; },
+    addEventListener(type, listener) { listeners.set(type, listener); },
+    removeEventListener(type, listener) { if (listeners.get(type) === listener) listeners.delete(type); },
+    dispatchEvent(event) { listeners.get(event.type)?.(event); },
     title: fixture.title || "",
     body: { innerText: fixture.bodyText || "Standalone detail fixture" },
     readyState: fixture.documentReadyState || "complete",
@@ -299,7 +304,8 @@ function fakeBrowser({
   createStarted = null,
   loseFocusAfterGuardedClick = false,
   clickAtError = null,
-  startNetworkLogError = null
+  startNetworkLogError = null,
+  preserveClickContext = false
 } = {}) {
   const calls = {
     listTabs: 0, createTab: [], bringToFront: [], navigate: [], evalValue: [], clickAt: [],
@@ -438,12 +444,14 @@ function fakeBrowser({
       calls.clickAt.push([tabId, point]);
       calls.timeline.push("clickAt");
       if (clickAtError) throw clickAtError;
+      const context = contexts.get(tabId);
+      context?.document.dispatchEvent({ type: "click", target: context.document.elementFromPoint(point.x, point.y), isTrusted: true });
       const tab = currentTabs.find((candidate) => candidate.id === tabId);
       const contextUrl = tab?.url || "";
       transport?.onAction?.(contexts.get(tabId));
       const nextFixture = afterClickFixtures.get(contextUrl);
       if (nextFixture) fixtures.set(contextUrl, nextFixture);
-      contexts.delete(tabId);
+      if (!preserveClickContext) contexts.delete(tabId);
     },
     setTabUrl(tabId, url) {
       currentTabs = currentTabs.map((tab) => tab.id === tabId ? { ...tab, url } : tab);
@@ -1150,6 +1158,7 @@ function assertNoPreparationAction(browser, before) {
     ["communication-created", false]
   ]);
   assert.strictEqual(clickFailureBrowser.calls.clickAt.length, 1);
+  assert.strictEqual(clickFailureBrowser.context("communication-created").__bossCommunicationClickReceipt, undefined);
   assert.strictEqual(clickFailureBrowser.calls.stopNetworkLog.length, 1);
 
   const observedSuccessBrowser = fakeBrowser({
@@ -1205,9 +1214,45 @@ function assertNoPreparationAction(browser, before) {
     assert.strictEqual(result.state, expectedState, name);
     if (expectedPageState) assert.strictEqual(result.evidence?.pageState, expectedPageState, name);
     if (expectedErrorCode) assert.strictEqual(result.errorCode, expectedErrorCode, name);
+    if (expectedPageState === "no_matching_request") {
+      assert.strictEqual(result.evidence.diagnostics.clickObserved, undefined,
+        "a replaced document has no receipt; absence is unknown, not proof of no click");
+    }
     assert(!JSON.stringify(result).includes("securityId"), `${name} must keep evidence sanitized`);
     assert.strictEqual(browser.calls.clickAt.length, 1, `${name} must never click twice`);
   }
+
+  const receiptBrowser = fakeBrowser({
+    tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],
+    preserveClickContext: true,
+    networkLogs: [{ entries: [], meta: { enabled: true, pendingRequests: 1 } }]
+  });
+  const receiptAdapter = new BossSiteAdapter({ browser: receiptBrowser, sleepFn: async () => {} });
+  const receiptInspection = await receiptAdapter.inspectCommunicationJob(expectedJob);
+  await receiptAdapter.dispatchCommunication(receiptInspection);
+  const receiptResult = await receiptAdapter.verifyCommunicationResult(expectedJob);
+  assert.strictEqual(receiptResult.state, "ambiguous", "a browser click receipt is NOT platform acceptance");
+  assert.strictEqual(receiptResult.evidence.pageState, "request_pending", "an unfinished observed request is not an absent request");
+  assert(receiptResult.evidence.diagnostics, "verification must retain the observed click diagnostics");
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(receiptResult.evidence.diagnostics)), {
+    clickObserved: true, trustedClick: true, focusedAtGuard: true, focusedAtClick: true,
+    documentReadyState: "complete", actionState: "communicate", dialogVisible: false, pendingRequests: 1
+  });
+  assert.strictEqual(receiptBrowser.context("communication-created").__bossCommunicationClickReceipt, undefined,
+    "receipt and listener must be cleared after verification");
+  assert.strictEqual(receiptBrowser.calls.clickAt.length, 1);
+
+  const staleReceiptBrowser = fakeBrowser({
+    tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],
+    preserveClickContext: true,
+    networkLogs: [{ entries: [], meta: { enabled: true } }]
+  });
+  const staleReceiptAdapter = new BossSiteAdapter({ browser: staleReceiptBrowser, sleepFn: async () => {} });
+  await staleReceiptAdapter.dispatchCommunication(await staleReceiptAdapter.inspectCommunicationJob(expectedJob));
+  staleReceiptBrowser.context("communication-created").__bossCommunicationClickReceipt.jobId = "fake456";
+  const staleReceipt = await staleReceiptAdapter.verifyCommunicationResult(expectedJob);
+  assert.strictEqual(staleReceipt.evidence.diagnostics.clickObserved, undefined, "another job's receipt must not be used");
+  assert.strictEqual(staleReceipt.state, "ambiguous");
 
   const userActionBrowser = fakeBrowser({
     tabs: [{ id: "search", url: searchUrl, windowId: "window-1" }],

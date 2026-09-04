@@ -42,6 +42,8 @@ await adapter.cdp(targetId, 'Emulation.setFocusEmulationEnabled', { enabled: fal
 
 **Interfaces:** 原有 `{state,errorCode,evidence:{endpoints,pageState}}` 增加可选 `diagnostics`；旧记录缺失时兼容。固定字段，不透传页面任意内容。
 
+补充代码取证：`CdpNetworkLog.read` 过滤掉未结束请求，导致“在途”与“没有请求”不可区分。`src/adapters/browser/cdp_network_log.js` 只追加 `meta.pendingRequests` 计数；Task 1 的 transport 检查负责验证开始为 1、完成为 0，Task 2 验证其落库及无元数据兼容。计数不改变沟通判定。
+
 - [ ] 先写失败测试：真实守卫注册的监听器收到目标点击后产生布尔回执；无回执不推断成功。
 - [ ] 执行器回归注入额外私密字段，验证最终数据库仅保存已列出的布尔值和枚举；后续岗位仍为 pending、零点击。
 - [ ] 最小实现回执清理、最终按钮/文档/弹层状态和白名单保存；沿现有界面改提示。

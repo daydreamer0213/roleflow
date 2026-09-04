@@ -536,7 +536,10 @@ const PAGE_HELPERS = String.raw`
       actions,
       successDialog,
       intermediateDialog,
-      inlineChatSent
+      inlineChatSent,
+      ...(window.__bossCommunicationClickReceipt
+        ? { clickReceipt: window.__bossCommunicationClickReceipt }
+        : {})
     };
   };
 
@@ -2372,7 +2375,7 @@ class BossSiteAdapter {
 
   async closeCommunicationOutcomeObserver(tabId) {
     try {
-      await this.browser.evalValue(tabId, "(() => window.__bossCloseCommunicationOutcomeObserver?.())()");
+      await this.browser.evalValue(tabId, "(() => { window.__bossCloseCommunicationClickReceipt?.(); window.__bossCloseCommunicationOutcomeObserver?.(); })()");
     } catch {}
   }
 
@@ -2433,18 +2436,21 @@ class BossSiteAdapter {
       await this.browser.evalValue(tabId, PAGE_HELPERS);
       let network = { state: "no_matching_request", evidence: { endpoints: [] } };
       let page = { state: "ambiguous" };
+      let diagnostics = {};
       for (let attempt = 0; attempt < COMMUNICATION_SNAPSHOT_ATTEMPTS; attempt += 1) {
         throwIfAborted(signal);
-        network = classifyBossCommunicationNetworkLog(await this.browser.readNetworkLog(tabId, {
+        const networkLog = await this.browser.readNetworkLog(tabId, {
           sinceSequence: dispatch.networkSequence,
           maxEntries: 12,
           includeBodies: true,
           resourceTypes: ["XHR", "Fetch"],
           urlIncludes: COMMUNICATION_NETWORK_URL_INCLUDES,
           consume: false
-        }));
+        });
+        network = classifyBossCommunicationNetworkLog(networkLog);
         const snapshot = await this.browser.evalValue(tabId, "(() => window.__bossCommunicationSnapshot())()");
         page = classifyBossCommunicationResultSnapshot(snapshot, dispatch.expectedJob);
+        diagnostics = communicationPageDiagnostics(snapshot, dispatch.jobId, networkLog?.meta);
         if (["target_mismatch", "job_unavailable"].includes(page.state)) return page;
         if (network.state === "accepted") {
           return {
@@ -2457,14 +2463,14 @@ class BossSiteAdapter {
           return {
             state: "ambiguous",
             errorCode: "COMMUNICATION_USER_ACTION_REQUIRED",
-            evidence: communicationOutcomeEvidence(network, "confirmation_dialog")
+            evidence: communicationOutcomeEvidence(network, "confirmation_dialog", diagnostics)
           };
         }
         if (page.state === "succeeded" && ["platform_rejected", "transport_failed", "ambiguous"].includes(network.state)) {
           return {
             state: "ambiguous",
             errorCode: "COMMUNICATION_RESULT_AMBIGUOUS",
-            evidence: communicationOutcomeEvidence(network, "request_conflict")
+            evidence: communicationOutcomeEvidence(network, "request_conflict", diagnostics)
           };
         }
         if (["platform_rejected", "transport_failed"].includes(network.state)) {
@@ -2472,7 +2478,8 @@ class BossSiteAdapter {
             ...network,
             evidence: communicationOutcomeEvidence(
               network,
-              network.state === "platform_rejected" ? "request_rejected" : "request_failed"
+              network.state === "platform_rejected" ? "request_rejected" : "request_failed",
+              diagnostics
             )
           };
         }
@@ -2480,7 +2487,7 @@ class BossSiteAdapter {
           return {
             state: "ambiguous",
             errorCode: "COMMUNICATION_RESULT_AMBIGUOUS",
-            evidence: communicationOutcomeEvidence(network, "request_unparsed")
+            evidence: communicationOutcomeEvidence(network, "request_unparsed", diagnostics)
           };
         }
         if (attempt < COMMUNICATION_SNAPSHOT_ATTEMPTS - 1) await this.waitWithPacing("retry");
@@ -2489,13 +2496,14 @@ class BossSiteAdapter {
         return {
           state: "ambiguous",
           errorCode: "COMMUNICATION_ACTION_NOT_TRIGGERED",
-          evidence: communicationOutcomeEvidence(network, "no_matching_request")
+          evidence: communicationOutcomeEvidence(network,
+            diagnostics.pendingRequests > 0 ? "request_pending" : "no_matching_request", diagnostics)
         };
       }
       return {
         state: "ambiguous",
         errorCode: "COMMUNICATION_RESULT_AMBIGUOUS",
-        evidence: communicationOutcomeEvidence(network, "request_conflict")
+        evidence: communicationOutcomeEvidence(network, "request_conflict", diagnostics)
       };
     } finally {
       if (dispatch?.tabId !== null && dispatch?.tabId !== undefined) {
@@ -3134,7 +3142,26 @@ function boundedCommunicationElapsedMs(startedAt, completedAt) {
   return Math.max(0, Math.min(60_000, completed - started));
 }
 
-function communicationOutcomeEvidence(value = {}, pageState = "") {
+function communicationPageDiagnostics(snapshot = {}, jobId, networkMeta = {}) {
+  const receipt = snapshot.clickReceipt?.jobId === jobId ? snapshot.clickReceipt : {};
+  const actions = Array.isArray(snapshot.actions) ? snapshot.actions : [];
+  const actionState = actions.length > 1 ? "multiple"
+    : !actions.length ? "none"
+      : actions[0].label === "立即沟通" ? "communicate"
+        : actions[0].label === "继续沟通" ? "continue" : "other";
+  return {
+    ...Object.fromEntries(["clickObserved", "trustedClick", "focusedAtGuard", "focusedAtClick"]
+      .filter((key) => typeof receipt[key] === "boolean").map((key) => [key, receipt[key]])),
+    ...(["loading", "interactive", "complete"].includes(snapshot.documentReadyState)
+      ? { documentReadyState: snapshot.documentReadyState } : {}),
+    actionState,
+    dialogVisible: snapshot.intermediateDialog?.visible === true,
+    ...(Number.isInteger(networkMeta?.pendingRequests) && networkMeta.pendingRequests >= 0 && networkMeta.pendingRequests <= 100
+      ? { pendingRequests: networkMeta.pendingRequests } : {})
+  };
+}
+
+function communicationOutcomeEvidence(value = {}, pageState = "", diagnostics = null) {
   const source = value?.evidence || value || {};
   const endpoints = Array.isArray(source.endpoints) ? source.endpoints.slice(0, 12) : [];
   const sanitizedEndpoints = endpoints.map((endpoint) => {
@@ -3155,7 +3182,8 @@ function communicationOutcomeEvidence(value = {}, pageState = "") {
   const observedPageState = String(pageState || source.pageState || "").trim();
   return {
     endpoints: sanitizedEndpoints,
-    ...(COMMUNICATION_OUTCOME_PAGE_STATES.has(observedPageState) ? { pageState: observedPageState } : {})
+    ...(COMMUNICATION_OUTCOME_PAGE_STATES.has(observedPageState) ? { pageState: observedPageState } : {}),
+    ...(diagnostics ? { diagnostics } : {})
   };
 }
 
@@ -3301,6 +3329,22 @@ function guardedBossCommunicationClickExpression(expectedJob) {
     };
     const pointElement = document.elementFromPoint(clickPoint.x, clickPoint.y);
     if (pointElement !== element && !element.contains(pointElement)) return fail("point_target_changed");
+    window.__bossCloseCommunicationClickReceipt?.();
+    const receipt = { jobId: expected.jobId, clickObserved: false, focusedAtGuard: document.hasFocus() };
+    const observeClick = (event) => {
+      if (event.target !== element && !element.contains(event.target)) return;
+      receipt.clickObserved = true;
+      receipt.trustedClick = event.isTrusted === true;
+      receipt.focusedAtClick = document.hasFocus();
+      document.removeEventListener("click", observeClick, true);
+    };
+    window.__bossCommunicationClickReceipt = receipt;
+    window.__bossCloseCommunicationClickReceipt = () => {
+      document.removeEventListener("click", observeClick, true);
+      delete window.__bossCommunicationClickReceipt;
+      delete window.__bossCloseCommunicationClickReceipt;
+    };
+    document.addEventListener("click", observeClick, { capture: true, passive: true });
     return { ready: true, jobId: expected.jobId, clickPoint, operation };
   })()`;
 }

@@ -678,6 +678,20 @@ function communicationOutcomeEvidence(value = {}) {
   const endpoints = Array.isArray(evidence.endpoints) ? evidence.endpoints.slice(0, 12) : [];
   const categories = new Set(["success", "http_failure", "business_rejected", "network_rejected", "network_timeout", "network_aborted", "response_unparsed"]);
   const pageStates = new Set(["request_accepted", "request_rejected", "request_failed", "request_conflict", "request_unparsed", "observer_timeout", "no_matching_request", "request_pending", "succeeded", "page_unverified", "confirmation_dialog"]);
+  const diagnostics = {};
+  const rawDiagnostics = evidence.diagnostics || {};
+  for (const key of ["clickObserved", "trustedClick", "focusedAtGuard", "focusedAtClick", "dialogVisible"]) {
+    if (typeof rawDiagnostics[key] === "boolean") diagnostics[key] = rawDiagnostics[key];
+  }
+  if (["loading", "interactive", "complete"].includes(rawDiagnostics.documentReadyState)) {
+    diagnostics.documentReadyState = rawDiagnostics.documentReadyState;
+  }
+  if (["communicate", "continue", "none", "multiple", "other"].includes(rawDiagnostics.actionState)) {
+    diagnostics.actionState = rawDiagnostics.actionState;
+  }
+  if (Number.isInteger(rawDiagnostics.pendingRequests) && rawDiagnostics.pendingRequests >= 0 && rawDiagnostics.pendingRequests <= 100) {
+    diagnostics.pendingRequests = rawDiagnostics.pendingRequests;
+  }
   return {
     endpoints: endpoints.map((endpoint) => {
       const endpointKind = String(endpoint?.endpointKind || "").trim();
@@ -694,7 +708,8 @@ function communicationOutcomeEvidence(value = {}) {
         ...(Number.isFinite(elapsedMs) && elapsedMs >= 0 ? { elapsedMs: Math.min(60_000, Math.floor(elapsedMs)) } : {})
       };
     }).filter(Boolean),
-    ...(pageStates.has(String(evidence.pageState || "").trim()) ? { pageState: String(evidence.pageState).trim() } : {})
+    ...(pageStates.has(String(evidence.pageState || "").trim()) ? { pageState: String(evidence.pageState).trim() } : {}),
+    ...(Object.keys(diagnostics).length ? { diagnostics } : {})
   };
 }
 

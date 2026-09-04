@@ -29,7 +29,7 @@ function communicationStatusLabel(value) {
 
 function communicationErrorLabel(code) {
   return {
-    COMMUNICATION_ACTION_NOT_TRIGGERED: "平台没有响应本次点击，RoleFlow 已停止且不会自动重试。",
+    COMMUNICATION_ACTION_NOT_TRIGGERED: "未能确认本次沟通结果，不代表发送失败；RoleFlow 已停止且不会自动重试。",
     COMMUNICATION_USER_ACTION_REQUIRED: "平台出现需要人工处理的提示，RoleFlow 已停止。",
     COMMUNICATION_RESULT_AMBIGUOUS: "平台请求与页面状态不一致，结果无法确认，RoleFlow 已停止。",
     COMMUNICATION_SINGLE_ITEM_CHECKPOINT: "本次单岗位验收已完成并自动暂停。",

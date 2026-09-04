@@ -226,7 +226,7 @@ function assertRendererContracts(vm) {
     },
     progressSnapshot: null
   })));
-  assert.match(actionNotTriggered, /平台没有响应本次点击，RoleFlow 已停止且不会自动重试。/);
+  assert.match(actionNotTriggered, /未能确认本次沟通结果，不代表发送失败；RoleFlow 已停止且不会自动重试。/);
   assert.match(actionNotTriggered, /COMMUNICATION_ACTION_NOT_TRIGGERED/);
 
   const unsafeUrl = renderWorkflowPage(buildWorkflowViewModel(fixture({ workflow: { status: "review_required" }, progressSnapshot: null, reviewCandidates: [{ id: 91, url: "javascript:alert(1)", title: "不安全链接", company: "甲", analysis: {}, workflowTier: "primary", defaultChecked: true }], quota: { remaining: 1 } })));
