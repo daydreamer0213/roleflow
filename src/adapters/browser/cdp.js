@@ -261,16 +261,22 @@ class CdpBrowserAdapter {
     const isFocusEnable = isFocusCommand && params?.enabled === true;
     const isFocusDisable = isFocusCommand && params?.enabled === false;
     let scope = this.focusScopes.get(tab.id);
+    if (scope?.failure) {
+      if (isFocusDisable) {
+        this.releaseFocusScope(tab.id, scope);
+        return {};
+      }
+      throw scope.failure;
+    }
     if (isFocusEnable && !scope) {
       scope = await openCdpConnection(tab.webSocketDebuggerUrl, this.timeoutMs, method);
-      scope.onFatal = () => this.releaseFocusScope(tab.id, scope);
       this.focusScopes.set(tab.id, scope);
     }
     if (!scope) return sendCdp(tab.webSocketDebuggerUrl, method, params, this.timeoutMs);
     try {
       return await scope.command(method, params);
     } catch (error) {
-      this.releaseFocusScope(tab.id, scope);
+      scope.fail(error);
       throw error;
     } finally {
       if (isFocusDisable) this.releaseFocusScope(tab.id, scope);
@@ -396,7 +402,7 @@ class CdpConnection {
     this.commandId = 0;
     this.pending = new Map();
     this.listeners = [];
-    this.onFatal = null;
+    this.failure = null;
   }
 
   open(method) {
@@ -502,12 +508,12 @@ class CdpConnection {
 
   fail(error) {
     if (this.closed) return;
+    this.failure = error;
     this.closed = true;
     this.opened = false;
     this.rejectPending(error);
     this.removeListeners();
     tryClose(this.socket);
-    this.onFatal?.();
   }
 
   rejectPending(error) {

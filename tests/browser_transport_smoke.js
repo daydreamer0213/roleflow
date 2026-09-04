@@ -442,7 +442,13 @@ async function main() {
     const idleDisconnectedFocusScope = latestSocket(websocket, "/devtools/page/cdp-tab");
     idleDisconnectedFocusScope.emit("close", { code: 1006, reason: "focus scope disconnect" });
     assert.strictEqual(idleDisconnectedFocusScope.closed, true, "an idle focus scope disconnect must close its websocket");
-    assert.strictEqual(cdp.focusScopes.size, 0, "an idle focus scope disconnect must release stale focus state");
+    assert.strictEqual(cdp.focusScopes.size, 1, "an idle focus scope disconnect must preserve a failed-scope tombstone");
+    const idleDisconnectCommandCount = idleDisconnectedFocusScope.messages.length;
+    await rejectsWithCode(() => cdp.evalValue("cdp-tab", "document.hasFocus()"), "BROWSER_DISCONNECTED");
+    assert.strictEqual(idleDisconnectedFocusScope.messages.length, idleDisconnectCommandCount,
+      "a failed focus scope must not fall through to a fresh normal command socket");
+    assert.deepStrictEqual(await cdp.cdp("cdp-tab", "Emulation.setFocusEmulationEnabled", { enabled: false }), {});
+    assert.strictEqual(cdp.focusScopes.size, 0, "explicit focus disable must clear a failed-scope tombstone");
 
     websocket.mode = "respond";
     await cdp.cdp("cdp-tab", "Emulation.setFocusEmulationEnabled", { enabled: true });
@@ -450,8 +456,25 @@ async function main() {
     websocket.mode = "disconnect-eval";
     await rejectsWithCode(() => cdp.evalValue("cdp-tab", "document.hasFocus()"), "BROWSER_DISCONNECTED");
     assert.strictEqual(disconnectedFocusScope.closed, true, "a scoped command disconnect must release the focus websocket");
-    assert.strictEqual(cdp.focusScopes.size, 0, "a scoped command disconnect must not retain stale focus state");
+    assert.strictEqual(cdp.focusScopes.size, 1, "a scoped command disconnect must preserve its failed-scope tombstone");
     assert.strictEqual(disconnectedFocusScope.messages.length, 2, "a scoped command disconnect must not reconnect or replay the command");
+    await rejectsWithCode(() => cdp.clickAt("cdp-tab", { x: 120, y: 48 }), "BROWSER_DISCONNECTED");
+    assert.strictEqual(disconnectedFocusScope.messages.length, 2, "a failed focus scope must block later click dispatches");
+    await cdp.cdp("cdp-tab", "Emulation.setFocusEmulationEnabled", { enabled: false });
+
+    websocket.mode = "respond";
+    await cdp.cdp("cdp-tab", "Emulation.setFocusEmulationEnabled", { enabled: true });
+    const erroredFocusScope = latestSocket(websocket, "/devtools/page/cdp-tab");
+    websocket.mode = "focus-command-error";
+    await rejectsWithCode(() => cdp.evalValue("cdp-tab", "document.hasFocus()"), "BROWSER_COMMAND_FAILED");
+    assert.strictEqual(erroredFocusScope.closed, true, "a scoped CDP command error must release its websocket");
+    assert.strictEqual(cdp.focusScopes.size, 1, "a scoped CDP command error must preserve its failed-scope tombstone");
+    assert.strictEqual(erroredFocusScope.messages.length, 2);
+    websocket.mode = "respond";
+    await rejectsWithCode(() => cdp.clickAt("cdp-tab", { x: 120, y: 48 }), "BROWSER_COMMAND_FAILED");
+    assert.strictEqual(erroredFocusScope.messages.length, 2, "a failed CDP scope must block later click dispatches");
+    await cdp.cdp("cdp-tab", "Emulation.setFocusEmulationEnabled", { enabled: false });
+    assert.strictEqual(cdp.focusScopes.size, 0);
 
     websocket.mode = "fail-third-dispatch";
     websocket.messages.length = 0;
@@ -863,6 +886,9 @@ function installFakeWebSocket() {
           && payload.method === "Input.dispatchMouseEvent"
           && dispatchCount === 3) {
           error = { message: "dispatch failed" };
+        } else if (control.mode === "focus-command-error"
+          && payload.method === "Runtime.evaluate") {
+          error = { message: "focus scope command failed" };
         } else if ((control.mode === "disconnect-navigation" && payload.method === "Page.navigate")
           || (control.mode === "disconnect-eval" && payload.method === "Runtime.evaluate"
             && payload.params.expression !== "document.visibilityState")

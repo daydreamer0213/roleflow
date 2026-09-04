@@ -22,17 +22,19 @@ async function main() {
   const tempRoot = process.env.TEMP || process.env.TMP || os.tmpdir();
   const profilePath = fs.mkdtempSync(path.join(tempRoot, "roleflow-cdp-focus-"));
   const port = await freeLoopbackPort();
-  const context = await chromium.launchPersistentContext(profilePath, {
-    channel: "msedge",
-    headless: true,
-    args: [`--remote-debugging-address=127.0.0.1`, `--remote-debugging-port=${port}`]
-  });
+  let context = null;
   try {
+    context = await chromium.launchPersistentContext(profilePath, {
+      channel: "msedge",
+      headless: true,
+      args: [`--remote-debugging-address=127.0.0.1`, `--remote-debugging-port=${port}`]
+    });
     const targetPage = await context.newPage();
     await targetPage.goto(dataPage("focus-target"));
     const foregroundPage = await context.newPage();
     await foregroundPage.goto(dataPage("focus-foreground"));
     await foregroundPage.bringToFront();
+    const baselineFocus = await targetPage.evaluate(() => document.hasFocus());
 
     await waitForCdp(port);
     const adapter = new CdpBrowserAdapter({ port, timeoutMs: 2_000 });
@@ -45,8 +47,10 @@ async function main() {
     await adapter.clickAt(target.id, { x: 100, y: 35 });
     assert.equal(await targetPage.evaluate(() => window.clicks.length), 1);
     await adapter.cdp(target.id, "Emulation.setFocusEmulationEnabled", { enabled: false });
+    await delay(150);
+    assert.equal(await targetPage.evaluate(() => document.hasFocus()), baselineFocus);
   } finally {
-    await context.close();
+    await context?.close();
     fs.rmSync(profilePath, { recursive: true, force: true });
   }
 }
