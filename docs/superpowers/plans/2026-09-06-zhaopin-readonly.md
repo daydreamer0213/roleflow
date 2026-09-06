@@ -101,6 +101,7 @@ assert.deepEqual(salaryRangeK('面议'), {min:null,max:null});
 - Modify: `src/adapters/sites/zhaopin.js`
 - Create: `src/adapters/sites/index.js`（两个真实读取器的轻量选择入口）
 - Modify: `src/cli.js`, `src/core/scan_execution.js`, `src/application/workflow/index.js`, `src/core/job_analysis.js`
+- Modify: `src/core/workflow_run.js`, `src/core/workflow_progress.js`（平台轮次规划、恢复和阶段提示）
 - Modify: `src/dashboard/server.js` 中实际扫描启动/快照/浏览器检查入口
 - Create: `tests/zhaopin_workflow_smoke.js`
 
@@ -111,6 +112,8 @@ assert.deepEqual(salaryRangeK('面议'), {min:null,max:null});
 - `planner.site` / `searchScope.site` 冻结本轮来源；扫描批次、运行和详情落库来源一致。使用同一浏览器任务互斥，访问账本按实际站点归属。
 - 智联分析后进入只读结果状态，允许结束/下一轮；BOSS `workflowEligibility` 不放宽，智联不以 BOSS 沟通库存决定是否扫描。
 - 恢复时 orphan scan 查询、批次归属与分析状态转换均使用冻结来源；智联分析完成的合法终态在存储与页面一起支持，不残留“继续沟通”要求。
+- 沿用现有访问控制器和节奏，不另造并发调度或忽略访问额度；实际事件使用 `site='zhaopin'`，动作前申请额度，等待后再次核对 signal、标签、搜索范围及岗位身份。
+- Dashboard 启动/恢复路径先区分站点：智联需要浏览器连接和自己的搜索页，不调用 BOSS 工作区登录就绪作为前置条件。保留既有浏览器运行时恢复，但不能因此强开 BOSS 页面或要求 BOSS 登录。
 
 - [ ] 在最小后台实站补证搜索结果加载机制和非默认筛选后，保存脱敏结构证据；未证实的路径不能靠猜测上线。
 - [ ] 写失败检查：冻结智联来源传到 CLI；同编号跨来源不串数据；逐岗结果先落库；暂停/结束/风险不再读下一岗；恢复保留原范围；未读尽/预算耗尽标部分完成而非全部完成；并发浏览器任务被拒绝。
@@ -129,14 +132,16 @@ assert.equal(args[args.indexOf('--site')+1], 'zhaopin');
 
 **Files:**
 - Modify: `src/dashboard/server.js`、现有今日任务/结果渲染与脚本模块
-- Modify: `src/core/communication_batches.js` 或实际公共批次创建资格入口（仅在当前可达路径缺少来源校验时补）
+- Modify: `src/storage/communication_store.js` 的 `isCommunicationJobEligible`（实际公共批次资格需同时要求 BOSS 来源和 BOSS URL）
 - Create: `tests/dashboard_zhaopin_smoke.js`
 - Modify: `docs/PROJECT_HANDOFF.md`, `docs/NEXT_PHASE.md`, 本计划
 
 **Interfaces:**
 - 今日任务平台选择控制本次打开/保存原生条件/开始请求，结果页来源筛选只过滤展示，不改岗位或历史统计。
 - 智联工作区按需准备同窗后台搜索页；先使用已有匹配页，只有不存在时创建。首次 URL 带方案首个关键词，不强设示例地区。保留默认 portable 与显式 edge 两条传输，不自动切换登录身份。
+- 两种传输已有 `createTab(openerTabId,url)`，优先复用；保留 CDP 字符串 targetId 和 Edge 数字 tabId 的原始类型，并复核同窗与活动页不变，不通过默认活动标签决定扫描目标。
 - 未启用写能力的平台既无操作按钮，也由服务端拒绝进入 BOSS 批次；不靠隐藏按钮作为唯一保护。
+- 今日任务的当前平台选择通过请求/页面状态保留；本轮运行仍使用冻结来源。智联只显示找岗相关的进度与动作，隐藏不适用的 BOSS 活跃度、生成模式和沟通指标，不重写这些旧方案值。
 
 - [ ] 写 HTTP/本地浏览器失败检查：BOSS 默认为旧路径；选择智联打开带词页；保存和刷新后条件保留；启动请求携带来源；结果可见来源；无智联发送按钮；伪造批次请求被拒绝。
 - [ ] 沿用现有视觉样式和原生 select，不重做布局、不增加大面积说明；新增错误显示发生位置及下一操作，不只显示编号。
