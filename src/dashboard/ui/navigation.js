@@ -8,7 +8,8 @@ function renderNavigation({ currentPath = "", todayPath = "", planId = "" } = {}
     const encodedPlanId = encodeURIComponent(resolvedPlanId);
     const planHref = currentRoute === "/plan" ? current : (todayPath || `/plan?planId=${encodedPlanId}`);
     const workflowHref = currentRoute === "/workflow" ? current : `${planHref}#today-discovery`;
-    const jobsHref = ["/queue", "/jobs"].includes(currentRoute) ? current : `/queue?planId=${encodedPlanId}`;
+    const zhaopin = new URL(todayPath || current || '/', 'http://localhost').searchParams.get('site') === 'zhaopin';
+    const jobsHref = ["/queue", "/jobs"].includes(currentRoute) ? current : `${zhaopin ? '/jobs' : '/queue'}?planId=${encodedPlanId}${zhaopin ? '&site=zhaopin' : ''}`;
     const communicationHref = ["/communication", "/communication/new"].includes(currentRoute)
       ? current
       : `/communication/new?planId=${encodedPlanId}`;
@@ -22,9 +23,9 @@ function renderNavigation({ currentPath = "", todayPath = "", planId = "" } = {}
       navigationGroup("求职", [
         navigationLink(workflowHref, "发现岗位", currentRoute === "/workflow"),
         navigationLink(jobsHref, "岗位记录", ["/queue", "/jobs"].includes(currentRoute)),
-        navigationLink(`/funnel?planId=${encodedPlanId}`, "求职体检", currentRoute === "/funnel")
+        zhaopin ? "" : navigationLink(`/funnel?planId=${encodedPlanId}`, "求职体检", currentRoute === "/funnel")
       ]),
-      navigationGroup("沟通", [
+      zhaopin ? "" : navigationGroup("沟通", [
         navigationLink(messagesHref, "消息与回复", currentRoute === "/messages"),
         navigationLink(communicationHref, "发送记录", ["/communication", "/communication/new"].includes(currentRoute))
       ]),

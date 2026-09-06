@@ -5,6 +5,7 @@
   const actionButton = document.querySelector("[data-runtime-recover]");
   if (!region || !title || !message || !actionButton) return;
 
+  const site = region.dataset.site || 'boss';
   let requestInFlight = false;
   let pollTimer = null;
   let actionEndpoint = "";
@@ -39,6 +40,7 @@
         endpoint: recoverable ? "/api/runtime/browser/recover" : ""
       };
     }
+    if (site === 'zhaopin') return { state: 'ready', title: '专用 Edge 已就绪 · 智联只读', message: '在今日任务准备智联搜索页并保存条件后开始。', button: '', endpoint: '' };
     if (workspace.status === "ready") {
       return {
         state: "ready",
@@ -108,7 +110,7 @@
 
   function poll() {
     pollTimer = null;
-    return request("/api/runtime-status");
+    return request("/api/runtime-status?site=" + encodeURIComponent(site));
   }
 
   actionButton.addEventListener("click", async () => {
@@ -118,7 +120,7 @@
     await request(actionEndpoint, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: "{}"
+      body: JSON.stringify({ site })
     });
   });
 

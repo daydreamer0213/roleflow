@@ -1585,7 +1585,7 @@ async function scan(
       reviewIfDrained: finalStatus === "completed",
       renderReports: (phaseDb, phaseBatchId, { counts }) => {
         const savedCount = completedWorkflowAnalysisCount(counts);
-        report = renderReports(listReportJobs(phaseDb, { batchId: phaseBatchId }), runtimePaths.reportRoot);
+        report = renderReports(listReportJobs(phaseDb, { batchId: phaseBatchId }), runtimePaths.reportRoot, { site });
         scanLogger.info("scan_completed", {
           batchId: phaseBatchId,
           saved: savedCount,
@@ -1652,7 +1652,7 @@ async function scan(
       saved += 1;
     }
     scanLogger.info("job_analysis_completed", { batchId, jobCount: analyzedJobs.length, analysisConcurrency });
-    report = renderReports(listReportJobs(db, { batchId }), runtimePaths.reportRoot);
+    report = renderReports(listReportJobs(db, { batchId }), runtimePaths.reportRoot, { site });
     scanLogger.info("scan_completed", { batchId, saved, reportMarkdown: path.basename(report.mdPath), reportHtml: path.basename(report.htmlPath) });
     console.log(`导入 ${saved} 个岗位`);
     console.log(`Markdown: ${report.mdPath}`);
@@ -1739,7 +1739,8 @@ async function resumeWorkflowAnalysisOnly(db, {
       const savedCount = completedWorkflowAnalysisCount(counts);
       report = renderReports(
         listReportJobs(phaseDb, { batchId: phaseBatchId }),
-        runtimePaths.reportRoot
+        runtimePaths.reportRoot,
+        { site: workflowRun.site || 'boss' }
       );
       scanLogger.info("scan_completed", {
         batchId: phaseBatchId,
@@ -2692,7 +2693,7 @@ function rescorePlan(db, args) {
 function rebuildReport(db, args = {}) {
   const batchId = Number(args.batch || 0);
   const jobs = batchId ? listReportJobs(db, { batchId, limit: 500 }) : listReportJobs(db, { limit: 500 });
-  const report = renderReports(jobs, runtimePaths.reportRoot);
+  const report = renderReports(jobs, runtimePaths.reportRoot, { site: batchId ? getBatch(db, batchId)?.site : args.site });
   console.log(`Markdown: ${report.mdPath}`);
   console.log(`HTML: ${report.htmlPath}`);
 }

@@ -69,6 +69,7 @@
     const stable = node("[data-overview-blocker-stable]");
     const countdown = node("[data-cooldown-countdown]");
     setText("[data-overview-progress]", "第 " + number(snapshot.progress.stageIndex) + " / " + number(snapshot.progress.stageCount) + " 阶段");
+    setText("[data-overview-analysis]", "已分析 " + (number(snapshot.progress.analysis?.succeeded) + number(snapshot.progress.analysis?.resolvedAfterFailure)) + " 个岗位");
     const scanTargets = snapshot.progress.scanTargets || {};
     const details = snapshot.progress.details || {};
     setText("[data-overview-acquisition]", "搜索目标 " + number(scanTargets.processed) + " / " + number(scanTargets.total) + " · 已获取 " + number(details.collected) + " 个岗位");

@@ -308,9 +308,9 @@ const { prepareInitialSearchPage } = require("../application/onboarding/initial_
 const { createModelAdapter } = require("../adapters/models");
 const boss = require("../adapters/sites/boss");
 const { ZhaopinSiteAdapter, resolveZhaopinSearchTab } = require('../adapters/sites/zhaopin');
-const { canonicalizeZhaopinSearchTemplate } = require('../core/zhaopin_search_scope');
+const { canonicalizeZhaopinSearchTemplate, buildZhaopinSearchUrl } = require('../core/zhaopin_search_scope');
 const { compileZhaopinPlatformRuntimePolicy } = require('../core/platform_runtime_policy');
-const { getPlatformSearchContext } = require('../storage/platform_search_context_store');
+const { getPlatformSearchContext, savePlatformSearchContext } = require('../storage/platform_search_context_store');
 const { inspectBossBrowserReadiness, readinessAction } = require("../core/browser_readiness");
 const { inspectBossOperatorTabs } = require("../core/workspace_tabs");
 
@@ -582,7 +582,7 @@ function createDashboardServer({
     runBrowserRead(async () => {
       await ensureManagedWorkspaceReady("workflow_resume", authority.site);
       if (authority.site === 'zhaopin') {
-        const browser = createDashboardBrowser(authority);
+        const browser = browserFactory(authority);
         await new ZhaopinSiteAdapter({ browser, logger }).preflight();
         return { status: 'ready', ready: true, message: '智联搜索页已就绪。', action: '', checkedAt: new Date().toISOString() };
       }
@@ -593,7 +593,7 @@ function createDashboardServer({
   const resolveSerializedInheritedPreview = (input) =>
     runBrowserRead(() => inheritedPreviewResolver(input));
   const resolveSerializedCurrentSearchContext = (input) =>
-    runBrowserRead(() => input.site === 'zhaopin' ? resolveLiveZhaopinContext({ ...input, requireSaved: false }) : currentSearchContextResolver(input));
+    runBrowserRead(() => input.site === 'zhaopin' ? resolveLiveZhaopinContext({ ...input, requireSaved: false, browserFactory }) : currentSearchContextResolver(input));
   const assertBrowserRuntimeReady = () => {
     if (!browserSupervisor?.getSnapshot) return;
     const snapshot = browserSupervisor.getSnapshot();
@@ -1156,7 +1156,7 @@ function createDashboardServer({
         return sendJson(res, 200, {
           application: { status: "ready", ready: true },
           browser: browserSupervisor?.getSnapshot?.() || null,
-          workspace: workspaceRuntime
+          workspace: requestedSite(url.searchParams.get('site')) === 'zhaopin' ? { status: 'unchecked', site: 'zhaopin' } : workspaceRuntime
         });
       }
       if (req.method === "GET" && url.pathname === "/api/runtime-diagnostics") {
@@ -1190,7 +1190,8 @@ function createDashboardServer({
         return sendJson(res, 200, { ok: true });
       }
       if (req.method === "POST" && url.pathname === "/api/runtime/browser/recover") {
-        await readBody(req);
+        const params = parseBody(await readBody(req), req.headers['content-type'] || '');
+        const site = requestedSite(params.site);
         if (!browserSupervisor?.ensure) {
           throw appError("BROWSER_RUNTIME_UNMANAGED", "当前浏览器由高级连接模式管理，不能从工作台启动。", { statusCode: 409 });
         }
@@ -1202,7 +1203,7 @@ function createDashboardServer({
           dashboardUrl: `http://127.0.0.1:${address.port}/`,
           reason: "user_recovery"
         });
-        const workspace = browser?.ready && workspaceReconciler
+        const workspace = site === 'boss' && browser?.ready && workspaceReconciler
           ? await reconcileWorkspace({ startupGuidance: false, reason: "user_recovery" })
           : null;
         return sendJson(res, 200, workspace
@@ -1210,7 +1211,8 @@ function createDashboardServer({
           : { browser });
       }
       if (req.method === "POST" && url.pathname === "/api/runtime/workspace/reconcile") {
-        parseBody(await readBody(req), req.headers["content-type"] || "");
+        const params = parseBody(await readBody(req), req.headers['content-type'] || '');
+        if (requestedSite(params.site) === 'zhaopin') return sendJson(res, 200, { browser: browserSupervisor?.getSnapshot?.() || null, workspace: { status: 'unchecked', site: 'zhaopin' } });
         if (!workspaceReconciler) {
           throw appError("BROWSER_RUNTIME_UNMANAGED", "当前浏览器工作区不能由工作台整理。", { statusCode: 409 });
         }
@@ -1228,27 +1230,63 @@ function createDashboardServer({
         });
       }
       if (req.method === "GET" && url.pathname === "/api/browser-readiness") {
+        const site = requestedSite(url.searchParams.get('site'));
         const authority = resolveDashboardWorkflowBrowser({
           browserMode: url.searchParams.get("browserMode"),
           cdpPort: url.searchParams.get("cdpPort")
         });
-        const readiness = await inspectBrowserReadiness(authority);
+        const readiness = site === 'zhaopin' ? await runBrowserRead(async () => {
+          try {
+            assertBrowserRuntimeReady();
+            if (!getSiteScanLease(db, 'boss') && !getSiteScanLease(db, 'zhaopin')) await new ZhaopinSiteAdapter({ browser: browserFactory(authority), logger }).preflight();
+            return { ready: true, status: 'ready', message: '智联搜索页已就绪；开始前将核对已保存条件。', checkedAt: new Date().toISOString() };
+          } catch (error) {
+            return { ready: false, status: 'search_page_required', message: `${error.message} 请准备智联搜索页并保存条件后重试。`, action: '检查智联搜索页', checkedAt: new Date().toISOString() };
+          }
+        }) : await inspectBrowserReadiness(authority);
         return sendJson(res, 200, publicBrowserReadinessSnapshot(readiness));
       }
       if (req.method === "GET" && url.pathname === "/api/acquisition-preview") {
+        const site = requestedSite(url.searchParams.get('site'));
         const authority = resolveDashboardWorkflowBrowser({
           browserMode: url.searchParams.get("browserMode"),
           cdpPort: url.searchParams.get("cdpPort")
         });
         return handleAcquisitionPreview(res, {
           db,
+          site,
           planId: url.searchParams.get("planId"),
           logger,
           requestId,
-          inheritedPreviewResolver: resolveSerializedInheritedPreview,
+          inheritedPreviewResolver: site === 'zhaopin'
+            ? (input) => runBrowserRead(() => resolveLiveZhaopinContext({ ...input, requireSaved: false, browserFactory }))
+            : resolveSerializedInheritedPreview,
           browserAuthority: authority,
           assertBrowserRuntimeReady
         });
+      }
+      if (req.method === 'POST' && ['/api/platform-search/open', '/api/platform-search/save'].includes(url.pathname)) {
+        const params = parseBody(await readBody(req), req.headers['content-type'] || '');
+        const site = requestedSite(params.site);
+        const plan = getSearchPlan(db, Number(params.planId));
+        if (!plan) throw appError('SEARCH_PLAN_NOT_FOUND', '筛选方案不存在。', { statusCode: 404 });
+        if (site !== 'zhaopin') throw appError('PLATFORM_SEARCH_BOSS_EXISTING', '请使用现有 BOSS 工作区和筛选方案。', { statusCode: 409 });
+        try {
+          const result = await runBrowserRead(async () => {
+            if (getSiteScanLease(db, 'boss') || getSiteScanLease(db, 'zhaopin')) throw appError('SCAN_ALREADY_RUNNING', '当前有浏览器任务，请暂停并等待它保存后再调整智联条件。', { statusCode: 409 });
+            assertBossRuntimeAvailable(db, { site });
+            await ensureManagedWorkspaceReady('zhaopin_search', site);
+            if (url.pathname.endsWith('/open')) return prepareZhaopinSearch({ db, plan, browser: browserFactory(frozenBrowserAuthority) });
+            const context = await resolveLiveZhaopinContext({ db, plan, logger, ...frozenBrowserAuthority, browserFactory, requireSaved: false });
+            if (context.site !== site || context.searchScope?.site !== site) throw appError('ZHAOPIN_SEARCH_SCOPE_CHANGED', '来源不一致，请重新打开智联搜索页。', { statusCode: 409 });
+            const template = canonicalizeZhaopinSearchTemplate(context.searchTemplate.url);
+            savePlatformSearchContext(db, { planId: plan.id, site, searchTemplate: template, filterSummary: context.platformPolicy.filterSummary || [] });
+            return { site, summary: (context.platformPolicy.filterSummary || []).join('；') || '当前页面未额外限制条件', message: '智联条件已保存，可开始本轮。' };
+          });
+          return sendJson(res, 200, result);
+        } catch (error) {
+          return sendJson(res, error.statusCode || 409, { error: `${error.message} 请在智联搜索页检查后重试。`, errorCode: error.code || 'ZHAOPIN_SEARCH_FAILED' });
+        }
       }
       if (req.method === "GET" && url.pathname === "/api/onboarding-status") {
         recoverStaleOnboardingRuns(db);
@@ -2004,10 +2042,13 @@ async function handlePlanSave(req, res, db, { root, logger, requestId, rescore =
     const profileId = Number(params.profileId);
     const profile = getCandidateProfile(db, profileId);
     if (!profile) throw new Error("候选人画像不存在，请重新上传简历。");
+    const site = requestedSite(params.site);
+    const existingPlan = site === 'zhaopin' ? getSearchPlan(db, Number(params.planId)) : null;
+    if (site === 'zhaopin' && existingPlan?.profileId !== profileId) throw new Error('筛选方案与候选人不一致。');
     const plan = normalizeSearchPlan({
       name: params.name,
-      acquisitionMode: params.acquisitionMode,
-      platform: {
+      acquisitionMode: existingPlan ? existingPlan.plan.acquisitionMode : params.acquisitionMode,
+      platform: existingPlan ? existingPlan.plan.platform : {
         site: "boss",
         generated: {
           cities: splitTerms(params.cities),
@@ -2022,7 +2063,7 @@ async function handlePlanSave(req, res, db, { root, logger, requestId, rescore =
       salaryMode: params.salaryMode,
       allowExperienceStretch: params.allowExperienceStretch === "on",
       allowPartTime: params.allowPartTime === "on",
-      bossActiveDays: params.bossActiveDays,
+      bossActiveDays: existingPlan ? existingPlan.plan.bossActiveDays : params.bossActiveDays,
       workSchedulePreference: params.workSchedulePreference,
       directions: splitTerms(params.directions),
       keywords: parseKeywordLines(params.keywords),
@@ -2063,7 +2104,7 @@ async function handlePlanSave(req, res, db, { root, logger, requestId, rescore =
       rescored: rescoreResult.rescored,
       rescoreDeferred: Boolean(rescoreResult.deferred)
     });
-    redirect(res, `/plan?profileId=${profileId}&planId=${planId}&saved=1${rescoreResult.deferred ? "&rescoreDeferred=1" : ""}`);
+    redirect(res, `/plan?profileId=${profileId}&planId=${planId}&saved=1${site === 'zhaopin' ? '&site=zhaopin' : ''}${rescoreResult.deferred ? "&rescoreDeferred=1" : ""}`);
   } catch (error) {
     respondUiError(res, error, "/onboarding", { logger, requestId, event: "search_plan_save_failed", fallbackCode: "SEARCH_PLAN_SAVE_FAILED" });
   }
@@ -2493,6 +2534,7 @@ async function saveModelSettingsRequest(params, { root, fallbackModelConfig, con
 
 async function handleAcquisitionPreview(res, {
   db,
+  site = 'boss',
   planId,
   logger,
   requestId,
@@ -2506,30 +2548,31 @@ async function handleAcquisitionPreview(res, {
     if (!plan) {
       throw appError("SEARCH_PLAN_NOT_FOUND", "筛选方案不存在。", { statusCode: 404 });
     }
-    if (acquisitionModeOf(plan.plan) !== "inherited") {
+    if (site === 'boss' && acquisitionModeOf(plan.plan) !== "inherited") {
       throw appError(
         "ACQUISITION_PREVIEW_INHERITED_REQUIRED",
         "当前方案不是继承模式，不需要读取 BOSS 搜索页范围。",
         { statusCode: 409 }
       );
     }
-    if (getSiteScanLease(db, "boss")) {
+    if (getSiteScanLease(db, "boss") || getSiteScanLease(db, 'zhaopin')) {
       throw appError(
         "SCAN_ALREADY_RUNNING",
-        "BOSS 正在执行其他只读任务，暂不读取搜索页范围。",
+        site === "zhaopin" ? "当前有平台正在执行只读任务，暂不读取智联搜索页范围。" : "BOSS 正在执行其他只读任务，暂不读取搜索页范围。",
         { statusCode: 409 }
       );
     }
-    if (scanRuntimeBlock(db)) {
+    if (scanRuntimeBlock(db, { site })) {
       throw appError(
         "BOSS_RUNTIME_BLOCKED",
-        "BOSS 访问仍处于安全暂停期，暂不读取搜索页范围。",
+        site === "zhaopin" ? "智联访问仍处于安全暂停期，暂不读取搜索页范围。" : "BOSS 访问仍处于安全暂停期，暂不读取搜索页范围。",
         { statusCode: 409 }
       );
     }
     assertBrowserRuntimeReady();
     const context = await inheritedPreviewResolver({
       db,
+      site,
       plan,
       matchingContext: getCandidateMatchingContext(db, plan.profileId),
       logger,
@@ -2538,7 +2581,9 @@ async function handleAcquisitionPreview(res, {
     });
     return sendJson(res, 200, publicAcquisitionPreview(context));
   } catch (error) {
-    const issue = publicAcquisitionPreviewError(error);
+    const issue = site === "zhaopin"
+      ? { statusCode: error.statusCode || 409, errorCode: error.code || "ZHAOPIN_PREVIEW_FAILED", error: error.message || "暂时无法读取智联搜索范围，请检查固定搜索页后重试。" }
+      : publicAcquisitionPreviewError(error);
     logger.warn("acquisition_preview_failed", {
       requestId,
       planId: normalizedPlanId || null,
@@ -2565,7 +2610,7 @@ function publicAcquisitionPreview(context, checkedAt = new Date().toISOString())
   return {
     mode: "inherited",
     status: unresolvedCount ? "partial" : "ready",
-    summary: filters.join("；") || "当前 BOSS 搜索页未识别到额外筛选条件",
+    summary: filters.join("；") || `当前 ${context.site === 'zhaopin' ? '智联' : 'BOSS'} 搜索页未识别到额外筛选条件`,
     filters,
     unresolved: Array.from({ length: unresolvedCount }, () => "某平台参数未能识别"),
     checkedAt
@@ -2705,6 +2750,54 @@ async function resolveLiveAcquisitionContext(input) {
   return acquisitionModeOf(input.plan.plan) === "inherited"
     ? resolveLiveInheritedContext(input)
     : resolveLiveGeneratedContext(input);
+}
+
+function requestedSite(value) {
+  const site = String(value || 'boss').trim().toLowerCase();
+  if (!['boss', 'zhaopin'].includes(site)) throw appError('UNKNOWN_SITE', '请选择 BOSS 或智联。', { statusCode: 400 });
+  return site;
+}
+
+async function prepareZhaopinSearch({ db, plan, browser }) {
+  const before = await browser.listTabs();
+  const dashboards = before.filter(tab => {
+    try { const url = new URL(tab.url); return ['127.0.0.1', 'localhost'].includes(url.hostname) && ['/plan', '/', '/workflow'].includes(url.pathname); } catch { return false; }
+  });
+  const searches = before.filter(tab => {
+    try { const url = new URL(tab.url); return url.origin === 'https://www.zhaopin.com' && url.pathname === '/jobs/'; } catch { return false; }
+  });
+  if (searches.length > 1) throw appError('ZHAOPIN_SEARCH_TAB_REQUIRED', '存在多个智联搜索页，请保留一个后重试。', { statusCode: 409 });
+  if (searches.length === 1) {
+    const search = searches[0];
+    if (!dashboards.some(tab => tab.windowId === search.windowId)) throw appError('ZHAOPIN_WINDOW_MISMATCH', '智联搜索页与 RoleFlow 不在同一窗口，请检查固定工作区后重试。', { statusCode: 409 });
+    const currentUrl = new URL(search.url);
+    if (!currentUrl.searchParams.get('kw')?.trim()) {
+      if (!currentUrl.searchParams.has('pageMode') || currentUrl.searchParams.get('pageMode') === 'recommend') currentUrl.searchParams.set('pageMode', 'search');
+      const template = canonicalizeZhaopinSearchTemplate(currentUrl.toString());
+      if (search.active) throw appError('ZHAOPIN_BACKGROUND_OPEN_FAILED', '请回到同窗 RoleFlow 页面后再准备智联搜索。', { statusCode: 409 });
+      await browser.navigate(search.id, buildZhaopinSearchUrl({ searchTemplate: template, keyword: planKeywords(plan.plan)[0] }));
+      const after = await browser.listTabs();
+      const target = after.find(tab => tab.id === search.id);
+      if (!target || target.windowId !== search.windowId || target.active || JSON.stringify(after.filter(tab => tab.active).map(tab => tab.id)) !== JSON.stringify(before.filter(tab => tab.active).map(tab => tab.id))) throw appError('ZHAOPIN_BACKGROUND_OPEN_FAILED', '无法确认智联搜索页仍在同窗后台，已停止。', { statusCode: 409 });
+      canonicalizeZhaopinSearchTemplate(target.url);
+    } else canonicalizeZhaopinSearchTemplate(search.url);
+    return { site: 'zhaopin', message: '已找到智联搜索页。设置原生条件后，点击“保存智联条件”。' };
+  }
+  if (dashboards.length !== 1) throw appError('ZHAOPIN_OPENER_REQUIRED', '请在当前浏览器保留一个 RoleFlow 今日任务页，再准备智联搜索页。', { statusCode: 409 });
+  const opener = dashboards[0];
+  const template = getPlatformSearchContext(db, { planId: plan.id, site: 'zhaopin' })?.searchTemplate || { url: 'https://www.zhaopin.com/jobs/?pageMode=search' };
+  const url = buildZhaopinSearchUrl({ searchTemplate: template, keyword: planKeywords(plan.plan)[0] });
+  const created = await browser.createTab(opener.id, url);
+  const createdId = created?.id ?? created?.tabId ?? created;
+  const after = await browser.listTabs();
+  const target = after.find(tab => tab.id === createdId);
+  const active = tabs => tabs.filter(tab => tab.active).map(tab => tab.id);
+  if (!target || target.windowId !== opener.windowId || target.active || JSON.stringify(active(before)) !== JSON.stringify(active(after))) {
+    if (target && browser.closeTab) await browser.closeTab(createdId);
+    throw appError('ZHAOPIN_BACKGROUND_OPEN_FAILED', '未能确认后台同窗打开，已停止。请检查浏览器工作区后重试。', { statusCode: 409 });
+  }
+  canonicalizeZhaopinSearchTemplate(target.url);
+  return { site: 'zhaopin', message: '智联搜索页已在同窗后台准备。设置条件后，点击“保存智联条件”。' };
 }
 
 async function resolveLiveZhaopinContext({ db, plan, matchingContext, logger, browserMode = 'edge', cdpPort = null, browserFactory = createDashboardBrowser, requireSaved = true }) {
@@ -3534,7 +3627,13 @@ function scanStatus(scanRuns, planId, db = null) {
 
 async function handlePost(req, res, handler, { logger, requestId, action }) {
   const contentType = req.headers["content-type"] || "";
-  const result = handler(await readBody(req), contentType);
+  let result;
+  try {
+    result = handler(await readBody(req), contentType);
+  } catch (error) {
+    if (error.code !== 'READONLY_SITE_FUNNEL_FORBIDDEN') throw error;
+    result = { statusCode: 400, body: { error: error.message, errorCode: error.code } };
+  }
   if (result.statusCode !== 200) {
     const body = { ...result.body, errorCode: result.body?.errorCode || "API_REQUEST_REJECTED", requestId };
     logger.warn("dashboard_api_rejected", { requestId, action, statusCode: result.statusCode, errorCode: body.errorCode });
@@ -3552,33 +3651,37 @@ function getDashboardData(db, searchParams = new URLSearchParams()) {
   const options = dashboardBatchOptions(db, filters);
   const jobs = filterJobs(listReportJobs(db, options), filters);
   return {
+    title: filters.site === 'zhaopin' ? '智联岗位分析结果' : filters.site === 'all' ? '各平台岗位分析记录' : undefined,
     filters: { ...filters, profileId: plan?.profileId || null, exportEnabled: Boolean(plan) },
     jobs,
     latestBatchId: options.batchId || getLatestBatchId(db, options),
     summary: summarizeJobs(jobs, buildBatchSummary(db, options)),
     currentPath: `/jobs?${searchParams.toString()}`,
-    todayPath: filters.planId ? `/plan?planId=${encodeURIComponent(filters.planId)}` : "/plan"
+    todayPath: filters.planId ? `/plan?planId=${encodeURIComponent(filters.planId)}${filters.workSite === 'zhaopin' ? '&site=zhaopin' : ''}` : "/plan"
   };
 }
 
 function dashboardBatchOptions(db, filters) {
   const options = batchOptions(filters);
-  if (filters.batch !== "latest" || filters.batchId) return options;
+  if (filters.site === 'all' || filters.batch !== "latest" || filters.batchId) return options;
   const latestMainBatchId = getLatestMainScanBatchId(db, options);
   return latestMainBatchId ? { ...options, batch: undefined, batchId: latestMainBatchId } : options;
 }
 
 function batchOptions(filters) {
   const planId = filters.planId || undefined;
-  if (filters.batch === "all") return { batch: "all", planId };
-  if (filters.batchId) return { batchId: filters.batchId, planId };
-  return { batch: "latest", planId };
+  const site = filters.site === 'all' ? undefined : filters.site || 'boss';
+  if (filters.batch === "all" || filters.site === 'all') return { batch: "all", planId, site };
+  if (filters.batchId) return { batchId: filters.batchId, planId, site };
+  return { batch: "latest", planId, site };
 }
 
 function parseFilters(searchParams) {
   const batchRaw = searchParams.get("batch") || "latest";
   const numericBatch = /^\d+$/.test(batchRaw) ? Number(batchRaw) : null;
   return {
+    workSite: requestedSite(searchParams.get('workSite') || (searchParams.get('site') === 'all' ? 'boss' : searchParams.get('site'))),
+    site: searchParams.get('site') === 'all' ? 'all' : requestedSite(searchParams.get('site')),
     status: searchParams.get("outcome") || searchParams.get("status") || "pending",
     level: searchParams.get("level") || "all",
     fresh: searchParams.get("fresh") || "all",
@@ -3736,8 +3839,9 @@ function handleMarkApi(db, rawBody, contentType = "application/json") {
   if (rawReasonCode && !reasonCode) return { statusCode: 400, body: { error: "invalid feedback reason" } };
   if (reviewAt && !/^\d{4}-\d{2}-\d{2}$/.test(reviewAt)) return { statusCode: 400, body: { error: "invalid reviewAt" } };
   if (status === "later" && !reviewAt) reviewAt = dateInputAfterDays(7);
-  const exists = db.prepare("SELECT id FROM jobs WHERE id = ?").get(jobId);
+  const exists = db.prepare("SELECT id, source FROM jobs WHERE id = ?").get(jobId);
   if (!exists) return { statusCode: 404, body: { error: "job not found" } };
+  if (!profileId && exists.source !== "boss" && status === "applied") return { statusCode: 400, body: { error: "智联只读岗位不能记录为已投递。", errorCode: "READONLY_SITE_FUNNEL_FORBIDDEN" } };
 
   if (profileId) {
     if (!getCandidateProfile(db, profileId)) return { statusCode: 404, body: { error: "candidate profile not found" } };
@@ -4157,7 +4261,7 @@ async function handleCommunication(req, res, { db, modelConfig, modelReady, logg
     if (!plan) throw new Error("筛选方案不存在。");
     const profile = getCandidateProfile(db, plan.profileId);
     if (!profile) throw new Error("候选人画像不存在。");
-    const job = listDecisionPool(db, { planId: plan.id }).find((item) => Number(item.id) === Number(params.jobId));
+    const job = listDecisionPool(db, { planId: plan.id, site: "boss" }).find((item) => Number(item.id) === Number(params.jobId));
     if (!job) throw new Error("岗位不存在或不属于当前筛选方案。");
     if (job.archived) throw new Error("岗位已归档，请先恢复后再生成沟通草稿。");
     const mode = ["greeting", "hr_reply", "follow_up"].includes(params.mode) ? params.mode : "greeting";
@@ -5432,6 +5536,7 @@ const PLAN_JOB_TYPE_OPTIONS = PRODUCT_POLICY.searchPlan.jobTypeOptions;
 const PLAN_DEGREE_OPTIONS = PRODUCT_POLICY.searchPlan.degreeOptions;
 
 function renderPlanPage({ db, searchParams, scanRuns, browserAuthority = { browserMode: "edge", cdpPort: null }, messageFollowUpService = null }) {
+  const site = requestedSite(searchParams.get('site'));
   const profiles = listCandidateProfiles(db);
   const requestedPlan = getSearchPlan(db, searchParams.get("planId"));
   const profileId = Number(searchParams.get("profileId") || requestedPlan?.profileId || profiles[0]?.id || 0);
@@ -5456,6 +5561,8 @@ function renderPlanPage({ db, searchParams, scanRuns, browserAuthority = { brows
     ? messageFollowUpService.listCandidates({ profileId: profile.id, planId: planRecord.id }).length
     : 0;
   const viewModel = buildTodayViewModel({
+    site,
+    platformContext: site === 'zhaopin' ? getPlatformSearchContext(db, { planId: planRecord.id, site }) : null,
     profile,
     planRecord,
     plan,
@@ -5471,8 +5578,8 @@ function renderPlanPage({ db, searchParams, scanRuns, browserAuthority = { brows
     versionDiff: compareProfileVersions(db, profile.id),
     feedback: buildFeedbackSummary(db, { profileId: profile.id }),
     bossCatalog,
-    bossRuntimeBlock: scanRuntimeBlock(db),
-    workflowState: buildWorkflowDashboardState(db, planRecord),
+    bossRuntimeBlock: scanRuntimeBlock(db, { site }),
+    workflowState: buildWorkflowDashboardState(db, planRecord, new Date(), { site }),
     bossFilterPreview,
     bossSalaryOptions: bossCatalog?.fields?.salary?.options?.map((option) => option.label) || [],
     selectedBossSalaryLanes,
@@ -5517,7 +5624,7 @@ function renderWorkflowDashboardPage({ db, searchParams, logger = null, workflow
   if (!plan) return renderErrorPage("本轮任务对应的筛选方案不存在。", "/plan", { code: "WORKFLOW_PLAN_NOT_FOUND" });
   const daily = buildWorkflowDashboardState(db, plan, new Date(), { site: workflow.site || 'boss' });
   const communication = workflow.communicationBatchId ? communicationStatus(db, workflow.communicationBatchId) : null;
-  const runtimeBlock = communicationRuntimeBlock(db);
+  const runtimeBlock = workflow.site === 'zhaopin' ? scanRuntimeBlock(db, { site: 'zhaopin' }) : communicationRuntimeBlock(db);
   const progressSnapshot = getWorkflowProgressSnapshot(db, { workflowRunId: workflow.id });
   const progressJobs = progressSnapshot?.progress?.phaseKey === "analysis"
     ? listWorkflowProgressJobs(db, workflow.id)
@@ -5910,18 +6017,20 @@ function requiredMockInterviewPlan(db, planId) {
 }
 
 function renderCompactQueuePage({ db, plan, searchParams, outcomeAnalyticsPanel = "" }) {
+  const source = searchParams.get('site') === 'all' ? 'all' : requestedSite(searchParams.get('site'));
+  const site = source === 'all' ? undefined : source;
   const pool = ["focus", "primary", "apply", "caution", "analysis_pending", "detail_pending", "activity_pending", "no_reply", "not_recommended", "waiting_reply", "needs_user_action", "interview"].includes(searchParams.get("pool")) ? searchParams.get("pool") : "focus";
   const scope = ["all", "new", "repeated", "backlog"].includes(searchParams.get("scope")) ? searchParams.get("scope") : "all";
-  const latestMainBatchId = getLatestMainScanBatchId(db, { planId: plan.id });
+  const latestMainBatchId = getLatestMainScanBatchId(db, { planId: plan.id, site });
   const progressCards = listProgressCardsWithEvents(db, { profileId: plan.profileId })
     .map((card) => ({ ...card, hasOpenMessageDraft: hasOpenMessageReplyDraft(db, card.profileId, card.id) }));
   const progressByJob = new Map(progressCards.map((card) => [Number(card.jobId), card]));
-  const decisionJobs = listDecisionPool(db, { planId: plan.id })
+  const decisionJobs = listDecisionPool(db, { planId: plan.id, site })
     .filter((job) => !job.archived)
     .map((job) => ({ ...job, progressCard: progressByJob.get(Number(job.id)) || null }));
   const knownJobIds = new Set(decisionJobs.map((job) => Number(job.id)));
   const directProgressJobs = progressCards
-    .filter((card) => card.planId === plan.id && card.job && !knownJobIds.has(Number(card.jobId))
+    .filter((card) => (!site || card.job?.source === site) && card.planId === plan.id && card.job && !knownJobIds.has(Number(card.jobId))
       && !isCandidateJobArchived(db, { profileId: card.profileId, jobId: card.jobId }))
     .map((card) => ({
       ...card.job,
@@ -5971,18 +6080,18 @@ function renderCompactQueuePage({ db, plan, searchParams, outcomeAnalyticsPanel 
   const jobs = filtered.slice((page - 1) * pageSize, page * pageSize);
   return renderCompactDashboard({
     jobs,
-    filters: { status: "all", level: "all", fresh: "all", decision: "all", q: "", planId: plan.id, batch: "latest", batchId: null, queuePool: pool, queueScope: scope, queuePage: page, latestMainBatchId },
-    latestBatchId: latestMainBatchId || getLatestBatchId(db, { planId: plan.id }),
+    filters: { site: source, status: "all", level: "all", fresh: "all", decision: "all", q: "", planId: plan.id, batch: "latest", batchId: null, queuePool: pool, queueScope: scope, queuePage: page, latestMainBatchId },
+    latestBatchId: latestMainBatchId || getLatestBatchId(db, { planId: plan.id, site }),
     currentPath: `/queue?${searchParams.toString()}`,
-    todayPath: `/plan?planId=${encodeURIComponent(plan.id)}`,
+    todayPath: `/plan?planId=${encodeURIComponent(plan.id)}${site === 'zhaopin' ? '&site=zhaopin' : ''}`,
     title: pool === "no_reply" ? "无回复待跟进" : progressPools.has(pool) ? "求职进展" : "当前待处理岗位",
     hint: pool === "no_reply"
       ? "这里只显示你主动标记为无回复的岗位；跟进文案按需生成一次，不会自动提醒或发送。"
       : progressPools.has(pool)
         ? "进展操作只更新本地记录；回复、投递、面试确认仍由你在平台上手动完成。"
         : "岗位按唯一记录展示；可切换本轮新增、本轮重复和历史未处理，已投与跳过状态不会因再次扫描丢失。",
-    queue: { pool, counts, scope, scopeCounts, total: filtered.length, page, pageSize, totalPages, latestMainBatchId, profileId: plan.profileId },
-    outcomeAnalyticsPanel
+    queue: { site: source, pool, counts, scope, scopeCounts, total: filtered.length, page, pageSize, totalPages, latestMainBatchId, profileId: plan.profileId },
+    outcomeAnalyticsPanel: site === 'zhaopin' ? '' : outcomeAnalyticsPanel
   });
 }
 
@@ -6191,7 +6300,7 @@ function renderCompactDashboard(data) {
     ? `<section class="panel"><form method="post" action="/api/analyze-jobs"><input type="hidden" name="planId" value="${escapeAttr(filters.planId)}"><button class="apply">批量重试全部待分析岗位（${queue.counts.analysis_pending}）</button></form><p class="line">仅使用已保存的岗位详情，模型并发固定为 ${PRODUCT_POLICY.operations.modelAnalysis.retryConcurrency}，不会访问招聘网站。</p></section>`
     : "";
   return renderLegacyDashboardPage({ title, currentPath, todayPath, planId: filters.planId, stage: "岗位", body: `<style>
-body{margin:0;background:#f5f7f8;color:#1f2933;font-family:Segoe UI,Microsoft YaHei,sans-serif}main{max-width:1100px;margin:0 auto;padding:22px 18px 48px}nav{display:flex;gap:14px;margin-bottom:20px}a{color:#1265a8;text-decoration:none}a:hover{text-decoration:underline}h1{font-size:24px;margin:0 0 7px}.hint{color:#5b6773;margin:0 0 16px}.panel{background:#fff;border:1px solid #d8e0e6;border-radius:8px;padding:12px 14px;margin:12px 0}.pool-tabs{display:flex;flex-wrap:wrap;gap:8px}.pool-tabs+.pool-tabs{margin-top:9px}.pool-tab{padding:7px 10px;border:1px solid #ccd7df;border-radius:6px;background:#fff;color:#344450}.pool-tab.active{background:#e6f3f0;border-color:#68aa9b;color:#155f54;font-weight:700;text-decoration:none}.queue-summary{margin-top:10px;color:#5b6773;font-size:13px}.pager{display:flex;justify-content:center;align-items:center;gap:10px;margin-top:14px}.pager a,.pager span{padding:7px 10px;border:1px solid #ccd7df;border-radius:5px;background:#fff}.filters{display:grid;grid-template-columns:repeat(7,minmax(105px,1fr)) auto;gap:8px}.filters input,.filters select,input,select{box-sizing:border-box;min-width:0;padding:8px;border:1px solid #b9c5ce;border-radius:5px;background:#fff}.job{background:#fff;border:1px solid #d7e0e6;border-radius:8px;padding:14px 16px;margin:10px 0}.job-top{display:flex;justify-content:space-between;gap:14px;align-items:flex-start}.job-side{display:grid;justify-items:end;gap:8px}.job-export-choice{font-size:12px;color:#53616d;white-space:nowrap}.job-export-choice input{margin:0 4px 0 0}.job-title{font-size:16px;font-weight:700;line-height:1.35}.job-meta,.job-reason,.job-risk,.line{margin-top:7px;font-size:14px;line-height:1.45;color:#53616d}.job-reason{color:#27604f}.job-risk{color:#9a4b42}.decision{display:inline-block;white-space:nowrap;border:1px solid #d8e0e6;border-radius:999px;padding:4px 8px;font-size:12px;font-weight:700}.decision.primary{background:#e6f3f0;border-color:#86b9ad;color:#155f54}.decision.apply{background:#eef4fa;border-color:#9cbcdc;color:#245b87}.decision.caution{background:#fff6df;border-color:#ead29a;color:#825b13}.analysis_pending{background:#f1f3f5;border-color:#b9c3cc;color:#46535e}.refresh{background:#f5f0fd;border-color:#c8b8e6;color:#64419b}.not_recommended{background:#f9e9e7;border-color:#e5b3ae;color:#9b3f37}.quick-actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}.quick-actions select{max-width:190px}.export-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}.export-actions form{margin:0}button{padding:7px 10px;cursor:pointer;border:1px solid #aab8c2;border-radius:5px;background:#fff;color:#25313a}button:disabled{cursor:not-allowed;opacity:.55}.apply{background:#176b5b;border-color:#176b5b;color:#fff}.skip{color:#8a3a33}.details{margin-top:11px;border-top:1px solid #e4e9ed;padding-top:9px}.details summary{cursor:pointer;color:#4f6170;font-size:13px}.detail-body{margin-top:10px}.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.chip{border:1px solid #d8dee4;border-radius:999px;padding:3px 7px;font-size:12px;background:#f6f8fa}.risk{background:#f9e9e7;border-color:#e5b3ae}.jd{white-space:pre-wrap;background:#f7f9fa;border-left:3px solid #2a7185;padding:9px 10px;font-size:13px;line-height:1.55}.detail-actions,.follow{display:flex;flex-wrap:wrap;gap:8px;align-items:end;margin-top:10px}.detail-actions input,.follow input{flex:1 1 220px}textarea{box-sizing:border-box;width:100%;min-height:52px;margin-top:8px;padding:8px;border:1px solid #b9c5ce;border-radius:5px;background:#fafcfd}@media(max-width:760px){.filters{grid-template-columns:1fr 1fr}.job-top{display:block}.job-side{justify-items:start;margin-top:8px}.decision{margin-top:7px}}</style><main id="main-content">
+body{margin:0;background:#f5f7f8;color:#1f2933;font-family:Segoe UI,Microsoft YaHei,sans-serif}main{max-width:1100px;margin:0 auto;padding:22px 18px 48px}nav{display:flex;gap:14px;margin-bottom:20px}a{color:#1265a8;text-decoration:none}a:hover{text-decoration:underline}h1{font-size:24px;margin:0 0 7px}.hint{color:#5b6773;margin:0 0 16px}.panel{background:#fff;border:1px solid #d8e0e6;border-radius:8px;padding:12px 14px;margin:12px 0}.pool-tabs{display:flex;flex-wrap:wrap;gap:8px}.pool-tabs+.pool-tabs{margin-top:9px}.pool-tab{padding:7px 10px;border:1px solid #ccd7df;border-radius:6px;background:#fff;color:#344450}.pool-tab.active{background:#e6f3f0;border-color:#68aa9b;color:#155f54;font-weight:700;text-decoration:none}.queue-summary{margin-top:10px;color:#5b6773;font-size:13px}.pager{display:flex;justify-content:center;align-items:center;gap:10px;margin-top:14px}.pager a,.pager span{padding:7px 10px;border:1px solid #ccd7df;border-radius:5px;background:#fff}.filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px}.filters input,.filters select,input,select{box-sizing:border-box;min-width:0;padding:8px;border:1px solid #b9c5ce;border-radius:5px;background:#fff}.job{background:#fff;border:1px solid #d7e0e6;border-radius:8px;padding:14px 16px;margin:10px 0}.job-top{display:flex;justify-content:space-between;gap:14px;align-items:flex-start}.job-side{display:grid;justify-items:end;gap:8px}.job-export-choice{font-size:12px;color:#53616d;white-space:nowrap}.job-export-choice input{margin:0 4px 0 0}.readonly-job .job-export-choice{display:flex;align-items:center;gap:6px}.readonly-job .job-export-choice input{width:18px;height:18px;min-height:18px}.job-title{font-size:16px;font-weight:700;line-height:1.35}.job-meta,.job-reason,.job-risk,.line{margin-top:7px;font-size:14px;line-height:1.45;color:#53616d}.job-reason{color:#27604f}.job-risk{color:#9a4b42}.decision{display:inline-block;white-space:nowrap;border:1px solid #d8e0e6;border-radius:999px;padding:4px 8px;font-size:12px;font-weight:700}.decision.primary{background:#e6f3f0;border-color:#86b9ad;color:#155f54}.decision.apply{background:#eef4fa;border-color:#9cbcdc;color:#245b87}.decision.caution{background:#fff6df;border-color:#ead29a;color:#825b13}.analysis_pending{background:#f1f3f5;border-color:#b9c3cc;color:#46535e}.refresh{background:#f5f0fd;border-color:#c8b8e6;color:#64419b}.not_recommended{background:#f9e9e7;border-color:#e5b3ae;color:#9b3f37}.quick-actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}.quick-actions select{max-width:190px}.export-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}.export-actions form{margin:0}button{padding:7px 10px;cursor:pointer;border:1px solid #aab8c2;border-radius:5px;background:#fff;color:#25313a}button:disabled{cursor:not-allowed;opacity:.55}.apply{background:#176b5b;border-color:#176b5b;color:#fff}.skip{color:#8a3a33}.details{margin-top:11px;border-top:1px solid #e4e9ed;padding-top:9px}.details summary{cursor:pointer;color:#4f6170;font-size:13px}.detail-body{margin-top:10px}.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.chip{border:1px solid #d8dee4;border-radius:999px;padding:3px 7px;font-size:12px;background:#f6f8fa}.risk{background:#f9e9e7;border-color:#e5b3ae}.jd{white-space:pre-wrap;background:#f7f9fa;border-left:3px solid #2a7185;padding:9px 10px;font-size:13px;line-height:1.55}.detail-actions,.follow{display:flex;flex-wrap:wrap;gap:8px;align-items:end;margin-top:10px}.detail-actions input,.follow input{flex:1 1 220px}textarea{box-sizing:border-box;width:100%;min-height:52px;margin-top:8px;padding:8px;border:1px solid #b9c5ce;border-radius:5px;background:#fafcfd}@media(max-width:760px){.filters{grid-template-columns:1fr 1fr}.job-top{display:block}.job-side{justify-items:start;margin-top:8px}.decision{margin-top:7px}}</style><main id="main-content">
 <h1>${escapeHtml(title)}</h1><p class="hint">${escapeHtml(hint)}${latestBatchId ? ` 主扫描批次 #${latestBatchId}` : ""}</p>
   ${queue ? renderCompactPoolTabs(queue, filters.planId, queue.profileId) : renderCompactFilters(filters)}${exportControls}${outcomeAnalyticsPanel}${analysisRetry}
 <section class="job-ledger" aria-label="岗位记录">${jobs.map((job) => renderCompactJob(job, { ...filters, exportEnabled: !queue && filters.exportEnabled })).join("") || "<section class=\"panel\">这个分组目前没有岗位。</section>"}</section>${queue ? renderCompactPager(queue, filters.planId) : ""}</main><script>async function copyGreeting(id){const el=document.getElementById(id);if(el)await navigator.clipboard.writeText(el.value);}${exportScript}</script>` });
@@ -6204,6 +6313,8 @@ function renderCompactJobExportControls(filters) {
 
 function jobExportFilterInputs(filters) {
   const values = {
+    workSite: filters.workSite,
+    site: filters.site,
     profileId: filters.profileId,
     planId: filters.planId,
     outcome: filters.status,
@@ -6220,10 +6331,10 @@ function jobExportFilterInputs(filters) {
 function renderCompactPoolTabs(queue, planId, profileId = "") {
   const scopes = [["all", "全部待处理", queue.scopeCounts.all || 0], ["new", "本轮新增", queue.scopeCounts.new || 0], ["repeated", "本轮重复", queue.scopeCounts.repeated || 0], ["backlog", "历史未处理", queue.scopeCounts.backlog || 0]];
   const tabs = [["focus", "主投 + 可投", (queue.counts.primary || 0) + (queue.counts.apply || 0)], ["primary", "主投", queue.counts.primary || 0], ["apply", "可投", queue.counts.apply || 0], ["caution", "慎投", queue.counts.caution || 0], ["analysis_pending", "待语义分析", queue.counts.analysis_pending || 0], ["detail_pending", "待读详情", queue.counts.detail_pending || 0], ["activity_pending", "活跃待核验", queue.counts.activity_pending || 0], ["no_reply", "无回复跟进", queue.counts.no_reply || 0], ["waiting_reply", "等待回复", queue.counts.waiting_reply || 0], ["needs_user_action", "需要处理", queue.counts.needs_user_action || 0], ["interview", "面试进展", queue.counts.interview || 0], ["not_recommended", "不推荐", queue.counts.not_recommended || 0]];
-  const scopeLinks = scopes.map(([key, label, count]) => `<a class="pool-tab ${queue.scope === key ? "active" : ""}" href="${queueHref(planId, queue.pool, key, 1)}">${escapeHtml(label)} ${count}</a>`).join("")
-    + `<a class="pool-tab" href="/communication/new?planId=${escapeAttr(planId)}">批量沟通清单</a>`
-    + (profileId ? `<a class="pool-tab" href="/messages?profileId=${escapeAttr(profileId)}">消息发现</a>` : "");
-  const poolLinks = tabs.map(([key, label, count]) => `<a class="pool-tab ${queue.pool === key ? "active" : ""}" href="${queueHref(planId, key, queue.scope, 1)}">${escapeHtml(label)} ${count}</a>`).join("");
+  const scopeLinks = scopes.map(([key, label, count]) => `<a class="pool-tab ${queue.scope === key ? "active" : ""}" href="${queueHref(planId, queue.pool, key, 1, queue.site)}">${escapeHtml(label)} ${count}</a>`).join("")
+    + (queue.site === 'zhaopin' ? '' : `<a class="pool-tab" href="/communication/new?planId=${escapeAttr(planId)}">批量沟通清单</a>`)
+    + (profileId && queue.site !== 'zhaopin' ? `<a class="pool-tab" href="/messages?profileId=${escapeAttr(profileId)}">消息发现</a>` : "");
+  const poolLinks = tabs.filter(([key]) => queue.site !== 'zhaopin' || !['activity_pending', 'no_reply', 'waiting_reply', 'needs_user_action', 'interview'].includes(key)).map(([key, label, count]) => `<a class="pool-tab ${queue.pool === key ? "active" : ""}" href="${queueHref(planId, key, queue.scope, 1, queue.site)}">${escapeHtml(label)} ${count}</a>`).join("");
   const from = queue.total ? (queue.page - 1) * queue.pageSize + 1 : 0;
   const to = Math.min(queue.total, queue.page * queue.pageSize);
   return `<section class="panel"><div class="pool-tabs">${scopeLinks}</div><div class="pool-tabs">${poolLinks}</div><div class="queue-summary">当前显示 ${from}-${to} / 共 ${queue.total} 条；范围以主扫描批次 #${escapeHtml(queue.latestMainBatchId || "-")} 为准。</div></section>`;
@@ -6231,22 +6342,26 @@ function renderCompactPoolTabs(queue, planId, profileId = "") {
 
 function renderCompactPager(queue, planId) {
   if (queue.totalPages <= 1) return "";
-  const previous = queue.page > 1 ? `<a href="${queueHref(planId, queue.pool, queue.scope, queue.page - 1)}">上一页</a>` : "<span>上一页</span>";
-  const next = queue.page < queue.totalPages ? `<a href="${queueHref(planId, queue.pool, queue.scope, queue.page + 1)}">下一页</a>` : "<span>下一页</span>";
+  const previous = queue.page > 1 ? `<a href="${queueHref(planId, queue.pool, queue.scope, queue.page - 1, queue.site)}">上一页</a>` : "<span>上一页</span>";
+  const next = queue.page < queue.totalPages ? `<a href="${queueHref(planId, queue.pool, queue.scope, queue.page + 1, queue.site)}">下一页</a>` : "<span>下一页</span>";
   return `<nav class="pager">${previous}<strong>第 ${queue.page} / ${queue.totalPages} 页</strong>${next}</nav>`;
 }
 
-function queueHref(planId, pool, scope, page) {
-  const params = new URLSearchParams({ planId: String(planId), pool, scope, page: String(page) });
+function queueHref(planId, pool, scope, page, site = 'boss') {
+  const params = new URLSearchParams({ planId: String(planId), pool, scope, page: String(page), ...(site !== 'boss' ? { site } : {}) });
   return `/queue?${params.toString()}`;
 }
 
 function renderCompactFilters(filters) {
-  return `<form class="panel filters" method="get" action="/jobs"><input type="hidden" name="planId" value="${escapeAttr(filters.planId || "")}">${select("status", filters.status, [["pending", "未处理"], ["review", "待确认"], ["later", "保留"], ["applied", "已投"], ["skipped", "跳过"], ["all", "全部"]])}${select("decision", filters.decision, [["all", "全部投递池"], ["primary", "主投"], ["apply", "可投"], ["caution", "慎投"], ["analysis_pending", "待语义分析"], ["refresh", "待刷新"], ["not_recommended", "不推荐"]])}${select("level", filters.level, [["all", "全部级别"], ["优先", "优先"], ["可投", "可投"], ["可冲", "可冲"], ["谨慎", "谨慎"], ["不建议", "不建议"]])}${select("fresh", filters.fresh, [["all", "新增+重复"], ["new", "本批新增"], ["repeated", "重复出现"]])}${select("archive", filters.archive, [["active", "未归档"], ["only", "只看已归档"], ["all", "全部归档状态"]])}${select("batch", filters.batchId ? String(filters.batchId) : filters.batch, [["latest", "最新批次"], ["all", "全部历史"]])}<input name="q" value="${escapeAttr(filters.q || "")}" placeholder="搜索标题/公司/地点" aria-label="搜索岗位"><button>过滤</button></form>`;
+  return `<form class="panel filters" method="get" action="/jobs"><input type="hidden" name="planId" value="${escapeAttr(filters.planId || "")}"><input type="hidden" name="workSite" value="${escapeAttr(filters.workSite || (filters.site === 'zhaopin' ? 'zhaopin' : 'boss'))}">${select("site", filters.site || "boss", [["boss", "BOSS"], ["zhaopin", "智联"], ["all", "全部平台（历史）"]])}${select("status", filters.status, [["pending", "未处理"], ["review", "待确认"], ["later", "保留"], ["applied", "已投"], ["skipped", "跳过"], ["all", "全部"]])}${select("decision", filters.decision, [["all", "全部投递池"], ["primary", "主投"], ["apply", "可投"], ["caution", "慎投"], ["analysis_pending", "待语义分析"], ["refresh", "待刷新"], ["not_recommended", "不推荐"]])}${select("level", filters.level, [["all", "全部级别"], ["优先", "优先"], ["可投", "可投"], ["可冲", "可冲"], ["谨慎", "谨慎"], ["不建议", "不建议"]])}${select("fresh", filters.fresh, [["all", "新增+重复"], ["new", "本批新增"], ["repeated", "重复出现"]])}${select("archive", filters.archive, [["active", "未归档"], ["only", "只看已归档"], ["all", "全部归档状态"]])}${select("batch", filters.batchId ? String(filters.batchId) : filters.batch, [["latest", "最新批次"], ["all", "全部历史"]])}<input name="q" value="${escapeAttr(filters.q || "")}" placeholder="搜索标题/公司/地点" aria-label="搜索岗位"><button>过滤</button></form>`;
 }
 
 function renderCompactJob(job, filters) {
-  const html = renderCompactJobBase(job, filters);
+  if (job.source === 'zhaopin') {
+    const narrative = compactJobNarrative(job, { salaryLabel: job.salary || '薪资未说明', risk: compactRefreshFailure(job) || job.analysis?.error || compactVisibleRisks(job.risks).slice(0, 2).join('；') });
+    return `<article class="job readonly-job"><div class="job-top"><div><div class="job-title">${escapeHtml(job.title)} · <a href="${escapeAttr(job.url || '#')}" target="_blank">打开岗位</a></div><div class="job-meta">来源：智联 · ${job.clientCompany ? `用人公司：${escapeHtml(job.clientCompany)} · 发布方：` : '公司：'}${escapeHtml(job.company || '')}</div><div class="job-meta">${escapeHtml(job.location || '')} · ${escapeHtml(job.salary || '薪资未说明')}</div></div><div class="job-side"><span class="decision">${escapeHtml(compactDecisionLabel(job.decisionBucket))}</span>${filters.exportEnabled ? `<label class="job-export-choice"><input type="checkbox" name="jobIds" value="${escapeAttr(job.id)}" form="job-export-selected" data-job-export>选择导出</label>` : ''}</div></div><div class="job-reason"><strong>结论：</strong>${escapeHtml(narrative.conclusion)}</div><div class="line"><strong>岗位：</strong>${escapeHtml(narrative.role)}</div><div class="line"><strong>公司与机会：</strong>${escapeHtml(narrative.companyOpportunity)}</div><div class="line"><strong>匹配：</strong>${escapeHtml(narrative.fit)}</div>${narrative.risk ? `<div class="job-risk">${escapeHtml(narrative.risk)}</div>` : ''}<details class="details"><summary>查看 JD 与完整分析</summary><div class="detail-body">${renderRoleEvidenceSummary(job.analysis || {}, 'line', 'div')}<div class="jd">${escapeHtml(job.description || '暂无完整 JD')}</div></div></details></article>`;
+  }
+  const html = renderCompactJobBase(job, filters).replace('<div class="job-meta">', `<div class="job-meta">来源：BOSS · ${job.clientCompany ? `用人公司：${escapeHtml(job.clientCompany)} · 发布方：` : ""}`);
   if (!job.progressCard || job.archived) return html;
   return html.replace("</details></article>", `</details>${renderProgressPanel(job.progressCard)}</article>`);
 }
@@ -6283,7 +6398,7 @@ function renderCompactJobBase(job, filters) {
 function compactJobNarrative(job, { salaryLabel, risk }) {
   const analysis = job.analysis || {};
   const role = String(analysis.roleSummary || job.title || "岗位职责待补充").trim();
-  const company = String(job.company || "这家公司").trim();
+  const company = String(job.clientCompany || job.company || "这家公司").trim();
   const businessScenario = meaningfulJobContext(analysis.businessScenario);
   const industryContext = meaningfulJobContext(analysis.industryContext);
   const companyOpportunity = businessScenario
@@ -6445,6 +6560,8 @@ function compactRefreshFailure(job = {}) {
 
 function compactQuery(filters) {
   const params = new URLSearchParams();
+  if (filters.site) params.set('site', filters.site);
+  if (filters.workSite) params.set('workSite', filters.workSite);
   if (filters.planId) params.set("planId", String(filters.planId));
   if (filters.queuePool) params.set("pool", filters.queuePool);
   if (filters.queueScope) params.set("scope", filters.queueScope);
@@ -6453,7 +6570,7 @@ function compactQuery(filters) {
 }
 
 function select(name, value, options) {
-  const labels = { status: "岗位状态", decision: "投递池", level: "岗位级别", fresh: "岗位新鲜度", archive: "归档状态", batch: "批次范围" };
+  const labels = { site: "结果来源", status: "岗位状态", decision: "投递池", level: "岗位级别", fresh: "岗位新鲜度", archive: "归档状态", batch: "批次范围" };
   return `<select name="${escapeAttr(name)}"${labels[name] ? ` aria-label="${escapeAttr(labels[name])}"` : ""}>${options.map(([v, label]) => `<option value="${escapeAttr(v)}"${String(value) === String(v) ? " selected" : ""}>${escapeHtml(label)}</option>`).join("")}</select>`;
 }
 

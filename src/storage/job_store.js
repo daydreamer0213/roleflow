@@ -215,17 +215,17 @@ function resolveBatchId(db, options = {}) {
 
 function getLatestBatchId(db, options = {}) {
   const planId = Number(options.planId || options.searchPlanId || 0);
-  const row = planId
-    ? db.prepare("SELECT id FROM batches WHERE search_plan_id = ? ORDER BY started_at DESC, id DESC LIMIT 1").get(planId)
-    : db.prepare("SELECT id FROM batches ORDER BY started_at DESC, id DESC LIMIT 1").get();
+  const site = String(options.site || '').trim();
+  if (site && !['boss', 'zhaopin'].includes(site)) throw storageError('UNKNOWN_SITE', 'Unknown report site');
+  const row = db.prepare("SELECT id FROM batches WHERE (? = 0 OR search_plan_id = ?) AND (? = '' OR site = ?) ORDER BY started_at DESC, id DESC LIMIT 1").get(planId, planId, site, site);
   return row ? Number(row.id) : null;
 }
 
 function getLatestMainScanBatchId(db, options = {}) {
   const planId = Number(options.planId || options.searchPlanId || 0);
-  const rows = planId
-    ? db.prepare("SELECT b.id, b.filter_snapshot_json FROM batches b WHERE b.search_plan_id = ? AND EXISTS (SELECT 1 FROM job_observations o WHERE o.batch_id = b.id) ORDER BY b.started_at DESC, b.id DESC").all(planId)
-    : db.prepare("SELECT b.id, b.filter_snapshot_json FROM batches b WHERE EXISTS (SELECT 1 FROM job_observations o WHERE o.batch_id = b.id) ORDER BY b.started_at DESC, b.id DESC").all();
+  const site = String(options.site || '').trim();
+  if (site && !['boss', 'zhaopin'].includes(site)) throw storageError('UNKNOWN_SITE', 'Unknown report site');
+  const rows = db.prepare("SELECT b.id, b.filter_snapshot_json FROM batches b WHERE (? = 0 OR b.search_plan_id = ?) AND (? = '' OR b.site = ?) AND EXISTS (SELECT 1 FROM job_observations o WHERE o.batch_id = b.id) ORDER BY b.started_at DESC, b.id DESC").all(planId, planId, site, site);
   const row = rows.find((candidate) => {
     const execution = parseJson(candidate.filter_snapshot_json, {}).execution;
     return execution && typeof execution === "object" && !Array.isArray(execution);

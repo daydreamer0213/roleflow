@@ -162,6 +162,8 @@ function startFunnelStrategyRound(db, input = {}) {
 function ensureFunnelEntry(db, input = {}) {
   const profileId = positiveInteger(input.profileId, "profileId");
   const jobId = positiveInteger(input.jobId, "jobId");
+  const job = db.prepare('SELECT source FROM jobs WHERE id = ?').get(jobId);
+  if (job && job.source !== 'boss') throw Object.assign(new Error('智联只读岗位不能记录为已投递或加入求职反馈样本。'), { code: 'READONLY_SITE_FUNNEL_FORBIDDEN' });
   const existing = getFunnelEntry(db, { profileId, jobId });
   if (existing) return existing;
   const sourceKind = String(input.sourceKind || "").trim();

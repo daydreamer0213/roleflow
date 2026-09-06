@@ -44,7 +44,7 @@ function buildTodayViewModel(input = {}) {
     } : null
   };
 
-  return {
+  const vm = {
     page: { title: "今日任务", profileId, planId, todayPath: `/plan?profileId=${profileId}&planId=${planId}` },
     heading: {
       eyebrow: "今日工作台",
@@ -120,6 +120,25 @@ function buildTodayViewModel(input = {}) {
         : "使用当前 Edge（高级，需要浏览器连接组件）"
     }
   };
+  vm.page.site = input.site || 'boss';
+  vm.runtime.site = vm.page.site;
+  if (vm.page.site === 'zhaopin') {
+    vm.page.todayPath += '&site=zhaopin';
+    vm.heading.title = '发现并分析值得关注的岗位。';
+    vm.heading.lede = '智联只读找岗：保留完整 JD 与匹配分析，供你查看和比较。';
+    vm.heading.meta[0] += ' · 智联';
+    vm.followUp = null;
+    vm.form.acquisition.mode = 'inherited';
+    vm.form.acquisition.inheritedPreview.summary = input.platformContext
+      ? (input.platformContext.filterSummary || []).join('；') || '已保存：当前页面未额外限制条件'
+      : '尚未保存智联条件。先准备搜索页，设置条件后保存。';
+    vm.form.acquisition.inheritedPreview.endpoint += '&site=zhaopin';
+    vm.platformContext = input.platformContext || null;
+    if (!activeRun && !input.platformContext && vm.primary.type === 'form') {
+      vm.primary = { type: 'link', href: '#platform-search-actions', label: '准备智联搜索页', status: '准备本轮搜索范围', detail: '打开智联搜索页设置原生条件，再保存并开始。' };
+    }
+  }
+  return vm;
 }
 
 function buildPrimaryAction({ activeRun, nextPlan, dependency, runtimeBlock, profileId, planId, startBlocked }) {

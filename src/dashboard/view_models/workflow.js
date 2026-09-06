@@ -21,18 +21,19 @@ function buildWorkflowViewModel({
   const status = String(workflow.status || "");
   const planner = workflow.planner || {};
   const progress = progressSnapshot ? progressView(progressSnapshot, progressJobs) : null;
+  if (progress) progress.site = workflow.site || 'boss';
   const phase = phaseView({ workflow, plan, daily, communication, runtimeBlock, reviewCandidates, quota });
   const controls = controlView(progressSnapshot, workflow, stopPreview);
   return {
     page: {
       title: "执行一轮", runId: String(workflow.id || ""), planId: String(plan.id || workflow.planId || ""),
-      planHref: `/plan?planId=${encodeURIComponent(plan.id || workflow.planId || "")}`,
+      planHref: `/plan?planId=${encodeURIComponent(plan.id || workflow.planId || "")}${workflow.site === 'zhaopin' ? '&site=zhaopin' : ''}`,
       queueHref: `/queue?planId=${encodeURIComponent(plan.id || workflow.planId || "")}`,
       currentPath: `/workflow?runId=${encodeURIComponent(workflow.id || "")}`
     },
     header: {
       statusLabel: phase.communication?.error ? "沟通已中断" : workflowStatusLabel(status), sequence: number(workflow.sequence), localDay: String(workflow.localDay || ""),
-      targetSuccessCount: number(workflow.targetSuccessCount), successfulCount: number(workflow.successfulCount),
+      site: workflow.site || 'boss', targetSuccessCount: number(workflow.targetSuccessCount), successfulCount: number(workflow.successfulCount),
       todaySuccessful: number(daily.successfulToday), dailyTarget: number(daily.dailyTarget), inventoryCount: number(workflow.inventoryCount)
     },
     scope: scopeView(planner, workflow),
@@ -69,7 +70,7 @@ function scopeView(planner, workflow) {
   const policy = planner.platformPolicy || {};
   const region = workRegionLabel(policy);
   return {
-    visible: true, mode: "继承模式", sourceLabel: "BOSS 当前页面", planHash,
+    visible: true, mode: "继承模式", sourceLabel: workflow.site === "zhaopin" ? "智联当前页面" : "BOSS 当前页面", planHash,
     scopeKey: scopeShortId(planner.searchScope?.key) || "未记录", sourcePlanId: String(source.searchPlanId || ""),
     filters: [region, ...(policy.filterSummary || []).map(String).filter((item) => !String(item).includes("未解析参数"))].filter(Boolean).filter((item, index, values) => values.indexOf(item) === index),
     actualKeywords: (workflow?.keywords || []).map((item) => String(item?.word || item || "")).filter(Boolean),
@@ -187,6 +188,8 @@ function overviewView({ workflow, progress, phase, controls, runtimeBlock }) {
   const scan = progress?.scanTargets || {};
   const details = progress?.details || {};
   return {
+    site: workflow.site || 'boss', completed: workflow.status === 'completed',
+    analysisProgress: `已分析 ${number(progress?.analysis?.succeeded) + number(progress?.analysis?.resolvedAfterFailure)} 个岗位`,
     currentPhase: phase.communication?.error ? "沟通已中断" : workflowStatusLabel(workflow.status),
     overallProgress: progress?.visible
       ? `第 ${number(progress.stageIndex)} / ${number(progress.stageCount)} 阶段`
@@ -250,7 +253,11 @@ function controlView(snapshot, workflow, stopPreview) {
 
 function phaseView({ workflow, plan, daily, communication, runtimeBlock, reviewCandidates, quota }) {
   const status = String(workflow.status || "");
-  const common = { status, runId: String(workflow.id || ""), planId: String(plan.id || workflow.planId || ""), planHref: `/plan?planId=${encodeURIComponent(plan.id || workflow.planId || "")}`, queueHref: `/queue?planId=${encodeURIComponent(plan.id || workflow.planId || "")}` };
+  const common = { site: workflow.site || 'boss', status, runId: String(workflow.id || ""), planId: String(plan.id || workflow.planId || ""), planHref: `/plan?planId=${encodeURIComponent(plan.id || workflow.planId || "")}`, queueHref: `/queue?planId=${encodeURIComponent(plan.id || workflow.planId || "")}` };
+  if (workflow.site === 'zhaopin') {
+    common.planHref += '&site=zhaopin';
+    common.queueHref = `/jobs?planId=${encodeURIComponent(workflow.planId)}&site=zhaopin${workflow.scanBatchId ? '&batchId=' + encodeURIComponent(workflow.scanBatchId) : ''}`;
+  }
   if (status === "review_required" && communication) return { ...common, kind: "confirmed", communication: communicationView(communication, runtimeBlock), targetSuccessCount: number(workflow.targetSuccessCount) };
   if (status === "review_required") {
     const rows = (reviewCandidates || []).map(reviewRow);
