@@ -384,7 +384,7 @@ async function resolveZhaopinSearchTab(browser, expectedTabId = null) {
 function isZhaopinWorkspaceTab(tab) {
   try {
     const url = new URL(tab.url);
-    return ['127.0.0.1', 'localhost'].includes(url.hostname) && ['/', '/plan', '/workflow'].includes(url.pathname);
+    return ['127.0.0.1', 'localhost'].includes(url.hostname);
   } catch { return false; }
 }
 

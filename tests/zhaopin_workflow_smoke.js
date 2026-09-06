@@ -22,12 +22,14 @@ function fakeBrowser({ terminal = true, loadingOnSwitch = false } = {}) {
   let url = 'https://www.zhaopin.com/jobs/?pageMode=search&jl=548&kw=AI';
   let selectedIndex = 0;
   let windowId = 1;
+  let dashboardPath = '/workflow';
   const overrides = {};
   const cards = [0, 1, 2].map(index => ({ index, signature: `card-${index}`, title: `岗位${index}`, company: '公司', salary: '10-20K', location: '广州' }));
   return {
     setState(value) { Object.assign(overrides, value); },
     moveToWindow(value) { windowId = value; },
-    async listTabs() { return [{ id: 'dashboard', windowId: 1, url: 'http://127.0.0.1/plan', active: true }, { id: 'cdp-zl', windowId, url, active: false }]; },
+    changeDashboardPage(value) { dashboardPath = value; },
+    async listTabs() { return [{ id: 'dashboard', windowId: 1, url: `http://127.0.0.1${dashboardPath}`, active: true }, { id: 'cdp-zl', windowId, url, active: false }]; },
     async navigate(id, target) { assert.equal(id, 'cdp-zl'); url = target; selectedIndex = 0; },
     async evalValue(id, expression) {
       assert.equal(id, 'cdp-zl');
@@ -69,6 +71,17 @@ async function main() {
     assert.equal(typeof adapter.scan, 'function', 'readonly adapter must support the shared scan/checkpoint contract');
     const opts = { tabId: 'cdp-zl', keywords: ['AI'], keywordPlan: [{ word: 'AI', priority: 'A' }], searchTemplate: canonicalizeZhaopinSearchTemplate('https://www.zhaopin.com/jobs/?pageMode=search&jl=548'), filterSummary: ['广东'], maxCards: 3, maxDetailTotal: 1, browserPageBudget: 1,
       onDetailCheckpoint: ({ job }) => storage.upsertJob(db, job, batch), onTargetComplete: result => targets.push(result) };
+    const routeBridge = fakeBrowser();
+    const routeBatch = storage.createBatch(db, 'zhaopin', 'AI', 'same-window-pages');
+    const routeTargets = [], dashboardPages = ['/jobs', '/settings', '/onboarding'];
+    let routeCheckpoints = 0;
+    const routeJobs = await new ZhaopinSiteAdapter({ browser: routeBridge, sleepFn: async () => {}, randomFn: () => 0 }).scan({ ...opts, maxDetailTotal: 3,
+      onDetailCheckpoint: ({ job }) => { storage.upsertJob(db, job, routeBatch); routeBridge.changeDashboardPage(dashboardPages[routeCheckpoints++]); },
+      onTargetComplete: target => routeTargets.push(target)
+    });
+    assert.equal(routeJobs.length, 3, 'same-window Dashboard navigation must not interrupt actual scanning');
+    assert.equal(storage.listReportJobs(db, { batchId: routeBatch }).length, 3);
+    assert.equal(routeTargets[0].status, 'completed');
     await adapter.scan(opts);
     assert.equal(storage.listReportJobs(db, { batchId: batch }).length, 1, 'detail is durable before proceeding to another card');
     assert.equal(storage.listReportJobs(db, { batchId: bossBatch })[0].title, 'BOSS岗位');

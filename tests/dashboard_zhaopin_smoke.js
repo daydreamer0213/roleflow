@@ -101,6 +101,15 @@ async function main() {
     response = await post('/api/platform-search/save', { planId: saved.planId, site: 'zhaopin' });
     assert.equal(response.status, 409, 'unknown native conditions must fail before storage');
     bridge.tabs[1].url = bridge.tabs[1].url.replace('&unknown=keep', '');
+    for (const route of ['/jobs', '/settings', '/onboarding']) {
+      bridge.tabs[0].url = base + route;
+      response = await post('/api/platform-search/open', { planId: saved.planId, site: 'zhaopin' });
+      assert.equal(response.status, 200, `same-window ${route} must remain a workspace owner: ` + await response.text());
+      response = await post('/api/platform-search/save', { planId: saved.planId, site: 'zhaopin' });
+      assert.equal(response.status, 200, await response.text());
+    }
+    bridge.tabs[0].url = base + '/plan';
+    assert.deepEqual(storage.getSearchPlan(db, saved.planId).plan, bossBefore);
     const jobs = await (await fetch(`${base}/jobs?planId=${saved.planId}&site=zhaopin&status=all`)).text();
     assert.match(jobs, /智联完整岗位/);
     assert.doesNotMatch(jobs, /新BOSS岗位/);
