@@ -140,6 +140,7 @@ function reconcilePlanWorkflowInventory(db, planId) {
   const inventoryCount = listWorkflowInventory(db, { planId }).length;
   for (const workflow of listWorkflowRuns(db, {
     planId,
+    site: "boss",
     localDay: shanghaiLocalDay(),
     statuses: ["review_required", "interrupted"],
     limit: 500

@@ -13,10 +13,10 @@ const { buildOutcomeAnalytics } = require("../core/outcome_analytics");
 
 const VALID_CANDIDATE_STATUSES = new Set(OUTCOME_STATUSES);
 
-function listDecisionPool(db, { planId } = {}) {
+function listDecisionPool(db, { planId, site } = {}) {
   const plan = getSearchPlan(db, planId);
   if (!plan) return [];
-  return listReportJobs(db, { planId: plan.id, batch: "all", profileId: plan.profileId, limit: 10000 });
+  return listReportJobs(db, { planId: plan.id, site, batch: "all", profileId: plan.profileId, limit: 10000 });
 }
 
 function outcomeAnalyticsPlanName(value) {
@@ -258,8 +258,14 @@ function listReportJobs(db, options = {}) {
     )
   ` : "";
   const observationSource = latestPerPlan ? "ranked_observations o" : "job_observations o";
-  const where = batchId ? "o.batch_id = ?" : latestPerPlan ? "o.plan_rank = 1" : "1 = 1";
+  let where = batchId ? "o.batch_id = ?" : latestPerPlan ? "o.plan_rank = 1" : "1 = 1";
   const params = latestPerPlan ? [planId] : batchId ? [batchId] : [];
+  if (options.site !== undefined && options.site !== null && options.site !== '') {
+    const site = String(options.site).trim().toLowerCase();
+    if (!['boss', 'zhaopin'].includes(site)) throw storageError('UNKNOWN_SITE', 'Unknown report site');
+    where += ' AND jobs.source = ?';
+    params.push(site);
+  }
   const limit = Math.max(1, Math.min(10000, Number(options.limit) || 200));
   const scopedObservation = profileId ? ` AND b2.profile_id = ${Number(profileId)}` : "";
   const stateSelect = profileId ? `
@@ -432,7 +438,7 @@ function rescorePlanObservations(db, { planId, configs }) {
   const plan = getSearchPlan(db, planId);
   if (!plan) throw new Error("search plan not found");
   const rows = db.prepare(`
-    SELECT o.id AS observation_id, j.source, j.source_id, o.keyword, o.title, o.company, o.location,
+    SELECT o.id AS observation_id, j.source, j.source_id, o.keyword, o.title, o.company, o.client_company, o.location,
       o.salary, o.experience, o.education, o.boss_active_text, o.url, o.tags_json, o.quality_tags_json, o.description, o.analysis_json
     FROM job_observations o JOIN jobs j ON j.id = o.job_id JOIN batches b ON b.id = o.batch_id WHERE b.search_plan_id = ?
   `).all(plan.id);
@@ -448,7 +454,10 @@ function rescorePlanObservations(db, { planId, configs }) {
         salary: metadata.salary, experience: metadata.experience, education: metadata.education, bossActiveText: row.boss_active_text || "",
         url: row.url || "", tags: parseJson(row.tags_json, []), description: row.description || "", ...storedDetailFlags(row)
       };
-      const scored = scoreJob(raw, configs);
+      const rowConfigs = configs.platformPolicy?.site && configs.platformPolicy.site !== row.source
+        ? { ...configs, platformPolicy: {} }
+        : configs;
+      const scored = scoreJob(raw, rowConfigs);
       const previousAnalysis = parseJson(row.analysis_json, {});
       const expectedRevision = buildAnalysisRevision(configs, sourceContentHash(raw));
       const staleReasons = analysisStaleReasons(previousAnalysis, expectedRevision);

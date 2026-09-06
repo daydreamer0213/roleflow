@@ -37,6 +37,7 @@ function resolveScanKind(command, args = {}) {
 }
 
 function buildScanCliArgs({
+  site = "boss",
   kind,
   dbPath,
   planId,
@@ -53,6 +54,8 @@ function buildScanCliArgs({
   browserPageBudget = null,
   detailMode = null
 } = {}) {
+  site = String(site || 'boss').trim().toLowerCase() || 'boss';
+  if (!["boss", "zhaopin"].includes(site)) throw scanExecutionError("UNKNOWN_SITE", `Unknown site: ${site}`);
   const normalizedKind = normalizeScanKind(kind);
   const normalizedDbPath = requiredText(dbPath, "dbPath");
   const normalizedRunId = requiredText(runId, "runId");
@@ -80,7 +83,7 @@ function buildScanCliArgs({
       throw scanExecutionError("INVALID_SCAN_INPUT", "analysisOnly uses the batch persisted on the workflow run");
     }
     cliArgs.push(
-      "--site", "boss",
+      "--site", site,
       "--scan-mode", normalizedKind,
       "--workflow-run", normalizedWorkflowRunId,
       "--analysis-only"
@@ -94,7 +97,7 @@ function buildScanCliArgs({
   }
 
   if (normalizedKind === "daily" || normalizedKind === "broad") {
-    cliArgs.push("--site", "boss", "--scan-mode", normalizedKind);
+    cliArgs.push("--site", site, "--scan-mode", normalizedKind);
     if (detailMode !== null && detailMode !== undefined) cliArgs.push("--detail-mode", normalizedDetailMode);
     if (resumeBatchId !== null && resumeBatchId !== undefined && resumeBatchId !== "") {
       const normalizedResumeBatchId = Number(resumeBatchId);

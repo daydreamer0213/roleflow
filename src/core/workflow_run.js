@@ -34,8 +34,9 @@ function chinaLocalDay(value = new Date()) {
 }
 
 function planWorkflowRun(input = {}) {
+  const readonly = input.site === "zhaopin";
   const policy = { ...PRODUCT_POLICY.operations.workflow, ...(input.policy || {}) };
-  const successfulToday = nonNegativeInteger(input.successfulToday);
+  const successfulToday = readonly ? 0 : nonNegativeInteger(input.successfulToday);
   const completedRuns = nonNegativeInteger(input.completedRuns);
   const remainingRunSlots = Math.max(0, policy.maxRunsPerDay - completedRuns);
   const remainingDailyTarget = Math.max(0, policy.dailyTarget - successfulToday);
@@ -62,7 +63,7 @@ function planWorkflowRun(input = {}) {
     policy.maxRunTarget,
     Math.ceil(remainingDailyTarget / planningSlots)
   );
-  const inventoryCount = nonNegativeInteger(input.inventoryCount);
+  const inventoryCount = readonly ? 0 : nonNegativeInteger(input.inventoryCount);
   const candidateGap = Math.max(0, targetSuccessCount - inventoryCount);
   const budget = fairBudget(input, planningSlots, policy);
   const thirdScanAllowed = completedRuns < nonNegativeInteger(policy.primaryRunsPerDay)
@@ -92,7 +93,7 @@ function planWorkflowRun(input = {}) {
     remainingRunSlots,
     nextRunAt: interval.nextRunAt,
     remainingDailyTarget,
-    targetSuccessCount,
+    targetSuccessCount: readonly ? 0 : targetSuccessCount,
     replacementBuffer: policy.replacementBuffer,
     inventoryCount,
     candidateGap,
@@ -284,11 +285,9 @@ function recoverWorkflowRuns(db, input = {}) {
   const orphanTimeoutMs = Math.max(0, Number(
     input.orphanTimeoutMs ?? PRODUCT_POLICY.operations.scanOrphanTimeoutMs
   ));
-  const orphaned = interruptOrphanedScanRuns(db, {
-    site: input.site || "boss",
-    now,
-    heartbeatTimeoutMs: orphanTimeoutMs
-  });
+  const sites = input.workflowRunId ? [getWorkflowRun(db, input.workflowRunId)?.site || 'boss'] : input.site ? [input.site] : ['boss', 'zhaopin'];
+  const orphaned = { interrupted: 0 };
+  for (const site of sites) orphaned.interrupted += interruptOrphanedScanRuns(db, { site, now, heartbeatTimeoutMs: orphanTimeoutMs }).interrupted;
   const runs = recoverableRuns(db, input);
   const report = {
     inspected: runs.length,
@@ -343,6 +342,7 @@ function recoverableRuns(db, input) {
     return run && !["completed", "failed", "stopped"].includes(run.status) ? [run] : [];
   }
   return listWorkflowRuns(db, {
+    site: input.site,
     profileId: input.profileId,
     planId: input.planId,
     statuses: ["created", "scanning", "analyzing", "paused", "review_required", "communicating", "interrupted"],
@@ -352,6 +352,7 @@ function recoverableRuns(db, input) {
 
 function recoverScanWorkflow(db, run, report, { now, orphanTimeoutMs }) {
   const scan = run.scanRunId ? getScanRun(db, run.scanRunId) : null;
+  if (scan && scan.site !== (run.site || 'boss')) throw workflowError('WORKFLOW_SCAN_SITE_MISMATCH', '工作流与扫描来源不一致。');
   if (!scan) {
     if (isOlderThan(run.updatedAt, now, orphanTimeoutMs)) {
       if (settleRecoveredScanControl(db, run, report, now)) return;

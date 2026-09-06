@@ -8,8 +8,11 @@ const {
   sourceContentHash,
   transitionWorkflowRun,
   getWorkflowRun,
+  getBatch,
+  listLatestScanTargetResults,
   selectReadyWorkflowJobEntries
 } = require("./storage");
+const { summarizeResumePlan } = require('./scan_snapshot');
 const { runWorkflowAnalysis } = require("./workflow_analysis_executor");
 const { hasCompleteJobDescription } = require("./job_description_readiness");
 const {
@@ -218,7 +221,17 @@ async function runWorkflowAnalysisPhase(db, input = {}) {
   }
   if (input.reviewIfDrained === false) return summary;
 
-  const inventoryCount = listWorkflowInventory(db, { planId: workflowRun.planId }).length;
+  const readonly = workflowRun.site === 'zhaopin';
+  if (readonly) {
+    const snapshot = getBatch(db, batchId)?.filterSnapshot?.execution;
+    const progress = snapshot ? summarizeResumePlan(snapshot, listLatestScanTargetResults(db, batchId)) : null;
+    if (!progress || progress.pending > 0 || progress.partial > 0 || progress.failed > 0) {
+      transitionWorkflowRun(db, { id: runId, status: 'interrupted', resumePhase: 'scanning', errorCode: 'SCAN_TARGETS_PARTIAL', errorMessage: '已保存分析结果，仍有智联采集目标需要继续。' });
+      return { ...summary, status: 'interrupted', errorCode: 'SCAN_TARGETS_PARTIAL' };
+    }
+  }
+
+  const inventoryCount = readonly ? 0 : listWorkflowInventory(db, { planId: workflowRun.planId }).length;
   const reviewedMetrics = {
     ...metrics,
     analyzed: completedWorkflowAnalysisCount(counts),
@@ -228,7 +241,7 @@ async function runWorkflowAnalysisPhase(db, input = {}) {
   };
   const reviewed = transitionWorkflowRun(db, {
     id: runId,
-    status: "review_required",
+    status: readonly ? "completed" : "review_required",
     inventoryCount,
     metrics: reviewedMetrics
   });

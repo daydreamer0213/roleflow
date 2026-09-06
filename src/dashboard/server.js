@@ -307,6 +307,10 @@ const { createMessageFollowUpService } = require("../application/message_follow_
 const { prepareInitialSearchPage } = require("../application/onboarding/initial_search_page");
 const { createModelAdapter } = require("../adapters/models");
 const boss = require("../adapters/sites/boss");
+const { ZhaopinSiteAdapter, resolveZhaopinSearchTab } = require('../adapters/sites/zhaopin');
+const { canonicalizeZhaopinSearchTemplate } = require('../core/zhaopin_search_scope');
+const { compileZhaopinPlatformRuntimePolicy } = require('../core/platform_runtime_policy');
+const { getPlatformSearchContext } = require('../storage/platform_search_context_store');
 const { inspectBossBrowserReadiness, readinessAction } = require("../core/browser_readiness");
 const { inspectBossOperatorTabs } = require("../core/workspace_tabs");
 
@@ -576,7 +580,12 @@ function createDashboardServer({
   };
   const inspectWorkflowResumeBrowserReadiness = (authority) =>
     runBrowserRead(async () => {
-      await ensureManagedWorkspaceReady("workflow_resume");
+      await ensureManagedWorkspaceReady("workflow_resume", authority.site);
+      if (authority.site === 'zhaopin') {
+        const browser = createDashboardBrowser(authority);
+        await new ZhaopinSiteAdapter({ browser, logger }).preflight();
+        return { status: 'ready', ready: true, message: '智联搜索页已就绪。', action: '', checkedAt: new Date().toISOString() };
+      }
       return resolvedWorkflowResumeBrowserReadinessProbe(authority);
     });
   const resolveSerializedAcquisitionContext = (input) =>
@@ -584,7 +593,7 @@ function createDashboardServer({
   const resolveSerializedInheritedPreview = (input) =>
     runBrowserRead(() => inheritedPreviewResolver(input));
   const resolveSerializedCurrentSearchContext = (input) =>
-    runBrowserRead(() => currentSearchContextResolver(input));
+    runBrowserRead(() => input.site === 'zhaopin' ? resolveLiveZhaopinContext({ ...input, requireSaved: false }) : currentSearchContextResolver(input));
   const assertBrowserRuntimeReady = () => {
     if (!browserSupervisor?.getSnapshot) return;
     const snapshot = browserSupervisor.getSnapshot();
@@ -918,7 +927,7 @@ function createDashboardServer({
     pending.then(clear, clear);
     return pending;
   };
-  const ensureManagedWorkspaceReady = async (reason) => {
+  const ensureManagedWorkspaceReady = async (reason, site = 'boss') => {
     if (browserSupervisor?.getSnapshot && !browserSupervisor.getSnapshot()?.ready && browserSupervisor?.ensure) {
       const address = dashboardServer.address();
       if (!address || typeof address === "string") {
@@ -938,6 +947,7 @@ function createDashboardServer({
       }
     }
     assertBrowserRuntimeReady();
+    if (site === 'zhaopin') return null;
     if (!workspaceReconciler) return null;
     const workspace = await reconcileWorkspace({ startupGuidance: false, reason });
     if (workspace?.status === "ready") return workspace;
@@ -1366,12 +1376,11 @@ function createDashboardServer({
       if (req.method === "POST" && url.pathname === "/api/plan/recommend") return handlePlanRecommend(req, res, { db, modelConfig: getRuntimeModel("deep_analysis"), modelReady: modelReady("deep_analysis"), logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/plan") return handlePlanSave(req, res, db, { root, logger, requestId, rescore: planRescore });
       if (req.method === "POST" && url.pathname === "/api/workflow-run") {
-        await ensureManagedWorkspaceReady("workflow_start");
         const batchModelState = getRuntimeModelState("batch_screening");
         const backupRuntime = batchModelState.settings?.batchBackup?.enabled
           ? getRuntimeBatchBackup()
           : null;
-        return handleWorkflowRunStart(req, res, { db, root, dataRoot, dbPath, scanRuns, modelReady: modelStateReady(batchModelState, "batch_screening"), modelState: batchModelState, backupRuntime, logger, requestId, spawnProcess, acquisitionContextResolver: resolveSerializedAcquisitionContext, planRescore, resolveNewWorkflowBrowser: resolveDashboardWorkflowBrowser });
+        return handleWorkflowRunStart(req, res, { db, root, dataRoot, dbPath, scanRuns, modelReady: modelStateReady(batchModelState, "batch_screening"), modelState: batchModelState, backupRuntime, logger, requestId, spawnProcess, acquisitionContextResolver: resolveSerializedAcquisitionContext, planRescore, resolveNewWorkflowBrowser: resolveDashboardWorkflowBrowser, ensureWorkspaceReady: (site) => runBrowserRead(() => ensureManagedWorkspaceReady('workflow_start', site)) });
       }
       if (req.method === "POST" && url.pathname === "/api/workflow-run/resume") return handleWorkflowRunResume(req, res, { db, root, dataRoot, dbPath, scanRuns, batchModelReady: modelReady("batch_screening"), logger, requestId, spawnProcess, browserReadinessProbe: inspectWorkflowResumeBrowserReadiness, resolveNewWorkflowBrowser: resolveDashboardWorkflowBrowser, currentSearchContextResolver: resolveSerializedCurrentSearchContext });
       if (req.method === "POST" && url.pathname === "/api/scan") {
@@ -2118,26 +2127,30 @@ function buildWorkflowDashboardState(
   db,
   planRecord,
   now = new Date(),
-  { searchScope = null, keywordSource = null, allowEarlyScan = false } = {}
+  { searchScope = null, keywordSource = null, allowEarlyScan = false, site = searchScope?.site || 'boss' } = {}
 ) {
   if (!planRecord) throw appError("WORKFLOW_PLAN_NOT_FOUND", "筛选方案不存在。", { statusCode: 404 });
   const localDay = chinaLocalDay(now);
   const runs = listWorkflowRuns(db, {
+    site,
     profileId: planRecord.profileId,
     planId: planRecord.id,
     localDay,
     limit: PRODUCT_POLICY.operations.workflow.maxRunsPerDay
   }).sort((a, b) => a.sequence - b.sequence);
   const activeRun = getActiveWorkflowRun(db, {
+    site,
     profileId: planRecord.profileId,
     planId: planRecord.id
   });
   const successfulToday = runs.reduce((sum, run) => sum + Number(run.successfulCount || 0), 0);
-  const inventory = listWorkflowInventory(db, { planId: planRecord.id, now: asIso(now) });
-  const budgetRuns = workflowRunsWithAccessUsage(db, runs, localDay);
+  const inventory = site === 'zhaopin' ? [] : listWorkflowInventory(db, { planId: planRecord.id, now: asIso(now) });
+  const budgetRuns = workflowRunsWithAccessUsage(db, runs, localDay, site);
   const usedBudget = consumedWorkflowBudget(budgetRuns);
   let keywordStats;
-  if (searchScope?.key) {
+  if (site === 'zhaopin') {
+    keywordStats = new Map(runs.flatMap(run => run.keywords || []).map(item => [String(item.word || item), { sampleSize: 0, eligibleCount: 0, usedToday: true }]));
+  } else if (searchScope?.key) {
     keywordStats = listScopedKeywordStats(db, {
       profileId: planRecord.profileId,
       scopeKey: searchScope.key,
@@ -2148,7 +2161,7 @@ function buildWorkflowDashboardState(
     const usedKeywords = new Set(runs.flatMap((run) => run.keywords || [])
       .map((item) => String(item.word || item)));
     keywordStats = new Map();
-    for (const job of listDecisionPool(db, { planId: planRecord.id })) {
+    for (const job of listDecisionPool(db, { planId: planRecord.id, site })) {
       const word = String(job.keyword || "").trim();
       if (!word) continue;
       const stats = keywordStats.get(word) || {
@@ -2190,6 +2203,7 @@ function buildWorkflowDashboardState(
     .sort()
     .at(-1) || null;
   const nextPlan = activeRun ? null : planWorkflowRun({
+    site,
     now,
     localDay,
     successfulToday,
@@ -2225,10 +2239,10 @@ function buildWorkflowDashboardState(
   };
 }
 
-function workflowRunsWithAccessUsage(db, runs, localDay) {
+function workflowRunsWithAccessUsage(db, runs, localDay, site = 'boss') {
   const since = new Date(`${localDay}T00:00:00+08:00`).toISOString();
   const usageByRun = new Map();
-  for (const event of listSiteAccessEvents(db, { site: "boss", since, limit: 10000 })) {
+  for (const event of listSiteAccessEvents(db, { site, since, limit: 10000 })) {
     const runId = String(event.details?.runId || "").trim();
     if (!runId || !["pane_detail_read", "job_detail_fetch", "detail_open", "list_navigation", "list_scroll"].includes(event.action)) continue;
     const usage = usageByRun.get(runId) || { details: 0, pages: 0, scrolls: 0 };
@@ -2686,9 +2700,29 @@ async function resolveLiveGeneratedContext({
 }
 
 async function resolveLiveAcquisitionContext(input) {
+  if (input.site && !['boss', 'zhaopin'].includes(input.site)) throw appError('UNKNOWN_SITE', '请选择 BOSS 或智联。', { statusCode: 400 });
+  if (input.site === 'zhaopin') return resolveLiveZhaopinContext(input);
   return acquisitionModeOf(input.plan.plan) === "inherited"
     ? resolveLiveInheritedContext(input)
     : resolveLiveGeneratedContext(input);
+}
+
+async function resolveLiveZhaopinContext({ db, plan, matchingContext, logger, browserMode = 'edge', cdpPort = null, browserFactory = createDashboardBrowser, requireSaved = true }) {
+  const stored = getPlatformSearchContext(db, { planId: plan.id, site: 'zhaopin' });
+  if (requireSaved && !stored) throw appError('ZHAOPIN_SEARCH_CONTEXT_REQUIRED', '请先打开智联搜索页、设置条件，再点击“保存智联条件”后开始。', { statusCode: 409 });
+  if (requireSaved) assertBossRuntimeAvailable(db, { site: 'zhaopin' });
+  const browser = browserFactory({ browserMode, cdpPort });
+  const tabId = await resolveZhaopinSearchTab(browser);
+  const adapter = new ZhaopinSiteAdapter({ browser, logger });
+  let state = await adapter.readSearchState(tabId);
+  if (requireSaved) {
+    const template = canonicalizeZhaopinSearchTemplate(stored.searchTemplate?.url);
+    state = await adapter.waitForSearchReady(tabId, { searchTemplate: template, keyword: new URL(state.url).searchParams.get('kw'), filterSummary: stored.filterSummary });
+  }
+  const scope = buildInheritedSearchScope({ site: 'zhaopin', profileId: plan.profileId, rawUrl: state.url });
+  return { site: 'zhaopin', acquisitionMode: 'inherited', ...scope, currentTargetUrl: state.url,
+    keywordSource: freezeKeywordSource({ planRecord: plan, matchingCardRevision: matchingCardRevision(matchingContext?.matchingCard) }),
+    platformPolicy: compileZhaopinPlatformRuntimePolicy({ searchScope: scope.searchScope, filterSummary: state.filterSummary }) };
 }
 
 function preparePlanForNewWorkflow({ db, plan, matchingContext, root, rescore = rescorePlanObservations }) {
@@ -2721,11 +2755,15 @@ async function handleWorkflowRunStart(req, res, {
   spawnProcess,
   acquisitionContextResolver,
   planRescore,
-  resolveNewWorkflowBrowser
+  resolveNewWorkflowBrowser,
+  ensureWorkspaceReady = async () => {}
 }) {
   let planId = 0;
   try {
     const params = parseBody(await readBody(req), req.headers["content-type"] || "");
+    const site = String(params.site || 'boss').trim().toLowerCase();
+    if (!['boss', 'zhaopin'].includes(site)) throw appError('UNKNOWN_SITE', '请选择 BOSS 或智联。', { statusCode: 400 });
+    await ensureWorkspaceReady(site);
     planId = Number(params.planId || 0);
     const browserAuthority = resolveNewWorkflowBrowser(params);
     const result = await startWorkflow({
@@ -2755,18 +2793,18 @@ async function handleWorkflowRunStart(req, res, {
   }
 }
 
-function assertWorkflowScanAvailable(db, scanRuns, planId, logger) {
-  assertBossRuntimeAvailable(db);
+function assertWorkflowScanAvailable(db, scanRuns, planId, logger, site = 'boss') {
+  assertBossRuntimeAvailable(db, { site });
   const orphaned = interruptOrphanedScanRuns(db, {
-    site: "boss",
+    site,
     heartbeatTimeoutMs: PRODUCT_POLICY.operations.scanOrphanTimeoutMs
   });
   if (orphaned.interrupted) logger?.warn("orphaned_scan_runs_interrupted", orphaned);
-  const latestRun = getLatestScanRun(db, { planId, site: "boss" });
+  const latestRun = getLatestScanRun(db, { planId, site });
   if (latestRun?.status === "running" || [...scanRuns.values()].some((run) => !run.exited)) {
     throw appError("WORKFLOW_SCAN_ALREADY_RUNNING", "BOSS 已有扫描任务正在运行，请先完成当前任务。", { statusCode: 409 });
   }
-  const activeLease = getSiteScanLease(db, "boss");
+  const activeLease = getSiteScanLease(db, site) || getSiteScanLease(db, site === 'boss' ? 'zhaopin' : 'boss');
   if (activeLease) {
     throw appError("WORKFLOW_SCAN_LEASE_ACTIVE", `BOSS 已有扫描任务运行中（${activeLease.command}）。`, { statusCode: 409 });
   }
@@ -2804,6 +2842,7 @@ async function handleWorkflowRunResume(req, res, {
           const plan = getSearchPlan(db, workflow.planId);
           if (!plan) throw appError("WORKFLOW_PLAN_NOT_FOUND", "本轮任务的 Search Plan 不存在。", { statusCode: 404 });
           return currentSearchContextResolver({
+            site: workflow.site || 'boss',
             db,
             plan,
             matchingContext: getCandidateMatchingContext(db, plan.profileId),
@@ -3203,7 +3242,7 @@ function workflowBatchResumeEvidence(modelState, { ready = false } = {}) {
 function assertWorkflowAnalysisBatch(db, workflow) {
   const batch = workflow?.scanBatchId ? getBatch(db, workflow.scanBatchId) : null;
   if (!batch
-    || batch.site !== "boss"
+    || batch.site !== (workflow.site || 'boss')
     || Number(batch.searchPlanId || 0) !== Number(workflow?.planId || 0)
     || Number(batch.profileId || 0) !== Number(workflow?.profileId || 0)) {
     throw appError(
@@ -3298,6 +3337,7 @@ function startPlanScan(scanRuns, {
   if (!dbPath) throw new Error("扫描数据路径未配置。");
   const runId = randomUUID();
   let workflowRun = workflowRunId ? getWorkflowRun(db, workflowRunId) : null;
+  const site = workflowRun?.site || 'boss';
   if (workflowRunId && (!workflowRun || workflowRun.planId !== Number(planId))) {
     throw appError("WORKFLOW_PLAN_MISMATCH", "Workflow run does not belong to this search plan.");
   }
@@ -3309,9 +3349,9 @@ function startPlanScan(scanRuns, {
   }
   const analysisOnly = workflowRun?.status === "analyzing";
   if (!analysisOnly) {
-    assertBossRuntimeAvailable(db);
+    assertBossRuntimeAvailable(db, { site });
     const orphaned = interruptOrphanedScanRuns(db, {
-      site: "boss",
+      site,
       heartbeatTimeoutMs: PRODUCT_POLICY.operations.scanOrphanTimeoutMs
     });
     if (orphaned.interrupted) logger.warn("orphaned_scan_runs_interrupted", orphaned);
@@ -3329,6 +3369,7 @@ function startPlanScan(scanRuns, {
   }
   const effectiveResumeBatchId = workflowRun ? persistedResumeBatchId : resumeBatchId;
   const commandArgs = buildScanCliArgs({
+    site,
     kind: scanKind,
     dbPath,
     planId,
@@ -3347,7 +3388,7 @@ function startPlanScan(scanRuns, {
       browserPageBudget: workflowRun.budget.browserPageBudget
     } : {})
   });
-  const persisted = createScanRun(db, { runId, site: "boss", command: scanKind, planId });
+  const persisted = createScanRun(db, { runId, site, command: scanKind, planId });
   if (workflowRun) {
     try {
       if (persistedResumeBatchId) {
@@ -5474,7 +5515,7 @@ function renderWorkflowDashboardPage({ db, searchParams, logger = null, workflow
   }
   const plan = getSearchPlan(db, workflow.planId);
   if (!plan) return renderErrorPage("本轮任务对应的筛选方案不存在。", "/plan", { code: "WORKFLOW_PLAN_NOT_FOUND" });
-  const daily = buildWorkflowDashboardState(db, plan);
+  const daily = buildWorkflowDashboardState(db, plan, new Date(), { site: workflow.site || 'boss' });
   const communication = workflow.communicationBatchId ? communicationStatus(db, workflow.communicationBatchId) : null;
   const runtimeBlock = communicationRuntimeBlock(db);
   const progressSnapshot = getWorkflowProgressSnapshot(db, { workflowRunId: workflow.id });
@@ -6514,6 +6555,7 @@ module.exports = {
   resolveLiveAcquisitionContext,
   resolveLiveInheritedContext,
   resolveLiveGeneratedContext,
+  resolveLiveZhaopinContext,
   inspectDashboardBossBrowserReadiness,
   startPlanScan,
   scanStatus,

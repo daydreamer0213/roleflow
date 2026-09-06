@@ -24,6 +24,8 @@ async function startWorkflow({ db, input = {}, deps = {} }) {
     logger
   } = deps;
   const planId = Number(input.planId || 0);
+  const site = String(input.site || "boss").trim().toLowerCase();
+  if (!["boss", "zhaopin"].includes(site)) throw appError("UNKNOWN_SITE", "请选择 BOSS 或智联。", { statusCode: 400 });
   const allowEarlyScan = input.confirmEarlyScan === "1";
   const browserAuthority = resolveNewWorkflowBrowser(input);
   const plan = getSearchPlan(db, planId);
@@ -38,10 +40,10 @@ async function startWorkflow({ db, input = {}, deps = {} }) {
     plan,
     matchingContext?.candidateProfile || {},
     getSearchPlanDependency(db, plan.id),
-    { acquisitionMode: acquisitionModeOf(plan.plan) }
+    { acquisitionMode: site === "zhaopin" ? "inherited" : acquisitionModeOf(plan.plan) }
   );
   await preparePlanForNewWorkflow({ db, plan, matchingContext });
-  const preliminaryState = buildDashboardState(db, plan, new Date(), { allowEarlyScan });
+  const preliminaryState = buildDashboardState(db, plan, new Date(), { site, allowEarlyScan });
   if (preliminaryState.activeRun) return { workflow: preliminaryState.activeRun, alreadyActive: true };
   if (preliminaryState.nextPlan?.errorCode) {
     throw appError(
@@ -58,6 +60,7 @@ async function startWorkflow({ db, input = {}, deps = {} }) {
     );
   }
   const acquisition = await acquisitionContextResolver({
+    site,
     db,
     plan,
     matchingContext,
@@ -67,10 +70,11 @@ async function startWorkflow({ db, input = {}, deps = {} }) {
   });
   try {
     assertAcquisitionContext(acquisition, { planId: plan.id });
+    if ((acquisition.site || acquisition.searchScope?.site || 'boss') !== site) throw appError('WORKFLOW_ACQUISITION_SITE_MISMATCH', '读取的搜索页来源与所选平台不一致。', { statusCode: 409 });
   } catch (error) {
     throw appError(error.code, error.message, { statusCode: 409, cause: error });
   }
-  const state = buildDashboardState(db, plan, new Date(), { ...acquisition, allowEarlyScan });
+  const state = buildDashboardState(db, plan, new Date(), { ...acquisition, site, allowEarlyScan });
   if (state.activeRun) return { workflow: state.activeRun, alreadyActive: true };
   if (state.nextPlan?.errorCode) {
     throw appError(state.nextPlan.errorCode, workflowBlockedMessage(state.nextPlan.errorCode, state.nextPlan), { statusCode: 409 });
@@ -82,9 +86,10 @@ async function startWorkflow({ db, input = {}, deps = {} }) {
       { statusCode: 409 }
     );
   }
-  if (state.nextPlan.scanNeeded) scanAvailability(db, input.scanRuns, plan.id, logger);
+  if (state.nextPlan.scanNeeded) scanAvailability(db, input.scanRuns, plan.id, logger, site);
   const modelProfiles = workflowModelProfilesSnapshot(input.modelState, { backupRuntime: input.backupRuntime });
   let workflow = createWorkflowRun(db, {
+    site,
     profileId: plan.profileId,
     planId: plan.id,
     localDay: state.localDay,
@@ -97,6 +102,7 @@ async function startWorkflow({ db, input = {}, deps = {} }) {
     budget: state.nextPlan.budget,
     modelConfigRevision: modelProfiles.batch_screening.revision,
     planner: {
+      site,
       ...state.nextPlan,
       ...frozenPlan,
       browserMode: browserAuthority.browserMode,
@@ -257,7 +263,7 @@ async function resumeWorkflow({ db, input = {}, deps = {} }) {
       const validation = validateResumeBatch({
         resumeBatchId: workflow.scanBatchId,
         resumedBatch: getBatch(db, workflow.scanBatchId),
-        site: "boss",
+        site: workflow.site || "boss",
         planId: workflow.planId
       });
       if (validation.acquisitionMode !== "generated") throw new Error("historical generated snapshot mode mismatch");
@@ -268,11 +274,11 @@ async function resumeWorkflow({ db, input = {}, deps = {} }) {
   if (resumesAnalysis) {
     assertWorkflowAnalysisBatch(db, workflow);
   } else if (workflow.scanNeeded && workflow.scanBatchId) {
-    validateResumeBatch({ resumeBatchId: workflow.scanBatchId, resumedBatch: getBatch(db, workflow.scanBatchId), site: "boss", planId: workflow.planId });
+    validateResumeBatch({ resumeBatchId: workflow.scanBatchId, resumedBatch: getBatch(db, workflow.scanBatchId), site: workflow.site || "boss", planId: workflow.planId });
   }
   const requiresBrowser = workflowResumeRequiresBrowser(db, workflow);
   if (requiresBrowser) {
-    const readiness = publicBrowserReadinessSnapshot(await browserReadinessProbe({ browserMode, cdpPort }));
+    const readiness = publicBrowserReadinessSnapshot(await browserReadinessProbe({ browserMode, cdpPort, site: workflow.site || "boss" }));
     assertWorkflowResumeBrowserReady(readiness);
   }
   const comparesSearchScope = !resumesAnalysis
@@ -300,7 +306,7 @@ async function resumeWorkflow({ db, input = {}, deps = {} }) {
         message: "当前搜索条件不完整，不能安全重新开始本轮。",
         planId: workflow.planId
       });
-      scanAvailability(db, input.scanRuns, workflow.planId, logger);
+      scanAvailability(db, input.scanRuns, workflow.planId, logger, workflow.site || "boss");
       scanAvailabilityChecked = true;
       workflow = replaceWorkflowScanContext(db, {
         workflowRunId: workflow.id,
@@ -317,7 +323,7 @@ async function resumeWorkflow({ db, input = {}, deps = {} }) {
         resumed = transitionWorkflowRun(db, { id: workflow.id, status: "analyzing", resumePhase: null });
         spawnScan(input.scanRuns, { db, root: input.root, dataRoot: input.dataRoot, dbPath: input.dbPath, planId: workflow.planId, cdpPort, browserMode, scanKind: "daily", workflowRunId: workflow.id, logger, requestId: input.requestId, spawnProcess: input.spawnProcess });
       } else if (workflow.scanNeeded) {
-        if (!scanAvailabilityChecked) scanAvailability(db, input.scanRuns, workflow.planId, logger);
+        if (!scanAvailabilityChecked) scanAvailability(db, input.scanRuns, workflow.planId, logger, workflow.site || "boss");
         spawnScan(input.scanRuns, { db, root: input.root, dataRoot: input.dataRoot, dbPath: input.dbPath, planId: workflow.planId, cdpPort, browserMode, scanKind: "daily", resumeBatchId: workflow.scanBatchId, workflowRunId: workflow.id, logger, requestId: input.requestId, spawnProcess: input.spawnProcess });
       } else {
         resumed = transitionWorkflowRun(db, { id: workflow.id, status: "review_required" });
@@ -371,7 +377,7 @@ function replacementWorkflowKeywords(workflow, liveContext) {
 
 function workflowLiveSearchKeyword(liveContext) {
   try {
-    return new URL(String(liveContext?.currentTargetUrl || "")).searchParams.get("query")?.trim() || "";
+    return new URL(String(liveContext?.currentTargetUrl || "")).searchParams.get(liveContext?.searchScope?.site === "zhaopin" ? "kw" : "query")?.trim() || "";
   } catch {
     return "";
   }
@@ -455,7 +461,7 @@ async function controlWorkflow({ db, input = {}, deps = {} }) {
   let authority = null;
   if (requiresBrowser) {
     authority = resolveWorkflowControlBrowserAuthority(workflow, input);
-    const readiness = publicBrowserReadinessSnapshot(await browserReadinessProbe(authority));
+    const readiness = publicBrowserReadinessSnapshot(await browserReadinessProbe({ ...authority, site: workflow.site || "boss" }));
     assertWorkflowResumeBrowserReady(readiness);
     const refreshed = getWorkflowRun(db, workflowRunId);
     activeRun = exactActiveWorkflowRun(input.scanRuns, refreshed);
@@ -467,9 +473,9 @@ async function controlWorkflow({ db, input = {}, deps = {} }) {
       throw appError("WORKFLOW_CONTROL_STATE_CHANGED", "工作流状态在浏览器检查期间发生变化，请刷新后重试。", { statusCode: 409 });
     }
     if (workflow.scanNeeded && workflow.scanBatchId) {
-      validateResumeBatch({ resumeBatchId: workflow.scanBatchId, resumedBatch: getBatch(db, workflow.scanBatchId), site: "boss", planId: workflow.planId });
+      validateResumeBatch({ resumeBatchId: workflow.scanBatchId, resumedBatch: getBatch(db, workflow.scanBatchId), site: workflow.site || "boss", planId: workflow.planId });
     }
-    scanAvailability(db, input.scanRuns, workflow.planId, logger);
+    scanAvailability(db, input.scanRuns, workflow.planId, logger, workflow.site || "boss");
   } else if (shouldLaunch && targetPhase === "analyzing") {
     assertWorkflowAnalysisBatch(db, workflow);
     authority = resolveWorkflowControlBrowserAuthority(workflow, input);

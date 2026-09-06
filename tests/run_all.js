@@ -28,6 +28,7 @@ const tests = [
   "zhaopin_readonly_smoke.js",
   "platform_search_context_smoke.js",
   "zhaopin_analysis_smoke.js",
+  "zhaopin_workflow_smoke.js",
   "scoped_keyword_stats_smoke.js",
   "scan_snapshot_smoke.js",
   "scan_recovery_smoke.js",

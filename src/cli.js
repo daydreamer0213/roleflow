@@ -8,6 +8,8 @@ const { CdpBrowserAdapter } = require("./adapters/browser/cdp");
 const { createPortableEdgeRuntime } = require("./adapters/browser/portable_edge_runtime");
 const { createBrowserSupervisor } = require("./core/browser_supervisor");
 const { BossSiteAdapter, cleanDetailText, resolveBossSearchContext } = require("./adapters/sites/boss");
+const { createSiteAdapter } = require('./adapters/sites');
+const { resolveZhaopinSearchTab } = require('./adapters/sites/zhaopin');
 const { scoreJob, decisionState } = require("./core/scoring");
 const { resolvePlannedKeywords } = require("./core/keyword_planner");
 const { createJobAnalysisRunner, runWorkflowAnalysisPhase } = require("./core/job_analysis");
@@ -32,6 +34,7 @@ const {
 const {
   openDb,
   getWorkflowRun,
+  getScanRun,
   getWorkflowRunByCommunicationBatch,
   transitionWorkflowRun,
   attachWorkflowScan,
@@ -983,7 +986,7 @@ async function scan(
     throw codedError("SCAN_DETAIL_MODE_MISMATCH", "恢复扫描的详情模式必须与执行快照一致。");
   }
   const browser = createBrowser(args);
-  const accessController = !args.input && site === "boss"
+  const accessController = !args.input && ["boss", "zhaopin"].includes(site)
     ? createSiteAccessController({
       db: execution?.accessLedgerDb || db,
       auditDb: db,
@@ -1016,6 +1019,7 @@ async function scan(
   const browserMode = String(args.browser || "").trim().toLowerCase();
   const usesFixedBossSearchTab = site === "boss" && ["edge", "portable"].includes(browserMode);
   const preflightBrowser = async (expectedSearchTabId = null, expectedCommunicationTabId = null) => {
+    if (site === "zhaopin") return adapter.preflight({ tabId: await resolveZhaopinSearchTab(browser, expectedSearchTabId) });
     if (!usesFixedBossSearchTab) return adapter.preflight();
     return preflightBossScanBrowser({
       browserMode,
@@ -1026,6 +1030,11 @@ async function scan(
     });
   };
   const runWithBoundFixedBossSearchAction = async (action) => {
+    if (site === "zhaopin") {
+      await resolveZhaopinSearchTab(browser, browserState.tabId);
+      assertScanActive(signal);
+      return action(browserState);
+    }
     if (!usesFixedBossSearchTab) return action(browserState);
     return runWithBoundBossScanBrowser({
       browserMode,
@@ -1057,6 +1066,9 @@ async function scan(
     }
   }
   let directSearchContext = null;
+  if (!workflowRun && !args.input && site === "zhaopin") {
+    throw codedError("ZHAOPIN_WORKFLOW_REQUIRED", "智联扫描请从工作台保存搜索条件后开始新一轮。恢复请使用原工作流。");
+  }
   if (!workflowRun && !args.input) {
     directSearchContext = resolveBossSearchContext({
       currentUrl: browserState?.url || browserState?.tab?.url || "",
@@ -1186,7 +1198,7 @@ async function scan(
       : applyScanPolicyToFilters(generatedFilterCatalog, scanPolicy);
   if (!args.input) {
     console.error(searchTemplate.mode === "inherited"
-      ? `[platform] BOSS 预筛：继承当前搜索页（仅替换关键词）`
+      ? `[platform] ${site === 'zhaopin' ? '智联' : 'BOSS'} 预筛：继承当前搜索页（仅替换关键词）`
       : `[platform] BOSS 预筛：${formatNativeFilterSummary(nativeFilterSnapshot) || "未命中可用原生条件"}`);
   }
   if (searchTemplate.mode === "inherited") {
@@ -1405,10 +1417,10 @@ async function scan(
   };
 
   if (workflowRun) assertWorkflowScanControl(db, workflowRun.id);
-  const restoredPacingState = args.input || site !== "boss"
+  const restoredPacingState = args.input
     ? validatedResume?.runtime?.bossPacing || null
     : mergeBossPacingStates(
-      getSitePacingState(db, "boss").pacing,
+      getSitePacingState(db, site).pacing,
       validatedResume?.runtime?.bossPacing
     );
   const rawJobs = await runWithBoundFixedBossSearchAction((state) => adapter.scan({
@@ -1419,6 +1431,7 @@ async function scan(
     cityScopes,
     nativeFilters: nativeFilterSnapshot,
     searchTemplate,
+    filterSummary: site === "zhaopin" ? platformPolicy.filterSummary : undefined,
     browserPageBudget: scanLimits.browserPageBudget,
     maxCards: scanLimits.maxCards,
     maxDetailTotal: scanLimits.maxDetailTotal,
@@ -1502,7 +1515,11 @@ async function scan(
         expectedSearchTabId: state.tabId,
         expectedCommunicationTabId: state.communicationTabId
       })
-      : null
+      : site === "zhaopin" ? async () => {
+        assertScanActive(signal);
+        if (workflowRun) assertWorkflowScanControl(db, workflowRun.id);
+        await resolveZhaopinSearchTab(browser, state.tabId);
+      } : null
   }));
   assertScanActive(signal);
 
@@ -1604,7 +1621,7 @@ async function scan(
       };
     }
     if (workflowAnalysisSummary.status === "drained" && finalStatus !== "completed") {
-      const inventoryCount = listWorkflowInventory(db, { planId: planRecord.id }).length;
+      const inventoryCount = site === 'zhaopin' ? 0 : listWorkflowInventory(db, { planId: planRecord.id }).length;
       const metrics = workflowMetrics({
         detailCoverage,
         rawJobs,
@@ -1617,6 +1634,7 @@ async function scan(
         id: workflowRun.id,
         status: "interrupted",
         inventoryCount,
+        ...(site === 'zhaopin' ? { resumePhase: 'scanning' } : {}),
         metrics,
         errorCode: scanSummary?.fatalErrorCode || defaultStopCode || "SCAN_INCOMPLETE",
         errorMessage: scanSummary?.fatalErrorMessage || "scan did not complete all planned targets"
@@ -1671,7 +1689,7 @@ async function resumeWorkflowAnalysisOnly(db, {
   const batchId = Number(workflowRun.scanBatchId || 0);
   const batch = batchId ? getBatch(db, batchId) : null;
   if (!batch
-    || batch.site !== "boss"
+    || batch.site !== (workflowRun.site || "boss")
     || Number(batch.searchPlanId || 0) !== Number(planRecord?.id || 0)
     || Number(batch.profileId || 0) !== Number(workflowRun.profileId)) {
     throw codedError(
@@ -2078,6 +2096,7 @@ function resolveScanTerminalStatus({ targetSummary = null, scanSummary = null } 
 
 function scanFailureStatus(error) {
   const code = String(error?.code || "");
+  if (code.startsWith('ZHAOPIN_')) return 'interrupted';
   return new Set([
     "SCAN_LEASE_LOST",
     "SCAN_ABORTED",
@@ -2105,7 +2124,7 @@ function persistBossRiskControl(db, {
   nowMs,
   accessLedgerDb = db
 } = {}) {
-  if (!isBossRiskControl(error)) return false;
+  if (!isBossRiskControl(error) && !(site === 'zhaopin' && error?.code === 'ZHAOPIN_RISK_CONTROL')) return false;
   const riskWindow = resolveBossRiskWindow({ nowMs, requestedBlockedUntil: error?.blockedUntil });
   const observedLocation = safeBossRiskLocation(error?.observedLocation);
   const details = {
@@ -2160,6 +2179,9 @@ function prepareWorkflowExecution(db, args, planId) {
   if (!workflowRunId) return null;
   const run = getWorkflowRun(db, workflowRunId);
   if (!run) throw codedError("WORKFLOW_RUN_NOT_FOUND", `Workflow run ${workflowRunId} does not exist.`);
+  if (String(args.site || "boss") !== (run.site || "boss") || (run.planner?.site && run.planner.site !== run.site)) {
+    throw codedError("WORKFLOW_SITE_MISMATCH", "扫描来源与本轮冻结的平台不一致。");
+  }
   if (!planId || run.planId !== Number(planId)) {
     throw codedError("WORKFLOW_PLAN_MISMATCH", "Workflow run belongs to another search plan.");
   }
@@ -2183,6 +2205,9 @@ function resolveWorkflowScanContext(db, args, planRecord) {
   if (!workflowRunId) return null;
   const run = getWorkflowRun(db, workflowRunId);
   if (!run) throw codedError("WORKFLOW_RUN_NOT_FOUND", `Workflow run ${workflowRunId} does not exist.`);
+  if (String(args.site || 'boss') !== (run.site || 'boss') || (run.planner?.site && run.planner.site !== run.site)) {
+    throw codedError('WORKFLOW_SITE_MISMATCH', '扫描来源与本轮冻结的平台不一致。');
+  }
   if (!planRecord || run.planId !== Number(planRecord.id) || run.profileId !== Number(planRecord.profileId)) {
     throw codedError("WORKFLOW_PLAN_MISMATCH", "Workflow run does not match the selected search plan and profile.");
   }
@@ -2273,7 +2298,8 @@ function workflowAccessUsage(db, scanRunId) {
   const normalizedRunId = String(scanRunId || "").trim();
   if (!normalizedRunId) return null;
   const usage = { details: 0, pages: 0, scrolls: 0 };
-  for (const event of listSiteAccessEvents(db, { site: "boss", limit: 10000 })) {
+  const site = getScanRun(db, normalizedRunId)?.site || "boss";
+  for (const event of listSiteAccessEvents(db, { site, limit: 10000 })) {
     if (String(event.details?.runId || "") !== normalizedRunId) continue;
     if (isBossDetailAccessAction(event.action)) usage.details += 1;
     if (event.action === "list_navigation") usage.pages += 1;
@@ -2293,6 +2319,7 @@ function persistDetailOutcome(db, { site, runId = "", batchId, result = {} } = {
     runId,
     details: {
       batchId: Number(batchId),
+      ...(site === 'zhaopin' ? { reused: result.reused === true } : {}),
       outcome: succeeded ? "succeeded" : "failed",
       errorCode: succeeded ? "" : String(result?.errorCode || "BOSS_DETAIL_LOAD_TIMEOUT"),
       accessMode
@@ -2631,11 +2658,6 @@ function createBrowser(args) {
     });
   }
   return null;
-}
-
-function createSiteAdapter(site, context) {
-  if (site === "boss") return new BossSiteAdapter(context);
-  throw new Error(`当前版本尚未接入 ${site}。请先选择 BOSS 直聘。`);
 }
 
 function offlineMockModelConfig() {

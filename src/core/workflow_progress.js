@@ -37,7 +37,7 @@ function getWorkflowProgressSnapshot(db, {
   const id = String(workflowRunId || "").trim();
   if (!id) return null;
   const workflow = db.prepare(`
-    SELECT id, status, control_state, resume_phase,
+    SELECT id, site, status, control_state, resume_phase,
       circuit_timeout_job_count, lifetime_timeout_job_count,
       progress_revision, last_activity_at, model_config_revision,
       planner_json, metrics_json, platform_access_started_at,
@@ -154,7 +154,7 @@ function getWorkflowProgressSnapshot(db, {
       progressRevision: Number(workflow.progress_revision || 0)
     },
     progress: {
-      stage: WORKFLOW_STAGES[stageIndex - 1],
+      stage: workflow.site === 'zhaopin' && stageIndex === 4 ? '查看只读结果' : WORKFLOW_STAGES[stageIndex - 1],
       stageIndex,
       stageCount: WORKFLOW_STAGES.length,
       phaseKey,
@@ -192,7 +192,7 @@ function getWorkflowProgressSnapshot(db, {
       },
       communication,
       tracks,
-      remainingWorkLabel: workflowRemainingWorkLabel(status, {
+      remainingWorkLabel: workflowRemainingWorkLabel(workflow.site === 'zhaopin' && ['paused', 'interrupted'].includes(status) ? workflow.resume_phase || status : status, {
         scanTargets,
         details,
         analysis: counts,

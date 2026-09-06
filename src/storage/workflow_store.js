@@ -312,9 +312,10 @@ function attachWorkflowScan(db, input = {}) {
         throw workflowRunError("WORKFLOW_SCAN_LINK_MISMATCH", "workflow run is already attached to another active scan");
       }
     }
-    const scan = db.prepare("SELECT plan_id, batch_id, status FROM scan_runs WHERE id = ?").get(scanRunId);
-    const batch = db.prepare("SELECT search_plan_id FROM batches WHERE id = ?").get(scanBatchId);
+    const scan = db.prepare("SELECT plan_id, batch_id, site, status FROM scan_runs WHERE id = ?").get(scanRunId);
+    const batch = db.prepare("SELECT search_plan_id, site FROM batches WHERE id = ?").get(scanBatchId);
     if (!scan || !batch || Number(scan.plan_id || 0) !== run.planId || Number(batch.search_plan_id || 0) !== run.planId
+      || scan.site !== run.site || batch.site !== run.site
       || scan.status !== "running" || (scan.batch_id && Number(scan.batch_id) !== scanBatchId)) {
       throw workflowRunError("WORKFLOW_SCAN_LINK_MISMATCH", "scan run or batch does not belong to this workflow plan");
     }
@@ -355,8 +356,8 @@ function attachWorkflowScanRun(db, input = {}) {
         throw workflowRunError("WORKFLOW_SCAN_LINK_MISMATCH", "workflow run is already attached to another active scan");
       }
     }
-    const scan = db.prepare("SELECT plan_id, status FROM scan_runs WHERE id = ?").get(scanRunId);
-    if (!scan || Number(scan.plan_id || 0) !== run.planId || scan.status !== "running") {
+    const scan = db.prepare("SELECT plan_id, site, status FROM scan_runs WHERE id = ?").get(scanRunId);
+    if (!scan || Number(scan.plan_id || 0) !== run.planId || scan.site !== run.site || scan.status !== "running") {
       throw workflowRunError("WORKFLOW_SCAN_LINK_MISMATCH", "scan run does not belong to this workflow plan");
     }
     db.prepare("UPDATE workflow_runs SET scan_run_id = ?, updated_at = ? WHERE id = ?")
@@ -743,7 +744,7 @@ function replaceWorkflowScanContext(db, input = {}) {
     if (countWorkflowJobTasks(db, id) > 0) {
       throw workflowRunError("WORKFLOW_SCAN_CONTEXT_ANALYSIS_EXISTS", "workflow analysis tasks already exist");
     }
-    const activeLease = db.prepare("SELECT expires_at FROM site_scan_leases WHERE site = 'boss'").get();
+    const activeLease = db.prepare("SELECT expires_at FROM site_scan_leases WHERE site IN ('boss', 'zhaopin') ORDER BY expires_at DESC LIMIT 1").get();
     const checkedAt = nowIso();
     const replacedAt = String(input.replacedAt || checkedAt);
     if (activeLease && Date.parse(activeLease.expires_at) > Date.parse(checkedAt)) {
