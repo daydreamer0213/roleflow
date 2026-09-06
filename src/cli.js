@@ -858,6 +858,7 @@ async function scan(
     runtimePlanRecord = { ...planRecord, plan: workflowRun.planner.planSnapshot };
   }
   const runtimePlan = runtimePlanRecord?.plan || {};
+  const site = String(workflowRun?.site || args.site || runtimePlan?.platform?.site || "boss").trim().toLowerCase();
   const workflowAcquisitionMode = workflowRun
     ? String(workflowRun.planner?.acquisitionMode || "").trim()
     : "";
@@ -876,6 +877,7 @@ async function scan(
     || resumeValidation?.acquisitionMode
     || (runtimePlanRecord ? acquisitionModeOf(runtimePlan) : "")
     || (args.input ? "generated" : "");
+  if (site === 'zhaopin') acquisitionMode = 'inherited';
   if (runtimePlanRecord) {
     if (!historicalGeneratedExecution) {
       assertSearchPlanReady(
@@ -897,10 +899,12 @@ async function scan(
       matchingContext.candidateProfile,
       runtimePlan,
       listMatchingResumeVersions(db, runtimePlanRecord.profileId),
-      matchingContext.matchingCard
+      matchingContext.matchingCard,
+      { site, acquisitionMode }
     );
   }
   if (analysisOnly) {
+    if (workflowRun?.planner?.platformPolicy) configs = applyPlatformRuntimePolicy(configs, workflowRun.planner.platformPolicy, { acquisitionMode });
     return resumeWorkflowAnalysisOnly(db, {
       workflowRun,
       planRecord: runtimePlanRecord,
@@ -967,7 +971,6 @@ async function scan(
   const source = `${planned.source}:${scanMode}`;
   if (!keywords.length) throw new Error(`Search Plan has no keywords for ${scanMode} scan mode.`);
   const analysisConcurrency = resolveAnalysisConcurrency(args, primaryState.concurrency);
-  const site = String(args.site || runtimePlan?.platform?.site || "boss").trim().toLowerCase();
   const resumeBatchId = resumeValidation?.resumeBatchId
     || parseOptionalPositiveIntegerArg(args, "resume-batch");
   if (resumeBatchId && args.input) throw codedError("SCAN_RESUME_INPUT_UNSUPPORTED", "JSON 输入扫描不能恢复浏览器批次。");

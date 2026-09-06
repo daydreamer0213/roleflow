@@ -92,6 +92,17 @@ try {
   assert.equal(stored.company, "发布方");
   assert.equal(stored.clientCompany, "客户公司");
   assert.equal(getWorkflowObservationJob(db, stored.observationId).clientCompany, "客户公司");
+  const { profileToRuntimeConfigs } = require('../src/core/search_plan');
+  const hostilePlan = { acquisitionMode: 'generated', platform: { site: 'boss', generated: { cities: ['北京'], experience: ['3-5年（可冲）'], jobTypes: ['实习'] } }, directions: ['AI应用开发'], keywords: ['AI应用'], allowExperienceStretch: false };
+  const candidate = { candidate: { city: '广州', targetTitles: ['AI应用开发'] }, skills: [], projects: [] };
+  const runtime = profileToRuntimeConfigs(require('../src/config').loadConfigs(require('node:path').resolve(__dirname, '..')), candidate, hostilePlan);
+  const bossBatch = createBatch(db, 'boss', 'AI应用', 'mixed-rescore', { profileId: saved.profileId, searchPlanId: saved.planId });
+  upsertJob(db, { ...stored, id: undefined, source: 'boss', sourceId: 'BOSS-GENERATED', experience: '经验不限', title: 'AI应用开发 全职', location: '广州' }, bossBatch);
+  require('../src/storage/job_store').rescorePlanObservations(db, { planId: saved.planId, configs: runtime });
+  const rescored = listReportJobs(db, { batchId })[0];
+  assert.equal(rescored.qualityTags.includes('location_mismatch'), false, 'mixed rescore must not apply generated BOSS Beijing to ZL Guangzhou');
+  assert.equal(rescored.qualityTags.includes('experience_out_of_scope'), false);
+  assert.equal(listReportJobs(db, { batchId: bossBatch })[0].qualityTags.includes('location_mismatch'), true, 'BOSS still honors its generated plan');
   createWorkflowRun(db, { id: "zhaopin-analysis", profileId: saved.profileId, planId: saved.planId, localDay: "2026-09-06", sequence: 1, site: "zhaopin" });
   transitionWorkflowRun(db, { id: "zhaopin-analysis", status: "scanning" });
   transitionWorkflowRun(db, { id: "zhaopin-analysis", status: "analyzing" });

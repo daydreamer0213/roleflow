@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const { buildScanCliArgs } = require('../src/core/scan_execution');
 const { planWorkflowRun } = require('../src/core/workflow_run');
-const { ZhaopinSiteAdapter } = require('../src/adapters/sites/zhaopin');
+const { ZhaopinSiteAdapter, resolveZhaopinSearchTab } = require('../src/adapters/sites/zhaopin');
 const storage = require('../src/core/storage');
 const { canonicalizeZhaopinSearchTemplate } = require('../src/core/zhaopin_search_scope');
 const { buildWorkflowDashboardState, startPlanScan, resolveLiveAcquisitionContext } = require('../src/dashboard/server');
@@ -18,19 +18,21 @@ const { createSiteAccessController } = require('../src/core/site_access_budget')
 const fs = require('node:fs');
 const path = require('node:path');
 
-function fakeBrowser({ terminal = true } = {}) {
+function fakeBrowser({ terminal = true, loadingOnSwitch = false } = {}) {
   let url = 'https://www.zhaopin.com/jobs/?pageMode=search&jl=548&kw=AI';
   let selectedIndex = 0;
+  let windowId = 1;
   const overrides = {};
   const cards = [0, 1, 2].map(index => ({ index, signature: `card-${index}`, title: `岗位${index}`, company: '公司', salary: '10-20K', location: '广州' }));
   return {
     setState(value) { Object.assign(overrides, value); },
-    async listTabs() { return [{ id: 'cdp-zl', url, active: false }]; },
+    moveToWindow(value) { windowId = value; },
+    async listTabs() { return [{ id: 'dashboard', windowId: 1, url: 'http://127.0.0.1/plan', active: true }, { id: 'cdp-zl', windowId, url, active: false }]; },
     async navigate(id, target) { assert.equal(id, 'cdp-zl'); url = target; selectedIndex = 0; },
     async evalValue(id, expression) {
       assert.equal(id, 'cdp-zl');
       if (expression.includes('const clean =')) return true;
-      if (expression.includes('__zhaopinActivateCard(')) { selectedIndex = Number(expression.match(/ActivateCard\((\d+)/)[1]); return { ready: true }; }
+      if (expression.includes('__zhaopinActivateCard(')) { selectedIndex = Number(expression.match(/ActivateCard\((\d+)/)[1]); if (loadingOnSwitch) overrides.loading = true; return { ready: true }; }
       if (expression.includes('__zhaopinScrollResults')) return true;
       return { url, keyword: new URL(url).searchParams.get('kw'), filterSummary: ['广东'], cards, selectedIndex, loading: false, risk: false, loginRequired: false, isSearchPage: true, confirmedEnd: terminal,
         detail: { ...cards[selectedIndex], description: '完整岗位职责与任职要求。'.repeat(20), url: `https://www.zhaopin.com/jobdetail/SYNTH${selectedIndex}.htm` }, ...overrides };
@@ -51,6 +53,12 @@ async function main() {
   restoring.setState({ filterSummary: ['默认占位'] });
   const readyAdapter = new ZhaopinSiteAdapter({ browser: restoring, sleepFn: async () => restoring.setState({ filterSummary: ['广东'] }) });
   assert.equal((await readyAdapter.waitForSearchReady('cdp-zl', { searchTemplate: canonicalizeZhaopinSearchTemplate('https://www.zhaopin.com/jobs/?pageMode=search&jl=548'), keyword: 'AI', filterSummary: ['广东'] })).filterSummary[0], '广东', 'restoration must wait out transient placeholder filters');
+  for (const windowId of [2, undefined, null, '']) {
+    const wrongWindow = fakeBrowser();
+    wrongWindow.moveToWindow(windowId);
+    await assert.rejects(() => resolveZhaopinSearchTab(wrongWindow), error => error.code === 'ZHAOPIN_WINDOW_MISMATCH');
+    await assert.rejects(() => new ZhaopinSiteAdapter({ browser: wrongWindow }).preflight({ tabId: 'cdp-zl' }), error => error.code === 'ZHAOPIN_WINDOW_MISMATCH');
+  }
   const db = storage.openDb(':memory:');
   try {
     const batch = storage.createBatch(db, 'zhaopin', 'AI', 'synthetic');
@@ -99,6 +107,29 @@ async function main() {
     const incomplete = fakeBrowser();
     incomplete.setState({ detail: { title: '岗位0', company: '公司', salary: '10-20K', location: '广州', description: '短描述', url: 'https://www.zhaopin.com/jobdetail/SYNTH0.htm' } });
     await assert.rejects(() => new ZhaopinSiteAdapter({ browser: incomplete, sleepFn: async () => {}, randomFn: () => 0 }).scan({ ...opts }), error => error.code === 'ZHAOPIN_DETAIL_INCOMPLETE');
+    const loadingBatch = storage.createBatch(db, 'zhaopin', 'AI', 'loading-timeout');
+    const loadingTargets = [], loadingTerminal = [];
+    const loadingBridge = fakeBrowser({ loadingOnSwitch: true });
+    let waits = 0;
+    await assert.rejects(() => new ZhaopinSiteAdapter({ browser: loadingBridge, sleepFn: async () => { waits++; }, randomFn: () => 0 }).scan({ ...opts, maxDetailTotal: 3,
+      onDetailCheckpoint: ({ job }) => storage.upsertJob(db, job, loadingBatch), onTargetComplete: target => loadingTargets.push(target), onScanComplete: result => loadingTerminal.push(result)
+    }), error => error.code === 'ZHAOPIN_DETAIL_IDENTITY_UNCONFIRMED');
+    assert.deepEqual(storage.listReportJobs(db, { batchId: loadingBatch }).map(job => job.sourceId), ['SYNTH0'], 'new ID must not adopt a still-loading old complete body');
+    assert.equal(loadingTargets[0].status, 'partial');
+    assert.equal(loadingTerminal[0].status, 'partial');
+    assert(waits < 100, 'detail readiness wait is bounded');
+    const loadingStop = new AbortController();
+    const stopBridge = fakeBrowser({ loadingOnSwitch: true });
+    const stopAdapter = new ZhaopinSiteAdapter({ browser: stopBridge, sleepFn: async () => loadingStop.abort() });
+    const stopState = await stopAdapter.readSearchState('cdp-zl');
+    await assert.rejects(() => stopAdapter.readVisiblePaneDetail('cdp-zl', stopState.cards[1], loadingStop.signal), error => error.code === 'ZHAOPIN_ABORTED');
+    const moved = fakeBrowser(), movedTargets = [];
+    const movedBatch = storage.createBatch(db, 'zhaopin', 'AI', 'window-moved');
+    await assert.rejects(() => new ZhaopinSiteAdapter({ browser: moved, sleepFn: async () => {}, randomFn: () => 0 }).scan({ ...opts, maxDetailTotal: 3,
+      onDetailCheckpoint: ({ job }) => { storage.upsertJob(db, job, movedBatch); moved.moveToWindow(2); }, onTargetComplete: target => movedTargets.push(target)
+    }), error => error.code === 'ZHAOPIN_WINDOW_MISMATCH');
+    assert.deepEqual(storage.listReportJobs(db, { batchId: movedBatch }).map(job => job.sourceId), ['SYNTH0']);
+    assert.equal(movedTargets[0].status, 'partial', 'moving windows preserves the checkpoint and unfinished target');
   } finally { db.close(); }
   const flowDb = storage.openDb(':memory:');
   try {
@@ -176,8 +207,10 @@ async function durableResume() {
     const saved = storage.saveProfileAnalysis(db, { profile: { candidate: { name: '恢复合成候选人', city: '广州', targetTitles: ['AI应用开发'] } }, document: { originalFileName: 'fixture.txt', format: 'text', contentHash: 'synthetic-resume', text: '合成简历', diagnostics: {} }, searchPlan: { name: '恢复', cities: ['广州'], directions: ['AI应用开发'], keywords: [{ word: 'AI', priority: 'A' }, { word: '工程', priority: 'A' }] } });
     const scope = buildInheritedSearchScope({ site: 'zhaopin', profileId: saved.profileId, rawUrl: 'https://www.zhaopin.com/jobs/?pageMode=search&jl=548' });
     const keywords = [{ word: 'AI', priority: 'A', maxCards: 3 }, { word: '工程', priority: 'A', maxCards: 3 }];
-    const snapshot = buildScanExecutionSnapshot({ ...scope, site: 'zhaopin', keywordPlan: keywords, limits: { maxCards: 3 } });
-    const workflow = storage.createWorkflowRun(db, { site: 'zhaopin', profileId: saved.profileId, planId: saved.planId, localDay: require('../src/core/workflow_run').chinaLocalDay(), sequence: 1, keywords, planner: { site: 'zhaopin', ...scope } });
+    const acquisition = { site: 'zhaopin', ...scope, acquisitionMode: 'inherited', browserMode: 'edge', cdpPort: null,
+      keywordSource: freezeKeywordSource({ planRecord: storage.getSearchPlan(db, saved.planId), matchingCardRevision: 'synthetic-matching' }), platformPolicy: compileZhaopinPlatformRuntimePolicy({ searchScope: scope.searchScope, filterSummary: ['广东'] }) };
+    const snapshot = buildScanExecutionSnapshot({ ...acquisition, keywordPlan: keywords, limits: { maxCards: 3 } });
+    const workflow = storage.createWorkflowRun(db, { site: 'zhaopin', profileId: saved.profileId, planId: saved.planId, localDay: require('../src/core/workflow_run').chinaLocalDay(), sequence: 1, keywords, planner: acquisition });
     storage.transitionWorkflowRun(db, { id: workflow.id, status: 'scanning' });
     storage.acquireSiteScanLease(db, { site: 'zhaopin', owner: 'first', planId: saved.planId, command: 'scan' });
     assert.throws(() => storage.acquireSiteScanLease(db, { site: 'boss', owner: 'competing', planId: saved.planId, command: 'scan' }), error => /LEASE|RUNNING/.test(error.code));
@@ -199,6 +232,26 @@ async function durableResume() {
     db = storage.openDb(filename);
     assert.equal(storage.listReportJobs(db, { batchId }).length, 1);
     assert.equal(storage.getWorkflowRun(db, workflow.id).planner.searchScope.templateUrl, scope.searchScope.templateUrl);
+    const movedBrowser = fakeBrowser();
+    movedBrowser.moveToWindow(2);
+    let spawnedWhileMoved = 0;
+    const resumeServer = require('../src/dashboard/server').createDashboardServer({ db, root: path.resolve(__dirname, '..'), dataRoot: dir, dbPath: filename,
+      browserAuthority: { browserMode: 'edge', cdpPort: null, profilePath: '' }, forceMock: true, allowOfflineMock: true,
+      logger: { info() {}, warn() {}, error() {}, requestId() { return 'moved-resume'; }, listRecent() { return []; } },
+      browserFactory: () => movedBrowser, spawnProcess: () => { spawnedWhileMoved++; throw new Error('cross-window resume issued a child'); }
+    });
+    try {
+      await new Promise(resolve => resumeServer.listen(0, '127.0.0.1', resolve));
+      for (const route of ['/api/workflow-control', '/api/workflow-run/resume']) {
+        const response = await fetch(`http://127.0.0.1:${resumeServer.address().port}${route}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ workflowRunId: workflow.id, action: 'resume' }), redirect: 'manual' });
+        const body = await response.text();
+        assert.equal(response.status, route === '/api/workflow-control' ? 409 : 400, body);
+        assert.match(body, /ZHAOPIN_WINDOW_MISMATCH/);
+        assert.equal(storage.getWorkflowRun(db, workflow.id).status, 'paused');
+        assert.equal(storage.listReportJobs(db, { batchId }).length, 1);
+      }
+      assert.equal(spawnedWhileMoved, 0, 'both scan-bearing HTTP resume paths stop before launching the next operation');
+    } finally { await new Promise(resolve => resumeServer.close(resolve)); }
     resumeWorkflowRun(db, { workflowRunId: workflow.id, now: new Date().toISOString() });
     for (const [owner, expectedJobs, expectedVisits] of [['second', 2, 2], ['third', 3, 3], ['fourth', 3, 3]]) {
       if (owner !== 'second') storage.transitionWorkflowRun(db, { id: workflow.id, status: 'scanning' });

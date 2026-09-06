@@ -263,11 +263,11 @@ class ZhaopinSiteAdapter {
       throwIfAborted(signal);
       await assertBindings(assertTabBindings);
       const state = await this.readSearchState(tabId);
-      if (state.selectedIndex === refreshedCard.index && (!state.loading || attempt > 0) && detailMatches(refreshedCard, state.detail)) {
+      if (state.selectedIndex === refreshedCard.index && !state.loading && detailMatches(refreshedCard, state.detail)) {
         if (!wasSelected && state.detail.url === beforeUrl) return null;
         const identity = safeIdentity(state.detail.url);
         if (!identity) return null;
-        return { ...state.detail, ...identity };
+        return { ...state.detail, company: state.detail.company || refreshedCard.company || '', ...identity };
       }
       if (attempt < 5) await this.waitWithChecks(signal, assertTabBindings);
     }
@@ -278,10 +278,12 @@ class ZhaopinSiteAdapter {
     if (!this.browser || typeof this.browser.listTabs !== "function" || typeof this.browser.evalValue !== "function") {
       throw zhaopinError("ZHAOPIN_BROWSER_REQUIRED", "智联只读预检需要 listTabs 和 evalValue 浏览器能力。");
     }
-    const tab = (await this.browser.listTabs()).find((item) => item.id === tabId);
+    const tabs = await this.browser.listTabs();
+    const tab = tabs.find((item) => item.id === tabId);
     if (!tab || !/^https:\/\/www\.zhaopin\.com\//i.test(String(tab.url || ""))) {
       throw zhaopinError("ZHAOPIN_TAB_BINDING_LOST", "智联标签页已丢失或不再属于当前会话。");
     }
+    assertZhaopinWorkspaceWindow(tabs, tab);
   }
 
   async reserveAccess(card) {
@@ -365,15 +367,32 @@ function searchStateMatches(state, template, keyword, filterSummary) {
 }
 
 async function resolveZhaopinSearchTab(browser, expectedTabId = null) {
-  const tabs = (await browser.listTabs()).filter(tab => {
+  const allTabs = await browser.listTabs();
+  const tabs = allTabs.filter(tab => {
     try { canonicalizeZhaopinSearchTemplate(tab.url); return true; } catch { return false; }
   });
   if (expectedTabId !== null) {
-    if (tabs.some(tab => tab.id === expectedTabId)) return expectedTabId;
+    const expected = tabs.find(tab => tab.id === expectedTabId);
+    if (expected) { assertZhaopinWorkspaceWindow(allTabs, expected); return expectedTabId; }
     throw zhaopinError('ZHAOPIN_TAB_BINDING_LOST', '本轮智联搜索标签页已丢失，请恢复后继续。');
   }
   if (tabs.length !== 1) throw zhaopinError('ZHAOPIN_SEARCH_TAB_REQUIRED', '请保留一个智联岗位搜索页并保存条件后开始。');
+  assertZhaopinWorkspaceWindow(allTabs, tabs[0]);
   return tabs[0].id;
 }
 
-module.exports = { ZhaopinSiteAdapter, ZHAOPIN_PAGE_HELPERS_EXPRESSION, resolveZhaopinSearchTab };
+function isZhaopinWorkspaceTab(tab) {
+  try {
+    const url = new URL(tab.url);
+    return ['127.0.0.1', 'localhost'].includes(url.hostname) && ['/', '/plan', '/workflow'].includes(url.pathname);
+  } catch { return false; }
+}
+
+function assertZhaopinWorkspaceWindow(tabs, search) {
+  if (!String(search?.windowId ?? '').trim()
+    || !tabs.some(tab => isZhaopinWorkspaceTab(tab) && tab.windowId === search.windowId)) {
+    throw zhaopinError('ZHAOPIN_WINDOW_MISMATCH', '无法确认智联搜索页与 RoleFlow 在同一窗口，请回到同窗今日任务页并检查浏览器窗口信息后重试。');
+  }
+}
+
+module.exports = { ZhaopinSiteAdapter, ZHAOPIN_PAGE_HELPERS_EXPRESSION, resolveZhaopinSearchTab, isZhaopinWorkspaceTab, assertZhaopinWorkspaceWindow };

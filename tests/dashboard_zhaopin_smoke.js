@@ -22,7 +22,7 @@ const syntheticAnalyzer = {
 
 function seed(db) {
   const profile = { candidate: { name: '合成候选人', city: '广州', targetTitles: ['AI工程师'] }, skills: [{ name: 'Python' }], projects: [] };
-  const saved = storage.saveProfileAnalysis(db, { profile, document: { originalFileName: 'synthetic.txt', format: 'text', contentHash: 'synthetic-dashboard', text: '合成 Python 项目经历', diagnostics: {} }, searchPlan: { name: '合成筛选方案', acquisitionMode: 'generated', cities: ['广州'], directions: ['AI应用开发'], keywords: [{ word: 'AI工程师', priority: 'A' }, { word: 'Python', priority: 'A' }], salary: {}, bossActiveDays: 3 } });
+  const saved = storage.saveProfileAnalysis(db, { profile, document: { originalFileName: 'synthetic.txt', format: 'text', contentHash: 'synthetic-dashboard', text: '合成 Python 项目经历', diagnostics: {} }, searchPlan: { name: '合成筛选方案', acquisitionMode: 'generated', platform: { site: 'boss', generated: { cities: ['北京'], experience: ['3-5年（可冲）'], jobTypes: ['实习'] } }, allowExperienceStretch: false, directions: ['AI应用开发'], keywords: [{ word: 'AI工程师', priority: 'A' }, { word: 'Python', priority: 'A' }], salary: {}, bossActiveDays: 3 } });
   const draft = storage.createMatchingCardDraft(db, { profileId: saved.profileId, profileVersionId: saved.profileVersionId, resumeDocumentId: saved.resumeDocumentId, resumeContentHash: 'synthetic-dashboard', card: matchingCardFromProfile(profile), source: 'migration' });
   storage.confirmMatchingCard(db, { profileId: saved.profileId, cardId: draft.id });
   return saved;
@@ -77,6 +77,9 @@ async function main() {
     bridge.tabs[1].windowId = 'another-window';
     response = await post('/api/platform-search/open', { planId: saved.planId, site: 'zhaopin' });
     assert.equal(response.status, 409, 'do not reuse another window identity');
+    response = await post('/api/platform-search/save', { planId: saved.planId, site: 'zhaopin' });
+    assert.equal(response.status, 409, 'save must verify workspace window before persisting conditions');
+    assert.equal(getPlatformSearchContext(db, { planId: saved.planId, site: 'zhaopin' }), null);
     bridge.tabs[1].windowId = 'window';
     bridge.tabs[1].url = 'https://www.zhaopin.com/jobs/?pageMode=search&jl=548';
     bridge.navigate = async (id, url) => { assert.equal(id, 'zl-search'); bridge.tabs[1].url = url; };
@@ -88,6 +91,12 @@ async function main() {
     assert.equal(response.status, 200, await response.text());
     assert.equal(getPlatformSearchContext(db, { planId: saved.planId, site: 'zhaopin' }).filterSummary[0], '广东');
     assert.deepEqual(storage.getSearchPlan(db, saved.planId).plan, bossBefore);
+    bridge.tabs[1].windowId = 'another-window';
+    response = await post('/api/workflow-run', { planId: saved.planId, site: 'zhaopin', confirmEarlyScan: '1' });
+    assert.equal(response.status, 400, 'start must reject a search outside the workspace window');
+    assert.match(await response.text(), /ZHAOPIN_WINDOW_MISMATCH/);
+    assert.equal(storage.listWorkflowRuns(db, { site: 'zhaopin', planId: saved.planId }).length, 0);
+    bridge.tabs[1].windowId = 'window';
     bridge.tabs[1].url += '&unknown=keep';
     response = await post('/api/platform-search/save', { planId: saved.planId, site: 'zhaopin' });
     assert.equal(response.status, 409, 'unknown native conditions must fail before storage');
@@ -192,6 +201,9 @@ async function journey() {
   // Existing dependency seams: real CLI, adapter and analysis executor with synthetic transport/model only.
   siteFactory.createSiteAdapter = (site, context) => originalSiteFactory(site, { ...context, sleepFn: async () => {}, randomFn: () => 0 });
   phases.runWorkflowAnalysisPhase = (database, input) => originalPhase(database, { ...input, createAnalyzeJob: (runtime, options) => {
+    assert.deepEqual(input.configs.profile.location.target_cities, ['广州'], 'normal and analysis-only CLI must derive inherited runtime before adding BOSS generated constraints');
+    assert.deepEqual(input.configs.targetPolicy.jobTypes, ['全职']);
+    assert.deepEqual(input.configs.scoring.experience.selected, []);
     const analyze = phases.createJobAnalysisRunner({ ...input.configs, model: runtime.modelConfig || input.configs.model }, input.keywordPlan, { db: database, logger: options.logger, errorMode: 'throw', analyzer: syntheticAnalyzer });
     return async (job, opts) => {
       analysisCalls++;
@@ -312,12 +324,14 @@ async function journey() {
     await new Promise(resolve => server.close(resolve)); server = null; db.close();
     db = storage.openDb(dbPath);
     base = await startServer();
+    bridge.tabs[1].windowId = 'another-window';
     await page.goto(`${base}/workflow?runId=${runId}`);
     await page.getByRole('button', { name: '继续本轮', exact: true }).click();
     await waitFor(() => storage.getWorkflowRun(db, runId).status === 'completed' || failures.length, 'resumed real CLI completes');
     await Promise.all([...pendingChildren]);
     assert.deepEqual(failures, []);
     assert.equal(storage.getWorkflowRun(db, runId).site, 'zhaopin');
+    bridge.tabs[1].windowId = 'window';
     const result = storage.listReportJobs(db, { batchId: storage.getWorkflowRun(db, runId).scanBatchId });
     assert.equal(result.length, 3); assert(result.every(job => job.analysis.semanticStatus === 'complete'));
     await page.reload(); await audit('completed');
@@ -344,6 +358,8 @@ async function journey() {
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, 'narrow sanity');
     assert.deepEqual(externalRequests, []);
     assert(calls.every(command => command[command.indexOf('--site') + 1] === 'zhaopin'));
+    assert(calls.some(command => !command.includes('--analysis-only')));
+    assert(calls.some(command => command.includes('--analysis-only')), 'restart must exercise actual analysis-only CLI');
     fs.writeFileSync(path.join(evidence, 'receipt.json'), JSON.stringify({ scope: 'real HTTP dashboard + temporary SQLite + real cli.scan and analysis executor; synthetic browser transport and offline mock only', runId, calls, resultCount: result.length, analysisCalls, failures, externalRequests, screenshots: fs.readdirSync(evidence).filter(name => name.endsWith('.png')), limitations: ['No real platform browser transport or account', 'No real model quality acceptance', 'Child spawn is an in-process test seam; service and database are reopened'] }, null, 2));
     console.log(`dashboard_zhaopin_smoke actual browser journey ok: ${evidence}`);
   } finally {

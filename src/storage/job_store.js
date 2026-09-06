@@ -10,6 +10,7 @@ const { buildAnalysisRevision, analysisStaleReasons } = require("../core/analysi
 const { decisionHardBlockers } = require("../core/model_contract");
 const { RECOMMENDATION_SCHEMA_VERSION, normalizeRecommendationTier } = require("../core/decision_policy");
 const { buildOutcomeAnalytics } = require("../core/outcome_analytics");
+const { profileToRuntimeConfigs } = require('../core/search_plan');
 
 const VALID_CANDIDATE_STATUSES = new Set(OUTCOME_STATUSES);
 
@@ -454,12 +455,15 @@ function rescorePlanObservations(db, { planId, configs }) {
         salary: metadata.salary, experience: metadata.experience, education: metadata.education, bossActiveText: row.boss_active_text || "",
         url: row.url || "", tags: parseJson(row.tags_json, []), description: row.description || "", ...storedDetailFlags(row)
       };
-      const rowConfigs = configs.platformPolicy?.site && configs.platformPolicy.site !== row.source
-        ? { ...configs, platformPolicy: {} }
+      const sourceConfigs = configs.candidateProfile && configs.searchPlan
+        ? profileToRuntimeConfigs(configs, configs.candidateProfile, configs.searchPlan, null, configs.matchingCard, { site: row.source })
         : configs;
+      const rowConfigs = configs.platformPolicy?.site && configs.platformPolicy.site !== row.source
+        ? { ...sourceConfigs, platformPolicy: {} }
+        : sourceConfigs;
       const scored = scoreJob(raw, rowConfigs);
       const previousAnalysis = parseJson(row.analysis_json, {});
-      const expectedRevision = buildAnalysisRevision(configs, sourceContentHash(raw));
+      const expectedRevision = buildAnalysisRevision(rowConfigs, sourceContentHash(raw));
       const staleReasons = analysisStaleReasons(previousAnalysis, expectedRevision);
       const modelBacked = ["complete", "partial"].includes(previousAnalysis.semanticStatus)
         || (!previousAnalysis.semanticStatus && !["rule-only", "rule-gate", "scan-checkpoint", "rule-fallback"].includes(previousAnalysis.provider));

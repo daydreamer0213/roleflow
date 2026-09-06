@@ -28,7 +28,7 @@ function localBrowser(page, url) {
     calls,
     async listTabs() {
       calls.push("listTabs");
-      return [{ id: "ZHAOPIN-SEARCH", url: page.url() || url, active: false, windowId: 1 }];
+      return [{ id: "dashboard", url: "http://127.0.0.1/plan", active: true, windowId: 1 }, { id: "ZHAOPIN-SEARCH", url: page.url() || url, active: false, windowId: 1 }];
     },
     async evalValue(tabId, expression) {
       calls.push({ type: "evalValue", tabId, expression });
@@ -96,9 +96,18 @@ async function main() {
     const second = await adapter.readVisiblePaneDetail("ZHAOPIN-SEARCH", state.cards[1]);
     assert.ok(second, "a selected card with matching visible detail must produce a job");
     assert.equal(second.sourceId, "CCSYNTH002J00000000002");
-    assert.equal(second.company, "");
+    assert.equal(second.company, "合成乙公司", "verified card publisher must survive client-company detail metadata");
     assert.equal(second.clientCompany, "合成客户公司");
     assert.equal(second.description, "职位描述：合成乙职责，要求独立完成可靠交付。");
+    const storage = require('../src/core/storage');
+    const db = storage.openDb(':memory:');
+    try {
+      const batchId = storage.createBatch(db, 'zhaopin', '合成关键词', 'reader-facts');
+      storage.upsertJob(db, second, batchId);
+      const facts = require('../src/core/job_analysis').jobFacts(storage.listReportJobs(db, { batchId })[0]);
+      assert.equal(facts.company, '合成乙公司');
+      assert.equal(facts.clientCompany, '合成客户公司');
+    } finally { db.close(); }
     assert.equal(bridge.calls.some((call) => call.type === "navigate"), false);
 
     const afterSwitch = await adapter.readSearchState("ZHAOPIN-SEARCH");

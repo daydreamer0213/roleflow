@@ -14,9 +14,9 @@ function cityToBossCode(city) {
   return CITY_CODES[String(city || "").trim()] || "";
 }
 
-function profileToRuntimeConfigs(configs, candidateProfile, searchPlan, resumeVersionsOverride = null, matchingCard = null) {
+function profileToRuntimeConfigs(configs, candidateProfile, searchPlan, resumeVersionsOverride = null, matchingCard = null, acquisition = {}) {
   const plan = searchPlan || {};
-  const acquisitionMode = acquisitionModeOf(plan);
+  const acquisitionMode = acquisition.site === 'zhaopin' ? 'inherited' : acquisition.acquisitionMode || acquisitionModeOf(plan);
   const generated = generatedPlatformOf(plan);
   const platformCities = acquisitionMode === "generated" ? generated.cities : [];
   const platformExperience = acquisitionMode === "generated" ? generated.experience : [];
@@ -48,6 +48,7 @@ function profileToRuntimeConfigs(configs, candidateProfile, searchPlan, resumeVe
   const selectedExperience = normalizeExperienceSelections(platformExperience);
   return {
     ...configs,
+    acquisitionMode,
     candidateProfile,
     searchPlan: plan,
     matchingCard: matchingCard || null,

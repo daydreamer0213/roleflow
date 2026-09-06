@@ -254,7 +254,7 @@ function seedJobs(database, batchId, { planId, profileId }) {
 function job(recommendation, keyword = "RAG 工程师", sourceSuffix = recommendation, recommendationSchemaVersion = 2) {
   const pending = recommendation === "analysis_pending";
   return {
-    source: "outcome-analytics-smoke",
+    source: "boss",
     sourceId: `${BAIT.jobOrSourceId}-${sourceSuffix}`,
     keyword,
     title: `${BAIT.title}-${recommendation}`,

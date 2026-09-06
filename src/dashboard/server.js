@@ -307,7 +307,7 @@ const { createMessageFollowUpService } = require("../application/message_follow_
 const { prepareInitialSearchPage } = require("../application/onboarding/initial_search_page");
 const { createModelAdapter } = require("../adapters/models");
 const boss = require("../adapters/sites/boss");
-const { ZhaopinSiteAdapter, resolveZhaopinSearchTab } = require('../adapters/sites/zhaopin');
+const { ZhaopinSiteAdapter, resolveZhaopinSearchTab, isZhaopinWorkspaceTab, assertZhaopinWorkspaceWindow } = require('../adapters/sites/zhaopin');
 const { canonicalizeZhaopinSearchTemplate, buildZhaopinSearchUrl } = require('../core/zhaopin_search_scope');
 const { compileZhaopinPlatformRuntimePolicy } = require('../core/platform_runtime_policy');
 const { getPlatformSearchContext, savePlatformSearchContext } = require('../storage/platform_search_context_store');
@@ -2760,16 +2760,14 @@ function requestedSite(value) {
 
 async function prepareZhaopinSearch({ db, plan, browser }) {
   const before = await browser.listTabs();
-  const dashboards = before.filter(tab => {
-    try { const url = new URL(tab.url); return ['127.0.0.1', 'localhost'].includes(url.hostname) && ['/plan', '/', '/workflow'].includes(url.pathname); } catch { return false; }
-  });
+  const dashboards = before.filter(isZhaopinWorkspaceTab);
   const searches = before.filter(tab => {
     try { const url = new URL(tab.url); return url.origin === 'https://www.zhaopin.com' && url.pathname === '/jobs/'; } catch { return false; }
   });
   if (searches.length > 1) throw appError('ZHAOPIN_SEARCH_TAB_REQUIRED', '存在多个智联搜索页，请保留一个后重试。', { statusCode: 409 });
   if (searches.length === 1) {
     const search = searches[0];
-    if (!dashboards.some(tab => tab.windowId === search.windowId)) throw appError('ZHAOPIN_WINDOW_MISMATCH', '智联搜索页与 RoleFlow 不在同一窗口，请检查固定工作区后重试。', { statusCode: 409 });
+    assertZhaopinWorkspaceWindow(before, search);
     const currentUrl = new URL(search.url);
     if (!currentUrl.searchParams.get('kw')?.trim()) {
       if (!currentUrl.searchParams.has('pageMode') || currentUrl.searchParams.get('pageMode') === 'recommend') currentUrl.searchParams.set('pageMode', 'search');
@@ -2785,6 +2783,7 @@ async function prepareZhaopinSearch({ db, plan, browser }) {
   }
   if (dashboards.length !== 1) throw appError('ZHAOPIN_OPENER_REQUIRED', '请在当前浏览器保留一个 RoleFlow 今日任务页，再准备智联搜索页。', { statusCode: 409 });
   const opener = dashboards[0];
+  assertZhaopinWorkspaceWindow(before, opener);
   const template = getPlatformSearchContext(db, { planId: plan.id, site: 'zhaopin' })?.searchTemplate || { url: 'https://www.zhaopin.com/jobs/?pageMode=search' };
   const url = buildZhaopinSearchUrl({ searchTemplate: template, keyword: planKeywords(plan.plan)[0] });
   const created = await browser.createTab(opener.id, url);
