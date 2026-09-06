@@ -6,7 +6,7 @@
 
 用户已批准 **智联只读找岗与完整 JD 分析首版**，在隔离分支 `codex/zhaopin-readonly` 推进：按轮次选平台 → 带关键词打开原生搜索 → 用户设置并保存筛选 → 后台读取完整岗位 → 复用现有分析 → 查看只读结果、继续下一轮。两个平台条件和轮次分别保存，共用浏览器执行互斥；智联不进入 BOSS 沟通或投递统计。
 
-当前仍在开发和分段复审，尚未完成运行链路、界面及最终验收，不能声称已经支持用户全流程使用。只读页面补证与实现边界见 `docs/superpowers/reports/2026-09-06-multi-platform-discovery-research.md`；设计和执行入口分别为 `docs/superpowers/specs/2026-09-06-zhaopin-readonly-design.md`、`docs/superpowers/plans/2026-09-06-zhaopin-readonly.md`。
+四段实现、全分支审查及修复复核已完成，最终功能代码为 `c27b2dfd2028427339af67c34a43b041ea524207`，该静态提交的严格完整检查 **149/149、退出码 0**。今日任务、平台条件、运行/恢复、来源结果/报告/CSV 和服务端只读边界均已接入；BOSS 条件串用、发布方缺失、加载中正文误读、同窗检查遗漏和普通页面切换误拦截均已修复并补回归。真实本地 Dashboard/CLI/临时数据库流程使用合成平台和分析器，已跑通开始、暂停、重开后继续和结果查看；不等于实站或真实模型验收。当前进入开发分支验收准备，不替换安装版。实现与最终复验记录见 `docs/superpowers/reports/2026-09-06-zhaopin-readonly-implementation.md`；只读页面补证见 `docs/superpowers/reports/2026-09-06-multi-platform-discovery-research.md`；设计和执行入口分别为 `docs/superpowers/specs/2026-09-06-zhaopin-readonly-design.md`、`docs/superpowers/plans/2026-09-06-zhaopin-readonly.md`。
 
 此后顺序是智联独立投递/消息/反馈，再评估 51job；尚未授权这些平台外部写。BOSS 既有流程与用户 v1.3.2 两轮人工验收并行保留，不以等待人工反馈阻塞隔离开发。当前没有推送、合并、打包、版本变更或发布授权。下方旧状态保留当时证据，不代表开发方向仍停留在历史发布收口。
 
