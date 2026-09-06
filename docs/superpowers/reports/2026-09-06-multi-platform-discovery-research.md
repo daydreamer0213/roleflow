@@ -272,3 +272,22 @@
 此前尝试用 CDP 鼠标移动显示薪资菜单时，`document.hasFocus()` 变为 true，而 visibility 仍为 hidden、活动标签编号未变。没有选择筛选，随即关闭自己创建的临时页。这不是已证明的操作系统前台抢占，但此鼠标路径不进入产品；之后的 DOM 选择与加载均未出现该变化。
 
 本节两个临时页已分别关闭并核对，原有三个用户页保留；收尾见 `zl-native-owned-tab.json`、`zl-inheritance-owned-tab.json`。没有读取真实消息内容、投递、发送、修改简历、访问 BOSS 或触碰用户运营数据库。新增证据仍是 DOM 和前后状态，不是带截图的实站端到端验收。
+
+## 12. 常用筛选与真实列表结束状态补证
+
+在后续同窗后台临时搜索页，保留已测薪资和学历，再从实际原生选项逐一选择：
+
+| 可见条件 | 实际新增参数 |
+| --- | --- |
+| 经验：1–3 年 | `we=0103` |
+| 公司性质：民营 | `ct=5` |
+| 公司人数：100–299 人 | `cs=3` |
+| 工作性质：全职 | `et=2` |
+
+随后仅将关键词由“AI应用工程师”改为“大模型应用工程师”，原 9 项筛选摘要完全保留；四次选择及换词后的页面均为 hidden、hasFocus=false，活动标签未变。本次仅验证这些实际参数和组合，不代表职位类别、行业与复杂区域条件也已验证。
+
+组合条件下当前列表为 11 条，实际 `.job-list-panel__status.job-list-panel__status--more` 明确显示“没有更多了”，稍后独立读取仍为同一状态。这为终止结构补上真实 DOM 证据；不是根据列表没增长推断结束，也没有逐条读取这 11 条详情或运行完整产品流程。首次新开页出现默认筛选占位文字，随后才显示保存条件，恢复时必须等待实际条件回读，不能以导航成功代替筛选恢复。
+
+临时页关闭后已再次查询标签列表，确认只保留原有三个用户页；原搜索地址、关键词和筛选摘要逐项未变。第一次关闭后的即时查询仍列出临时页，已保留该观察，后一次只读查询确认关闭，不重复发送关闭命令。没有点击投递、沟通、收藏或简历操作。
+
+证据均位于既有 D 盘证据目录：`zl-native-option-3.json` 至 `zl-native-option-6.json`、`zl-all-common-filters-preserved.json`、`zl-common-filters-terminal-confirmed.json`、`zl-more-filters-original-before.json` / `zl-more-filters-original-after.json`、`zl-more-filters-owned-tab.json`。以最后的 `closedVerified=true` 为收尾证据，不覆写即时查询中的失败观察。

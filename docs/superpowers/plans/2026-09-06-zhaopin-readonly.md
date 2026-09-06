@@ -48,7 +48,7 @@ $env:PATH='D:\hermes\node;'+$env:PATH
 - `readSearchState` 返回 `{url, keyword, filterSummary, cards, selectedIndex, detail, loading, risk, loginRequired}`；卡片只带局部定位所需字段，真实 sourceId 只从当前详情得到；`detail` 包含独立 title/salary/company/clientCompany/location/experience/education/description/url。
 - 浏览器传输仍仅依赖既有 `listTabs`、`evalValue`、`navigate`。原生 DOM helper 作为字符串导出，供本地浏览器执行 fixture 检查。
 
-- [ ] 写行为测试：异站/公司 URL 不能当岗位；同名不同编号独立；关键词只变 kw；完整详情不混入其他卡片或 HR 区域；未切换详情链接时不能返回新岗位；空标题/掉页/风险/取消明确停止，不激活前台。fixture 使用合成名称正文，结构取自已获 DOM。
+- [x] 写行为测试：异站/公司 URL 不能当岗位；同名不同编号独立；关键词只变 kw；完整详情不混入其他卡片或 HR 区域；未切换详情链接时不能返回新岗位；空标题/掉页/风险/取消明确停止，不激活前台。fixture 使用合成名称正文，结构取自已获 DOM。
 
 ```js
 assert.notStrictEqual(zhaopinJobIdentity('https://www.zhaopin.com/jobdetail/CC138117190J40877589505.htm').sourceId,
@@ -59,9 +59,9 @@ assert.equal(target.searchParams.get('jl'), '548');
 assert.equal(target.searchParams.get('kw'), 'AI 应用');
 ```
 
-- [ ] 执行 `node tests/zhaopin_readonly_smoke.js`，确认因缺少上述能力失败。
-- [ ] 实现最小读取与条件规范化；同名卡片按当前索引及完整卡片签名临时定位，点击前重新检查，点击后依照选中卡片、详情字段和新岗位链接判断结果；不得把临时索引写作 sourceId。
-- [ ] 执行新检查与 `source_acquisition_smoke.js`、`inherited_search_scope_smoke.js`，自审后提交 Task 1。
+- [x] 执行 `node tests/zhaopin_readonly_smoke.js`，确认因缺少上述能力失败。
+- [x] 实现最小读取与条件规范化；同名卡片按当前索引及完整卡片签名临时定位，点击前重新检查，点击后依照选中卡片、详情字段和新岗位链接判断结果；不得把临时索引写作 sourceId。
+- [x] 执行新检查与 `source_acquisition_smoke.js`、`inherited_search_scope_smoke.js`，自审后提交 Task 1。`d6b5beb` 实现、`a239abf` 修复额度检查顺序；独立任务审查与修复复审通过，不代表后续集成已完成。
 
 ### Task 2: 平台条件、薪资与分析隔离
 
@@ -80,6 +80,7 @@ assert.equal(target.searchParams.get('kw'), 'AI 应用');
 - 在既有 `acquireSiteScanLease` 的事务内检查 boss/zhaopin 的活动租约，再写实际 site 行；继续按 site+owner 续约/释放。该互斥保证同一运营数据库内的浏览器任务串行，不宣称能锁住独立数据库或人工操作。
 - 通用继承范围校验按显式 site 分派；无 site 的旧轮默认 BOSS。BOSS 规范化结果及历史快照哈希不变。
 - 智联 context 使用 `searchScope.site='zhaopin'`，来源、模板、关键词来源、筛选摘要和策略 hash 一起冻结；目标按已保存原生范围及关键词生成，不调用 BOSS 城市/薪资 lane 映射。
+- 后续最小实站补证确认 `we`、`ct`、`cs`、`et` 分别用于经验、公司性质、公司人数、工作性质，且组合换词保留；将其与已有 `jl/sl/el` 一起纳入严格模板与存储往返回归。证据见调研报告第 12 节；必要时修改 `src/core/zhaopin_search_scope.js` 的已证参数白名单。
 - 金额读取保留原文字；月薪千/万/元可用于比较，小时/天/年及遮蔽不误判为月薪。BOSS 活跃度约束只作用 BOSS；来源不改变匹配模型与二维表。
 - 发布方继续使用 `company`，客户公司单独使用可选 `clientCompany`；在岗位和观察记录增加必要字段，往返存储和分析事实均保留。客户公司变更参与新岗位内容 hash；没有该字段的旧 BOSS hash 保持不变。
 
@@ -107,9 +108,13 @@ assert.deepEqual(salaryRangeK('面议'), {min:null,max:null});
 
 **Interfaces:**
 - 智联 `scan(options)` 消费与现有扫描相同的关键词、预算、目标键、signal、绑定校验、逐岗位/逐目标/终态回调；返回统一岗位数组。分页/连续加载操作只使用补证后的真实 DOM。
+- 实证加载入口为 `document.scrollingElement` 页面滚动，加窗口 DOM `scroll` 事件；不用鼠标 CDP，不调用网站内部请求方法。20→40 证据为 `zl-scroll-event-after.json`。真实结束结构为 `.job-list-panel__status.job-list-panel__status--more` 文本“没有更多了”，已见 11 条结果并再次核对，证据 `zl-common-filters-terminal-confirmed.json`。
+- 新导航后可能先出现默认筛选占位标签，随后才恢复真实条件；以 URL、关键词、已保存筛选摘要实际就绪为准，不把首次占位快照视作用户改变条件。等待有上限，风险/掉页/取消不吞错。
+- “本轮目标完成”沿用现有 `card_limit_reached` / `confirmed_end` 含义：已达到冻结的每词岗位目标且这些岗位都已处理，或页面明确显示列表结束；不是读完平台所有岗位。访问额度、等待或滚动上限提前耗尽，且尚未达到该目标时必须保持 partial/pending，不将无增长当作已读尽。
 - `buildScanCliArgs` 增加 `site`，默认 boss，恢复时来源取自已冻结 workflow，不取当前 UI 选择。
 - `createSiteAdapter(site,context)` 仅支持 boss、zhaopin；未知站点报错。BOSS 沟通入口保持只创建 BOSS 适配器。
 - `planner.site` / `searchScope.site` 冻结本轮来源；扫描批次、运行和详情落库来源一致。使用同一浏览器任务互斥，访问账本按实际站点归属。
+- 所有用于规划当日轮次、成功数、关键词和预算的查询都显式限定实际站点（存储层无 site 查询返回全部来源）；以 BOSS 当日成功目标已达成仍能开始智联，以及智联轮次不占 BOSS 序号的交叉场景核验。
 - 智联分析后进入只读结果状态，允许结束/下一轮；BOSS `workflowEligibility` 不放宽，智联不以 BOSS 沟通库存决定是否扫描。
 - 恢复时 orphan scan 查询、批次归属与分析状态转换均使用冻结来源；智联分析完成的合法终态在存储与页面一起支持，不残留“继续沟通”要求。
 - 沿用现有访问控制器和节奏，不另造并发调度或忽略访问额度；实际事件使用 `site='zhaopin'`，动作前申请额度，等待后再次核对 signal、标签、搜索范围及岗位身份。
@@ -133,18 +138,26 @@ assert.equal(args[args.indexOf('--site')+1], 'zhaopin');
 **Files:**
 - Modify: `src/dashboard/server.js`、现有今日任务/结果渲染与脚本模块
 - Modify: `src/storage/communication_store.js` 的 `isCommunicationJobEligible`（实际公共批次资格需同时要求 BOSS 来源和 BOSS URL）
+- Modify: `src/storage/funnel_store.js` 的实际样本入账入口（避免只读来源经旧“已投”记录路径进入 BOSS 反馈样本）
 - Create: `tests/dashboard_zhaopin_smoke.js`
 - Modify: `docs/PROJECT_HANDOFF.md`, `docs/NEXT_PHASE.md`, 本计划
 
 **Interfaces:**
 - 今日任务平台选择控制本次打开/保存原生条件/开始请求，结果页来源筛选只过滤展示，不改岗位或历史统计。
+- 原生条件保存入口先用该平台的严格模板规范化和范围校验，再写 `savePlatformSearchContext`；拒绝来源/URL 不一致及未知条件，不能依赖存储层仅有的对象形状检查。
+- “本轮/最近一轮”结果选择也必须属于所选平台，不能先取另一平台最新批次再过滤成空列表；混合历史列表则保留各自来源。用两平台交错建批次的回归验证。
 - 智联工作区按需准备同窗后台搜索页；先使用已有匹配页，只有不存在时创建。首次 URL 带方案首个关键词，不强设示例地区。保留默认 portable 与显式 edge 两条传输，不自动切换登录身份。
 - 两种传输已有 `createTab(openerTabId,url)`，优先复用；保留 CDP 字符串 targetId 和 Edge 数字 tabId 的原始类型，并复核同窗与活动页不变，不通过默认活动标签决定扫描目标。
 - 未启用写能力的平台既无操作按钮，也由服务端拒绝进入 BOSS 批次；不靠隐藏按钮作为唯一保护。
+- 旧 `/api/mark` 的“已投”和 `/api/progress` 记录最终会调用 `ensureFunnelEntry`；验证智联不会通过这些旧本地状态路径进入漏斗样本。保留 BOSS 既有人工记录，不将只读分析记录当成已投递数据。
 - 今日任务的当前平台选择通过请求/页面状态保留；本轮运行仍使用冻结来源。智联只显示找岗相关的进度与动作，隐藏不适用的 BOSS 活跃度、生成模式和沟通指标，不重写这些旧方案值。
+- 岗位结果有客户公司时，用紧凑文字区分“用人公司 / 发布方”，岗位机会描述优先基于已给出的客户公司，不能将外包招聘发布方当成实际用人公司；无客户公司时沿用原有显示。
 
 - [ ] 写 HTTP/本地浏览器失败检查：BOSS 默认为旧路径；选择智联打开带词页；保存和刷新后条件保留；启动请求携带来源；结果可见来源；无智联发送按钮；伪造批次请求被拒绝。
 - [ ] 沿用现有视觉样式和原生 select，不重做布局、不增加大面积说明；新增错误显示发生位置及下一操作，不只显示编号。
 - [ ] 本地页面完成一次合成数据完整流程与暂停恢复验证，检查桌面无溢出/页面错误/外部请求；记录真实平台未验收项。
+
+本地用户验收至少覆盖：旧 BOSS 打开仍为原路径；智联首次选平台并准备带词页；保存条件刷新后仍在智联且不改 BOSS；本轮运行时切换页面选择不改变冻结来源；暂停/重启后继续智联并保留已分析岗位；两平台交错批次的最近结果、来源筛选、客户公司显示和无发送动作。HTTP 检查走真实 Dashboard 服务和临时数据库；页面操作复用本机 headless Edge，不将手工拼出的 HTML 当成完整流程。真实平台传输和真实模型效果单列未验证。
+
 - [ ] 运行新鲜完整 `npm test`、危险夹具扫描、`git diff --check`；审查整个分支并修复当前可达问题。
 - [ ] 提交功能与最终文档，精确最终 SHA 再跑风险相关回归，交付分支和验证结果。不上线、不发布，后续由用户验收页面并单独授权集成。
