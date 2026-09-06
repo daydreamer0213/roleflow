@@ -125,7 +125,7 @@ assert.deepEqual(salaryRangeK('面议'), {min:null,max:null});
 - 现有 `listReportJobs` / `listDecisionPool` 增加可选严格 `site` SQL 筛选，先筛来源再 LIMIT；未传时保留旧混合来源查询。规划只传实际来源，智联关键词不使用 BOSS 沟通资格的产出率。
 
 - [x] 在最小后台实站补证搜索结果加载机制和非默认筛选后，保存脱敏结构证据；未证实的路径不能靠猜测上线。实证和关闭临时页回执见调研报告第 11–12 节，不等于真实产品全流程验收。
-- [ ] 写失败检查：冻结智联来源传到 CLI；同编号跨来源不串数据；逐岗结果先落库；暂停/结束/风险不再读下一岗；恢复保留原范围；未读尽/预算耗尽标部分完成而非全部完成；并发浏览器任务被拒绝。
+- [x] 写失败检查：冻结智联来源传到 CLI；同编号跨来源不串数据；逐岗结果先落库；暂停/结束/风险不再读下一岗；恢复保留原范围；未读尽/预算耗尽标部分完成而非全部完成；并发浏览器任务被拒绝。
 
 ```js
 const args=buildScanCliArgs({site:'zhaopin',kind:'daily',dbPath:'fixture.sqlite',planId:1,browserMode:'edge',runId:'fixture'});
@@ -134,8 +134,8 @@ assert.equal(args[args.indexOf('--site')+1], 'zhaopin');
 // 断言两来源岗位各自存在、已读岗位不丢、未执行目标仍待继续、沟通批次为 0。
 ```
 
-- [ ] 实现最小接入，不复制整个工作流；每次页面动作前核对停止/身份，动作后核对真实结果；已保存条件无法恢复时给出具体重设提示。
-- [ ] 新检查与 workflow_end_to_end、workflow_control、workflow_recovery、scan_end_to_end_recovery、communication_cli_authority 回归通过；审查后提交 Task 3。
+- [x] 实现最小接入，不复制整个工作流；每次页面动作前核对停止/身份，动作后核对真实结果；已保存条件无法恢复时给出具体重设提示。
+- [x] 新检查与 workflow_end_to_end、workflow_control、workflow_recovery、scan_end_to_end_recovery、communication_cli_authority 回归通过；Task 3 提交 `9048a7c`，跨轮节奏修复 `d97f4f0`，独立修复复审通过。
 
 ### Task 4: 今日任务入口、来源结果与无写能力边界
 
