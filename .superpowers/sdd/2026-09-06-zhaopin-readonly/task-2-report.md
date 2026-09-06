@@ -16,6 +16,14 @@ Red checks observed before the matching implementation:
 4. `tests/platform_search_context_smoke.js` then failed because `listWorkflowRuns(..., {site:'zhaopin'})` still returned the BOSS row.
 5. The migration regression initially failed on the expected v29 migration record; after updating that expectation it exposed a real FK failure during the old workflow-table rebuild. The migration now stages workflow task/attempt children, rebuilds the parent, restores children and indexes, and the migration smoke passes.
 
+Review fix round 1 baseline red (recorded before the salary parser change):
+
+1. `salaryRangeK('20-30万/年')` returned `{min:200,max:300}` instead of non-monthly nulls.
+2. `salaryRangeK('150-200元/时')` returned `{min:0.15,max:0.2}` instead of non-monthly nulls.
+3. `salaryRangeK('1万-1.5万/月')` returned `{min:10,max:10}` because it fell back to the first amount instead of parsing the duplicated-unit range. Masked ranges such as `10K-**K` and `**-15K` likewise fell back to a single value.
+
+Round 1 green evidence: `tests/zhaopin_analysis_smoke.js` now checks those cases, both masked ranges, the `小时` spelling, and the unchanged `1.5-1.6万·13薪` / `10-20K·13薪` cases. `tests/storage_migration_smoke.js` now builds an actual synthetic v28 parent schema with nonempty workflow-run, workflow-task, and analysis-attempt rows; it compares each row after v29 migration and asserts `PRAGMA foreign_key_check` is empty.
+
 Fresh green command (Node runtime and Playwright requirement supplied by the task):
 
 ```powershell
@@ -36,7 +44,7 @@ Output: all ten checks printed `... ok`; exit code 0. Node emitted only its exis
 - 智联 frozen runtime policy comes from `compileZhaopinPlatformRuntimePolicy({searchScope, filterSummary=[]})`. It preserves observed native values (`jl/sl/el/we/ct/cs/et`) as native codes, does not create BOSS city or salary-lane mappings, and keeps `location.cities` empty.
 - 智联 scan targets use the common target shape with `laneId: 'native'`; no BOSS target builder or city mapping is used.
 - Added observed parameters `we`, `ct`, `cs`, and `et` to the safe 智联 template allowlist; unknown parameters are still rejected.
-- `salaryRangeK` now compares monthly Chinese 万/千/元 values, preserves raw salary text, and rejects hourly/day/year/negotiated values as non-monthly.
+- `salaryRangeK` first classifies an explicit pay period, preserves raw salary text, rejects hourly/day/year/negotiated values as non-monthly, and parses both endpoints (including duplicated units) for monthly Chinese 万/千/元 ranges.
 - BOSS activity scoring only applies to BOSS (including missing-source legacy semantics), not 智联.
 - `clientCompany` is stored in jobs and observations, returned in reports and workflow analysis facts, and changes the content hash only when non-empty. Empty/missing legacy BOSS values preserve both hash and model-input JSON shape.
 

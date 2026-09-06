@@ -3,15 +3,18 @@ const { evaluateJobEligibility } = require("./job_eligibility");
 
 function salaryRangeK(salary) {
   const text = String(salary || "").trim();
-  if (!text || /面议|保密|元\s*\/(?:小时|天|日)|(?:小时|天|日)\s*薪|年薪/.test(text)) return { min: null, max: null };
-  const range = text.match(/(\d+(?:\.\d+)?)\s*[-~—至]\s*(\d+(?:\.\d+)?)\s*(万|千|元|k)/i);
+  const period = text.match(/\/\s*(年|月|日|天|时|小时)/)?.[1];
+  if (!text || /面议|保密|年薪|时薪|日薪/.test(text) || (period && period !== "月")) return { min: null, max: null };
+  const range = text.match(/(\d+(?:\.\d+)?)\s*(万|千|元|k)?\s*[-~—至]\s*(\d+(?:\.\d+)?)\s*(万|千|元|k)?/i);
+  if (!range && /[-~—至]/.test(text)) return { min: null, max: null };
   const single = text.match(/(\d+(?:\.\d+)?)\s*(万|千|元|k)/i);
-  const match = range || single;
-  if (!match) return { min: null, max: null };
-  const unit = (range ? range[3] : single[2]).toLowerCase();
-  const multiplier = { "万": 10, "千": 1, "元": 0.001, k: 1 }[unit];
-  const min = Number(match[1]) * multiplier;
-  const max = Number(range ? match[2] : match[1]) * multiplier;
+  const values = range
+    ? { min: range[1], minUnit: range[2] || range[4], max: range[3], maxUnit: range[4] || range[2] }
+    : single ? { min: single[1], minUnit: single[2], max: single[1], maxUnit: single[2] } : null;
+  if (!values?.minUnit || !values.maxUnit) return { min: null, max: null };
+  const multiplier = { "万": 10, "千": 1, "元": 0.001, k: 1 };
+  const min = Number(values.min) * multiplier[values.minUnit.toLowerCase()];
+  const max = Number(values.max) * multiplier[values.maxUnit.toLowerCase()];
   return Number.isFinite(min) && Number.isFinite(max) && min > 0 && max >= min ? { min, max } : { min: null, max: null };
 }
 

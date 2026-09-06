@@ -1525,6 +1525,150 @@ try {
   ]);
   db.close();
 
+  const platformV28Path = path.join(root, "platform-v28.sqlite");
+  db = openDb(platformV28Path);
+  const platformV28Now = "2026-09-06T00:00:00.000Z";
+  const platformV28ProfileId = Number(db.prepare(`INSERT INTO candidate_profiles(
+    display_name, profile_json, source_hash, created_at, updated_at
+  ) VALUES ('Platform v28 candidate', '{}', NULL, ?, ?)`)
+    .run(platformV28Now, platformV28Now).lastInsertRowid);
+  const platformV28PlanId = Number(db.prepare(`INSERT INTO search_plans(
+    profile_id, name, plan_json, profile_version_id, is_active, created_at, updated_at
+  ) VALUES (?, 'Platform v28 plan', '{}', NULL, 1, ?, ?)`)
+    .run(platformV28ProfileId, platformV28Now, platformV28Now).lastInsertRowid);
+  const platformV28BatchId = createBatch(db, "boss", "v28", "platform v28 migration", {
+    profileId: platformV28ProfileId,
+    searchPlanId: platformV28PlanId
+  });
+  const platformV28JobId = Number(upsertJob(db, {
+    source: "boss",
+    sourceId: "platform-v28-job",
+    title: "Platform v28 job",
+    description: "migration fixture"
+  }, platformV28BatchId));
+  const platformV28ObservationId = db.prepare(`SELECT id FROM job_observations
+    WHERE batch_id = ? AND job_id = ?`).get(platformV28BatchId, platformV28JobId).id;
+  const platformV28WorkflowId = createWorkflowRun(db, {
+    id: "platform-v28-workflow",
+    profileId: platformV28ProfileId,
+    planId: platformV28PlanId,
+    localDay: "2026-09-06",
+    sequence: 1
+  }).id;
+  const platformV28TaskId = Number(db.prepare(`INSERT INTO workflow_job_tasks(
+    workflow_run_id, batch_id, job_id, observation_id, position, status,
+    recovery_generation, attempt_count_in_generation, total_attempt_count,
+    priority, model_config_revision, created_at, updated_at
+  ) VALUES (?, ?, ?, ?, 1, 'succeeded', 0, 1, 1, 70, 'v28-model', ?, ?)`)
+    .run(platformV28WorkflowId, platformV28BatchId, platformV28JobId, platformV28ObservationId, platformV28Now, platformV28Now).lastInsertRowid);
+  db.prepare(`INSERT INTO job_analysis_attempts(
+    workflow_run_id, task_id, job_id, recovery_generation, attempt_in_generation,
+    total_attempt_number, profile_kind, model_config_revision, provider, model,
+    thinking_mode, reasoning_effort, backup_used, status, model_call_count,
+    prompt_tokens, completion_tokens, total_tokens, started_at, finished_at,
+    latency_ms, created_at, updated_at
+  ) VALUES (?, ?, ?, 0, 1, 1, 'batch_screening', 'v28-model', 'fixture', 'fixture-model',
+    'default', 'low', 0, 'succeeded', 1, 11, 22, 33, ?, ?, 44, ?, ?)`)
+    .run(platformV28WorkflowId, platformV28TaskId, platformV28JobId,
+      platformV28Now, platformV28Now, platformV28Now, platformV28Now);
+  const platformV28RunBefore = { ...db.prepare("SELECT * FROM workflow_runs WHERE id = ?").get(platformV28WorkflowId) };
+  delete platformV28RunBefore.site;
+  const platformV28TasksBefore = db.prepare("SELECT * FROM workflow_job_tasks WHERE workflow_run_id = ?").all(platformV28WorkflowId).map((row) => ({ ...row }));
+  const platformV28AttemptsBefore = db.prepare("SELECT * FROM job_analysis_attempts WHERE workflow_run_id = ?").all(platformV28WorkflowId).map((row) => ({ ...row }));
+  db.exec("PRAGMA foreign_keys = OFF; PRAGMA legacy_alter_table = ON;");
+  db.exec(`
+    DROP INDEX idx_workflow_runs_active;
+    DROP INDEX idx_workflow_runs_daily;
+    ALTER TABLE workflow_runs RENAME TO workflow_runs_platform_v29_fixture;
+    CREATE TABLE workflow_runs (
+      id TEXT PRIMARY KEY,
+      profile_id INTEGER NOT NULL,
+      plan_id INTEGER NOT NULL,
+      local_day TEXT NOT NULL,
+      sequence INTEGER NOT NULL CHECK(sequence BETWEEN 1 AND 3),
+      status TEXT NOT NULL CHECK(status IN ('created','scanning','analyzing','review_required','communicating','paused','completed','interrupted','failed','stopped')),
+      target_success_count INTEGER NOT NULL CHECK(target_success_count >= 0),
+      successful_count INTEGER NOT NULL DEFAULT 0 CHECK(successful_count >= 0),
+      inventory_count INTEGER NOT NULL DEFAULT 0 CHECK(inventory_count >= 0),
+      candidate_gap INTEGER NOT NULL DEFAULT 0 CHECK(candidate_gap >= 0),
+      scan_needed INTEGER NOT NULL DEFAULT 1 CHECK(scan_needed IN (0, 1)),
+      keywords_json TEXT NOT NULL DEFAULT '[]',
+      budget_json TEXT NOT NULL DEFAULT '{}',
+      planner_json TEXT NOT NULL DEFAULT '{}',
+      metrics_json TEXT NOT NULL DEFAULT '{}',
+      control_state TEXT NOT NULL DEFAULT 'none' CHECK(control_state IN ('none','pause_requested','stop_requested')),
+      resume_phase TEXT CHECK(resume_phase IS NULL OR resume_phase IN ('scanning','analyzing')),
+      recovery_generation INTEGER NOT NULL DEFAULT 0 CHECK(recovery_generation >= 0),
+      circuit_timeout_job_count INTEGER NOT NULL DEFAULT 0 CHECK(circuit_timeout_job_count >= 0),
+      lifetime_timeout_job_count INTEGER NOT NULL DEFAULT 0 CHECK(lifetime_timeout_job_count >= 0),
+      progress_revision INTEGER NOT NULL DEFAULT 0 CHECK(progress_revision >= 0),
+      last_activity_at TEXT,
+      model_config_revision TEXT,
+      platform_access_started_at TEXT,
+      scan_run_id TEXT,
+      scan_batch_id INTEGER,
+      communication_batch_id INTEGER,
+      shortfall_code TEXT,
+      error_code TEXT,
+      error_message TEXT,
+      created_at TEXT NOT NULL,
+      started_at TEXT,
+      review_ready_at TEXT,
+      finished_at TEXT,
+      updated_at TEXT NOT NULL,
+      UNIQUE(profile_id, local_day, sequence),
+      FOREIGN KEY(profile_id) REFERENCES candidate_profiles(id),
+      FOREIGN KEY(plan_id) REFERENCES search_plans(id),
+      FOREIGN KEY(scan_run_id) REFERENCES scan_runs(id),
+      FOREIGN KEY(scan_batch_id) REFERENCES batches(id),
+      FOREIGN KEY(communication_batch_id) REFERENCES communication_batches(id)
+    );
+    INSERT INTO workflow_runs(
+      id, profile_id, plan_id, local_day, sequence, status,
+      target_success_count, successful_count, inventory_count, candidate_gap, scan_needed,
+      keywords_json, budget_json, planner_json, metrics_json, control_state, resume_phase,
+      recovery_generation, circuit_timeout_job_count, lifetime_timeout_job_count, progress_revision,
+      last_activity_at, model_config_revision, platform_access_started_at, scan_run_id, scan_batch_id,
+      communication_batch_id, shortfall_code, error_code, error_message, created_at, started_at,
+      review_ready_at, finished_at, updated_at
+    ) SELECT
+      id, profile_id, plan_id, local_day, sequence, status,
+      target_success_count, successful_count, inventory_count, candidate_gap, scan_needed,
+      keywords_json, budget_json, planner_json, metrics_json, control_state, resume_phase,
+      recovery_generation, circuit_timeout_job_count, lifetime_timeout_job_count, progress_revision,
+      last_activity_at, model_config_revision, platform_access_started_at, scan_run_id, scan_batch_id,
+      communication_batch_id, shortfall_code, error_code, error_message, created_at, started_at,
+      review_ready_at, finished_at, updated_at
+    FROM workflow_runs_platform_v29_fixture;
+    DROP TABLE workflow_runs_platform_v29_fixture;
+    CREATE INDEX idx_workflow_runs_active ON workflow_runs(profile_id, plan_id, local_day, status, sequence);
+    CREATE INDEX idx_workflow_runs_daily ON workflow_runs(profile_id, local_day, sequence);
+    DELETE FROM schema_migrations WHERE version = ${PLATFORM_SEARCH_CONTEXT_VERSION};
+    PRAGMA user_version = ${RESUME_OPTIMIZATION_PLAN_BINDING_VERSION};
+  `);
+  db.exec("PRAGMA legacy_alter_table = OFF; PRAGMA foreign_keys = ON;");
+  assert.deepStrictEqual(db.prepare("PRAGMA foreign_key_check").all(), [], "synthetic v28 fixture must be healthy before migration");
+  db.close();
+  db = openDb(platformV28Path);
+  assert.strictEqual(db.prepare("PRAGMA user_version").get().user_version, SCHEMA_VERSION);
+  assert.deepStrictEqual(
+    { ...db.prepare("SELECT * FROM workflow_runs WHERE id = ?").get(platformV28WorkflowId) },
+    { ...platformV28RunBefore, site: "boss" },
+    "v29 must retain every workflow run column and give legacy rows the BOSS site"
+  );
+  assert.deepStrictEqual(
+    db.prepare("SELECT * FROM workflow_job_tasks WHERE workflow_run_id = ?").all(platformV28WorkflowId).map((row) => ({ ...row })),
+    platformV28TasksBefore,
+    "v29 must retain nonempty workflow tasks"
+  );
+  assert.deepStrictEqual(
+    db.prepare("SELECT * FROM job_analysis_attempts WHERE workflow_run_id = ?").all(platformV28WorkflowId).map((row) => ({ ...row })),
+    platformV28AttemptsBefore,
+    "v29 must retain nonempty analysis attempts"
+  );
+  assert.deepStrictEqual(db.prepare("PRAGMA foreign_key_check").all(), [], "v29 migration must retain foreign keys");
+  db.close();
+
   const futurePath = path.join(root, "future.sqlite");
   db = openDb(futurePath);
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION + 1}`);

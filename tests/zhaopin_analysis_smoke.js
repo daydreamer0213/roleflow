@@ -46,7 +46,13 @@ assert.deepEqual(buildScanExecutionSnapshot({
 
 assert.deepEqual(salaryRangeK("1.5-1.6万·13薪"), { min: 15, max: 16 });
 assert.deepEqual(salaryRangeK("8000-15000元"), { min: 8, max: 15 });
+assert.deepEqual(salaryRangeK("10-20K·13薪"), { min: 10, max: 20 });
+assert.deepEqual(salaryRangeK("20-30万/年"), { min: null, max: null });
+assert.deepEqual(salaryRangeK("150-200元/时"), { min: null, max: null });
 assert.deepEqual(salaryRangeK("150-200元/小时"), { min: null, max: null });
+assert.deepEqual(salaryRangeK("1万-1.5万/月"), { min: 10, max: 15 });
+assert.deepEqual(salaryRangeK("10K-**K"), { min: null, max: null });
+assert.deepEqual(salaryRangeK("**-15K"), { min: null, max: null });
 assert.deepEqual(salaryRangeK("面议"), { min: null, max: null });
 
 const configs = {
