@@ -53,6 +53,8 @@ assert.deepEqual(salaryRangeK("150-200元/小时"), { min: null, max: null });
 assert.deepEqual(salaryRangeK("1万-1.5万/月"), { min: 10, max: 15 });
 assert.deepEqual(salaryRangeK("10K-**K"), { min: null, max: null });
 assert.deepEqual(salaryRangeK("**-15K"), { min: null, max: null });
+assert.deepEqual(salaryRangeK("10K-20**K"), { min: null, max: null });
+assert.deepEqual(salaryRangeK("300-400元 天薪"), { min: null, max: null });
 assert.deepEqual(salaryRangeK("面议"), { min: null, max: null });
 
 const configs = {

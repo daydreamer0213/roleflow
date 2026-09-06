@@ -4,7 +4,7 @@ const { evaluateJobEligibility } = require("./job_eligibility");
 function salaryRangeK(salary) {
   const text = String(salary || "").trim();
   const period = text.match(/\/\s*(年|月|日|天|时|小时)/)?.[1];
-  if (!text || /面议|保密|年薪|时薪|日薪/.test(text) || (period && period !== "月")) return { min: null, max: null };
+  if (!text || /面议|保密|年薪|时薪|日薪|天薪|\*+/.test(text) || (period && period !== "月")) return { min: null, max: null };
   const range = text.match(/(\d+(?:\.\d+)?)\s*(万|千|元|k)?\s*[-~—至]\s*(\d+(?:\.\d+)?)\s*(万|千|元|k)?/i);
   if (!range && /[-~—至]/.test(text)) return { min: null, max: null };
   const single = text.match(/(\d+(?:\.\d+)?)\s*(万|千|元|k)/i);

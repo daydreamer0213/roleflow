@@ -24,6 +24,14 @@ Review fix round 1 baseline red (recorded before the salary parser change):
 
 Round 1 green evidence: `tests/zhaopin_analysis_smoke.js` now checks those cases, both masked ranges, the `小时` spelling, and the unchanged `1.5-1.6万·13薪` / `10-20K·13薪` cases. `tests/storage_migration_smoke.js` now builds an actual synthetic v28 parent schema with nonempty workflow-run, workflow-task, and analysis-attempt rows; it compares each row after v29 migration and asserts `PRAGMA foreign_key_check` is empty.
 
+Review fix round 2: baseline `salaryRangeK('10K-20**K')` returned `{min:10,max:20}` by accepting a numeric prefix before the masked suffix, and `salaryRangeK('300-400元 天薪')` returned `{min:0.3,max:0.4}` after the original non-monthly guard was narrowed. The parser now rejects any masked amount and restores `天薪` as non-monthly. Green command:
+
+```powershell
+$env:NODE_PATH='C:/Users/Administrator/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules'; $env:ROLEFLOW_REQUIRE_PLAYWRIGHT='1'; $env:PATH='D:/hermes/node;' + $env:PATH; & 'D:/hermes/node/node.exe' tests/zhaopin_analysis_smoke.js; & 'D:/hermes/node/node.exe' tests/scoring_url_smoke.js; & 'D:/hermes/node/node.exe' tests/screening_preferences_smoke.js
+```
+
+Output: `zhaopin_analysis_smoke ok`, `scoring_url_smoke ok`, and `screening_preferences_smoke ok`; exit code 0 (only the existing experimental SQLite warning).
+
 Fresh green command (Node runtime and Playwright requirement supplied by the task):
 
 ```powershell
