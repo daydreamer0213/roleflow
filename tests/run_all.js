@@ -25,6 +25,7 @@ const tests = [
   "workflow_planner_smoke.js",
   "workflow_acquisition_smoke.js",
   "inherited_search_scope_smoke.js",
+  "zhaopin_readonly_smoke.js",
   "scoped_keyword_stats_smoke.js",
   "scan_snapshot_smoke.js",
   "scan_recovery_smoke.js",

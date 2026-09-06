@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head><meta charset="utf-8"><title>合成智联搜索页</title></head>
+  <body>
+    <main class="jobs-split-page">
+      <input class="search-keyword-input" value="合成关键词" aria-label="搜索职位">
+      <div class="filter-select-box filter-region-box"><span class="filter-select-box__label">合成地区</span></div>
+      <div class="filter-select-box"><span class="filter-select-box__label">薪资</span></div>
+      <div class="job-list-panel">
+        <article class="job-card job-card--active">
+          <div class="job-card__title-main"><span class="vue-clamp__text">同名合成岗位</span></div>
+          <span class="job-card__salary">11K-15K</span>
+          <span class="job-card__skill-tag">1-3年</span>
+          <span class="job-card__skill-tag">本科</span>
+          <a class="job-card__company-name">合成甲公司</a>
+          <div class="job-card__location">合成市·甲区</div>
+        </article>
+        <article class="job-card">
+          <div class="job-card__title-main"><span class="vue-clamp__text">同名合成岗位</span></div>
+          <span class="job-card__salary">16K-22K</span>
+          <span class="job-card__skill-tag">3-5年</span>
+          <span class="job-card__skill-tag">本科</span>
+          <a class="job-card__company-name">合成乙公司</a>
+          <div class="job-card__location">合成市·乙区</div>
+        </article>
+        <article class="job-card job-card--stale-detail">
+          <div class="job-card__title-main"><span class="vue-clamp__text">无切换合成岗位</span></div>
+          <span class="job-card__salary">20K-24K</span>
+          <span class="job-card__skill-tag">5-10年</span>
+          <span class="job-card__skill-tag">硕士</span>
+          <a class="job-card__company-name">合成丙公司</a>
+          <div class="job-card__location">合成市·丙区</div>
+        </article>
+        <article class="job-card">
+          <div class="job-card__title-main"><span class="vue-clamp__text"></span></div>
+          <span class="job-card__salary">8K-10K</span>
+          <a class="job-card__company-name">空标题公司</a>
+          <div class="job-card__location">合成市·空区</div>
+        </article>
+      </div>
+      <section class="job-detail-card job-detail-card--default">
+        <header class="job-detail-card__header">
+          <div class="job-detail-summary">
+            <h1 class="job-detail-summary__title"><span class="job-detail-summary__title-text">同名合成岗位</span><span class="job-detail-summary__salary">11K-15K</span></h1>
+            <div class="job-detail-summary__meta">合成市·甲区<br>1-3年<br>本科<br>合成甲公司</div>
+          </div>
+        </header>
+        <div class="job-detail-card__body">职位描述：合成甲职责，包含可验证的技术与协作要求。</div>
+        <a class="job-detail-card__link" href="https://www.zhaopin.com/jobdetail/CCSYNTH001J00000000001.htm?utm_source=fixture">查看更多信息</a>
+      </section>
+      <aside class="job-detail-chat">HR区域：这段文字绝不能成为岗位描述。</aside>
+    </main>
+    <script>
+      const details = [
+        { title: '同名合成岗位', salary: '11K-15K', location: '合成市·甲区', experience: '1-3年', education: '本科', company: '合成甲公司', description: '职位描述：合成甲职责，包含可验证的技术与协作要求。', id: 'CCSYNTH001J00000000001' },
+        { title: '同名合成岗位', salary: '16K-22K', location: '合成市·乙区', experience: '3-5年', education: '本科', company: '合成乙公司', clientCompany: '合成客户公司', description: '职位描述：合成乙职责，要求独立完成可靠交付。', id: 'CCSYNTH002J00000000002' }
+      ];
+      const cards = [...document.querySelectorAll('.job-card')];
+      const render = (detail) => {
+        document.querySelector('.job-detail-summary__title-text').textContent = detail.title;
+        document.querySelector('.job-detail-summary__salary').textContent = detail.salary;
+        document.querySelector('.job-detail-summary__meta').innerHTML = [detail.location, detail.experience, detail.education, detail.clientCompany ? `客户公司：${detail.clientCompany}` : detail.company].join('<br>');
+        document.querySelector('.job-detail-card__body').textContent = detail.description;
+        document.querySelector('.job-detail-card__link').href = `https://www.zhaopin.com/jobdetail/${detail.id}.htm?utm_source=fixture`;
+      };
+      cards.forEach((card, index) => card.addEventListener('click', () => {
+        cards.forEach((item) => item.classList.remove('job-card--active'));
+        card.classList.add('job-card--active');
+        if (!card.classList.contains('job-card--stale-detail') && details[index]) render(details[index]);
+      }));
+    </script>
+  </body>
+</html>
