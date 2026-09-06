@@ -629,12 +629,13 @@ function updateBatchRuntimeSnapshot(db, batch, runtime) {
 }
 
 function checkpointSharedPacing(db, site, runtime, updatedAt) {
-  if (String(site || "").toLowerCase() !== "boss"
+  const normalizedSite = String(site || "").trim().toLowerCase();
+  if (!["boss", "zhaopin"].includes(normalizedSite)
     || !runtime
     || typeof runtime !== "object"
     || Array.isArray(runtime)
     || !Object.hasOwn(runtime, "bossPacing")) return;
-  setSitePacingState(db, { site: "boss", pacing: runtime.bossPacing, updatedAt });
+  setSitePacingState(db, { site: normalizedSite, pacing: runtime.bossPacing, updatedAt });
 }
 
 function normalizeScanProgress(value, execution) {
