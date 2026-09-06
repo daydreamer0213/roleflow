@@ -84,7 +84,7 @@ assert.equal(target.searchParams.get('kw'), 'AI 应用');
 - 金额读取保留原文字；月薪千/万/元可用于比较，小时/天/年及遮蔽不误判为月薪。BOSS 活跃度约束只作用 BOSS；来源不改变匹配模型与二维表。
 - 发布方继续使用 `company`，客户公司单独使用可选 `clientCompany`；在岗位和观察记录增加必要字段，往返存储和分析事实均保留。客户公司变更参与新岗位内容 hash；没有该字段的旧 BOSS hash 保持不变。
 
-- [ ] 先写并运行失败检查：同方案两平台独立；未知/跨方案输入拒绝；旧 BOSS 快照仍可恢复；智联完整岗位不出现 activity_unverified/inactive_boss；带薪资阈值时中文月薪正确比较、小时薪资仍能触发兼职筛选。
+- [x] 先写并运行失败检查：同方案两平台独立；未知/跨方案输入拒绝；旧 BOSS 快照仍可恢复；智联完整岗位不出现 activity_unverified/inactive_boss；带薪资阈值时中文月薪正确比较、小时薪资仍能触发兼职筛选。
 
 ```js
 assert.deepEqual(salaryRangeK('1.5-1.6万·13薪'), {min:15,max:16});
@@ -93,8 +93,8 @@ assert.deepEqual(salaryRangeK('150-200元/小时'), {min:null,max:null});
 assert.deepEqual(salaryRangeK('面议'), {min:null,max:null});
 ```
 
-- [ ] 实现必要迁移和来源分派；只在新平台需要的契约处扩展，不改 BOSS 生成模式。
-- [ ] 新检查、存储迁移、scoring_url、screening_preferences、scan_snapshot、workflow_acquisition 回归通过；审查后提交 Task 2。
+- [x] 实现必要迁移和来源分派；只在新平台需要的契约处扩展，不改 BOSS 生成模式。
+- [x] 新检查、存储迁移、scoring_url、screening_preferences、scan_snapshot、workflow_acquisition 回归通过；审查后提交 Task 2。实现 `3b74233`，薪资与带数据迁移回归修正 `29fbc93`、`8ff6d01`；两轮复审后无剩余重要问题。最终修复三项相关回归通过，迁移等十项前序检查记录保留；不替代全分支最终门禁。
 
 ### Task 3: 串行采集、检查点和恢复接入
 
@@ -120,7 +120,7 @@ assert.deepEqual(salaryRangeK('面议'), {min:null,max:null});
 - 沿用现有访问控制器和节奏，不另造并发调度或忽略访问额度；实际事件使用 `site='zhaopin'`，动作前申请额度，等待后再次核对 signal、标签、搜索范围及岗位身份。
 - Dashboard 启动/恢复路径先区分站点：智联需要浏览器连接和自己的搜索页，不调用 BOSS 工作区登录就绪作为前置条件。保留既有浏览器运行时恢复，但不能因此强开 BOSS 页面或要求 BOSS 登录。
 
-- [ ] 在最小后台实站补证搜索结果加载机制和非默认筛选后，保存脱敏结构证据；未证实的路径不能靠猜测上线。
+- [x] 在最小后台实站补证搜索结果加载机制和非默认筛选后，保存脱敏结构证据；未证实的路径不能靠猜测上线。实证和关闭临时页回执见调研报告第 11–12 节，不等于真实产品全流程验收。
 - [ ] 写失败检查：冻结智联来源传到 CLI；同编号跨来源不串数据；逐岗结果先落库；暂停/结束/风险不再读下一岗；恢复保留原范围；未读尽/预算耗尽标部分完成而非全部完成；并发浏览器任务被拒绝。
 
 ```js
