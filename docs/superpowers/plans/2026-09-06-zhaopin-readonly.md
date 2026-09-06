@@ -71,6 +71,7 @@ assert.equal(target.searchParams.get('kw'), 'AI 应用');
 - Create: `src/storage/platform_search_context_store.js`
 - Modify: `src/core/storage.js`（必要的显式迁移）
 - Modify: `src/storage/workflow_store.js`, `src/storage/scan_store.js`（实际轮次隔离与共用浏览器互斥）
+- Modify: `src/storage/job_store.js`、`src/core/job_analysis.js` 中事实传递（仅保留实际客户公司字段，不引入通用元数据系统）
 - Create: `tests/platform_search_context_smoke.js`, `tests/zhaopin_analysis_smoke.js`
 
 **Interfaces:**
@@ -80,6 +81,7 @@ assert.equal(target.searchParams.get('kw'), 'AI 应用');
 - 通用继承范围校验按显式 site 分派；无 site 的旧轮默认 BOSS。BOSS 规范化结果及历史快照哈希不变。
 - 智联 context 使用 `searchScope.site='zhaopin'`，来源、模板、关键词来源、筛选摘要和策略 hash 一起冻结；目标按已保存原生范围及关键词生成，不调用 BOSS 城市/薪资 lane 映射。
 - 金额读取保留原文字；月薪千/万/元可用于比较，小时/天/年及遮蔽不误判为月薪。BOSS 活跃度约束只作用 BOSS；来源不改变匹配模型与二维表。
+- 发布方继续使用 `company`，客户公司单独使用可选 `clientCompany`；在岗位和观察记录增加必要字段，往返存储和分析事实均保留。客户公司变更参与新岗位内容 hash；没有该字段的旧 BOSS hash 保持不变。
 
 - [ ] 先写并运行失败检查：同方案两平台独立；未知/跨方案输入拒绝；旧 BOSS 快照仍可恢复；智联完整岗位不出现 activity_unverified/inactive_boss；带薪资阈值时中文月薪正确比较、小时薪资仍能触发兼职筛选。
 
