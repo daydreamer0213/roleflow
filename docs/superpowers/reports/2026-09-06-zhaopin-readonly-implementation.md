@@ -1,6 +1,6 @@
 # 智联只读找岗首版：实现与验收记录
 
-状态：**智联只读首版开发与复审完成，最终功能提交的 149 项完整检查通过**。保留隔离开发分支，尚未替换安装版；文档提交后的精确 SHA 复验另行记录。
+状态：**智联只读首版开发与复审完成，最终功能提交的 149 项完整检查通过，文档提交后 12 项关键复验通过**。保留隔离开发分支，尚未替换安装版；最终交付 SHA 和回执位置见下文。
 
 ## 范围与环境
 
@@ -127,7 +127,8 @@ Task 4 独立复审同时发现 CSV 导出丢失来源/用人公司、智联过�
 - 新平台本地用户流程与十张桌面截图：该精确提交已重跑并查看，见 `c27b2df-fullgate/receipt.json` 及相邻截图；结果不是实站或真实模型验收。
 - 全分支审查与所有修复复核：通过，没有未关闭 Critical/Important。按 subagent-driven-development 的收尾要求尝试清理本计划临时目录时，执行环境在运行前拒绝了删除命令，因此没有删除任何文件，也没有换方法绕过。28 份材料已另存到 D 盘证据目录的 `review-archive-c27b2df`，逐文件 SHA-256 校验一致；原目录仍保留，这是非阻塞的内部整理事项。
 - 危险测试资料检查已完成，见外部 `c27b2df-fixture-audit.md`。完整门禁执行过实际安装暂存检查（StageOnly），没有编译、安装或发布安装器。
-- 最终文档提交后的精确 SHA 复验：待运行；回执固定存放在 `D:\DevData\RoleFlow-multiplatform-research-20260906\final-verification.json`，避免把文档自己的未知提交号写进提交。
+- 文档提交 `b28e9cc0a0075d060424ca0c1b79edb53e531d55` 上 12 项关键复验退出 0：五项新增智联检查，以及 storage_migration、job_export、dashboard_shell、workflow_control、workflow_recovery、communication_runtime、outcome_analytics_dashboard。强制本地浏览器验收，没有跳过；日志与截图分别为 `b28e9cc-final-focused.log`、`b28e9cc-final-focused`。源码、测试、脚本及依赖清单与完整门禁的 `c27b2df` 相同。
+- 此后只提交本计划与报告的验收记录更新。最终交付 SHA、再次复验与干净工作树检查保存在 `D:\DevData\RoleFlow-multiplatform-research-20260906\final-verification.json`，避免把文档自己的未知提交号写进提交。没有将只读结构探查或合成分析结论当作真实产品质量证明。
 - 真实智联产品端到端、真实模型质量、长期平台稳定性和真实投递/消息：未验证；实时 DOM 探查不能替代这些结果。
 - 未访问真实 BOSS；没有向招聘方发送、投递、同意或拒绝简历操作。临时探查页已按证据回执关闭，用户原有页保留。
 - 非阻塞限制：沿用已有节奏实现的控制台 `[boss]` 前缀仍存在，实际智联事件/额度按自身平台存储；未知原生筛选条件会提示重设，尚未声称覆盖所有平台条件组合。
