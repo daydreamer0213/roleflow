@@ -32,3 +32,25 @@ foreach ($file in @('tests/zhaopin_readonly_smoke.js', 'tests/source_acquisition
 - 没有运行真实招聘平台或真实浏览器操作；本任务仅使用已提供的脱敏结构证据和本地拦截页面。
 - 复杂原生条件仍默认拒绝，后续仅可在新证据出现后把对应参数加入白名单。
 - 列表连续加载的滚动/终止态由 Task 3 实现；Task 1 不触发滚动。
+
+## 修复 round 1：额度等待前选卡
+
+审查发现 `site_access_budget.reserve()` 可能等待或抛停，而旧顺序在 `reserve()` 前调用了 DOM 卡片点击。修复后，读取器先保留额度；额度调用结束后重新检查取消状态、调用方标签绑定、页面风险/登录/掉页状态、同一索引的完整卡片签名与当前选中状态；只有这些都一致时才执行 DOM 点击。
+
+RED：
+
+```powershell
+$env:NODE_PATH='C:\Users\Administrator\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\node_modules'
+$env:ROLEFLOW_REQUIRE_PLAYWRIGHT='1'
+& D:\hermes\node\node.exe tests\zhaopin_readonly_smoke.js
+```
+
+旧顺序的失败输出：`a denied access reservation must not change the selected card`，实际选中索引从 `1` 变为 `0`。新增回归还覆盖额度等待期间卡片标题变化，要求不点击且保持原详情。
+
+GREEN：
+
+```powershell
+foreach ($file in @('tests/zhaopin_readonly_smoke.js', 'tests/source_acquisition_smoke.js', 'tests/inherited_search_scope_smoke.js')) { & D:\hermes\node\node.exe $file; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
+```
+
+结果：`zhaopin_readonly_smoke ok`、`source_acquisition_smoke ok`、`inherited_search_scope_smoke ok`，退出码 `0`。`source_acquisition_smoke` 仍只输出 Node SQLite 实验性警告。

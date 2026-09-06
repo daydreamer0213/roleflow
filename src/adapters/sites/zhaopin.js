@@ -113,20 +113,27 @@ class ZhaopinSiteAdapter {
     const before = await this.readSearchState(tabId);
     const expected = before.cards[Number(card?.index)];
     if (!expected || expected.signature !== card?.signature || !expected.title) return null;
-    const wasSelected = before.selectedIndex === expected.index;
-    const beforeUrl = before.detail.url;
+    await this.reserveAccess(expected);
+    throwIfAborted(signal);
+    await assertBindings(assertTabBindings);
+    const refreshed = await this.readSearchState(tabId);
+    const refreshedCard = refreshed.cards[expected.index];
+    if (!refreshedCard || refreshedCard.signature !== expected.signature || !refreshedCard.title) return null;
+    if (refreshed.selectedIndex !== before.selectedIndex) return null;
+    const wasSelected = refreshed.selectedIndex === refreshedCard.index;
+    const beforeUrl = refreshed.detail.url;
     if (!wasSelected) {
+      throwIfAborted(signal);
       await assertBindings(assertTabBindings);
       await this.assertBoundTab(tabId);
-      const activation = await this.browser.evalValue(tabId, `(() => window.__zhaopinActivateCard(${JSON.stringify(expected.index)}, ${JSON.stringify(expected.signature)}))()`);
+      const activation = await this.browser.evalValue(tabId, `(() => window.__zhaopinActivateCard(${JSON.stringify(refreshedCard.index)}, ${JSON.stringify(refreshedCard.signature)}))()`);
       if (activation?.ready !== true) return null;
     }
-    await this.reserveAccess(expected);
     for (let attempt = 0; attempt < 6; attempt += 1) {
       throwIfAborted(signal);
       await assertBindings(assertTabBindings);
       const state = await this.readSearchState(tabId);
-      if (state.selectedIndex === expected.index && (!state.loading || attempt > 0) && detailMatches(expected, state.detail)) {
+      if (state.selectedIndex === refreshedCard.index && (!state.loading || attempt > 0) && detailMatches(refreshedCard, state.detail)) {
         if (!wasSelected && state.detail.url === beforeUrl) return null;
         const identity = safeIdentity(state.detail.url);
         if (!identity) return null;

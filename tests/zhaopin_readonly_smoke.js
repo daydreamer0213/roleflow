@@ -107,6 +107,32 @@ async function main() {
     assert.equal(await adapter.readVisiblePaneDetail("ZHAOPIN-SEARCH", afterSwitch.cards[2]), null, "unchanged detail link must not be adopted after a card click");
     assert.equal(await adapter.readVisiblePaneDetail("ZHAOPIN-SEARCH", afterSwitch.cards[3]), null, "empty card title must stop before click");
 
+    const deniedAdapter = new ZhaopinSiteAdapter({
+      browser: bridge,
+      sleepFn: async () => {},
+      accessController: { reserve: async () => { throw Object.assign(new Error("access denied"), { code: "ZHAOPIN_ACCESS_DENIED" }); } }
+    });
+    const deniedBefore = await deniedAdapter.readSearchState("ZHAOPIN-SEARCH");
+    await assert.rejects(
+      () => deniedAdapter.readVisiblePaneDetail("ZHAOPIN-SEARCH", deniedBefore.cards[0]),
+      (error) => error.code === "ZHAOPIN_ACCESS_DENIED"
+    );
+    assert.equal((await deniedAdapter.readSearchState("ZHAOPIN-SEARCH")).selectedIndex, deniedBefore.selectedIndex, "a denied access reservation must not change the selected card");
+
+    await page.reload();
+    const waitState = await adapter.readSearchState("ZHAOPIN-SEARCH");
+    const waitedAdapter = new ZhaopinSiteAdapter({
+      browser: bridge,
+      sleepFn: async () => {},
+      accessController: {
+        reserve: async () => page.evaluate(() => {
+          document.querySelectorAll(".job-card .vue-clamp__text")[1].textContent = "等待后变更岗位";
+        })
+      }
+    });
+    assert.equal(await waitedAdapter.readVisiblePaneDetail("ZHAOPIN-SEARCH", waitState.cards[1]), null, "a card changed while waiting for access must not be clicked");
+    assert.equal((await waitedAdapter.readSearchState("ZHAOPIN-SEARCH")).selectedIndex, 0, "a changed card must leave the previous detail selected");
+
     await page.evaluate(() => { document.title = "安全验证"; });
     await assert.rejects(
       () => adapter.readSearchState("ZHAOPIN-SEARCH"),
