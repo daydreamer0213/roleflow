@@ -291,3 +291,7 @@
 临时页关闭后已再次查询标签列表，确认只保留原有三个用户页；原搜索地址、关键词和筛选摘要逐项未变。第一次关闭后的即时查询仍列出临时页，已保留该观察，后一次只读查询确认关闭，不重复发送关闭命令。没有点击投递、沟通、收藏或简历操作。
 
 证据均位于既有 D 盘证据目录：`zl-native-option-3.json` 至 `zl-native-option-6.json`、`zl-all-common-filters-preserved.json`、`zl-common-filters-terminal-confirmed.json`、`zl-more-filters-original-before.json` / `zl-more-filters-original-after.json`、`zl-more-filters-owned-tab.json`。以最后的 `closedVerified=true` 为收尾证据，不覆写即时查询中的失败观察。
+
+### 实现期间的证据核对
+
+对上述目录当时的 50 份 JSON 做了格式和回执核对：七份筛选/加载结果的全部检查为 true，五份自建临时页的最终关闭回执为 true，真实终止状态仍是 11 条及“没有更多了”；即时关闭查询的 false 原样保留。结果在 `development-evidence-audit.json`。这只是对已保存探查证据的复核，没有再次操作真实浏览器，也不代表产品链路已通过。
