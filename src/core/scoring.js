@@ -2,12 +2,17 @@ const { evaluatePlatformBoundaries } = require("./platform_runtime_policy");
 const { evaluateJobEligibility } = require("./job_eligibility");
 
 function salaryRangeK(salary) {
-  const text = String(salary || "");
-  const match = text.match(/(\d+)\s*[-~—]\s*(\d+)\s*K/i);
-  if (match) return { min: Number(match[1]), max: Number(match[2]) };
-  const single = text.match(/(\d+)\s*K/i);
-  if (single) return { min: Number(single[1]), max: Number(single[1]) };
-  return { min: null, max: null };
+  const text = String(salary || "").trim();
+  if (!text || /面议|保密|元\s*\/(?:小时|天|日)|(?:小时|天|日)\s*薪|年薪/.test(text)) return { min: null, max: null };
+  const range = text.match(/(\d+(?:\.\d+)?)\s*[-~—至]\s*(\d+(?:\.\d+)?)\s*(万|千|元|k)/i);
+  const single = text.match(/(\d+(?:\.\d+)?)\s*(万|千|元|k)/i);
+  const match = range || single;
+  if (!match) return { min: null, max: null };
+  const unit = (range ? range[3] : single[2]).toLowerCase();
+  const multiplier = { "万": 10, "千": 1, "元": 0.001, k: 1 }[unit];
+  const min = Number(match[1]) * multiplier;
+  const max = Number(range ? match[2] : match[1]) * multiplier;
+  return Number.isFinite(min) && Number.isFinite(max) && min > 0 && max >= min ? { min, max } : { min: null, max: null };
 }
 
 function activeDays(text) {
@@ -99,7 +104,7 @@ function scoreJob(job, configs) {
     risks.push("地点待核验");
   }
 
-  const enforceBossActivity = scoring.boss_activity?.enforce !== false;
+  const enforceBossActivity = (job.source || "boss") === "boss" && scoring.boss_activity?.enforce !== false;
   if (enforceBossActivity) {
     if (days === null) {
       score -= scoring.boss_activity?.unknown_penalty || 0;

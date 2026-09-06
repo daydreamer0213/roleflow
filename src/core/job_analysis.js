@@ -750,7 +750,7 @@ function needsRetry(analysis, reason = "", decisionSource = "needs_retry") {
 }
 
 function jobFacts(job = {}) {
-  return {
+  const facts = {
     source: job.source || "",
     sourceId: job.sourceId || "",
     title: job.title || "",
@@ -764,6 +764,8 @@ function jobFacts(job = {}) {
     tags: Array.isArray(job.tags) ? job.tags : [],
     description: job.description || ""
   };
+  if (String(job.clientCompany || "").trim()) facts.clientCompany = String(job.clientCompany).trim();
+  return facts;
 }
 
 function searchPreferences(configs) {

@@ -926,7 +926,10 @@ function acquireSiteScanLease(db, { site = "boss", owner = crypto.randomUUID(), 
   db.exec("BEGIN IMMEDIATE");
   try {
     db.prepare("DELETE FROM site_scan_leases WHERE expires_at <= ?").run(acquiredAt);
-    const active = db.prepare("SELECT * FROM site_scan_leases WHERE site = ?").get(normalizedSite);
+    const mutuallyExclusiveSites = ["boss", "zhaopin"].includes(normalizedSite) ? ["boss", "zhaopin"] : [normalizedSite];
+    const active = db.prepare(`SELECT * FROM site_scan_leases
+      WHERE site IN (${mutuallyExclusiveSites.map(() => "?").join(", ")})
+      ORDER BY acquired_at ASC LIMIT 1`).get(...mutuallyExclusiveSites);
     if (active) {
       const error = new Error(`${normalizedSite} 已有扫描任务运行中（${active.command}，开始于 ${active.acquired_at}）。`);
       error.code = "SCAN_ALREADY_RUNNING";

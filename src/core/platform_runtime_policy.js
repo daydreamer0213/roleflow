@@ -120,6 +120,30 @@ function compileGeneratedPlatformRuntimePolicy({ cityScopes = [], nativeFilters 
   return { ...payload, filterSummary: formatPolicySummary(filters, []), hash: stableHash(payload) };
 }
 
+function compileZhaopinPlatformRuntimePolicy({ searchScope, filterSummary = [] } = {}) {
+  if (searchScope?.site !== "zhaopin" || !searchScope?.templateUrl || !searchScope?.templateHash) {
+    throw policyError("PLATFORM_SCOPE_INVALID", "智联运行策略缺少继承范围。");
+  }
+  const params = new URL(searchScope.templateUrl).searchParams;
+  const nativeParams = ["jl", "sl", "el", "we", "ct", "cs", "et"]
+    .flatMap((name) => params.getAll(name).map((value) => `${name}=${value}`))
+    .sort();
+  const payload = {
+    site: "zhaopin",
+    templateHash: searchScope.templateHash,
+    filters: {
+      location: { mode: "native", codes: splitCodes(params.getAll("jl")), cities: [], districts: [] },
+      salary: emptyFilter(),
+      experience: emptyFilter(),
+      degree: emptyFilter(),
+      jobType: emptyFilter(),
+      acquisitionOnly: { native: { codes: nativeParams, labels: [] } }
+    },
+    unresolvedParams: []
+  };
+  return { ...payload, filterSummary: Array.isArray(filterSummary) ? [...filterSummary] : [], hash: stableHash(payload) };
+}
+
 function applyPlatformRuntimePolicy(configs = {}, policy = {}, { acquisitionMode = "inherited" } = {}) {
   const sourcePlan = configs.searchPlan || {};
   const recommendationPolicy = {
@@ -334,6 +358,7 @@ function policyError(code, message) {
 module.exports = {
   compilePlatformRuntimePolicy,
   compileGeneratedPlatformRuntimePolicy,
+  compileZhaopinPlatformRuntimePolicy,
   applyPlatformRuntimePolicy,
   evaluatePlatformBoundaries
 };

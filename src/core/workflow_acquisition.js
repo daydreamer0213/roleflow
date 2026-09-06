@@ -106,7 +106,16 @@ function assertFrozenWorkflowPlan(planner = {}) {
 }
 
 function assertAcquisitionContext(context, options = {}) {
-  if (context?.acquisitionMode === "inherited") return assertCompleteInheritedContext(context, options);
+  const inheritedSite = String(context?.site || context?.searchScope?.site || "boss").trim().toLowerCase();
+  if (context?.acquisitionMode === "inherited") {
+    if (!["boss", "zhaopin"].includes(inheritedSite)) {
+      throw acquisitionError("WORKFLOW_ACQUISITION_SITE_INVALID", "本轮任务的平台无效。");
+    }
+    if (context?.site && inheritedSite !== String(context?.searchScope?.site || "boss").trim().toLowerCase()) {
+      throw acquisitionError("WORKFLOW_ACQUISITION_SITE_MISMATCH", "本轮任务的平台与继承范围不一致。");
+    }
+    return assertCompleteInheritedContext(context, options);
+  }
   if (context?.acquisitionMode === "generated") return assertCompleteGeneratedContext(context, options);
   throw acquisitionError("WORKFLOW_ACQUISITION_MODE_INVALID", "本轮任务的采集模式无效。");
 }

@@ -2,7 +2,7 @@ const ZHAOPIN_ORIGIN = "https://www.zhaopin.com";
 const ZHAOPIN_SEARCH_PATH = "/jobs/";
 const TRACKING_PARAMS = new Set(["from", "source", "src", "trackId", "lid", "ref", "refer", "_", "timestamp"]);
 const PAGING_PARAMS = new Set(["page", "pageNum"]);
-const SEARCH_PARAMS = new Set(["pageMode", "jl", "sl", "el", "kw", ...TRACKING_PARAMS, ...PAGING_PARAMS]);
+const SEARCH_PARAMS = new Set(["pageMode", "jl", "sl", "el", "we", "ct", "cs", "et", "kw", ...TRACKING_PARAMS, ...PAGING_PARAMS]);
 
 function canonicalizeZhaopinSearchTemplate(rawUrl) {
   const url = parseZhaopinUrl(rawUrl, "ZHAOPIN_SEARCH_PAGE_INVALID", "当前标签页不是可用的智联搜索页。");

@@ -147,7 +147,7 @@ function upsertJob(db, job, batchId) {
   const existing = db.prepare("SELECT id, first_seen_at FROM jobs WHERE source = ? AND source_id = ?").get(job.source, job.sourceId);
   const now = nowIso();
   const params = [
-    job.keyword || null, job.title, job.company || null, job.location || null, job.salary || null,
+    job.keyword || null, job.title, job.company || null, job.clientCompany || null, job.location || null, job.salary || null,
     job.experience || null, job.education || null, job.bossActiveText || null, job.bossActiveDays ?? null,
     job.url || null, JSON.stringify(job.tags || []), job.description || null, job.score || 0, job.level || null,
     JSON.stringify(job.matches || []), JSON.stringify(job.risks || []), JSON.stringify(job.qualityTags || []),
@@ -155,7 +155,7 @@ function upsertJob(db, job, batchId) {
   ];
   if (existing) {
     db.prepare(`
-      UPDATE jobs SET keyword=?, title=?, company=?, location=?, salary=?, experience=?, education=?,
+      UPDATE jobs SET keyword=?, title=?, company=?, client_company=?, location=?, salary=?, experience=?, education=?,
       boss_active_text=?, boss_active_days=?, url=?, tags_json=?, description=?, score=?, level=?,
       matches_json=?, risks_json=?, quality_tags_json=?, greeting=?, analysis_json=?, last_seen_at=?, batch_id=? WHERE id=?
     `).run(...params, existing.id);
@@ -163,10 +163,10 @@ function upsertJob(db, job, batchId) {
     return Number(existing.id);
   }
   const result = db.prepare(`
-    INSERT INTO jobs(source, source_id, keyword, title, company, location, salary, experience, education,
+    INSERT INTO jobs(source, source_id, keyword, title, company, client_company, location, salary, experience, education,
       boss_active_text, boss_active_days, url, tags_json, description, score, level, matches_json,
       risks_json, quality_tags_json, greeting, analysis_json, first_seen_at, last_seen_at, batch_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(job.source, job.sourceId, ...params.slice(0, -1), now, batchId || null);
   const id = Number(result.lastInsertRowid);
   if (batchId) recordJobObservation(db, id, batchId, job, now);
@@ -176,7 +176,7 @@ function upsertJob(db, job, batchId) {
 function recordJobObservation(db, jobId, batchId, job, seenAt) {
   const contentHash = sourceContentHash(job);
   const values = [
-    jobId, batchId, job.keyword || null, job.title || "", job.company || null, job.location || null,
+    jobId, batchId, job.keyword || null, job.title || "", job.company || null, job.clientCompany || null, job.location || null,
     job.salary || null, job.experience || null, job.education || null, job.bossActiveText || null,
     job.bossActiveDays ?? null, job.url || null, JSON.stringify(job.tags || []), job.description || null,
     job.score || 0, job.level || null, JSON.stringify(job.matches || []), JSON.stringify(job.risks || []),
@@ -184,12 +184,12 @@ function recordJobObservation(db, jobId, batchId, job, seenAt) {
   ];
   db.prepare(`
     INSERT INTO job_observations(
-      job_id, batch_id, keyword, title, company, location, salary, experience, education,
+      job_id, batch_id, keyword, title, company, client_company, location, salary, experience, education,
       boss_active_text, boss_active_days, url, tags_json, description, score, level,
       matches_json, risks_json, quality_tags_json, greeting, analysis_json, content_hash, content_hash_version, seen_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(batch_id, job_id) DO UPDATE SET
-      keyword=excluded.keyword, title=excluded.title, company=excluded.company, location=excluded.location,
+      keyword=excluded.keyword, title=excluded.title, company=excluded.company, client_company=excluded.client_company, location=excluded.location,
       salary=excluded.salary, experience=excluded.experience, education=excluded.education,
       boss_active_text=excluded.boss_active_text, boss_active_days=excluded.boss_active_days, url=excluded.url,
       tags_json=excluded.tags_json, description=excluded.description, score=excluded.score, level=excluded.level,
@@ -282,7 +282,7 @@ function listReportJobs(db, options = {}) {
     ${cte}
     SELECT jobs.id AS id, jobs.source AS source, jobs.source_id AS source_id,
       o.id AS observation_id, o.batch_id AS batch_id, b.profile_id AS profile_id, b.search_plan_id AS search_plan_id,
-      o.keyword, o.title, o.company, o.location, o.salary, o.experience, o.education,
+      o.keyword, o.title, o.company, o.client_company, o.location, o.salary, o.experience, o.education,
       o.boss_active_text, o.boss_active_days, o.url, o.tags_json, o.description, o.score, o.level,
       o.matches_json, o.risks_json, o.quality_tags_json, o.greeting, o.analysis_json,
       (SELECT MIN(o2.seen_at) FROM job_observations o2 JOIN batches b2 ON b2.id = o2.batch_id WHERE o2.job_id = jobs.id${scopedObservation}) AS first_seen_at,
@@ -444,7 +444,7 @@ function rescorePlanObservations(db, { planId, configs }) {
     for (const row of rows) {
       const metadata = mergeJobMetadata({ salary: row.salary || "", experience: row.experience || "", education: row.education || "", tags: parseJson(row.tags_json, []) }, row.description || "");
       const raw = {
-        source: row.source, sourceId: row.source_id, keyword: row.keyword || "", title: row.title || "", company: row.company || "", location: row.location || "",
+        source: row.source, sourceId: row.source_id, keyword: row.keyword || "", title: row.title || "", company: row.company || "", clientCompany: row.client_company || "", location: row.location || "",
         salary: metadata.salary, experience: metadata.experience, education: metadata.education, bossActiveText: row.boss_active_text || "",
         url: row.url || "", tags: parseJson(row.tags_json, []), description: row.description || "", ...storedDetailFlags(row)
       };
@@ -475,7 +475,7 @@ async function reassessBatchObservations(db, { batchId, planId, configs, analyze
   if (Number(batch.search_plan_id || 0) !== normalizedPlanId) throw storageError("BATCH_PLAN_MISMATCH", "batch does not belong to the requested search plan");
   if (typeof analyzeJob !== "function") throw new Error("analyzeJob is required");
   const rows = db.prepare(`
-    SELECT o.id AS observation_id, o.job_id, o.keyword, o.title, o.company, o.location, o.salary, o.experience, o.education,
+    SELECT o.id AS observation_id, o.job_id, o.keyword, o.title, o.company, o.client_company, o.location, o.salary, o.experience, o.education,
       o.boss_active_text, o.url, o.tags_json, o.quality_tags_json, o.description, o.greeting, j.source, j.source_id
     FROM job_observations o JOIN jobs j ON j.id = o.job_id WHERE o.batch_id = ? ORDER BY o.id
   `).all(normalizedBatchId);
@@ -485,7 +485,7 @@ async function reassessBatchObservations(db, { batchId, planId, configs, analyze
     const detailActivity = parseBossActivityText(row.description || "");
     const metadata = mergeJobMetadata({ salary: row.salary || "", experience: row.experience || "", education: row.education || "", tags: parseJson(row.tags_json, []) }, description);
     const raw = {
-      source: row.source, sourceId: row.source_id, keyword: row.keyword || "", title: row.title || "", company: row.company || "", location: row.location || "",
+      source: row.source, sourceId: row.source_id, keyword: row.keyword || "", title: row.title || "", company: row.company || "", clientCompany: row.client_company || "", location: row.location || "",
       salary: metadata.salary, experience: metadata.experience, education: metadata.education, bossActiveText: detailActivity || row.boss_active_text || "",
       url: row.url || "", tags: parseJson(row.tags_json, []), description, ...storedDetailFlags(row)
     };
@@ -608,7 +608,7 @@ function rowToJob(row) {
   const analysis = normalizeAnalysisForRead(parseJson(row.analysis_json, {}));
   return {
     id: row.id, observationId: row.observation_id || null, profileId: row.profile_id || null, searchPlanId: row.search_plan_id || null,
-    source: row.source, sourceId: row.source_id, keyword: row.keyword, title: row.title, company: row.company, location: row.location,
+    source: row.source, sourceId: row.source_id, keyword: row.keyword, title: row.title, company: row.company, clientCompany: row.client_company || "", location: row.location,
     salary: row.salary, experience: row.experience, education: row.education, bossActiveText: row.boss_active_text, bossActiveDays: row.boss_active_days,
     url: row.url, tags: JSON.parse(row.tags_json || "[]"), description: row.description, score: row.score, level: row.level,
     matches: JSON.parse(row.matches_json || "[]"), risks: JSON.parse(row.risks_json || "[]"), qualityTags: parseJson(row.quality_tags_json, []),
@@ -697,10 +697,12 @@ function normalizeAnalysisForRead(analysis = {}) {
 function observationContentHash(job) { return sourceContentHash(job); }
 
 function sourceContentHash(job) {
-  return crypto.createHash("sha256").update(JSON.stringify({
+  const payload = {
     title: job.title || "", company: job.company || "", location: job.location || "", salary: job.salary || "", experience: job.experience || "", education: job.education || "",
     tags: Array.isArray(job.tags) ? job.tags : parseJson(job.tags_json, []), description: job.description || ""
-  })).digest("hex");
+  };
+  if (String(job.clientCompany || "").trim()) payload.clientCompany = String(job.clientCompany).trim();
+  return crypto.createHash("sha256").update(JSON.stringify(payload)).digest("hex");
 }
 
 function normalizeDedupeText(value) { return String(value || "").toLowerCase().replace(/[\s\-_/()（）]/g, ""); }

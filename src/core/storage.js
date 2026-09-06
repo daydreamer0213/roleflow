@@ -127,6 +127,19 @@ CREATE INDEX IF NOT EXISTS idx_candidate_job_archives_profile
   ON candidate_job_archives(profile_id, archived_at DESC, job_id);
 `;
 
+const PLATFORM_SEARCH_CONTEXT_SCHEMA = `
+CREATE TABLE IF NOT EXISTS search_plan_platform_contexts (
+  plan_id INTEGER NOT NULL,
+  site TEXT NOT NULL CHECK(site IN ('boss', 'zhaopin')),
+  search_template_json TEXT NOT NULL,
+  filter_summary_json TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(plan_id, site),
+  FOREIGN KEY(plan_id) REFERENCES search_plans(id)
+);
+`;
+
 const COMMUNICATION_SCHEMA = `
 CREATE TABLE IF NOT EXISTS communication_batches (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -180,6 +193,7 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
   id TEXT PRIMARY KEY,
   profile_id INTEGER NOT NULL,
   plan_id INTEGER NOT NULL,
+  site TEXT NOT NULL DEFAULT 'boss' CHECK(site IN ('boss', 'zhaopin')),
   local_day TEXT NOT NULL,
   sequence INTEGER NOT NULL CHECK(sequence BETWEEN 1 AND 3),
   status TEXT NOT NULL CHECK(status IN ('created','scanning','analyzing','review_required','communicating','paused','completed','interrupted','failed','stopped')),
@@ -212,7 +226,7 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
   review_ready_at TEXT,
   finished_at TEXT,
   updated_at TEXT NOT NULL,
-  UNIQUE(profile_id, local_day, sequence),
+  UNIQUE(profile_id, local_day, site, sequence),
   FOREIGN KEY(profile_id) REFERENCES candidate_profiles(id),
   FOREIGN KEY(plan_id) REFERENCES search_plans(id),
   FOREIGN KEY(scan_run_id) REFERENCES scan_runs(id),
@@ -223,7 +237,7 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
 CREATE INDEX IF NOT EXISTS idx_workflow_runs_active
   ON workflow_runs(profile_id, plan_id, local_day, status, sequence);
 CREATE INDEX IF NOT EXISTS idx_workflow_runs_daily
-  ON workflow_runs(profile_id, local_day, sequence);
+  ON workflow_runs(profile_id, local_day, site, sequence);
 
 `;
 
@@ -409,6 +423,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   keyword TEXT,
   title TEXT NOT NULL,
   company TEXT,
+  client_company TEXT,
   location TEXT,
   salary TEXT,
   experience TEXT,
@@ -470,6 +485,7 @@ CREATE TABLE IF NOT EXISTS job_observations (
   keyword TEXT,
   title TEXT NOT NULL,
   company TEXT,
+  client_company TEXT,
   location TEXT,
   salary TEXT,
   experience TEXT,
@@ -634,6 +650,7 @@ CREATE INDEX IF NOT EXISTS idx_scan_runs_status ON scan_runs(status, heartbeat_a
 CREATE INDEX IF NOT EXISTS idx_job_refresh_attempts_job ON job_refresh_attempts(job_id, created_at);
 ${COMMUNICATION_SCHEMA}
 ${WORKFLOW_SCHEMA}
+${PLATFORM_SEARCH_CONTEXT_SCHEMA}
 `;
 
 const MATCHING_CARD_SCHEMA = `
@@ -1369,8 +1386,84 @@ const MIGRATIONS = [
     apply(db) {
       migrateResumeOptimizationPlanBinding(db);
     }
+  },
+  {
+    version: 29,
+    name: "platform_search_contexts_and_workflow_source_v1",
+    apply(db) {
+      migrateWorkflowRunPlatforms(db);
+      migrateJobClientCompanies(db);
+      db.exec(PLATFORM_SEARCH_CONTEXT_SCHEMA);
+    }
   }
 ];
+
+function migrateWorkflowRunPlatforms(db) {
+  const exists = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'workflow_runs'").get();
+  if (!exists) {
+    db.exec(WORKFLOW_SCHEMA);
+    return;
+  }
+  const columns = new Set(db.prepare("PRAGMA table_info(workflow_runs)").all().map((column) => column.name));
+  if (columns.has("site")) return;
+  const taskExists = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'workflow_job_tasks'").get();
+  const attemptExists = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'job_analysis_attempts'").get();
+  if (attemptExists) db.exec("CREATE TABLE job_analysis_attempts_platform_v29 AS SELECT * FROM job_analysis_attempts; DROP TABLE job_analysis_attempts;");
+  if (taskExists) db.exec("CREATE TABLE workflow_job_tasks_platform_v29 AS SELECT * FROM workflow_job_tasks; DROP TABLE workflow_job_tasks;");
+  db.exec("DROP INDEX IF EXISTS idx_workflow_runs_active; DROP INDEX IF EXISTS idx_workflow_runs_daily;");
+  db.exec("ALTER TABLE workflow_runs RENAME TO workflow_runs_legacy_v29;");
+  db.exec(WORKFLOW_SCHEMA);
+  db.exec(`INSERT INTO workflow_runs(
+    id, profile_id, plan_id, site, local_day, sequence, status,
+    target_success_count, successful_count, inventory_count, candidate_gap, scan_needed,
+    keywords_json, budget_json, planner_json, metrics_json, control_state, resume_phase,
+    recovery_generation, circuit_timeout_job_count, lifetime_timeout_job_count, progress_revision,
+    last_activity_at, model_config_revision, platform_access_started_at, scan_run_id, scan_batch_id,
+    communication_batch_id, shortfall_code, error_code, error_message, created_at, started_at,
+    review_ready_at, finished_at, updated_at
+  ) SELECT
+    id, profile_id, plan_id, 'boss', local_day, sequence, status,
+    target_success_count, successful_count, inventory_count, candidate_gap, scan_needed,
+    keywords_json, budget_json, planner_json, metrics_json, control_state, resume_phase,
+    recovery_generation, circuit_timeout_job_count, lifetime_timeout_job_count, progress_revision,
+    last_activity_at, model_config_revision, platform_access_started_at, scan_run_id, scan_batch_id,
+    communication_batch_id, shortfall_code, error_code, error_message, created_at, started_at,
+    review_ready_at, finished_at, updated_at
+  FROM workflow_runs_legacy_v29; DROP TABLE workflow_runs_legacy_v29;`);
+  if (taskExists) {
+    const taskSchema = WORKFLOW_TASK_SCHEMA.split("CREATE INDEX IF NOT EXISTS idx_workflow_job_tasks_claim")[0];
+    db.exec(taskSchema);
+    copyTable(db, "workflow_job_tasks_platform_v29", "workflow_job_tasks");
+    db.exec("DROP TABLE workflow_job_tasks_platform_v29;");
+  }
+  if (attemptExists) {
+    const attemptSchema = WORKFLOW_TASK_SCHEMA
+      .slice(WORKFLOW_TASK_SCHEMA.indexOf("CREATE TABLE IF NOT EXISTS job_analysis_attempts"))
+      .split("CREATE INDEX IF NOT EXISTS idx_job_analysis_attempts_progress")[0];
+    db.exec(attemptSchema);
+    copyTable(db, "job_analysis_attempts_platform_v29", "job_analysis_attempts");
+    db.exec("DROP TABLE job_analysis_attempts_platform_v29;");
+  }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_workflow_runs_active ON workflow_runs(profile_id, plan_id, local_day, status, sequence);
+    CREATE INDEX IF NOT EXISTS idx_workflow_runs_daily ON workflow_runs(profile_id, local_day, site, sequence);
+    CREATE INDEX IF NOT EXISTS idx_workflow_job_tasks_claim ON workflow_job_tasks(workflow_run_id, status, priority, position);
+    CREATE INDEX IF NOT EXISTS idx_workflow_job_tasks_lease ON workflow_job_tasks(status, lease_expires_at);
+    CREATE INDEX IF NOT EXISTS idx_job_analysis_attempts_progress ON job_analysis_attempts(workflow_run_id, model_config_revision, finished_at);
+    CREATE INDEX IF NOT EXISTS idx_job_analysis_attempts_task ON job_analysis_attempts(task_id, recovery_generation, attempt_in_generation);`);
+}
+
+function copyTable(db, from, to) {
+  const names = db.prepare(`PRAGMA table_info(${from})`).all().map((column) => column.name);
+  db.exec(`INSERT INTO ${to}(${names.join(", ")}) SELECT ${names.join(", ")} FROM ${from};`);
+}
+
+function migrateJobClientCompanies(db) {
+  for (const table of ["jobs", "job_observations"]) {
+    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)) continue;
+    const columns = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((column) => column.name));
+    if (!columns.has("client_company")) db.exec(`ALTER TABLE ${table} ADD COLUMN client_company TEXT`);
+  }
+}
 
 function migrateResumeOptimizationPlanBinding(db) {
   db.exec(RESUME_OPTIMIZATION_SCHEMA);

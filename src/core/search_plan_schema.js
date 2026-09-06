@@ -26,11 +26,17 @@ function generatedPlatformOf(plan = {}) {
 
 function canonicalSearchPlanV2(plan = {}) {
   const generated = generatedPlatformOf(plan);
+  const site = String(plan?.platform?.site || "boss").trim().toLowerCase();
+  if (!["boss", "zhaopin"].includes(site)) {
+    const error = new Error("平台无效。");
+    error.code = "SEARCH_PLAN_PLATFORM_SITE_INVALID";
+    throw error;
+  }
   return {
     schemaVersion: SEARCH_PLAN_SCHEMA_VERSION,
     name: String(plan.name || "岗位筛选计划").trim() || "岗位筛选计划",
     acquisitionMode: acquisitionModeOf(plan),
-    platform: { site: String(plan?.platform?.site || "boss").trim().toLowerCase(), generated },
+    platform: { site, generated },
     salary: clone(plan.salary || {}),
     salaryMode: plan.salaryMode,
     allowExperienceStretch: plan.allowExperienceStretch !== false,

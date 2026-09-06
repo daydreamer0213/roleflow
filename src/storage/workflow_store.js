@@ -61,6 +61,7 @@ function createWorkflowRun(db, input = {}) {
   const planId = optionalPositiveInteger(input.planId, "planId");
   const localDay = String(input.localDay || "").trim();
   const sequence = optionalPositiveInteger(input.sequence, "sequence");
+  const site = normalizeWorkflowSite(input.site);
   if (!id) throw workflowRunError("WORKFLOW_RUN_ID_REQUIRED", "workflow run id is required");
   if (!profileId || !planId) throw workflowRunError("WORKFLOW_OWNER_REQUIRED", "workflow run profile and plan are required");
   if (!/^\d{4}-\d{2}-\d{2}$/.test(localDay)) {
@@ -76,15 +77,16 @@ function createWorkflowRun(db, input = {}) {
   const now = String(input.createdAt || nowIso());
   try {
     db.prepare(`INSERT INTO workflow_runs(
-      id, profile_id, plan_id, local_day, sequence, status,
+      id, profile_id, plan_id, site, local_day, sequence, status,
       target_success_count, successful_count, inventory_count, candidate_gap, scan_needed,
       keywords_json, budget_json, planner_json, metrics_json,
       shortfall_code, error_code, error_message, model_config_revision, last_activity_at, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, 'created', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    ) VALUES (?, ?, ?, ?, ?, ?, 'created', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(
         id,
         profileId,
         planId,
+        site,
         localDay,
         sequence,
         nonNegativeInteger(input.targetSuccessCount),
@@ -132,8 +134,10 @@ function listWorkflowRuns(db, filters = {}) {
   const params = [];
   const profileId = optionalPositiveInteger(filters.profileId, "profileId");
   const planId = optionalPositiveInteger(filters.planId, "planId");
+  const site = filters.site ? normalizeWorkflowSite(filters.site) : "";
   if (profileId) { clauses.push("profile_id = ?"); params.push(profileId); }
   if (planId) { clauses.push("plan_id = ?"); params.push(planId); }
+  if (site) { clauses.push("site = ?"); params.push(site); }
   if (filters.localDay) { clauses.push("local_day = ?"); params.push(String(filters.localDay)); }
   const statuses = (Array.isArray(filters.statuses) ? filters.statuses : [])
     .map((status) => String(status || "").trim())
@@ -167,7 +171,8 @@ function transitionWorkflowRun(db, input = {}) {
   if (!WORKFLOW_RUN_STATUSES.includes(nextStatus)) {
     throw workflowRunError("WORKFLOW_STATUS_INVALID", "workflow run status is invalid");
   }
-  if (nextStatus !== current.status && !WORKFLOW_TRANSITIONS[current.status]?.has(nextStatus)) {
+  const readonlyAnalysisCompletion = current.site === "zhaopin" && current.status === "analyzing" && nextStatus === "completed";
+  if (nextStatus !== current.status && !readonlyAnalysisCompletion && !WORKFLOW_TRANSITIONS[current.status]?.has(nextStatus)) {
     throw workflowRunError("WORKFLOW_TRANSITION_INVALID", `workflow run cannot transition from ${current.status} to ${nextStatus}`);
   }
   const now = String(input.updatedAt || nowIso());
@@ -386,6 +391,7 @@ function workflowRunRow(row) {
     id: row.id,
     profileId: Number(row.profile_id),
     planId: Number(row.plan_id),
+    site: row.site || "boss",
     localDay: row.local_day,
     sequence: Number(row.sequence),
     status: row.status,
@@ -420,6 +426,12 @@ function workflowRunRow(row) {
     finishedAt: row.finished_at || null,
     updatedAt: row.updated_at
   };
+}
+
+function normalizeWorkflowSite(value) {
+  const site = String(value || "boss").trim().toLowerCase();
+  if (!["boss", "zhaopin"].includes(site)) throw workflowRunError("WORKFLOW_SITE_INVALID", "workflow site is invalid");
+  return site;
 }
 
 function workflowJobTaskRow(row) {
@@ -494,6 +506,7 @@ function workflowObservationJobRow(row) {
     keyword: row.keyword || null,
     title: row.title,
     company: row.company || null,
+    clientCompany: row.client_company || null,
     location: row.location || null,
     salary: row.salary || null,
     experience: row.experience || null,
@@ -906,7 +919,7 @@ function incrementWorkflowRunActivity(db, { workflowRunId, now }) {
 
 function getWorkflowObservationJob(db, observationId) {
   const row = db.prepare(`
-    SELECT o.id, o.job_id, o.batch_id, o.keyword, o.title, o.company, o.location, o.salary,
+    SELECT o.id, o.job_id, o.batch_id, o.keyword, o.title, o.company, o.client_company, o.location, o.salary,
       o.experience, o.education, o.boss_active_text, o.boss_active_days, o.url, o.tags_json,
       o.description, o.score, o.level, o.matches_json, o.risks_json, o.quality_tags_json,
       o.greeting, o.analysis_json, j.source, j.source_id

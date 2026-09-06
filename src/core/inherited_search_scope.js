@@ -1,5 +1,6 @@
 const crypto = require("node:crypto");
 const { stableHash } = require("./analysis_revision");
+const { canonicalizeZhaopinSearchTemplate } = require("./zhaopin_search_scope");
 
 const BOSS_SEARCH_ORIGIN = "https://www.zhipin.com";
 const BOSS_SEARCH_PATH = "/web/geek/jobs";
@@ -47,12 +48,13 @@ function canonicalizeBossSearchUrl(rawUrl, removedParams) {
   };
 }
 
-function buildInheritedSearchScope({ profileId, rawUrl } = {}) {
+function buildInheritedSearchScope({ profileId, rawUrl, site = "boss" } = {}) {
   const normalizedProfileId = Number(profileId);
   if (!Number.isInteger(normalizedProfileId) || normalizedProfileId <= 0) {
     throw scopeError("INHERITED_SCOPE_PROFILE_INVALID", "继承范围需要有效候选人画像。");
   }
-  const searchTemplate = canonicalizeBossSearchTemplate(rawUrl);
+  const normalizedSite = normalizeInheritedSite(site);
+  const searchTemplate = canonicalizeTemplateForSite(normalizedSite, rawUrl);
   const templateHash = crypto.createHash("sha256").update(searchTemplate.url).digest("hex");
   const filterParams = {};
   const url = new URL(searchTemplate.url);
@@ -60,8 +62,8 @@ function buildInheritedSearchScope({ profileId, rawUrl } = {}) {
     filterParams[name] = url.searchParams.getAll(name);
   }
   const searchScope = {
-    key: `boss:${normalizedProfileId}:${templateHash}`,
-    site: "boss",
+    key: `${normalizedSite}:${normalizedProfileId}:${templateHash}`,
+    site: normalizedSite,
     templateHash,
     templateUrl: searchTemplate.url,
     filterParams
@@ -74,11 +76,11 @@ function assertInheritedAcquisitionScope(searchScope = {}) {
   const templateUrl = String(searchScope?.templateUrl || "");
   const templateHash = String(searchScope?.templateHash || "");
   const key = String(searchScope?.key || "");
+  const site = normalizeInheritedSite(searchScope?.site || "boss");
   if (
-    searchScope?.site !== "boss"
-    || !templateUrl
+    !templateUrl
     || !templateHash
-    || !key.startsWith("boss:")
+    || !key.startsWith(`${site}:`)
     || !key.endsWith(`:${templateHash}`)
     || !Object.hasOwn(searchScope, "filterParams")
     || !searchScope.filterParams
@@ -87,7 +89,7 @@ function assertInheritedAcquisitionScope(searchScope = {}) {
   ) {
     throw scopeError("INHERITED_SCOPE_INVALID", "继承范围数据不完整或格式无效。");
   }
-  const canonical = canonicalizeBossSearchTemplate(templateUrl);
+  const canonical = canonicalizeTemplateForSite(site, templateUrl);
   if (canonical.url !== templateUrl) {
     throw scopeError("INHERITED_SCOPE_INVALID", "继承范围 URL 不是规范化的 BOSS 搜索页。");
   }
@@ -107,6 +109,7 @@ function assertCompleteInheritedContext(context = {}, {
   }
   const expectedPlanId = planId === null || planId === undefined ? null : Number(planId);
   const keywordPlanId = Number(keywordSource?.searchPlanId || 0);
+  const site = String(searchScope?.site || "boss").toLowerCase();
   if (
     searchTemplate?.mode !== "inherited"
     || String(searchTemplate?.url || "") !== String(searchScope.templateUrl || "")
@@ -120,7 +123,7 @@ function assertCompleteInheritedContext(context = {}, {
     || !Array.isArray(keywordSource?.keywords)
     || !keywordSource.keywords.length
     || !String(platformPolicy?.hash || "").trim()
-    || platformPolicy?.site !== "boss"
+    || platformPolicy?.site !== site
     || String(platformPolicy?.templateHash || "") !== String(searchScope.templateHash || "")
     || !platformPolicy?.filters
     || typeof platformPolicy.filters !== "object"
@@ -131,6 +134,18 @@ function assertCompleteInheritedContext(context = {}, {
     throw scopeError(code, message);
   }
   return context;
+}
+
+function normalizeInheritedSite(value) {
+  const site = String(value || "boss").trim().toLowerCase();
+  if (!["boss", "zhaopin"].includes(site)) {
+    throw scopeError("INHERITED_SCOPE_SITE_INVALID", "继承范围的平台无效。");
+  }
+  return site;
+}
+
+function canonicalizeTemplateForSite(site, rawUrl) {
+  return site === "zhaopin" ? canonicalizeZhaopinSearchTemplate(rawUrl) : canonicalizeBossSearchTemplate(rawUrl);
 }
 
 function freezeKeywordSource({ planRecord, matchingCardRevision = "" } = {}) {

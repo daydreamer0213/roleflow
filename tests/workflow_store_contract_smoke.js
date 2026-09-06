@@ -20,8 +20,8 @@ const WORKFLOW_EXPORTS = [
   "WORKFLOW_RUN_STATUSES", "WORKFLOW_TIMEOUT_CIRCUIT_OPEN_CODE"
 ].sort();
 const MOVED_DEFINITIONS = [
-  ...WORKFLOW_EXPORTS.filter((name) => name !== "replaceWorkflowScanContext"),
-  "workflowRunRow", "workflowObservationJobRow", "nonNegativeInteger", "workflowRunError",
+  ...WORKFLOW_EXPORTS.filter((name) => !["replaceWorkflowScanContext", "createWorkflowRun", "listWorkflowRuns", "transitionWorkflowRun", "getWorkflowObservationJob"].includes(name)),
+  "nonNegativeInteger", "workflowRunError",
   "ACTIVE_WORKFLOW_RUN_STATUSES", "TERMINAL_WORKFLOW_RUN_STATUSES", "WORKFLOW_CONTROL_STATES",
   "WORKFLOW_DETAIL_REQUIRED_CODE", "WORKFLOW_DETAIL_REQUIRED_KIND", "WORKFLOW_OBSERVATION_QUALITY_JSON_SQL",
   "WORKFLOW_OBSERVATION_READY_SQL", "WORKFLOW_TRANSITIONS"
@@ -160,12 +160,13 @@ function contract03RuntimeOwnershipAndRollback() {
       "errorCode", "errorMessage", "finishedAt", "id", "inventoryCount", "keywords", "lastActivityAt",
       "lifetimeTimeoutJobCount", "localDay", "metrics", "modelConfigRevision", "planId", "planner",
       "platformAccessStartedAt", "profileId", "progressRevision", "recoveryGeneration", "resumePhase",
-      "reviewReadyAt", "scanBatchId", "scanNeeded", "scanRunId", "sequence", "shortfallCode", "startedAt",
+      "reviewReadyAt", "scanBatchId", "scanNeeded", "scanRunId", "sequence", "shortfallCode", "site", "startedAt",
       "status", "successfulCount", "targetSuccessCount", "updatedAt"
     ]);
     assert.equal(run.id, "workflow-store-contract");
     assert.equal(run.localDay, "2030-01-02");
     assert.equal(run.sequence, 1);
+    assert.equal(run.site, "boss");
     assertWorkflowFailure(
       () => workflowStore.createWorkflowRun(db, {
         id: "duplicate-slot", profileId, planId, localDay: "2030-01-02", sequence: 1
@@ -409,7 +410,7 @@ function contract04DirectHealthSnapshot() {
     ]);
     assert.deepEqual(Object.keys(snapshot.jobs[0]).sort(), [
       "activityObservedAt", "analysis", "applicationNote", "applicationReasonCode", "applicationStatus",
-      "applicationUpdatedAt", "archived", "archivedAt", "batchId", "bossActiveDays", "bossActiveText", "company",
+      "applicationUpdatedAt", "archived", "archivedAt", "batchId", "bossActiveDays", "bossActiveText", "clientCompany", "company",
       "daysSinceLastSeen", "decisionBucket", "description", "detailChanged", "education",
       "effectiveBossActiveDays", "experience", "feedback", "feedbackRank", "firstBatchId",
       "firstSeenAt", "followUpNote", "followUpUpdatedAt", "greeting", "id", "keyword",
@@ -424,7 +425,7 @@ function contract04DirectHealthSnapshot() {
       "errorCode", "errorMessage", "finishedAt", "id", "inventoryCount", "keywords", "lastActivityAt",
       "lifetimeTimeoutJobCount", "localDay", "metrics", "modelConfigRevision", "planId", "planner",
       "platformAccessStartedAt", "profileId", "progressRevision", "recoveryGeneration", "resumePhase",
-      "reviewReadyAt", "scanBatchId", "scanNeeded", "scanRunId", "sequence", "shortfallCode", "startedAt",
+      "reviewReadyAt", "scanBatchId", "scanNeeded", "scanRunId", "sequence", "shortfallCode", "site", "startedAt",
       "status", "successfulCount", "targetSuccessCount", "updatedAt"
     ]);
     assert.deepEqual(Object.keys(snapshot.candidateEvents[0]).sort(), [

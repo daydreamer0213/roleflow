@@ -22,6 +22,7 @@ const PAYLOAD_FIELDS = [
 const TARGET_FIELDS = ["targetKey", "cityCode", "keyword", "priority", "laneId", "cardLimit"];
 
 function buildScanExecutionSnapshot(input = {}) {
+  const site = String(input.site || "boss").trim().toLowerCase();
   const cityScopes = (Array.isArray(input.cityScopes) ? input.cityScopes : []).map((item) => ({
     city: String(item?.city || ""),
     cityCode: String(item?.cityCode || "")
@@ -34,7 +35,7 @@ function buildScanExecutionSnapshot(input = {}) {
   const searchTemplate = normalizeSearchTemplate(input.searchTemplate);
   const { searchScope, keywordSource, platformPolicy } = normalizeInheritedContext(input);
   const limits = normalizeExecutionLimits(input.limits);
-  const targets = buildBossScanTargets({
+  const scanTargets = site === "zhaopin" ? buildZhaopinScanTargets({ keywordPlan, searchTemplate, limits }) : buildBossScanTargets({
     keywords: keywordPlan.map((item) => typeof item === "string" ? item : item?.word).filter(Boolean),
     keywordPlan,
     cityScopes,
@@ -43,7 +44,8 @@ function buildScanExecutionSnapshot(input = {}) {
     supplementalSalaryLaneKeywordLimit: limits.supplementalSalaryLaneKeywordLimit,
     supplementalSalaryLaneCardLimit: limits.supplementalSalaryLaneCardLimit,
     supplementalSalaryLaneDetailLimit: limits.supplementalSalaryLaneDetailLimit
-  }).map((target) => ({
+  });
+  const targets = scanTargets.map((target) => ({
     targetKey: target.targetKey,
     cityCode: target.city.cityCode,
     keyword: target.keyword,
@@ -55,7 +57,7 @@ function buildScanExecutionSnapshot(input = {}) {
     schemaVersion: SCHEMA_VERSION,
     createdAt: new Date().toISOString(),
     ...(String(input.planHash || "").trim() ? { planHash: String(input.planHash).trim() } : {}),
-    site: String(input.site || "boss").trim().toLowerCase(),
+    site,
     scanKind: String(input.scanKind || "").trim().toLowerCase(),
     detailMode: normalizeDetailMode(input.detailMode),
     runtimePolicyHash: String(input.runtimePolicyHash || "").trim(),
@@ -73,6 +75,17 @@ function buildScanExecutionSnapshot(input = {}) {
     targets
   };
   return { ...snapshot, snapshotHash: stableHash(deterministicPayload(snapshot)) };
+}
+
+function buildZhaopinScanTargets({ keywordPlan, searchTemplate, limits }) {
+  return keywordPlan.map((item, index) => ({
+    targetKey: `zhaopin:${String(searchTemplate.cityCode || "")}:${item.word}:${item.priority}:${index + 1}`,
+    city: { cityCode: String(searchTemplate.cityCode || "") },
+    keyword: item.word,
+    item,
+    laneId: "native",
+    cardLimit: limits.maxCards
+  }));
 }
 
 function normalizeSearchTemplate(value = {}) {
