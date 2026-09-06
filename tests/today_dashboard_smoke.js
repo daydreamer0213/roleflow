@@ -318,6 +318,11 @@ function assertEarlyScanConfirmationRendering() {
   assert.match(html, /连续多轮访问 BOSS 可能增加账号触发限制的风险/);
   assert.match(html, /data-browser-readiness-button/);
 
+  const zlBlocked = buildTodayViewModel({ ...base, site: 'zhaopin', workflowState: { nextPlan: { errorCode: 'WORKFLOW_SCAN_INTERVAL' } } });
+  assert.match(renderTodayPage(zlBlocked), /连续多轮访问 智联 可能增加账号触发限制的风险/);
+  const zlPaused = buildTodayViewModel({ ...base, site: 'zhaopin', bossRuntimeBlock: { reasonCode: 'ZHAOPIN_RISK_CONTROL' } });
+  assert.equal(zlPaused.primary.status, '智联 安全暂停中');
+  assert.equal(zlPaused.blockers[0].title, '智联 扫描因安全验证暂停');
   const normal = renderTodayPage(buildTodayViewModel({
     ...base,
     workflowState: { activeRun: null, nextPlan: { targetSuccessCount: 35 } }

@@ -4,6 +4,7 @@ const { PRODUCT_POLICY } = require("../../core/product_policy");
 const { acquisitionModeOf, generatedPlatformOf } = require("../../core/search_plan_schema");
 
 function buildTodayViewModel(input = {}) {
+  const site = input.site || "boss";
   const profile = input.profile || {};
   const planRecord = input.planRecord || {};
   const plan = input.plan || {};
@@ -53,7 +54,7 @@ function buildTodayViewModel(input = {}) {
       meta: [`本地筛选方案 #${planId}`, plan.name || "未命名方案"],
       status: dependency.stale || dependency.matchingCardRequired ? "方案待确认" : "方案可用"
     },
-    primary: buildPrimaryAction({ activeRun, nextPlan, dependency, runtimeBlock, profileId, planId, startBlocked }),
+    primary: buildPrimaryAction({ activeRun, nextPlan, dependency, runtimeBlock, profileId, planId, startBlocked, site }),
     followUp: Number(input.followUp?.count) > 0 ? {
       count: Math.floor(Number(input.followUp.count)),
       href: String(input.followUp.href || `/follow-ups?profileId=${profileId}&planId=${planId}`)
@@ -69,6 +70,7 @@ function buildTodayViewModel(input = {}) {
       remainingPages: Number(remainingBudget.pages || 0)
     },
     blockers: buildBlockers({
+      site,
       dependency,
       runtimeBlock,
       validation,
@@ -120,7 +122,7 @@ function buildTodayViewModel(input = {}) {
         : "使用当前 Edge（高级，需要浏览器连接组件）"
     }
   };
-  vm.page.site = input.site || 'boss';
+  vm.page.site = site;
   vm.runtime.site = vm.page.site;
   if (vm.page.site === 'zhaopin') {
     vm.page.todayPath += '&site=zhaopin';
@@ -141,11 +143,11 @@ function buildTodayViewModel(input = {}) {
   return vm;
 }
 
-function buildPrimaryAction({ activeRun, nextPlan, dependency, runtimeBlock, profileId, planId, startBlocked }) {
+function buildPrimaryAction({ activeRun, nextPlan, dependency, runtimeBlock, profileId, planId, startBlocked, site = "boss" }) {
   if (activeRun) return { type: "link", label: "继续本轮", href: `/workflow?runId=${encodeURIComponent(activeRun.id)}`, status: workflowStatusLabel(activeRun.status), detail: "继续查看本轮进度和已完成岗位。" };
   if (dependency.matchingCardRequired) return { type: "link", label: "确认匹配偏好卡", href: `/match-card?profileId=${profileId}${dependency.draftCardId ? `&cardId=${dependency.draftCardId}` : ""}`, status: "扫描前需要确认", detail: "确认当前草稿后，才会启用扫描和岗位匹配。" };
-  if (dependency.stale) return { type: "link", label: "重新确认筛选条件", href: `/plan?profileId=${profileId}&planId=${planId}#plan-settings`, status: "方案需要重新确认", detail: "画像已更新；保存现有条件即可重新绑定，不会覆盖人工设置。" };
-  if (runtimeBlock) return { type: "link", label: "查看恢复说明", href: "/diagnostics", status: "BOSS 安全暂停中", detail: `已采集的数据安全保留。${runtimeBlock.blockedUntil ? `恢复时间 ${runtimeBlock.blockedUntil}` : "请等待风控恢复。"}` };
+  if (dependency.stale) return { type: "link", label: "重新确认筛选条件", href: `/plan?profileId=${profileId}&planId=${planId}${site === "zhaopin" ? "&site=zhaopin" : ""}#plan-settings`, status: "方案需要重新确认", detail: "画像已更新；保存现有条件即可重新绑定，不会覆盖人工设置。" };
+  if (runtimeBlock) return { type: "link", label: "查看恢复说明", href: "/diagnostics", status: `${site === "zhaopin" ? "智联" : "BOSS"} 安全暂停中`, detail: `已采集的数据安全保留。${runtimeBlock.blockedUntil ? `恢复时间 ${runtimeBlock.blockedUntil}` : "请等待风控恢复。"}` };
   if (nextPlan?.errorCode === "WORKFLOW_SCAN_INTERVAL") return {
     type: "cooldown_override",
     label: "提前开始下一轮",
@@ -158,11 +160,11 @@ function buildPrimaryAction({ activeRun, nextPlan, dependency, runtimeBlock, pro
   return { type: "form", label: "开始一轮岗位发现", status: startBlocked ? "等待前置条件恢复" : "可以开始新一轮", detail: "使用已保存条件发现一批岗位。", disabled: Boolean(startBlocked) };
 }
 
-function buildBlockers({ dependency, runtimeBlock, validation, nextPlan, profileId }) {
+function buildBlockers({ dependency, runtimeBlock, validation, nextPlan, profileId, site = "boss" }) {
   const blockers = [];
   if (dependency.stale) blockers.push({ tone: "danger", title: "方案需要重新确认", detail: "画像已更新，当前方案仍基于旧画像。保存一次即可重新绑定，人工条件不会被覆盖。", action: { label: "调整筛选条件", href: "#plan-settings" } });
   if (dependency.matchingCardRequired) blockers.push({ tone: "danger", title: "尚未确认匹配偏好卡", detail: "扫描和岗位匹配只会使用已确认的偏好卡。", action: { label: "检查匹配偏好卡", href: `/match-card?profileId=${profileId}${dependency.draftCardId ? `&cardId=${dependency.draftCardId}` : ""}` } });
-  if (runtimeBlock) blockers.push({ tone: "danger", title: "BOSS 扫描因安全验证暂停", detail: `限制到期前不会创建扫描进程；此前已采集的岗位和详情不会丢失。${runtimeBlock.reasonCode ? ` ${runtimeBlock.reasonCode}` : ""}`, action: { label: "查看诊断", href: "/diagnostics" } });
+  if (runtimeBlock) blockers.push({ tone: "danger", title: `${site === "zhaopin" ? "智联" : "BOSS"} 扫描因安全验证暂停`, detail: `限制到期前不会创建扫描进程；此前已采集的岗位和详情不会丢失。${runtimeBlock.reasonCode ? ` ${runtimeBlock.reasonCode}` : ""}`, action: { label: "查看诊断", href: "/diagnostics" } });
   for (const error of validation.errors || []) blockers.push({ tone: "waiting", title: "扫描前需要修正", detail: String(error), action: { label: "调整筛选条件", href: "#plan-settings" } });
   return blockers;
 }

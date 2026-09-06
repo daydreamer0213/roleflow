@@ -19,7 +19,10 @@ const COLUMNS = Object.freeze([
   ["求职状态", (job) => job.applicationStatus],
   ["状态时间", (job) => job.applicationUpdatedAt],
   ["HR 状态", (job) => job.messageStatus],
-  ["HR 状态时间", (job) => job.messageStatusAt]
+  ["HR 状态时间", (job) => job.messageStatusAt],
+  ["来源", (job) => job.source === "zhaopin" ? "智联" : job.source === "boss" || !job.source ? "BOSS" : job.source],
+  ["用人公司", (job) => job.clientCompany || job.company],
+  ["发布方", (job) => job.clientCompany ? job.company : ""]
 ]);
 
 function encodeJobExportCsv(jobs = []) {

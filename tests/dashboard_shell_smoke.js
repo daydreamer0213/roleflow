@@ -77,6 +77,7 @@ const logger = { info() {}, warn() {}, error() {}, requestId() { return "dashboa
     assert.strictEqual(runtimeAsset.status, 200, "the shared runtime client must be served");
     assert.match(runtimeAsset.contentType, /^application\/javascript(?:;|$)/);
     await assertRuntimeClient(runtimeAsset.body);
+    await assertRuntimeClient(runtimeAsset.body, "zhaopin");
 
     const unknownAsset = await getText(baseUrl, "/assets/%2e%2e%2fpackage.json");
     assert.strictEqual(unknownAsset.status, 404, "unknown asset paths must not reach the filesystem");
@@ -240,9 +241,10 @@ function assertSharedFrame(markup, href, name) {
   assert.strictEqual((markup.match(/src="\/assets\/runtime\.js"/g) || []).length, 1, `${name} must load one runtime client`);
 }
 
-async function assertRuntimeClient(source) {
+async function assertRuntimeClient(source, site = "boss") {
+  const pollUrl = site === "boss" ? "/api/runtime-status" : "/api/runtime-status?site=zhaopin";
   const elements = {
-    "[data-runtime-status]": { dataset: {} },
+    "[data-runtime-status]": { dataset: site === "boss" ? {} : { site } },
     "[data-runtime-title]": { textContent: "" },
     "[data-runtime-message]": { textContent: "" },
     "[data-runtime-recover]": {
@@ -277,7 +279,7 @@ async function assertRuntimeClient(source) {
     console: { error() {} }
   };
   vm.runInNewContext(source, context, { filename: "runtime.js" });
-  assert.deepStrictEqual(fetchCalls.map((call) => call.url), ["/api/runtime-status"]);
+  assert.deepStrictEqual(fetchCalls.map((call) => call.url), [pollUrl]);
   documentHandlers.visibilitychange();
   assert.strictEqual(fetchCalls.length, 1, "runtime polling must keep one request in flight");
 
@@ -300,6 +302,7 @@ async function assertRuntimeClient(source) {
   const clickPromise = click();
   assert.strictEqual(fetchCalls.at(-1).url, "/api/runtime/browser/recover");
   assert.strictEqual(fetchCalls.at(-1).options.method, "POST");
+  assert.strictEqual(fetchCalls.at(-1).options.body, site === "boss" ? "{}" : '{"site":"zhaopin"}');
   pending.shift()({
     ok: false,
     async json() {
@@ -319,7 +322,11 @@ async function assertRuntimeClient(source) {
   assert.strictEqual(timers.size, 0, "hidden pages must stop runtime polling");
   document.hidden = false;
   documentHandlers.visibilitychange();
-  assert.strictEqual(fetchCalls.at(-1).url, "/api/runtime-status", "visible pages must resume local runtime polling");
+  assert.strictEqual(fetchCalls.at(-1).url, pollUrl, "visible pages must resume local runtime polling");
+  pending.shift()({ ok: true, async json() { return { browser: { ready: true }, workspace: { status: "login_required" } }; } });
+  await settlePromises();
+  assert.strictEqual(elements["[data-runtime-recover]"].hidden, site === "zhaopin");
+  assert.match(elements["[data-runtime-title]"].textContent, site === "zhaopin" ? /智联只读/ : /登录 BOSS/);
   assert(fetchCalls.every((call) => String(call.url).startsWith("/api/runtime")), "runtime client must call only local runtime endpoints");
 }
 

@@ -39,4 +39,7 @@ const risky = encodeJobExportCsv([{ id: 8, title: "  +SUM(1,2)" }]);
 assert.match(risky, /"'  \+SUM\(1,2\)"/);
 assert.equal(jobExportFileName({ planName: "广州/AI:*?", date: "2026-09-03" }), "RoleFlow-广州_AI-2026-09-03.csv");
 
+const sourceCsv = encodeJobExportCsv([{ source: "zhaopin", clientCompany: "=SUM(1,2)", company: "@publisher" }]);
+assert.match(sourceCsv.split("\r\n")[0], /"来源","用人公司","发布方"$/);
+assert.match(sourceCsv, /"智联","'=SUM\(1,2\)","'@publisher"/);
 console.log("job_export_smoke ok");

@@ -106,6 +106,15 @@ async function main() {
     assert.match(mixedDefault, /智联完整岗位/); assert.match(mixedDefault, /新BOSS岗位/);
     const exported = await (await fetch(`${base}/jobs/export.csv?profileId=${saved.profileId}&planId=${saved.planId}&site=zhaopin&status=all`)).text();
     assert.match(exported, /智联完整岗位/); assert.doesNotMatch(exported, /新BOSS岗位/);
+    const exportRows = csvFixtureRows(exported);
+    assert.equal(exportRows.length, 1);
+    assert.deepEqual(['来源', '用人公司', '发布方'].map(key => exportRows[0][key]), ['智联', '实际用人公司', '招聘发布方']);
+    const mixedCsv = await (await fetch(`${base}/jobs/export.csv?profileId=${saved.profileId}&planId=${saved.planId}&site=all&status=all`)).text();
+    const mixedRows = csvFixtureRows(mixedCsv);
+    assert.equal(mixedRows.length, 3);
+    assert.deepEqual(mixedRows.filter(row => row['来源'] === '智联').map(row => row['用人公司']), ['实际用人公司']);
+    assert.equal(mixedRows.filter(row => row['来源'] === 'BOSS').length, 2);
+    assert(mixedRows.every(row => row['公司'] === '招聘发布方'), 'legacy company column preserved');
     response = await post('/api/mark', { profileId: saved.profileId, planId: saved.planId, jobId: ids[1].job.id, status: 'applied' });
     assert.equal(response.status, 400, await response.text());
     assert.equal(db.prepare('SELECT COUNT(*) n FROM candidate_funnel_entries').get().n, 0);
@@ -266,7 +275,12 @@ async function journey() {
     await page.reload();
     assert.equal(await page.getByLabel('本次找岗平台').inputValue(), 'zhaopin');
     assert.deepEqual(storage.getSearchPlan(db, saved.planId).plan, bossBefore);
-    await page.locator('#plan-settings > summary').click();
+    db.prepare('UPDATE search_plans SET profile_version_id = NULL WHERE id = ?').run(saved.planId);
+    await page.reload();
+    await page.getByRole('link', { name: '重新确认筛选条件', exact: true }).click();
+    assert.equal(new URL(page.url()).searchParams.get('site'), 'zhaopin', 'stale-plan CTA preserves source');
+    assert.equal(await page.getByLabel('本次找岗平台').inputValue(), 'zhaopin');
+    if (!await page.locator('#plan-settings').evaluate(node => node.open)) await page.locator('#plan-settings > summary').click();
     assert.equal(await page.locator('input[name="bossActiveDays"]').count(), 0);
     assert.equal(await page.locator('input[name="acquisitionMode"]').count(), 0);
     assert.equal(await page.locator('input[name="salaryMinK"]').inputValue(), '');
@@ -340,6 +354,11 @@ async function journey() {
     db.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }
+}
+// These fixture rows deliberately contain no embedded newlines.
+function csvFixtureRows(csv) {
+  const rows = csv.replace(/^\ufeff/, '').trimEnd().split('\r\n').map(line => [...line.matchAll(/"((?:[^"]|"")*)"(?:,|$)/g)].map(match => match[1].replace(/""/g, '"')));
+  return rows.slice(1).map(row => Object.fromEntries(rows[0].map((key, index) => [key, row[index]])));
 }
 async function waitFor(predicate, label) {
   const end = Date.now() + 20000;

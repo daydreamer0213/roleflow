@@ -110,7 +110,7 @@
 
   function poll() {
     pollTimer = null;
-    return request("/api/runtime-status?site=" + encodeURIComponent(site));
+    return request(site === "boss" ? "/api/runtime-status" : "/api/runtime-status?site=" + encodeURIComponent(site));
   }
 
   actionButton.addEventListener("click", async () => {
@@ -120,7 +120,7 @@
     await request(actionEndpoint, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ site })
+      body: site === "boss" ? "{}" : JSON.stringify({ site })
     });
   });
 
