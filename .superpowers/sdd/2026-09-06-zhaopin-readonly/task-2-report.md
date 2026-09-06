@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented in code commit `3b74233` (`feat: isolate zhaopin platform workflow state`).
+Implemented in code commits `3b74233` (`feat: isolate zhaopin platform workflow state`) and `29fbc93` (`fix: normalize salary range periods`).
 
 ## Red / green evidence
 
