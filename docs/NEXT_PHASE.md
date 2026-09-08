@@ -4,7 +4,7 @@
 
 ## 当前开发优先级
 
-用户已批准在当前 `codex/zhaopin-readonly` 分支继续 **智联消息发现接入统一消息页**：一次手动只读发现串行读取已连接平台；默认合并展示，来源筛选只影响显示；复用原文、岗位分析、可编辑草稿、自动保存、复制与学习。智联不开放发送、投递、简历处理和漏斗扩展。当前设计见 `docs/superpowers/specs/2026-09-08-unified-message-discovery-design.md`，实施顺序见 `docs/superpowers/plans/2026-09-08-unified-message-foundation.md`。四项实现均已通过定向回归与任务复核，当前代码 `517d5d7`；正在进行全分支复审及最后的加载状态修复，尚未交付完整新功能。最终完整门禁必须重跑，不能沿用基础或上一阶段的 149 项结果。过程证据见 `docs/superpowers/reports/2026-09-08-unified-message-discovery-implementation.md`。
+**智联消息发现接入统一消息页已完成本地实现与验证，下一步是开发分支的人工只读验收。** 当前 `codex/zhaopin-readonly` 分支一次手动只读发现串行读取已连接平台；默认合并展示，来源筛选只影响显示；复用原文、岗位分析、可编辑草稿、自动保存、复制与学习。智联不开放发送、投递、简历处理和漏斗扩展。设计见 `docs/superpowers/specs/2026-09-08-unified-message-discovery-design.md`，实施计划见 `docs/superpowers/plans/2026-09-08-unified-message-foundation.md`。四项任务复核、全分支审查和唯一最终修复波均完成，生产代码 `23dad6e`；随后仅对齐一项旧测试，在静态 `bd659782497941a842e22c46ca6b15518d9bd414` 从头重跑严格完整门禁，实际 **152/152、退出码 0**。修复包括列表/正文加载等待、准确岗位关联、待处理消息保留、平台来源隔离，以及智联筛选下仍能停止在途 BOSS 发送。失败历史、修改文件、限制和文档提交后精确 SHA 复验回执见 `docs/superpowers/reports/2026-09-08-unified-message-discovery-implementation.md`；不将本地合成测试等同于实站或真实模型验收。
 
 真实消息正文已经补证：纯文字、131 招呼文本、11 简历请求卡及 255 平台提示可区分；用户也提供了可见正文核对。先前后台空白属于当时加载状态，不能据此断言没有消息或必须前台。页面访问仅后台只读选择会话，一条未读正常变为已读，未发送或处理简历。详见设计的证据段落。
 

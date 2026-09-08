@@ -5,8 +5,8 @@
 ## 0. 当前开发入口：统一 BOSS / 智联消息发现
 
 - 用户已批准在同一消息发现页读取已连接的两个平台，不要求切换“今日任务”的找岗平台。默认合并展示，来源筛选只影响显示；复用原文、岗位分析、自动保存草稿、复制和学习。智联发送、投递、简历处理、漏斗扩展不在本阶段。
-- 当前工作树仍为 `D:/DevData/RoleFlow-worktrees/zhaopin-readonly`、分支 `codex/zhaopin-readonly`。依据 `docs/superpowers/specs/2026-09-08-unified-message-discovery-design.md` 和 `docs/superpowers/plans/2026-09-08-unified-message-foundation.md`；四项实现均已通过定向回归及任务复核，当前代码 `517d5d7`。正在进行全分支复审与最后的加载状态修复，最终完整门禁尚未运行，须重新跑在本阶段静态代码上。分阶段证据见 `docs/superpowers/reports/2026-09-08-unified-message-discovery-implementation.md`，不得把基础 149 项当作最终验收。
-- 2026-09-08 真实普通 Edge 消息页已验证稳定会话/岗位身份以及三条入站内容（招呼文本、简历请求卡、纯文字）和一条平台提示。先前两条旧会话空白、第三条加载较慢，不能把当时空白当作账号无消息。用户提供正文后与已加载结构吻合。没有前台激活调用、发送、同意/拒绝简历、投递或生产数据库写入；打开一条未读产生正常已读副作用。原始脱敏证据位于 `D:/DevData/RoleFlow-zhaopin-messages-20260908`。
+- **本地开发与复审完成，下一步准备开发分支人工只读验收。** 工作树 `D:/DevData/RoleFlow-worktrees/zhaopin-readonly`、分支 `codex/zhaopin-readonly`。依据 `docs/superpowers/specs/2026-09-08-unified-message-discovery-design.md` 和 `docs/superpowers/plans/2026-09-08-unified-message-foundation.md`；四项任务及全分支复审完成，唯一最终修复波 `23dad6e` 关闭六项重要和两项次要发现。首次完整门禁因旧测试仍要求无条件准备 BOSS 工作区而失败；`bd659782497941a842e22c46ca6b15518d9bd414` 只对齐该测试，生产代码不变，独立复核后从头重跑严格完整 `npm test`，实际 **152/152、退出码 0**，起止 SHA 一致。详细失败历史、证据、文件及文档提交后精确 SHA 复验回执见 `docs/superpowers/reports/2026-09-08-unified-message-discovery-implementation.md`，不得把基础 149 项或合成旅程当作真实账号验收。
+- 2026-09-08 真实普通 Edge 消息页已验证稳定会话/岗位身份以及三条入站内容（招呼文本、简历请求卡、纯文字）和一条平台提示。先前两条旧会话空白、第三条加载较慢，不能把当时空白当作账号无消息；网络慢是可能解释，不是已诊断结论。用户提供正文后与已加载结构吻合。读取器现对列表和正文按默认 120 秒窗口进行可取消等待，超时保留待处理，不推进已处理标记。没有前台激活调用、发送、同意/拒绝简历、投递或生产数据库写入；打开一条未读产生正常已读副作用。证据位于 `D:/DevData/RoleFlow-zhaopin-messages-20260908`；侧栏身份已遮蔽，但截图仍有用户提供的 HR 正文，仅保存在仓库外。
 - 保留上阶段推送成果；新增实现当前没有再次推送、合并、打包、发布或版本变更授权。不要替换用户安装版。
 
 ### 0.1 上一阶段：智联只读找岗与完整 JD 分析

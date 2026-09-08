@@ -207,8 +207,10 @@ Keep the existing optional browser-test runtime convention: Playwright is not in
 
 ## Main final delivery gate
 
-Tasks 1–4 have completed their independent task reviews (Task 4 final fix `517d5d7`); this is not final delivery approval.
+Tasks 1–4 have completed their independent task reviews (Task 4 final fix `517d5d7`). Final delivery evidence is recorded below and in the implementation report.
 
-- [ ] Whole-branch review from merge base, one final fix wave and scoped re-review if needed; include the observed list-loading-as-empty and normal-wait listener-retention gaps.
-- [ ] Fresh strict full offline gate on the final frozen code; record actual count, exit code and SHA.
-- [ ] Final report/handoff/checks, documentation commit, exact final SHA proportional verification; leave branch/worktree in place without push/merge/package/release.
+- [x] Whole-branch review from merge base, one final fix wave and scoped re-review if needed; all six Important and two Minor findings addressed at `23dad6e5f4737209bec793a6fac368e7a061d86d`, no new breakage in the scoped re-review.
+- [x] Fresh strict full offline gate on frozen `bd659782497941a842e22c46ca6b15518d9bd414`: **152/152**, exit **0**, start/end SHA identical. The first run on `23dad6e` failed an obsolete runtime-test expectation; test-only alignment was independently reviewed before restarting the entire gate. Production code is unchanged from `23dad6e`.
+- [x] Final report and handoff prepared for the documentation checkpoint; leave branch/worktree in place without push/merge/package/release. Do not delete retained evidence or audit candidates.
+
+Exact final documentation-SHA acceptance requires the external receipt `D:/DevData/RoleFlow-zhaopin-messages-20260908/final-verification.json`: it records actual post-commit checks and confirms production/test trees match the full-gate SHA. An absent or failed receipt is not a passing final verification; the 152-item full result is not relabelled as a second full run on the documentation SHA.
