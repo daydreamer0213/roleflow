@@ -38,6 +38,9 @@
 - 当前岗位摘要区 `.job-detail-summary__actions` 同时具有独立的 `.job-detail-summary__prechat`（“先聊聊”）与 `.job-detail-summary__apply`（“立即投递”）。尚未点击，不声称前者已验证成功。
 - 已选消息的 `.im-chat-header__detail` 提供真实 `/jobdetail/…html` 链接，同时标记 `is-offline`、“职位已下线”。这是单条岗位事实，不代表全部消息岗位下线。
 - 当前 `zhaopin_job_context.js` 只查本地完整缓存；不是自动补资料已经实现。
+- 又核验一条用户提供过正文的 Python 会话：岗位详情仍在线，标题、稳定岗位编号匹配；公司侧栏短名与详情全称相差“有限公司”后缀。消息链接 `.html` 在平台上重定向为相同编号 `.htm`。
+- 独立详情实际采用 `.summary-planes__title`、`.summary-planes__salary`、`.summary-planes__info li`、`.describtion-card__detail-content`（平台原拼写）及 `.company-info__name`。正文和公司已齐全时 `document.readyState` 仍可能为 `loading`；一次等待全页 complete 的探针 60 秒未完成，而结构内容已就绪。不能将全页 load 作为正文唯一就绪条件。
+- 上述探针每次只开一个同窗后台临时页，结束后关闭；活动标签不变。没有初次沟通、回复发送、投递或处理简历。
 
 ## 实施与验收顺序
 
