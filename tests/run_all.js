@@ -32,6 +32,7 @@ const tests = [
   "zhaopin_analysis_smoke.js",
   "zhaopin_workflow_smoke.js",
   "dashboard_zhaopin_smoke.js",
+  "dashboard_unified_messages_journey.js",
   "scoped_keyword_stats_smoke.js",
   "scan_snapshot_smoke.js",
   "scan_recovery_smoke.js",

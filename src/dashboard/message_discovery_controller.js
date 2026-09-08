@@ -1,5 +1,8 @@
 const { randomUUID } = require("node:crypto");
 const { createBossMessageReader } = require("../adapters/sites/boss_message_reader");
+const { createZhaopinMessageReader } = require("../adapters/sites/zhaopin_message_reader");
+const { createZhaopinMessageJobContextResolver } = require("../application/message_discovery/zhaopin_job_context");
+const { findMessageDiscoveryJobContext } = require("../core/candidate_progress");
 const { createBossMessageDetailReader } = require("../adapters/sites/boss_message_detail_reader");
 const { BossSiteAdapter } = require("../adapters/sites/boss");
 const { createMessageDiscoveryJobContextResolver } = require("../application/message_discovery/job_context");
@@ -18,6 +21,8 @@ const {
   recordSiteAccessEvent,
   listOpenMessageReplyDrafts,
   listMessageInboundContexts,
+  deleteMessageInboundContext,
+  getActiveSearchPlan,
   closeMessageReplyDrafts
 } = require("../core/storage");
 
@@ -50,10 +55,12 @@ function createMessageDiscoveryController(deps = {}) {
       if (browser && typeof browser.disconnect === "function") await browser.disconnect();
       else if (browser && typeof browser.cleanup === "function") await browser.cleanup();
     },
-    createReader = ({ browser }) => createBossMessageReader({ browser }),
+    createReader = ({ browser, platform }) => platform === "zhaopin"
+      ? createZhaopinMessageReader({ browser }) : createBossMessageReader({ browser }),
     createDetailSafety = (options) => createMessageDiscoveryDetailSafety(options),
     createDetailReader = (options) => createBossMessageDetailReader(options),
-    createJobContextResolver = (options) => createMessageDiscoveryJobContextResolver(options),
+    createJobContextResolver = (options) => options.platform === "zhaopin"
+      ? createZhaopinMessageJobContextResolver(options) : createMessageDiscoveryJobContextResolver(options),
     createAnalyzer = ({ modelConfig, logger: analyzerLogger }) => createMessageReplyAnalyzer({
       adapter: createMessageModelAdapter(modelConfig, analyzerLogger)
     }),
@@ -89,7 +96,6 @@ function createMessageDiscoveryController(deps = {}) {
     if (previousRun?.status === "running") {
       throw messageDiscoveryError("MESSAGE_DISCOVERY_ALREADY_RUNNING", "message discovery is already running", 409);
     }
-    assertRuntimeAvailable({ profileId });
     if (!modelReady()) {
       throw messageDiscoveryError(
         "MESSAGE_DISCOVERY_MODEL_NOT_READY",
@@ -124,6 +130,7 @@ function createMessageDiscoveryController(deps = {}) {
       counters: emptyCounters(),
       reasonCode: "",
       results: [],
+      platformRuns: [],
       phase: "starting",
       waitUntil: "",
       startedAt: startedAt.toISOString(),
@@ -155,54 +162,68 @@ function createMessageDiscoveryController(deps = {}) {
           503
         );
       }
-      browser = createBrowser();
-      const reader = createReader({ browser });
-      const detailSafety = createDetailSafety({
-        db,
-        profileId,
-        owner,
-        run,
-        logger,
-        signal: abortController.signal,
-        now,
-        sleepFn: pacingSleepFn,
-        randomFn: pacingRandomFn
+      browser = await createBrowser();
+      if (abortController.signal.aborted) throw abortController.signal.reason;
+      const tabs = await browser.listTabs();
+      run.platformRuns = ["boss", "zhaopin"].map((platform) => {
+        const matches = tabs.filter((tab) => {
+          try {
+            const url = new URL(tab.url);
+            return platform === "boss"
+              ? url.hostname === "www.zhipin.com" && url.pathname === "/web/geek/chat"
+              : url.href === "https://i.zhaopin.com/im";
+          } catch { return false; }
+        });
+        return { platform, status: matches.length === 1 ? "pending" : matches.length ? "needs_user_action" : "not_connected",
+          reasonCode: matches.length > 1 ? (platform === "boss" ? "BOSS_MESSAGE_TAB_AMBIGUOUS" : "ZHAOPIN_MESSAGE_TAB_AMBIGUOUS") : "", counters: emptyCounters() };
       });
-      const detailReader = createDetailReader({
-        browser,
-        messageReader: reader,
-        logger,
-        beforeOpen: detailSafety.beforeOpen,
-        afterIssuedAttempt: detailSafety.afterIssuedAttempt,
-        sleepFn: detailSleepFn
-      });
-      const resolveJobContext = createJobContextResolver({
-        db,
-        profileId,
-        messageReader: reader,
-        detailReader,
-        modelConfig,
-        root,
-        logger
-      });
-      const analyzer = createAnalyzer({
-        modelConfig,
-        logger
-      });
-      const summary = await runDiscovery({
-        db,
-        profileId,
-        reader,
-        signal: abortController.signal,
-        logger,
-        classifyMessageGroup: analyzer,
-        resolveJobContext,
-        onStatus: (status) => updateRun(run, status)
-      });
-      if (summary?.reasonCode === "BOSS_RISK_CONTROL") {
-        recordRiskOnce(run, summary.reasonCode, "BOSS requires security verification");
+      for (const entry of run.platformRuns) {
+        if (abortController.signal.aborted) break;
+        if (entry.status !== "pending") continue;
+        const platform = entry.platform;
+        const earlier = { queued: run.queued, processed: run.processed, unresolved: run.unresolved, counters: run.counters, results: run.results };
+        const checkpoint = (summary = {}) => {
+          entry.status = ALLOWED_RUN_STATUSES.has(summary.status) ? summary.status : "running";
+          entry.reasonCode = safeCode(summary.reasonCode);
+          entry.counters = safeCounters(summary.counters);
+          const counters = { ...earlier.counters };
+          for (const key of ["visible", "newReplies", "unbound"]) counters[key] += entry.counters[key];
+          if (platform === "boss") {
+            counters.currentRead = entry.counters.currentRead;
+            counters.currentDelivered = entry.counters.currentDelivered;
+          }
+          const results = new Map(earlier.results.map(item => [item.cardId, item]));
+          for (const item of sanitizeResults(summary.results || [])) results.set(item.cardId, item);
+          updateRun(run, { ...summary, status: "running", queued: earlier.queued + (Number(summary.queued) || 0), processed: earlier.processed + (Number(summary.processed) || 0), unresolved: earlier.unresolved + (Number(summary.unresolved) || 0), counters, results: [...results.values()] });
+        };
+        let readingStarted = false;
+        try {
+          entry.status = "running";
+          if (platform === "boss") assertRuntimeAvailable({ profileId });
+          readingStarted = true;
+          setDetailPhase(run, "reading_messages", now);
+          const reader = createReader({ browser, platform });
+          let detailReader = null;
+          if (platform === "boss") {
+            const safety = createDetailSafety({ db, profileId, owner, run, logger, signal: abortController.signal, now, sleepFn: pacingSleepFn, randomFn: pacingRandomFn });
+            detailReader = createDetailReader({ browser, messageReader: reader, logger, beforeOpen: safety.beforeOpen, afterIssuedAttempt: safety.afterIssuedAttempt, sleepFn: detailSleepFn });
+          }
+          const resolveJobContext = createJobContextResolver({ platform, db, profileId, messageReader: reader, detailReader, modelConfig, root, logger });
+          const summary = await runDiscovery({ platform, db, profileId, reader, signal: abortController.signal, logger,
+            classifyMessageGroup: createAnalyzer({ modelConfig, logger }), resolveJobContext, onStatus: checkpoint });
+          checkpoint(summary);
+          if (platform === "boss" && summary?.reasonCode === "BOSS_RISK_CONTROL") recordRiskOnce(run, summary.reasonCode, "BOSS requires security verification");
+        } catch (error) {
+          entry.reasonCode = messageDiscoveryErrorCode(error);
+          entry.status = /RISK_CONTROL|RUNTIME_BLOCKED|LOGIN_REQUIRED|PAGE_LOST|TAB_|BINDING/.test(entry.reasonCode) ? "needs_user_action" : "stopped";
+          if (readingStarted && platform === "boss" && entry.reasonCode === "BOSS_RISK_CONTROL") recordRiskOnce(run, entry.reasonCode, error.message);
+        }
       }
-      updateRun(run, summary);
+      for (const entry of run.platformRuns) if (entry.status === "pending") entry.status = "stopped";
+      const issue = run.platformRuns.find(entry => entry.status === "needs_user_action" || entry.status === "stopped");
+      const stopped = abortController.signal.aborted || run.platformRuns.some(entry => entry.status === "stopped");
+      updateRun(run, { ...run, status: stopped ? "stopped" : issue || !run.platformRuns.some(entry => entry.status === "completed") ? "needs_user_action" : "completed",
+        reasonCode: abortController.signal.aborted ? messageDiscoveryErrorCode(abortController.signal.reason) : issue?.reasonCode || "" });
     }).catch((error) => {
       const code = messageDiscoveryErrorCode(error);
       if (code === "BOSS_RISK_CONTROL") recordRiskOnce(run, code, error?.message);
@@ -264,20 +285,16 @@ function createMessageDiscoveryController(deps = {}) {
     clearExpiredRun(profileId);
     const run = runs.get(profileId);
     if (!run) {
-      const openDrafts = listOpenMessageReplyDrafts(db, { profileId, limit: 500 });
-      if (!openDrafts.length) throw messageDiscoveryError("MESSAGE_DISCOVERY_NOT_FOUND", "message discovery run was not found", 404);
-      for (const cardId of new Set(openDrafts.map((draft) => draft.cardId))) {
-        closeMessageReplyDrafts(db, { profileId, cardId, closedAt: nowDate().toISOString() });
-      }
+      const results = durableStatus(profileId).results;
+      if (!results.length) throw messageDiscoveryError("MESSAGE_DISCOVERY_NOT_FOUND", "message discovery run was not found", 404);
+      clearProcessedCards(profileId, results.map(result => result.cardId));
       return { statusCode: 200, body: { ...emptyStatus(profileId), status: "dismissed" } };
     }
     if (run.status === "running") {
       throw messageDiscoveryError("MESSAGE_DISCOVERY_RUNNING", "stop message discovery before dismissing drafts", 409);
     }
+    clearProcessedCards(profileId, run.results.map(item => item.cardId));
     clearRunTimer(run);
-    for (const cardId of new Set(run.results.map((item) => Number(item.cardId)).filter((id) => id > 0))) {
-      closeMessageReplyDrafts(db, { profileId, cardId, closedAt: nowDate().toISOString() });
-    }
     run.results = [];
     run.status = run.unresolved > 0 ? "needs_user_action" : "dismissed";
     if (run.unresolved === 0) run.reasonCode = "";
@@ -305,16 +322,34 @@ function createMessageDiscoveryController(deps = {}) {
     const profileId = Number(profileIdValue);
     const cardId = Number(cardIdValue);
     if (Number.isSafeInteger(profileId) && profileId > 0 && Number.isSafeInteger(cardId) && cardId > 0) {
-      closeMessageReplyDrafts(db, { profileId, cardId, closedAt: nowDate().toISOString() });
+      clearProcessedCards(profileId, [cardId]);
     }
     const run = runs.get(profileId);
     if (!run) return;
     const result = run.results.find((item) => Number(item.cardId) === cardId);
     if (!result) return;
     run.clearedCardIds.add(cardId);
-    run.results = run.results.map((item) => Number(item.cardId) === cardId
+    run.results = run.results.filter(item => Number(item.cardId) !== cardId || !item.drafts?.length).map((item) => Number(item.cardId) === cardId
       ? { ...item, inboundMessages: [], drafts: [], messages: [] }
       : item);
+  }
+
+  function clearProcessedCards(profileId, cardIds) {
+    const targets = [...new Set(cardIds.map(Number).filter(id => id > 0))];
+    for (const cardId of targets) {
+      if (db.prepare(`SELECT 1 FROM message_reply_send_items items
+        JOIN message_reply_drafts drafts ON drafts.id = items.draft_id
+        WHERE drafts.profile_id = ? AND drafts.card_id = ?
+        AND items.status IN ('pending','selecting','verified','filled','click_dispatched','ambiguous') LIMIT 1`).get(profileId, cardId)) {
+        throw messageDiscoveryError("MESSAGE_REPLY_SEND_DRAFT_BUSY", "正在发送或结果待核对的草稿不能清除。", 409);
+      }
+    }
+    for (const cardId of targets) {
+      closeMessageReplyDrafts(db, { profileId, cardId, closedAt: nowDate().toISOString() });
+      for (const context of listMessageInboundContexts(db, { profileId, cardId, limit: 500 })) {
+        deleteMessageInboundContext(db, { profileId, cardId, messageGroupKey: context.messageGroupKey });
+      }
+    }
   }
 
   function close() {
@@ -377,6 +412,9 @@ function createMessageDiscoveryController(deps = {}) {
   function sanitizeResults(results) {
     if (!Array.isArray(results)) return [];
     return results.map((item) => {
+      const persisted = db.prepare(`SELECT j.source, j.source_id FROM candidate_progress_cards c
+        JOIN jobs j ON j.id = c.job_id WHERE c.id = ? AND c.job_id = ? AND c.source = j.source`).get(Number(item?.cardId) || 0, Number(item?.jobId) || 0);
+      const platform = ["boss", "zhaopin"].includes(persisted?.source) ? persisted.source : "";
       const messages = Array.isArray(item?.messages)
         ? item.messages.slice(0, 2).map((message) => safeText(message, 4000)).filter(Boolean)
         : [];
@@ -390,13 +428,15 @@ function createMessageDiscoveryController(deps = {}) {
       return {
         cardId: Math.max(0, Number(item?.cardId) || 0),
         jobId: Math.max(0, Number(item?.jobId) || 0),
+        platform,
+        sourceJobId: safeText(persisted?.source_id, 180),
         stage: String(item?.stage || "").slice(0, 80),
         messageIntent: MESSAGE_INTENTS.has(item?.messageIntent) ? item.messageIntent : "manual_review",
         messageCategory: String(item?.messageCategory || "").slice(0, 80),
         messageSummary: safeInlineText(item?.messageSummary, 160),
         missingFactKey: String(item?.missingFactKey || "").slice(0, 80),
         manualActionReason: safeText(item?.manualActionReason, 240),
-        manualActions: sanitizeManualActions(item?.manualActions),
+        manualActions: sanitizeManualActions(item?.manualActions, platform),
         contextSource: ["local_cache", "message_discovery_detail"].includes(item?.contextSource)
           ? item.contextSource
           : "",
@@ -416,12 +456,12 @@ function createMessageDiscoveryController(deps = {}) {
       : [];
   }
 
-  function sanitizeManualActions(value) {
+  function sanitizeManualActions(value, platform = "boss") {
     return Array.isArray(value) && value.some((item) => item?.kind === "resume_request")
       ? [{
         kind: "resume_request",
-        title: "需要在 BOSS 人工处理附件简历请求",
-        instruction: "请在 BOSS 消息卡片中人工选择“同意”或“拒绝”。"
+        title: `需要在${platform === "zhaopin" ? "智联" : " BOSS "}人工处理附件简历请求`,
+        instruction: platform === "zhaopin" ? "请自行到智联原始会话处理这条简历请求。" : "请在 BOSS 消息卡片中人工选择“同意”或“拒绝”。"
       }]
       : [];
   }
@@ -446,10 +486,13 @@ function createMessageDiscoveryController(deps = {}) {
       processed: run.processed,
       unresolved: run.unresolved,
       counters: safeCounters(run.counters),
+      platformRuns: visiblePlatformRuns(run),
       reasonCode: run.reasonCode,
       results: sanitizeResults(run.results).map((item) => ({
         cardId: item.cardId,
         jobId: item.jobId,
+        platform: item.platform,
+        sourceJobId: item.sourceJobId,
         stage: item.stage,
         messageCategory: item.messageCategory,
         missingFactKey: item.missingFactKey
@@ -471,6 +514,7 @@ function createMessageDiscoveryController(deps = {}) {
       processed: run.processed,
       unresolved: run.unresolved,
       counters: safeCounters(run.counters),
+      platformRuns: visiblePlatformRuns(run),
       reasonCode: run.reasonCode,
       results: run.status === "running" ? results : overlayOpenDrafts(run.profileId, results),
       phase: safePhase(run.phase),
@@ -479,6 +523,13 @@ function createMessageDiscoveryController(deps = {}) {
       updatedAt: run.updatedAt,
       expiresAt: run.expiresAt
     };
+  }
+
+  function visiblePlatformRuns(run) {
+    return (run.platformRuns || []).map(entry => ({ ...entry,
+      status: entry.status === "pending" ? "running" : entry.status,
+      reasonCode: entry.status === "pending" ? "MESSAGE_DISCOVERY_WAITING_TURN" : entry.reasonCode
+    }));
   }
 
   function overlayOpenDrafts(profileId, results) {
@@ -494,12 +545,13 @@ function createMessageDiscoveryController(deps = {}) {
       if (!result.drafts.length) return result;
       const openDrafts = byCard.get(result.cardId) || [];
       if (!openDrafts.length && !result.drafts.some((draft) => persistedDraft.get(draft.id, profileId))) return result;
+      if (!openDrafts.length) return null;
       const drafts = openDrafts
         .sort((left, right) => left.draftIndex - right.draftIndex)
         .slice(0, 2)
         .map((draft) => ({ id: draft.id, text: draft.currentText, revision: draft.revision }));
       return { ...result, drafts, messages: drafts.map((draft) => draft.text) };
-    });
+    }).filter(Boolean);
   }
 
   function emptyStatus(profileId) {
@@ -535,9 +587,11 @@ function createMessageDiscoveryController(deps = {}) {
   function durableStatus(profileId) {
     const drafts = listOpenMessageReplyDrafts(db, { profileId, limit: 500 })
       .filter((draft) => draft.messageIntent !== "follow_up");
-    const inboundContexts = listMessageInboundContexts(db, { profileId, limit: 500 });
-    const unresolved = listUnresolvedMessageDiscoveryItems(db, { profileId });
-    if (!drafts.length && unresolved.length === 0) return emptyStatus(profileId);
+    const inboundContexts = listMessageInboundContexts(db, { profileId, limit: 500 }).filter(context =>
+      drafts.some(draft => draft.cardId === context.cardId && draft.messageGroupKey === context.messageGroupKey)
+      || !db.prepare("SELECT 1 FROM message_reply_drafts WHERE profile_id = ? AND card_id = ? AND message_group_key = ?").get(profileId, context.cardId, context.messageGroupKey));
+    const unresolved = listUnresolvedMessageDiscoveryItems(db, { profileId, platform: null });
+    if (!drafts.length && !inboundContexts.length && unresolved.length === 0) return emptyStatus(profileId);
     const byCard = new Map();
     for (const draft of drafts) {
       const values = byCard.get(draft.cardId) || [];
@@ -546,6 +600,7 @@ function createMessageDiscoveryController(deps = {}) {
     }
     const contextsByCard = new Map();
     for (const context of inboundContexts) {
+      if (!byCard.has(context.cardId)) byCard.set(context.cardId, []);
       const values = contextsByCard.get(context.cardId) || [];
       values.push(context);
       contextsByCard.set(context.cardId, values);
@@ -573,6 +628,8 @@ function createMessageDiscoveryController(deps = {}) {
       results: sanitizeResults(value.results).map((item) => ({
         cardId: item.cardId,
         jobId: item.jobId,
+        platform: item.platform,
+        sourceJobId: item.sourceJobId,
         stage: item.stage,
         messageCategory: item.messageCategory,
         missingFactKey: item.missingFactKey
@@ -582,21 +639,25 @@ function createMessageDiscoveryController(deps = {}) {
 
   function durableDraftResult(profileId, cardId, drafts, contexts = []) {
     const row = db.prepare(`SELECT c.id AS card_id, c.job_id, c.stage,
-      j.title, j.company, j.salary, j.description, j.analysis_json
+      j.title, j.company, j.salary, j.description, j.analysis_json, j.source, j.source_id, c.source AS card_source
       FROM candidate_progress_cards c
       JOIN jobs j ON j.id = c.job_id
       WHERE c.id = ? AND c.profile_id = ?`).get(cardId, profileId);
     if (!row) throw messageDiscoveryError("MESSAGE_DISCOVERY_CONTEXT_INVALID", "durable draft context is missing", 500);
-    const first = drafts[0];
+    const platform = row.source === row.card_source && ["boss", "zhaopin"].includes(row.source) ? row.source : "";
+    const first = drafts[0] || contexts[0] || {};
     const openGroupKeys = new Set(drafts.map((draft) => draft.messageGroupKey));
-    const activeContexts = contexts.filter((context) => openGroupKeys.has(context.messageGroupKey));
+    const activeContexts = contexts.filter((context) => openGroupKeys.has(context.messageGroupKey)
+      || !db.prepare("SELECT 1 FROM message_reply_drafts WHERE profile_id = ? AND card_id = ? AND message_group_key = ?").get(profileId, cardId, context.messageGroupKey));
     const inboundMessages = sanitizeInboundMessages(activeContexts.flatMap((context) => context.inboundMessages));
     const safeDrafts = drafts.sort((left, right) => left.draftIndex - right.draftIndex).slice(0, 2).map((draft) => ({
       id: draft.id,
       text: draft.currentText,
       revision: draft.revision
     }));
-    const job = projectMessageDecisionCard({
+    const activePlan = getActiveSearchPlan(db, profileId);
+    const trusted = row.source === "zhaopin" && activePlan ? findMessageDiscoveryJobContext(db, { profileId, planId: activePlan.id, sourceId: row.source_id, platform: "zhaopin" }) : null;
+    const job = projectMessageDecisionCard(row.source === "zhaopin" ? (trusted || { title: row.title, company: row.company, salary: row.salary }) : {
       title: row.title,
       company: row.company,
       salary: row.salary,
@@ -606,15 +667,17 @@ function createMessageDiscoveryController(deps = {}) {
     return {
       cardId: Number(row.card_id),
       jobId: Number(row.job_id),
+      platform,
+      sourceJobId: row.source_id,
       stage: String(row.stage || "reply_ready"),
       messageIntent: MESSAGE_INTENTS.has(first.messageIntent) ? first.messageIntent : "manual_review",
       messageCategory: String(first.messageCategory || "other"),
       messageSummary: safeInlineText(first.questionSummary, 160),
       missingFactKey: "",
       manualActionReason: "",
-      manualActions: sanitizeManualActions(activeContexts.flatMap((context) => context.manualActions)),
+      manualActions: sanitizeManualActions(activeContexts.flatMap((context) => context.manualActions), row.source),
       contextSource: "local_cache",
-      contextComplete: Boolean(row.description),
+      contextComplete: row.source === "zhaopin" ? trusted?.contextComplete === true : Boolean(row.description),
       job,
       inboundMessages,
       drafts: safeDrafts,

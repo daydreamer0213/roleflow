@@ -13,7 +13,7 @@ function renderNavigation({ currentPath = "", todayPath = "", planId = "" } = {}
     const communicationHref = ["/communication", "/communication/new"].includes(currentRoute)
       ? current
       : `/communication/new?planId=${encodedPlanId}`;
-    const messagesHref = currentRoute === "/messages" ? current : `/messages?planId=${encodedPlanId}`;
+    const messagesHref = currentRoute === "/messages" ? current : `/messages?planId=${encodedPlanId}${zhaopin ? '&workSite=zhaopin' : ''}`;
     const resumeRoutes = ["/resume-optimization", "/profile", "/resumes", "/onboarding"];
     const resumeHref = resumeRoutes.includes(currentRoute) ? current : `/resume-optimization?planId=${encodedPlanId}`;
     return [
@@ -25,9 +25,9 @@ function renderNavigation({ currentPath = "", todayPath = "", planId = "" } = {}
         navigationLink(jobsHref, "岗位记录", ["/queue", "/jobs"].includes(currentRoute)),
         zhaopin ? "" : navigationLink(`/funnel?planId=${encodedPlanId}`, "求职体检", currentRoute === "/funnel")
       ]),
-      zhaopin ? "" : navigationGroup("沟通", [
+      navigationGroup("沟通", [
         navigationLink(messagesHref, "消息与回复", currentRoute === "/messages"),
-        navigationLink(communicationHref, "发送记录", ["/communication", "/communication/new"].includes(currentRoute))
+        zhaopin ? "" : navigationLink(communicationHref, "发送记录", ["/communication", "/communication/new"].includes(currentRoute))
       ]),
       navigationGroup("成长", [
         navigationLink(resumeHref, "简历工作室", resumeRoutes.includes(currentRoute)),

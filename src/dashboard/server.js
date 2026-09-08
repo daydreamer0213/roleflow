@@ -1376,9 +1376,7 @@ function createDashboardServer({
         db,
         mockInterview: getMockInterviewService()
       });
-      if (req.method === "POST" && url.pathname === "/api/message-discovery") return handleMessageDiscovery(req, res, messageDiscovery, {
-        ensureBrowserWorkspaceReady: () => ensureManagedWorkspaceReady("message_discovery_start")
-      });
+      if (req.method === "POST" && url.pathname === "/api/message-discovery") return handleMessageDiscovery(req, res, messageDiscovery);
       if (req.method === "POST" && url.pathname === "/api/message-discovery-unresolved") return handleInboundOpportunityResolution(req, res, db);
       if (req.method === "POST" && url.pathname === "/api/analyze-job") return handleJobAnalysisRetry(req, res, { db, root, modelConfig: getRuntimeModel("batch_screening"), modelReady: modelReady("batch_screening"), logger, requestId, analysisRetryRunnerFactory });
       if (req.method === "POST" && url.pathname === "/api/analyze-jobs") return handleJobAnalysisRetry(req, res, { db, root, modelConfig: getRuntimeModel("batch_screening"), modelReady: modelReady("batch_screening"), logger, requestId, bulk: true, analysisRetryRunnerFactory });
@@ -4409,6 +4407,10 @@ async function handleProgress(req, res, db, messageDiscovery = null, replyLearni
       throw appError("JOB_ARCHIVED_ACTION_BLOCKED", "岗位已归档，请先恢复后再处理。", { statusCode: 409 });
     }
     const action = String(params.action || "").trim();
+    if (action === "reply_confirmed_sent" && (card.source !== "boss"
+      || db.prepare("SELECT source FROM jobs WHERE id = ?").get(card.jobId)?.source !== "boss")) {
+      throw appError("MESSAGE_REPLY_PLATFORM_UNSUPPORTED", "这个平台的消息请在原始会话中自行处理。", { statusCode: 409 });
+    }
     if (action === "correct_stage") {
       const targetStage = String(params.targetStage || "").trim();
       if (!PROGRESS_STAGES.has(targetStage)) throw appError("PROGRESS_STAGE_INVALID", "目标阶段无效。", { statusCode: 400 });
@@ -6332,7 +6334,7 @@ function renderCompactPoolTabs(queue, planId, profileId = "") {
   const tabs = [["focus", "主投 + 可投", (queue.counts.primary || 0) + (queue.counts.apply || 0)], ["primary", "主投", queue.counts.primary || 0], ["apply", "可投", queue.counts.apply || 0], ["caution", "慎投", queue.counts.caution || 0], ["analysis_pending", "待语义分析", queue.counts.analysis_pending || 0], ["detail_pending", "待读详情", queue.counts.detail_pending || 0], ["activity_pending", "活跃待核验", queue.counts.activity_pending || 0], ["no_reply", "无回复跟进", queue.counts.no_reply || 0], ["waiting_reply", "等待回复", queue.counts.waiting_reply || 0], ["needs_user_action", "需要处理", queue.counts.needs_user_action || 0], ["interview", "面试进展", queue.counts.interview || 0], ["not_recommended", "不推荐", queue.counts.not_recommended || 0]];
   const scopeLinks = scopes.map(([key, label, count]) => `<a class="pool-tab ${queue.scope === key ? "active" : ""}" href="${queueHref(planId, queue.pool, key, 1, queue.site)}">${escapeHtml(label)} ${count}</a>`).join("")
     + (queue.site === 'zhaopin' ? '' : `<a class="pool-tab" href="/communication/new?planId=${escapeAttr(planId)}">批量沟通清单</a>`)
-    + (profileId && queue.site !== 'zhaopin' ? `<a class="pool-tab" href="/messages?profileId=${escapeAttr(profileId)}">消息发现</a>` : "");
+    + (profileId ? `<a class="pool-tab" href="/messages?profileId=${escapeAttr(profileId)}${queue.site === 'zhaopin' ? '&workSite=zhaopin' : ''}">消息发现</a>` : "");
   const poolLinks = tabs.filter(([key]) => queue.site !== 'zhaopin' || !['activity_pending', 'no_reply', 'waiting_reply', 'needs_user_action', 'interview'].includes(key)).map(([key, label, count]) => `<a class="pool-tab ${queue.pool === key ? "active" : ""}" href="${queueHref(planId, key, queue.scope, 1, queue.site)}">${escapeHtml(label)} ${count}</a>`).join("");
   const from = queue.total ? (queue.page - 1) * queue.pageSize + 1 : 0;
   const to = Math.min(queue.total, queue.page * queue.pageSize);

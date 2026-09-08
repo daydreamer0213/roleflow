@@ -72,7 +72,7 @@ const NOW = "2026-08-29T06:00:00.000Z";
 
     const page = await request(base, `/messages?profileId=${fixture.profileId}`);
     assert.equal(page.status, 200);
-    assert.match(page.body, /BOSS 消息发现与回复/);
+    assert.match(page.body, /消息发现与回复/);
     assert.match(page.body, /class="[^"]*message-workspace/);
     assert.match(page.body, /class="[^"]*message-list/);
     assert.match(page.body, /class="[^"]*message-detail/);

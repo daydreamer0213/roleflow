@@ -1,5 +1,11 @@
 const assert = require("node:assert/strict");
-const { chromium } = require("playwright");
+let chromium;
+try { ({ chromium } = require("playwright")); }
+catch (error) {
+  if (process.env.ROLEFLOW_REQUIRE_PLAYWRIGHT === "1") throw error;
+  console.log("zhaopin_message_reader_smoke SKIP: Playwright unavailable");
+  process.exit(0);
+}
 const {
   createZhaopinMessageReader,
   ZHAOPIN_MESSAGE_SNAPSHOT_EXPRESSION
@@ -21,11 +27,11 @@ function message({ idServer, flow = "in", fromMe = false, from = 501, type = "te
 
 function fixtureHtml() {
   return `<!doctype html><html><head><meta charset="utf-8"></head><body>
-    <main class="im-side-panel"></main>
+    <main class="im-side-panel"></main><button class="im-send-button">发送</button><textarea class="im-input"></textarea>
     <section class="im-main-panel"><header class="im-chat-header"><span class="im-chat-header__job-title"></span><span class="im-chat-header__salary"></span><span class="im-chat-header__city"></span></header><div class="im-timeline"></div></section>
     <script>
       window.fixture = {
-        sessions: [], active: null, timeline: [], loading: false, timelineError: "", selectWrong: "", clicks: 0,
+        sessions: [], active: null, timeline: [], loading: false, timelineError: "", selectWrong: "", clicks: 0, resumeClicks: 0, senderClicks: 0,
         set(data) { this.sessions = data.sessions; this.active = data.active || data.sessions[0] || null; this.timeline = data.timeline || []; this.loading = Boolean(data.loading); this.timelineError = data.timelineError || ""; this.selectWrong = data.selectWrong || ""; this.render(); },
         render() {
           const side = document.querySelector('.im-side-panel'); side.replaceChildren();
@@ -53,6 +59,7 @@ function fixtureHtml() {
           }
         }
       };
+      document.addEventListener('click', event => { if(event.target.closest('.im-msg-11__btn--refuse,.im-msg-11__btn--agree'))window.fixture.resumeClicks++;if(event.target.closest('.im-send-button,.im-input'))window.fixture.senderClicks++; });
     </script>
   </body></html>`;
 }
@@ -121,6 +128,7 @@ async function main() {
     assert.strictEqual(selected.messages.filter(m => m.contentKind === "text").length, 2);
     assert.strictEqual(selected.sourceJobId, "zhaopin:CCL1234567890J00123456789");
     assert.equal(selected.lastMessageId, "104", "the detail reader returns a real final meaningful ID");
+    assert.deepEqual(await page.evaluate(() => [window.fixture.resumeClicks,window.fixture.senderClicks]), [0,0]);
     for (const forbidden of ["bringToFront", "navigate", "createTab", "inputText"]) assert.equal(bridge.calls.some(([name]) => name === forbidden), false);
 
     await setFixture(page, { sessions: [first, second], active: first, timeline: richTimeline, loading: false });
@@ -144,6 +152,11 @@ async function main() {
     await assert.rejects(() => driftReader.openQueuedConversation({ ...driftScan.rows[0], tabId: IM_TAB_ID }), error => error.code === "ZHAOPIN_MESSAGE_PREVIEW_DRIFTED");
     assert.equal(await page.evaluate(() => window.fixture.clicks), clicksBeforeDrift, "a changed preview must stop before another root row click");
 
+    const absent = session({ sessionId: "f".repeat(32), jobNumber: JOB_A });
+    delete absent.senderId; delete absent.peerPartnerId; delete absent.userId;
+    await setFixture(page, { sessions: [absent], active: absent, timeline: [], loading: false });
+    const absentScan = await readerFor(fakeBrowser(page)).scanConversationRows();
+    assert.equal(absentScan.rows[0].lastMessageDirection, "unknown", "absent optional identity stays unknown");
     const uncertain = session({ sessionId: "c".repeat(32), jobNumber: JOB_A, senderId: "not-numeric", peerPartnerId: 501, text: "未知方向" });
     const malformedTimeline = [
       message({ idServer: "", body: "缺少服务端 ID" }),
@@ -220,6 +233,7 @@ async function main() {
     const clicksBeforeInvalidJob = await page.evaluate(() => window.fixture.clicks);
     await assert.rejects(() => invalidJobReader.openQueuedConversation({ ...invalidJobScan.rows[0], tabId: IM_TAB_ID }), error => error.code === "ZHAOPIN_MESSAGE_JOB_ID_INVALID");
     assert.equal(await page.evaluate(() => window.fixture.clicks), clicksBeforeInvalidJob, "an invalid job identity must stop before row.click()");
+    assert.deepEqual(await page.evaluate(() => [window.fixture.resumeClicks,window.fixture.senderClicks]), [0,0]);
   } finally {
     await browser.close();
   }

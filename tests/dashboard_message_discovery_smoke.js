@@ -125,7 +125,7 @@ async function main() {
     browserFactory({ browserMode, cdpPort }) {
       browserCreations += 1;
       discoveryBrowserAuthority = { browserMode, cdpPort };
-      const browser = { kind: "fake-browser", cleanupCalls: 0 };
+      const browser = { kind: "fake-browser", cleanupCalls: 0, listTabs: async () => [{ id: 10, windowId: 1, url: "https://www.zhipin.com/web/geek/chat" }] };
       browsers.push(browser);
       return browser;
     },
@@ -195,13 +195,19 @@ async function main() {
     }),
     nowMs: riskAtMs
   });
+  const existingRiskDeadline = getSiteRuntimeState(db, "boss").details.blockedUntil;
   let response = await postJson(base, "/api/message-discovery", {
     action: "start",
     profileId: fixture.profileId
   });
-  assert.strictEqual(response.status, 409);
-  assert.strictEqual(response.body.errorCode, "BOSS_RISK_CONTROL");
-  assert.strictEqual(browserCreations, 0, "recovery floor must stop before browser creation");
+  assert.strictEqual(response.status, 202);
+  await waitForStatus(base, fixture.profileId, "needs_user_action");
+  assert.strictEqual((await getStatus(base, fixture.profileId)).reasonCode, "BOSS_RISK_CONTROL");
+  assert.strictEqual(browserCreations, 1, "inventory precedes source-specific safety");
+  assert.strictEqual(readerCalls.length, 0, "recovery floor must stop before BOSS reading");
+  assert.equal(getSiteRuntimeState(db, "boss").details.blockedUntil, existingRiskDeadline, "checking an existing safety pause must not extend its deadline");
+  browserCreations = 0;
+  browsers.length = 0;
   assert.strictEqual(
     db.prepare("SELECT COUNT(*) AS count FROM site_scan_leases WHERE site = 'boss'").get().count,
     0,
@@ -387,6 +393,7 @@ async function main() {
     "counters",
     "expiresAt",
     "phase",
+    "platformRuns",
     "processed",
     "profileId",
     "queued",
@@ -410,6 +417,8 @@ async function main() {
     "jobId",
     "messageCategory",
     "missingFactKey",
+    "platform",
+    "sourceJobId",
     "stage"
   ]);
   assert(!Object.hasOwn(status.results[0], "messageSummary"));
@@ -425,7 +434,7 @@ async function main() {
   assert(completedPage.body.includes("这条草稿与近期消息的表达比较接近，你可以直接发送，也可以改得更具体。"));
   assert(completedPage.body.includes("HR 消息"));
   assert(completedPage.body.includes(OPEN_HR_TEXT));
-  assert(completedPage.body.includes("可见 52 · HR 新回复 1 · 已读 31 · 送达 20"));
+  assert(completedPage.body.includes("可见 52 · HR 新回复 1 · BOSS 已读 31 · 送达 20"));
   assert.match(completedPage.body, /class="[^"]*message-workspace/);
   assert.match(completedPage.body, /class="[^"]*message-list/);
   assert.match(completedPage.body, /class="[^"]*message-detail/);
@@ -461,6 +470,7 @@ async function main() {
   const closedDraftPage = await request(base, `/messages?profileId=${fixture.profileId}`);
   assert(!closedDraftPage.body.includes(`data-draft-id="${renderedDraft.id}"`), "closed drafts must not reappear from the completed run snapshot");
   assert(!closedDraftPage.body.includes(editedDraftText));
+  assert(!closedDraftPage.body.includes(OPEN_HR_TEXT), "a completed durable message must not reappear as an active no-draft result");
   const diagnosticsResponse = await request(base, "/api/runtime-diagnostics");
   assert.strictEqual(diagnosticsResponse.status, 200);
   assert(!diagnosticsResponse.body.includes(OPEN_HR_TEXT), "HR display text must stay out of runtime diagnostics");
@@ -1100,7 +1110,7 @@ async function inboundResolutionDashboardSmoke({ base, browserCreations, scenari
 }
 
 async function controllerBrowserAuthoritySmoke() {
-  const browserSentinel = { kind: "controller-browser-sentinel" };
+  const browserSentinel = { kind: "controller-browser-sentinel", listTabs: async () => [{ id: 10, windowId: 1, url: "https://www.zhipin.com/web/geek/chat" }] };
   const readerSentinel = { kind: "controller-reader-sentinel" };
   const detailReaderSentinel = { kind: "controller-detail-reader-sentinel" };
   const resolverSentinel = async () => ({ kind: "controller-context-sentinel" });
@@ -1163,6 +1173,7 @@ async function controllerBrowserAuthoritySmoke() {
     clearInterval: () => {}
   });
   controller.start(1);
+  await waitFor(() => controller.status(1).status !== "running");
   await controller.close();
   assert.strictEqual(factoryCalls, 1, "controller must call the supplied browser factory exactly once");
   assert.strictEqual(readerBrowser, browserSentinel, "controller must pass the factory sentinel to the reader");
@@ -1305,15 +1316,16 @@ async function browserRuntimeGateSmoke(database, projectRoot, databasePath, scop
       action: "start",
       profileId
     });
-    assert.strictEqual(response.status, 409);
-    assert.strictEqual(response.body.errorCode, "BROWSER_RUNTIME_NOT_READY");
-    assert.strictEqual(browserCreations, 0, "browser gate must stop before message browser creation");
+    assert.strictEqual(response.status, 202);
+    await waitForStatus(base, profileId, "stopped");
+    assert.strictEqual((await getStatus(base, profileId)).status, "stopped");
+    assert.strictEqual(browserCreations, 1, "discovery checks the existing browser inventory");
     assert.strictEqual(
       database.prepare("SELECT COUNT(*) AS count FROM site_scan_leases WHERE site = 'boss'").get().count,
       0,
       "browser gate must stop before message lease acquisition"
     );
-    assert.strictEqual(ensureCalls, 1, "message discovery must try the managed Edge recovery once before stopping");
+    assert.strictEqual(ensureCalls, 0, "message discovery must not start a BOSS workspace as a prerequisite");
   } finally {
     await new Promise((resolve) => runtimeServer.close(resolve));
   }
