@@ -10,8 +10,8 @@ const { recordUnresolvedMessageDiscoveryItem } = require('../src/core/message_pr
 const NOW = '2026-09-08T01:00:00.000Z';
 const digest = value => 'sha256:' + crypto.createHash('sha256').update(value).digest('hex');
 const logger = { info() {}, warn() {}, error() {}, requestId() { return 'unified'; }, listRecent() { return []; } };
-function seed(db, platform, profileId, planId, manual = false) {
-  const sourceId = platform + ':CCL1234567890J0012345678' + (manual ? '8' : '9');
+function seed(db, platform, profileId, planId, manual = false, suffix = manual ? '8' : '9') {
+  const sourceId = platform + ':CCL1234567890J0012345678' + suffix;
   const jobId = Number(db.prepare("INSERT INTO jobs(source,source_id,title,company,description,first_seen_at,last_seen_at) VALUES (?,?,'同名岗位','合成公司','只有一小段资料',?,?)").run(platform, sourceId, NOW, NOW).lastInsertRowid);
   const cardId = Number(db.prepare("INSERT INTO candidate_progress_cards(profile_id,plan_id,job_id,source,stage,next_action,last_event_at,created_at,updated_at) VALUES (?,?,?,?,'reply_ready','人工确认',?,?,?)").run(profileId, planId, jobId, platform, NOW, NOW, NOW).lastInsertRowid);
   const key = digest(sourceId);
@@ -112,7 +112,119 @@ async function main() {
     assert.match(await page.locator('main').innerText(),/正在加载并读取消息/);assert.equal(httpBossCalls,0);assert.equal(httpReaderCalls,1);
     await page.getByRole('button',{name:'安全停止',exact:true}).click();await page.waitForFunction(()=>Array.from(document.querySelectorAll('form[data-discovery-form]')).find(form=>form.querySelector('[name=action]').value==='start').querySelector('button').disabled===false);assert.equal(httpBrowserCalls,1);
     assert.deepEqual(errors,[]);assert.deepEqual(external,[]);
-    console.log('dashboard_unified_messages_journey ok: serial discovery, restore, source-safe HTTP/UI, autosave, navigation, 1440/390');
+    await activeBatchRemainsStoppableUnderZhaopinFilter(chromium);
+    console.log('dashboard_unified_messages_journey ok: serial discovery, restore, source-safe HTTP/UI, autosave, navigation, 1440/390, active BOSS stop under ZL filter/reload');
   }finally{if(browser)await browser.close();if(server)await new Promise(r=>server.close(r));for(const controller of controllers)await controller.close();db.close();fs.rmSync(root,{recursive:true,force:true});}
+}
+async function activeBatchRemainsStoppableUnderZhaopinFilter(chromium) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'roleflow-unified-active-send-'));
+  const dbPath = path.join(root, 'fixture.sqlite');
+  const db = storage.openDb(dbPath);
+  const token = 'unified-active-send-fixture';
+  let server, browser, base, profileId, batchId;
+  let inspections = 0, writes = 0, browserCreations = 0;
+  let disconnectedResolve;
+  const disconnected = new Promise(resolve => { disconnectedResolve = resolve; });
+  try {
+    profileId = Number(db.prepare("INSERT INTO candidate_profiles(display_name,profile_json,created_at,updated_at) VALUES ('合成候选人','{}',?,?)").run(NOW,NOW).lastInsertRowid);
+    const planId = Number(db.prepare("INSERT INTO search_plans(profile_id,name,plan_json,is_active,created_at,updated_at) VALUES (?,'合成计划','{}',1,?,?)").run(profileId,NOW,NOW).lastInsertRowid);
+    for (const suffix of ['1', '2', '3']) seed(db, 'boss', profileId, planId, false, suffix);
+    const zl = seed(db, 'zhaopin', profileId, planId);
+    server = createDashboardServer({
+      db, dbPath, root, dataRoot: root, forceMock: true, logger, messageReplyActionToken: token,
+      browserAuthority: { browserMode: 'portable', cdpPort: 9222, profilePath: path.join(root, 'profile') },
+      browserFactory: () => { browserCreations++; return { async disconnect() { disconnectedResolve(); } }; },
+      messageReplySendDependencies: {
+        createReader: () => ({}),
+        createAccessController: () => ({ async reserve() {} }),
+        createSender: () => ({
+          async inspectReplyTarget(item, signal) {
+            inspections++;
+            assert.equal(db.prepare('SELECT source FROM jobs WHERE id=?').get(item.jobId).source, 'boss');
+            await new Promise(resolve => signal.aborted ? resolve() : signal.addEventListener('abort', resolve, { once: true }));
+            return {};
+          },
+          async fillReply() { writes++; return {}; },
+          async dispatchReply() { writes++; },
+          async verifyReplyResult() { return { state: 'succeeded' }; },
+          async clearPreparedReply() { writes++; }
+        })
+      }
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    base = 'http://127.0.0.1:' + server.address().port;
+    browser = await chromium.launch({ channel: 'msedge', headless: true });
+    const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+    const errors = [], external = [], mutations = [];
+    page.on('pageerror', error => errors.push(error.message));
+    page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
+    await page.route('**/*', route => {
+      const request = route.request(), url = new URL(request.url());
+      if (url.origin !== base) { external.push(request.url()); return route.abort(); }
+      if (request.method() === 'POST') mutations.push(url.pathname);
+      return route.continue();
+    });
+    await page.goto(base + '/messages?profileId=' + profileId);
+    await page.locator('[data-send-batch]').click();
+    await page.locator('[data-send-stop]').waitFor({ state: 'visible' });
+    await page.waitForFunction(() => document.querySelector('[data-send-batch-panel]').dataset.state === 'running');
+    batchId = db.prepare('SELECT id FROM message_reply_send_batches').get().id;
+    assert.deepEqual(db.prepare('SELECT status FROM message_reply_send_items ORDER BY id').all().map(item => item.status), ['selecting', 'pending', 'pending']);
+    const filter = page.getByLabel('消息来源');
+    await filter.selectOption('zhaopin');
+    await page.waitForFunction(() => document.querySelector('.message-list-item[data-platform="boss"]').hidden);
+    assert.equal(await page.locator('[data-send-stop]').isVisible(), true, 'switching to ZL must retain the active BOSS stop control');
+    assert.equal(await page.locator('[data-send-stop]').isEnabled(), true);
+    assert.equal(await page.locator('[data-send-batch]').isVisible(), false, 'ZL filter hides only new batch initiation');
+    assert.match(await page.locator('[data-send-batch-title]').innerText(), /0 \/ 3/);
+    const field = page.locator('[data-message-detail-panel][data-platform="zhaopin"] [data-draft-text]');
+    await field.fill('切换筛选仍保存智联草稿');
+    await filter.selectOption('all');
+    await page.waitForFunction(() => !document.querySelector('.message-list-item[data-platform="boss"]').hidden);
+    await filter.selectOption('zhaopin');
+    await page.waitForFunction(() => document.querySelector('.message-list-item[data-platform="boss"]').hidden);
+    await page.reload();
+    assert.equal(await filter.inputValue(), 'zhaopin');
+    assert.equal(await field.inputValue(), '切换筛选仍保存智联草稿');
+    assert.equal(await page.locator('[data-send-stop]').isVisible(), true, 'reload with saved ZL filter must retain the restored active stop control');
+    assert.equal(await page.locator('[data-send-stop]').isEnabled(), true);
+    const stopContrast = await page.locator('[data-send-stop]').evaluate(button => {
+      const style = getComputedStyle(button);
+      const luminance = color => color.match(/[\d.]+/g).slice(0, 3).map(Number).map(value => value / 255).map(value => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4).reduce((sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index], 0);
+      const foreground = luminance(style.color), background = luminance(style.backgroundColor);
+      return (Math.max(foreground, background) + 0.05) / (Math.min(foreground, background) + 0.05);
+    });
+    assert(stopContrast >= 4.5, 'the restored stop label must be readable against its button background');
+    assert.equal(await page.locator('[data-send-batch]').isVisible(), false);
+    assert.equal(db.prepare('SELECT COUNT(*) n FROM message_reply_send_batches').get().n, 1, 'filter/reload cannot authorize another batch');
+    assert.equal(inspections, 1);
+    assert.equal(writes, 0);
+    assert.deepEqual(mutations.filter(route => route !== '/api/message-reply-draft'), ['/api/message-reply-send-batch']);
+    await page.screenshot({ path: 'D:/DevData/RoleFlow-zhaopin-messages-20260908/unified-active-boss-zhaopin-filter.png', fullPage: true });
+    await page.getByRole('button', { name: '停止后续发送', exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('[data-send-batch-panel]').dataset.state === 'stopped');
+    await disconnected;
+    assert.deepEqual(db.prepare('SELECT status, click_count FROM message_reply_send_items ORDER BY id').all().map(item => ({ ...item })), Array.from({ length: 3 }, () => ({ status: 'stopped', click_count: 0 })));
+    assert.equal(inspections, 1, 'the two pending conversations must never be inspected');
+    assert.equal(writes, 0, 'stop before first fill prevents all sender writes');
+    assert.equal(browserCreations, 1);
+    assert.deepEqual(mutations.filter(route => route !== '/api/message-reply-draft'), ['/api/message-reply-send-batch', '/api/message-reply-send-control']);
+    for (const table of ['candidate_progress_events', 'candidate_answer_memories', 'candidate_funnel_entries']) assert.equal(db.prepare('SELECT COUNT(*) n FROM ' + table).get().n, 0);
+    assert.equal(storage.getMessageReplyDraft(db, { profileId, draftId: zl.drafts[0].id }).currentText, '切换筛选仍保存智联草稿');
+    assert.equal(await filter.inputValue(), 'zhaopin');
+    assert.equal(await page.locator('[data-send-batch-panel]').isVisible(), false, 'terminal ZL view has no new send action');
+    await filter.selectOption('boss');
+    await page.waitForFunction(() => !document.querySelector('.message-list-item[data-platform="boss"]').hidden);
+    assert.equal(await page.locator('[data-send-batch]').isVisible(), true);
+    assert.equal(await page.locator('[data-send-stop]').isVisible(), false);
+    assert.deepEqual(errors, []);
+    assert.deepEqual(external, []);
+  } finally {
+    if (batchId && ['confirmed', 'running'].includes(db.prepare('SELECT status FROM message_reply_send_batches WHERE id=?').get(batchId).status)) await fetch(base + '/api/message-reply-send-control', { method: 'POST', headers: { 'content-type': 'application/json', 'x-roleflow-action': token }, body: JSON.stringify({ profileId, batchId, action: 'stop' }) });
+    if (browser) await browser.close();
+    if (server) await new Promise(resolve => server.close(resolve));
+    db.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 }
 main().catch(error=>{console.error(error.stack);process.exitCode=1;});

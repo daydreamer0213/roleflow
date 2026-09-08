@@ -140,7 +140,7 @@ function renderMessageDiscoveryPage({ db, searchParams, controller, replySendCon
     + (Array.isArray(result.drafts) && result.drafts.some((draft) => Number(draft?.id) > 0) ? 1 : 0), 0);
   const sendBatchPanel = sendableDraftCount > 0 ? `<section class="message-send-batch" data-send-batch-panel data-state="idle" aria-label="确认发送">
     <div><strong data-send-batch-title>已选择 ${selectedDraftCount} 条草稿</strong><span data-send-batch-status>逐条确认目标后在后台串行发送</span></div>
-    <div class="button-row"><button type="button" data-send-batch>确认并串行发送 ${selectedDraftCount} 条</button><button type="button" class="secondary" data-send-stop hidden disabled>停止后续发送</button></div>
+    <div class="button-row"><button type="button" data-send-batch>确认并串行发送 ${selectedDraftCount} 条</button><button type="button" data-send-stop hidden disabled>停止后续发送</button></div>
   </section>` : "";
   const unresolvedSections = durableUnresolved.map((item) =>
     renderUnresolvedItem(db, item, { profileId, escapeHtml, escapeAttr })
@@ -226,7 +226,7 @@ function messageDiscoveryClientScript(scriptState) {
     }[String(code||"")]||"发送没有开始，请刷新页面后重试。");
     const fieldForDraft=(draftId)=>document.querySelector('[data-draft-text][data-draft-id="'+Number(draftId)+'"]');
     const selectedFields=()=>sendChoices.filter((choice)=>choice.checked&&!choice.disabled&&(selectedSource==="all"||selectedSource==="boss")).map((choice)=>fieldForDraft(choice.dataset.sendSelect)).filter(Boolean);
-    const updateSelection=()=>{if(!sendBatchButton)return;const count=selectedFields().length;sendBatchButton.disabled=sendPending||count===0||activeBatchId>0;sendBatchButton.textContent="确认并串行发送 "+count+" 条";if(sendBatchTitle&&!activeBatchId)sendBatchTitle.textContent="已选择 "+count+" 条草稿";};
+    const updateSelection=()=>{if(!sendBatchButton)return;const count=selectedFields().length;sendBatchButton.hidden=selectedSource==="zhaopin";if(sendPanel)sendPanel.hidden=selectedSource==="zhaopin"&&!activeBatchId&&!sendPending;sendBatchButton.disabled=sendPending||count===0||activeBatchId>0;sendBatchButton.textContent="确认并串行发送 "+count+" 条";if(sendBatchTitle&&!activeBatchId)sendBatchTitle.textContent="已选择 "+count+" 条草稿";};
     const setDiscoveryLocked=(locked)=>{for(const form of forms)for(const button of form.querySelectorAll("button")){if(!("sendBaseDisabled" in button.dataset))button.dataset.sendBaseDisabled=String(button.disabled);button.disabled=locked||button.dataset.sendBaseDisabled==="true";}};
     const setDraftPending=(fields,locked)=>{for(const field of fields){const card=field.closest("[data-draft-card]");if(!card||ownedDraftCards.has(card))continue;for(const control of card.querySelectorAll("button,input,textarea")){if(!("sendPendingBaseDisabled" in control.dataset))control.dataset.sendPendingBaseDisabled=String(control.disabled);control.disabled=locked||control.dataset.sendPendingBaseDisabled==="true";}}};
     const setOwned=(fields)=>{for(const field of fields){field.disabled=true;const card=field.closest("[data-draft-card]");if(!card)continue;ownedDraftCards.add(card);for(const control of card.querySelectorAll("button,input,textarea")){if(!("sendPendingBaseDisabled" in control.dataset))control.dataset.sendPendingBaseDisabled=String(control.disabled);control.disabled=true;}}};
@@ -255,7 +255,6 @@ function messageDiscoveryClientScript(scriptState) {
       const pending=Array.from(document.querySelectorAll(".message-unresolved[data-platform]"));
       for(const item of pending)item.hidden=selectedSource!=="all"&&item.dataset.platform!==selectedSource;
       const empty=document.querySelector("[data-source-empty]");if(empty)empty.hidden=Boolean(first)||pending.some(item=>!item.hidden);
-      if(sendPanel)sendPanel.hidden=selectedSource==="zhaopin";
       updateSelection();
     };
     sourceFilter?.addEventListener("change",async()=>{
