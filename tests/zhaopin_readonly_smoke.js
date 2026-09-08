@@ -240,6 +240,17 @@ async function main() {
     const vue2State = await adapter.readSearchState("ZHAOPIN-SEARCH");
     assert.equal(vue2State.cards[0].sourceId, "CCSYNTHV2A1J00000000001", "Vue 2 JobCard exposes the trusted card ID");
     assert.ok(await adapter.readVisiblePaneDetail("ZHAOPIN-SEARCH", vue2State.cards[0]), "same-ID 北京 朝阳 建外 and 北京·朝阳区 are one location");
+    await page.evaluate(() => {
+      document.querySelector("#vue2-card .job-card__location").textContent = "合成市 甲 商圈";
+      document.querySelector("#vue2-summary .job-detail-summary__tags li").textContent = "合成市·甲新区";
+    });
+    const newDistrictState = await adapter.readSearchState("ZHAOPIN-SEARCH");
+    const newDistrictDetail = await adapter.readVisiblePaneDetail("ZHAOPIN-SEARCH", newDistrictState.cards[0]);
+    assert.ok(newDistrictDetail, "same-ID card business district and detail new district are one location");
+    assert.equal(newDistrictDetail.title, "合成智能应用工程师");
+    assert.equal(newDistrictDetail.company, "合成研发中心");
+    assert.equal(newDistrictDetail.salary, "15-30K");
+    assert.equal(newDistrictDetail.location, "合成市·甲新区");
     const noExternalActionCount = bridge.calls.filter((call) => ["navigate", "bringToFront"].includes(call.type) || call === "bringToFront").length;
 
     for (const [label, mutate] of [

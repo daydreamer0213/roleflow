@@ -476,7 +476,7 @@ function sameLocation(left, right, allowBusinessDistrict = false) {
   const rightParts = parts(right);
   if (leftParts.length < 2 || rightParts.length < 2) return false;
   const city = value => value.replace(/市$/, "");
-  const district = value => value.replace(/[区县]$/, "");
+  const district = value => value.replace(/(?:新区|区|县)$/, "");
   return city(leftParts[0]) === city(rightParts[0]) && district(leftParts[1]) === district(rightParts[1]);
 }
 
