@@ -27,7 +27,7 @@ const ZHAOPIN_COMPONENT_ACCESSORS_SOURCE = String.raw`
 `;
 
 const ZHAOPIN_PAGE_HELPERS_EXPRESSION = String.raw`(() => {
-  if (window.__zhaopinReadSearchState?.__roleflowVersion === 5) return true;
+  if (window.__zhaopinReadSearchState?.__roleflowVersion === 6) return true;
   const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
   const validSourceId = (value) => /^[A-Za-z0-9]{1,160}$/.test(String(value || '')) ? String(value) : '';
   ${ZHAOPIN_COMPONENT_ACCESSORS_SOURCE}
@@ -98,6 +98,7 @@ const ZHAOPIN_PAGE_HELPERS_EXPRESSION = String.raw`(() => {
       salary: clean(pane.querySelector('.job-detail-summary__salary')?.textContent),
       company: panel ? (clientMatch ? publisher : companyLine || publisher) : clientMatch ? '' : companyLine,
       clientCompany: clientMatch ? clean(clientMatch[1]) : '',
+      publisherCompany: publisher,
       location,
       experience,
       education,
@@ -135,7 +136,7 @@ const ZHAOPIN_PAGE_HELPERS_EXPRESSION = String.raw`(() => {
       isSearchPage: location.protocol === 'https:' && location.hostname === 'www.zhaopin.com' && pathname === '/jobs/' && new URL(location.href).searchParams.get('pageMode') === 'search'
     };
   };
-  window.__zhaopinReadSearchState.__roleflowVersion = 5;
+  window.__zhaopinReadSearchState.__roleflowVersion = 6;
   window.__zhaopinActivateCard = (expectedIndex, expectedSignature) => {
     const cards = Array.from(document.querySelectorAll('.job-list-panel .job-card'));
     const card = cards[Number(expectedIndex)];
@@ -406,7 +407,8 @@ class ZhaopinSiteAdapter {
         if (!wasSelected && state.detail.url === beforeUrl) return null;
         const identity = safeIdentity(state.detail.url);
         if (!identity) return null;
-        return { ...state.detail, company: state.detail.company || refreshedCard.company || '', ...identity };
+        const { publisherCompany: _publisherCompany, ...detail } = state.detail;
+        return { ...detail, company: detail.company || refreshedCard.company || '', ...identity };
       }
       if (attempt < 5) await this.waitWithChecks(signal, assertTabBindings);
     }
@@ -449,12 +451,14 @@ function assertSafeSearchState(state) {
 
 function detailMatches(card, detail, detailSourceIdConfirmed = true, detailSourceIdFullyConfirmed = false) {
   const company = detail?.company || detail?.clientCompany || "";
+  const publisher = detail?.publisherCompany || "";
   const exactComponentIdentity = detailSourceIdFullyConfirmed === true && card?.currentSourceIdSupplied === true
     && Boolean(card?.sourceId) && card.sourceId === detail?.sourceId;
   return detailSourceIdConfirmed === true && Boolean(detail?.title && detail?.description && detail?.url)
     && sameText(detail.title, card.title)
     && (!card.currentSourceIdSupplied || (Boolean(card.sourceId) && card.sourceId === detail.sourceId))
     && (!card.salary || sameText(detail.salary, card.salary))
+    && (!card.company || !publisher || sameText(publisher, card.company))
     && (!card.company || sameText(company, card.company) || (Boolean(detail.clientCompany) && !detail.company))
     && (!card.location || sameLocation(detail.location, card.location, exactComponentIdentity));
 }

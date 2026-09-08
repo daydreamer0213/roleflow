@@ -214,6 +214,14 @@ async function main() {
       "an explicit client company must not bypass a publisher mismatch"
     );
 
+    await page.evaluate(() => { document.querySelector(".job-detail-panel .job-detail-summary__company-name").textContent = "合成甲公司"; });
+    const matchingSummaryWrongPublisherState = await adapter.readSearchState("ZHAOPIN-SEARCH");
+    assert.equal(
+      await adapter.readVisiblePaneDetail("ZHAOPIN-SEARCH", matchingSummaryWrongPublisherState.cards[0]),
+      null,
+      "an unmarked matching summary company must not hide a publisher mismatch"
+    );
+
     const vue2FixtureHtml = fs.readFileSync(path.join(__dirname, "fixtures", "zhaopin", "search-vue2.html"), "utf8");
     await page.route("https://www.zhaopin.com/jobs-vue2/**", (route) => route.fulfill({
       status: 200,
@@ -224,11 +232,12 @@ async function main() {
     await page.evaluate(() => history.replaceState({}, "", "/jobs/?pageMode=search&kw=%E5%90%88%E6%88%90%E5%85%B3%E9%94%AE%E8%AF%8D"));
     await page.evaluate(() => {
       window.__zhaopinReadSearchState = () => ({ legacyFixture: true });
-      window.__zhaopinReadSearchState.__roleflowVersion = 4;
+      window.__zhaopinReadSearchState.__roleflowVersion = 5;
     });
+    assert.equal(await page.evaluate(ZHAOPIN_PAGE_HELPERS_EXPRESSION), true, "the upgraded DOM helper must run in an already-open page");
+    assert.equal(await page.evaluate(() => window.__zhaopinReadSearchState.__roleflowVersion), 6,
+      "the upgraded injection replaces a previously cached version 5 helper");
     const vue2State = await adapter.readSearchState("ZHAOPIN-SEARCH");
-    assert.equal(await page.evaluate(() => window.__zhaopinReadSearchState.__roleflowVersion), 5,
-      "the upgraded injection replaces a previously cached version 4 helper");
     assert.equal(vue2State.cards[0].sourceId, "CCSYNTHV2A1J00000000001", "Vue 2 JobCard exposes the trusted card ID");
     assert.ok(await adapter.readVisiblePaneDetail("ZHAOPIN-SEARCH", vue2State.cards[0]), "same-ID 北京 朝阳 建外 and 北京·朝阳区 are one location");
     const noExternalActionCount = bridge.calls.filter((call) => ["navigate", "bringToFront"].includes(call.type) || call === "bringToFront").length;
