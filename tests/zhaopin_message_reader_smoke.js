@@ -30,13 +30,16 @@ function message({ idServer, flow = "in", fromMe = false, from = 501, type = "te
 
 function fixtureHtml() {
   return `<!doctype html><html><head><meta charset="utf-8"></head><body>
+    <nav class="home-header__right"><a class="home-header__b-login">我要招人</a><a class="home-header__c-no-login">登录/注册</a></nav>
+    <section class="login-panel" hidden>请登录</section>
     <main class="im-side-panel"></main><button class="im-send-button">发送</button><textarea class="im-input"></textarea>
     <section class="im-main-panel"><header class="im-chat-header"><span class="im-chat-header__job-title"></span><span class="im-chat-header__salary"></span><span class="im-chat-header__city"></span></header><div class="im-timeline"></div></section>
     <script>
       window.fixture = {
         sessions: [], active: null, timeline: [], loading: false, timelineError: "", selectWrong: "", clicks: 0, resumeClicks: 0, senderClicks: 0,
-        set(data) { this.sessions = data.sessions; this.active = data.active || data.sessions[0] || null; this.timeline = data.timeline || []; this.loading = Boolean(data.loading); this.listLoading = data.listLoading === true; this.timelineError = data.timelineError || ""; this.selectWrong = data.selectWrong || ""; this.render(); },
+        set(data) { this.sessions = data.sessions; this.active = data.active || data.sessions[0] || null; this.timeline = data.timeline || []; this.loading = Boolean(data.loading); this.listLoading = data.listLoading === true; this.loginPanel = data.loginPanel === true; this.timelineError = data.timelineError || ""; this.selectWrong = data.selectWrong || ""; this.render(); },
         render() {
+          document.querySelector('.login-panel').hidden = !this.loginPanel;
           const side = document.querySelector('.im-side-panel'); side.replaceChildren();
           side.__vue__ = { $options: { name: 'SidePanelThreeColumns' }, listLoading: this.listLoading, listError: '', sessions: this.sessions };
           for (const current of this.sessions) {
@@ -118,7 +121,6 @@ async function main() {
       message({ idServer: "999", body: "不得重复", nested: true })
     ];
     await setFixture(page, { sessions: [first, second], active: first, timeline: richTimeline, loading: true });
-    assert.equal((await page.evaluate(ZHAOPIN_MESSAGE_SNAPSHOT_EXPRESSION)).rows.length, 2, "exported snapshot expression must run against mounted DOM");
     const bridge = fakeBrowser(page);
     const reader = readerFor(bridge, { onSleep: () => setFixture(page, { sessions: [first, second], active: first, timeline: richTimeline, loading: false }) });
     const scanned = await reader.scanConversationRows();
@@ -131,6 +133,7 @@ async function main() {
     assert.strictEqual(selected.messages.filter(m => m.contentKind === "text").length, 2);
     assert.strictEqual(selected.sourceJobId, "zhaopin:CCL1234567890J00123456789");
     assert.equal(selected.lastMessageId, "104", "the detail reader returns a real final meaningful ID");
+    assert.equal((await page.evaluate(ZHAOPIN_MESSAGE_SNAPSHOT_EXPRESSION)).rows.length, 2, "exported snapshot expression must run against mounted DOM with normal header login links");
     assert.deepEqual(await page.evaluate(() => [window.fixture.resumeClicks,window.fixture.senderClicks]), [0,0]);
     for (const forbidden of ["bringToFront", "navigate", "createTab", "inputText"]) assert.equal(bridge.calls.some(([name]) => name === forbidden), false);
 
@@ -238,7 +241,7 @@ async function main() {
     assert.equal(await page.evaluate(() => window.fixture.clicks), clicksBeforeInvalidJob, "an invalid job identity must stop before row.click()");
     assert.deepEqual(await page.evaluate(() => [window.fixture.resumeClicks,window.fixture.senderClicks]), [0,0]);
     const failures = [];
-    for (const regression of [parameterizedUrlSmoke, listLoadingSmoke, ambiguousFromMeSmoke, defaultWaitCleanupSmoke]) {
+    for (const regression of [parameterizedUrlSmoke, loginGuardSmoke, listLoadingSmoke, ambiguousFromMeSmoke, defaultWaitCleanupSmoke]) {
       try { await regression(page, first); } catch (error) { failures.push(`${regression.name}: ${error.stack}`); }
     }
     assert.deepEqual(failures, []);
@@ -247,6 +250,26 @@ async function main() {
     await browser.close();
   }
   console.log("zhaopin_message_reader_smoke ok");
+}
+
+async function loginGuardSmoke(page, first) {
+  const timeline = [message({ idServer: "602", body: "你好" })];
+  await setFixture(page, { sessions: [first], active: first, timeline, loginPanel: true });
+  const clicksBeforeScan = await page.evaluate(() => window.fixture.clicks);
+  await assert.rejects(() => readerFor(fakeBrowser(page)).scanConversationRows(), error => error.code === "ZHAOPIN_MESSAGE_LOGIN_REQUIRED");
+  assert.equal(await page.evaluate(() => window.fixture.clicks), clicksBeforeScan, "a real login panel must stop scan without clicking a row");
+
+  await setFixture(page, { sessions: [first], active: first, timeline });
+  const bridge = fakeBrowser(page);
+  const reader = readerFor(bridge);
+  const scanned = await reader.scanConversationRows();
+  await setFixture(page, { sessions: [first], active: first, timeline, loginPanel: true });
+  const clicksBeforeOpen = await page.evaluate(() => window.fixture.clicks);
+  await assert.rejects(() => reader.openQueuedConversation({ ...scanned.rows[0], tabId: scanned.tabId }), error => error.code === "ZHAOPIN_MESSAGE_LOGIN_REQUIRED");
+  assert.equal(await page.evaluate(() => window.fixture.clicks), clicksBeforeOpen, "a real login panel appearing after scan must stop before row.click()");
+  assert.deepEqual(await page.evaluate(() => [window.fixture.resumeClicks, window.fixture.senderClicks]), [0, 0]);
+  for (const forbidden of ["bringToFront", "navigate", "createTab", "inputText"]) assert.equal(bridge.calls.some(([name]) => name === forbidden), false);
+  await setFixture(page, { sessions: [first], active: first, timeline });
 }
 
 async function parameterizedUrlSmoke(page, first) {

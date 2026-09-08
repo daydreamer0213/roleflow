@@ -7,8 +7,16 @@ function isZhaopinMessageUrl(value) {
   } catch { return false; }
 }
 
+function isVisibleZhaopinLoginChallenge(node) {
+  if (!node || node.offsetParent === null) return false;
+  const ordinaryHeaderLink = node.matches?.("a.home-header__b-login, a.home-header__c-no-login")
+    && node.parentElement?.matches?.(".home-header__right");
+  return !ordinaryHeaderLink;
+}
+
 const ZHAOPIN_MESSAGE_SNAPSHOT_EXPRESSION = String.raw`(() => {
   const isZhaopinMessageUrl = ${isZhaopinMessageUrl.toString()};
+  const isVisibleZhaopinLoginChallenge = ${isVisibleZhaopinLoginChallenge.toString()};
   const text = (value) => String(value == null ? "" : value).replace(/\s+/g, " ").trim();
   const numeric = (value) => /^\d+$/.test(String(value == null ? "" : value).trim());
   const failed = (state) => ({ state });
@@ -16,7 +24,7 @@ const ZHAOPIN_MESSAGE_SNAPSHOT_EXPRESSION = String.raw`(() => {
     if (!isZhaopinMessageUrl(location.href)) return failed("page_lost");
     const bodyText = text(document.body?.innerText).slice(0, 3000);
     if (/安全验证|访问异常|行为验证|访问受限/.test(text(document.title)) || /安全验证|访问异常|行为验证|访问受限/.test(bodyText)) return failed("risk_control");
-    if (Array.from(document.querySelectorAll(".login, .login-panel, [class*='login']")).some((node) => node.offsetParent !== null)) return failed("login_required");
+    if (Array.from(document.querySelectorAll(".login, .login-panel, [class*='login']")).some(isVisibleZhaopinLoginChallenge)) return failed("login_required");
     const side = document.querySelector(".im-side-panel");
     const main = document.querySelector(".im-main-panel");
     const header = document.querySelector(".im-chat-header");
@@ -216,12 +224,13 @@ function buildSelectionExpression(target) {
   return String.raw`(() => {
     const expected = ${expected};
     const isZhaopinMessageUrl = ${isZhaopinMessageUrl.toString()};
+    const isVisibleZhaopinLoginChallenge = ${isVisibleZhaopinLoginChallenge.toString()};
     const text = (value) => String(value == null ? "" : value).replace(/\s+/g, " ").trim();
     const fail = (reason) => ({ clicked: false, reason });
     if (!isZhaopinMessageUrl(location.href)) return fail("page_lost");
     const bodyText = text(document.body?.innerText).slice(0, 3000);
     if (/安全验证|访问异常|行为验证|访问受限/.test(text(document.title)) || /安全验证|访问异常|行为验证|访问受限/.test(bodyText)) return fail("risk_control");
-    if (Array.from(document.querySelectorAll(".login, .login-panel, [class*='login']")).some((node) => node.offsetParent !== null)) return fail("login_required");
+    if (Array.from(document.querySelectorAll(".login, .login-panel, [class*='login']")).some(isVisibleZhaopinLoginChallenge)) return fail("login_required");
     const rows = [...document.querySelectorAll('.im-session-item')];
     const row = rows.find(el => el.__vue__?.$props?.session?.sessionId === expected.sessionId);
     const session = row?.__vue__?.$props?.session;
