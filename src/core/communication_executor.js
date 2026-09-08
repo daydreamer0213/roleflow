@@ -2,6 +2,7 @@ const { PRODUCT_POLICY } = require("./product_policy");
 const { reconcileCommunicationOutcome } = require("./workflow_inventory");
 const { recordVerifiedCommunicationStart } = require("./candidate_progress");
 const { assertCommunicationExecutionEnabled } = require("./communication_calibration");
+const { assertCommunicationRuntimeAvailable } = require("./communication_runtime");
 const { getWorkflowRunByCommunicationBatch, transitionWorkflowRun } = require("./storage");
 const { communicationWorkflowMetrics } = require("./workflow_run");
 const { workflowLogContext } = require("./observability");
@@ -26,7 +27,17 @@ const FATAL_CODES = new Set([
   "BOSS_OPERATOR_TABS_CHANGED",
   "BOSS_WINDOW_MISMATCH",
   "BOSS_SEARCH_PAGE_LOST",
-  "BOSS_COMMUNICATION_PAGE_LOST"
+  "BOSS_COMMUNICATION_PAGE_LOST",
+  "ZHAOPIN_RISK_CONTROL",
+  "ZHAOPIN_LOGIN_REQUIRED",
+  "ZHAOPIN_SEARCH_PAGE_LOST",
+  "ZHAOPIN_COMMUNICATION_PAGE_LOST",
+  "ZHAOPIN_COMMUNICATION_STRUCTURE_CHANGED",
+  "ZHAOPIN_COMMUNICATION_IDENTITY_CHANGED",
+  "ZHAOPIN_COMMUNICATION_NOT_BACKGROUND",
+  "ZHAOPIN_OPERATOR_TABS_CHANGED",
+  "ZHAOPIN_WINDOW_MISMATCH",
+  "ZHAOPIN_BACKGROUND_OPEN_FAILED"
 ]);
 const READ_ONLY_RECOVERY_CODES = new Set([
   "BROWSER_TIMEOUT",
@@ -46,13 +57,15 @@ async function runCommunicationBatch({
   beforeReadOnlyRetry = null,
   singleItemId = null,
   executionGate = assertCommunicationExecutionEnabled,
+  runtimeGate = assertCommunicationRuntimeAvailable,
   ambiguityReader = communicationAmbiguityStateForBatch
 }) {
-  validateDependencies({ db, batchId, adapter, accessController, executionGate, ambiguityReader });
+  validateDependencies({ db, batchId, adapter, accessController, executionGate, runtimeGate, ambiguityReader });
   const authorizedItemId = normalizeSingleItemId(singleItemId);
-  assertExecutionEnabled(executionGate);
   let batch = getCommunicationBatch(db, batchId);
   if (!batch) throw codedError("COMMUNICATION_BATCH_NOT_FOUND", "communication batch not found");
+  assertRuntimeAvailable(runtimeGate, db, batch.site);
+  assertExecutionEnabled(executionGate, batch.site, authorizedItemId);
   if (["confirmed", "paused", "running"].includes(batch.status)) assertNoUnresolvedAmbiguity(db, batchId, ambiguityReader);
   if (["confirmed", "paused"].includes(batch.status)) batch = setCommunicationBatchStatus(db, { batchId, status: "running" });
   if (batch.status === "stopping") return stopUnfinishedItems(db, batchId, logger);
@@ -132,6 +145,7 @@ async function runCommunicationBatch({
     try {
       inspection = await inspectWithOneRecovery({
         adapter,
+        batch,
         item,
         signal,
         beforeReadOnlyRetry
@@ -139,6 +153,10 @@ async function runCommunicationBatch({
     } catch (error) {
       const afterInspectFailure = observeControl(db, batchId, signal, logger);
       if (afterInspectFailure) return afterInspectFailure;
+      if (batch.site === "zhaopin" && Number(item.clickCount || 0) === 0) {
+        pauseCommunicationBatchAfterReservationFailure(db, { batchId, itemId: item.id });
+        return interruptAndThrow(db, batchId, error, logger);
+      }
       transitionToUnavailable(db, batchId, item, error);
       if (isFatal(error) || signal?.aborted) return interruptAndThrow(db, batchId, error, logger);
       if (authorizedItemId !== null) return checkpointSingleItemRun(db, batchId, logger);
@@ -156,11 +174,13 @@ async function runCommunicationBatch({
         batchId,
         batch: getCommunicationBatch(db, batchId),
         item,
+        authorizedItemId,
         inspection,
         adapter,
         logger,
         signal,
         executionGate,
+        runtimeGate,
         ambiguityReader
       });
     } else if (state === "already_communicated") {
@@ -205,9 +225,9 @@ function normalizeSingleItemId(value) {
   return itemId;
 }
 
-async function inspectWithOneRecovery({ adapter, item, signal, beforeReadOnlyRetry }) {
+async function inspectWithOneRecovery({ adapter, batch, item, signal, beforeReadOnlyRetry }) {
   try {
-    return await adapter.inspectCommunicationJob(immutableJob(item), signal);
+    return await adapter.inspectCommunicationJob(immutableJob(item, batch), signal);
   } catch (error) {
     if (!READ_ONLY_RECOVERY_CODES.has(errorCode(error))
       || Number(item.clickCount || 0) !== 0
@@ -215,7 +235,7 @@ async function inspectWithOneRecovery({ adapter, item, signal, beforeReadOnlyRet
       throw error;
     }
     await beforeReadOnlyRetry({ item, error, recoveryAttempt: 1 });
-    return adapter.inspectCommunicationJob(immutableJob(item), signal);
+    return adapter.inspectCommunicationJob(immutableJob(item, batch), signal);
   }
 }
 
@@ -249,12 +269,13 @@ function communicationInspectionEvidence(inspection = {}, state = "") {
   };
 }
 
-async function dispatchAndVerify({ db, batchId, batch, item, inspection, adapter, logger, signal, executionGate, ambiguityReader }) {
+async function dispatchAndVerify({ db, batchId, batch, item, authorizedItemId, inspection, adapter, logger, signal, executionGate, runtimeGate, ambiguityReader }) {
   const beforeDispatch = observeControl(db, batchId, signal, logger);
   if (beforeDispatch) return beforeDispatch;
   assertNoUnresolvedAmbiguity(db, batchId, ambiguityReader);
   try {
-    assertExecutionEnabled(executionGate);
+    assertRuntimeAvailable(runtimeGate, db, batch.site);
+    assertExecutionEnabled(executionGate, batch.site, authorizedItemId);
   } catch (error) {
     transitionCommunicationItem(db, {
       itemId: item.id,
@@ -278,7 +299,8 @@ async function dispatchAndVerify({ db, batchId, batch, item, inspection, adapter
       return afterPreparation;
     }
     assertNoUnresolvedAmbiguity(db, batchId, ambiguityReader);
-    assertExecutionEnabled(executionGate);
+    assertRuntimeAvailable(runtimeGate, db, batch.site);
+    assertExecutionEnabled(executionGate, batch.site, authorizedItemId);
     const authorized = listCommunicationBatchItems(db, batchId).find((candidate) => candidate.id === item.id);
     if (authorized?.status !== "verified" || Number(authorized?.clickCount || 0) !== 0) {
       throw codedError("COMMUNICATION_ITEM_TRANSITION_CONFLICT", "authorized communication item changed before dispatch");
@@ -305,7 +327,7 @@ async function dispatchAndVerify({ db, batchId, batch, item, inspection, adapter
 
   let result;
   try {
-    result = await adapter.verifyCommunicationResult(immutableJob(item), signal);
+    result = await adapter.verifyCommunicationResult(immutableJob(item, batch), signal);
   } catch (error) {
     return ambiguousAndThrow(db, batchId, item, error, logger);
   }
@@ -319,8 +341,8 @@ async function dispatchAndVerify({ db, batchId, batch, item, inspection, adapter
       evidence: { outcome: communicationOutcomeEvidence(result) },
       errorCode: resultState === "platform_rejected" ? "COMMUNICATION_PLATFORM_REJECTED" : "COMMUNICATION_TRANSPORT_FAILED",
       errorMessage: resultState === "platform_rejected"
-        ? "BOSS rejected the communication request."
-        : "The communication request did not reach BOSS."
+        ? `${batch.site === "zhaopin" ? "Zhaopin" : "BOSS"} rejected the communication request.`
+        : `The communication request did not reach ${batch.site === "zhaopin" ? "Zhaopin" : "BOSS"}.`
     });
     recordAudit(db, item, "communication_result", resultState);
     return;
@@ -400,7 +422,9 @@ function commitVerifiedCommunication(db, { batch, item, expectedStatus, status, 
 
 async function paceAfterTerminalItem({ db, batchId, logger, sleepFn, randomFn, signal }) {
   if (!listCommunicationBatchItems(db, batchId).some((item) => item.status === "pending")) return null;
-  let remainingMs = randomDelay(PRODUCT_POLICY.operations.bossCommunication.delayMs, randomFn);
+  const site = getCommunicationBatch(db, batchId).site;
+  const policy = PRODUCT_POLICY.operations[site === "zhaopin" ? "zhaopinCommunication" : "bossCommunication"];
+  let remainingMs = randomDelay(policy.delayMs, randomFn);
   logger?.info("communication_batch_pacing", { batchId, delayMs: remainingMs });
   while (remainingMs > 0) {
     const control = observeControl(db, batchId, signal, logger);
@@ -657,7 +681,10 @@ function workflowAuditContext(db, batchId) {
   return workflowLogContext({ ...(workflow || {}), communicationBatchId: batchId });
 }
 
-function immutableJob(item) {
+function immutableJob(item, batch) {
+  const zhaopinTarget = batch.site === "zhaopin"
+    ? batch.policySnapshot?.zhaopin?.targets?.[String(item.jobId)]
+    : null;
   return Object.freeze({
     id: item.jobId,
     batchId: item.batchId,
@@ -665,7 +692,12 @@ function immutableJob(item) {
     position: item.position,
     url: item.jobUrl,
     title: item.titleSnapshot,
-    company: item.companySnapshot
+    company: item.companySnapshot,
+    ...(batch.site === "zhaopin" ? {
+      source: batch.site,
+      sourceId: String(zhaopinTarget?.sourceId || ""),
+      searchUrl: String(zhaopinTarget?.searchUrl || "")
+    } : {})
   });
 }
 
@@ -695,7 +727,7 @@ function communicationOutcomeEvidence(value = {}) {
   return {
     endpoints: endpoints.map((endpoint) => {
       const endpointKind = String(endpoint?.endpointKind || "").trim();
-      if (!["chat_config", "friend_add"].includes(endpointKind)) return null;
+      if (!["chat_config", "friend_add", "zhaopin_prechat"].includes(endpointKind)) return null;
       const httpStatus = Number(endpoint?.httpStatus);
       const businessCode = String(endpoint?.businessCode || "").trim();
       const businessCategory = String(endpoint?.businessCategory || "").trim();
@@ -732,7 +764,7 @@ function errorCode(error) {
   return String(error?.code || "COMMUNICATION_EXECUTION_FAILED");
 }
 
-function validateDependencies({ db, batchId, adapter, accessController, executionGate, ambiguityReader }) {
+function validateDependencies({ db, batchId, adapter, accessController, executionGate, runtimeGate, ambiguityReader }) {
   if (!db) throw new Error("db is required");
   if (!Number.isInteger(Number(batchId)) || Number(batchId) <= 0) throw codedError("COMMUNICATION_BATCH_INVALID", "batchId is required");
   for (const method of ["inspectCommunicationJob", "prepareCommunicationDispatch", "dispatchCommunication", "verifyCommunicationResult"]) {
@@ -740,15 +772,26 @@ function validateDependencies({ db, batchId, adapter, accessController, executio
   }
   if (typeof accessController?.reserve !== "function") throw new Error("accessController.reserve is required");
   if (typeof executionGate !== "function") throw new Error("executionGate is required");
+  if (typeof runtimeGate !== "function") throw new Error("runtimeGate is required");
   if (typeof ambiguityReader !== "function") throw new Error("ambiguityReader is required");
 }
 
-function assertExecutionEnabled(executionGate) {
-  const result = executionGate();
+function assertExecutionEnabled(executionGate, site, singleItemId) {
+  const result = executionGate(site);
   if (result === false || result?.executionEnabled === false) {
-    throw codedError("BOSS_COMMUNICATION_CALIBRATION_REQUIRED", "BOSS communication calibration is required before execution");
+    throw codedError(
+      site === "zhaopin" ? "ZHAOPIN_COMMUNICATION_CALIBRATION_REQUIRED" : "BOSS_COMMUNICATION_CALIBRATION_REQUIRED",
+      `${site === "zhaopin" ? "Zhaopin" : "BOSS"} communication calibration is required before execution`
+    );
+  }
+  if (result?.acceptance === "e2e_pending" && singleItemId === null) {
+    throw codedError("COMMUNICATION_E2E_SINGLE_ITEM_REQUIRED", "end-to-end acceptance requires one authorized communication item");
   }
   return result;
+}
+
+function assertRuntimeAvailable(runtimeGate, db, site) {
+  return runtimeGate(db, { site });
 }
 
 function codedError(code, message) {

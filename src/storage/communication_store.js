@@ -12,6 +12,8 @@ const { chinaDayStartMs } = require("../core/site_access_budget");
 const { listWorkflowReviewCandidates } = require("../core/workflow_inventory");
 const { recordVerifiedCommunicationStart } = require("../core/candidate_progress");
 const { isBrowserTabId, sameBrowserTabId } = require("../core/browser_tab_identity");
+const { getPlatformSearchContext } = require("./platform_search_context_store");
+const { buildZhaopinSearchUrl, canonicalizeZhaopinSearchTemplate, zhaopinJobIdentity } = require("../core/zhaopin_search_scope");
 
 const BATCH_STATUSES = new Set(["confirmed", "running", "paused", "stopping", "completed", "stopped", "interrupted", "failed"]);
 const ITEM_STATUSES = new Set(["pending", "opening", "verified", "click_dispatched", "succeeded", "already_communicated", "job_unavailable", "target_mismatch", "action_unavailable", "platform_rejected", "transport_failed", "ambiguous", "stopped"]);
@@ -47,6 +49,9 @@ function createCommunicationBatch(db, input = {}) {
   const planId = positiveInteger(input.planId ?? workflow?.planId, "COMMUNICATION_PLAN_INVALID", "planId is required");
   const plan = getSearchPlan(db, planId);
   if (!plan) throw codedError("COMMUNICATION_PLAN_NOT_FOUND", "communication plan not found");
+  const requestedSite = input.site === undefined || input.site === null || input.site === ""
+    ? ""
+    : communicationSite(input.site);
   if (workflow && (workflow.planId !== planId || workflow.profileId !== plan.profileId)) {
     throw codedError("WORKFLOW_COMMUNICATION_LINK_MISMATCH", "communication plan does not belong to this workflow run");
   }
@@ -87,37 +92,54 @@ function createCommunicationBatch(db, input = {}) {
   if (workflow && jobIds.length > workflow.targetSuccessCount + replacementBuffer) {
     throw codedError("WORKFLOW_COMMUNICATION_SELECTION_LIMIT", "workflow selection exceeds target and replacement buffer");
   }
-  const policyJson = JSON.stringify({
-    ...(input.policySnapshot || {}),
-    browser: browserPolicy,
-    ...(workflow ? {
-      workflowRunId: workflow.id,
-      targetSuccessCount: workflow.targetSuccessCount,
-      replacementBuffer
-    } : {})
-  });
-
   db.exec("BEGIN IMMEDIATE");
   try {
-    const quota = communicationQuotaSnapshot(db, { now });
-    if (jobIds.length > quota.remaining) {
-      throw codedError("COMMUNICATION_QUOTA_EXHAUSTED", "communication selection exceeds the remaining daily quota");
-    }
-    const jobsById = new Map((workflow
-      ? listWorkflowReviewCandidates(db, workflow.id, { now })
-      : listDecisionPool(db, { planId }))
+    const jobsById = new Map(listDecisionPool(db, { planId })
       .map((job) => [Number(job.id), job]));
     const selected = jobIds.map((jobId) => {
       const job = jobsById.get(jobId);
-      if (!isCommunicationJobEligible(db, job)) {
+      if (!job) {
         throw codedError("COMMUNICATION_JOB_INELIGIBLE", `job ${jobId} is not eligible for communication`);
       }
       return job;
     });
+    const sources = new Set(selected.map((job) => String(job.source || "").trim().toLowerCase()));
+    if (sources.size !== 1) {
+      throw codedError("COMMUNICATION_SOURCE_MISMATCH", "communication batch jobs must belong to one source");
+    }
+    const site = communicationSite([...sources][0]);
+    if ((requestedSite && requestedSite !== site) || (workflow && workflow.site !== site)) {
+      throw codedError("COMMUNICATION_SOURCE_MISMATCH", "communication source differs from the selected jobs");
+    }
+    const workflowReviewIds = workflow?.site === "boss"
+      ? new Set(listWorkflowReviewCandidates(db, workflow.id, { now }).map((job) => Number(job.id)))
+      : null;
+    for (const job of selected) {
+      if ((workflowReviewIds && !workflowReviewIds.has(Number(job.id)))
+        || !isCommunicationJobEligible(db, job, { site })) {
+        throw codedError("COMMUNICATION_JOB_INELIGIBLE", `job ${job.id} is not eligible for communication`);
+      }
+    }
+    const quota = communicationQuotaSnapshot(db, { site, now });
+    if (jobIds.length > quota.remaining) {
+      throw codedError("COMMUNICATION_QUOTA_EXHAUSTED", "communication selection exceeds the remaining daily quota");
+    }
+    const zhaopinTargets = site === "zhaopin" ? frozenZhaopinTargets(db, planId, selected) : null;
+    const policyJson = JSON.stringify({
+      ...(input.policySnapshot || {}),
+      ...(site === "zhaopin" ? { calibration: communicationCalibrationSnapshot(site) } : {}),
+      browser: browserPolicy,
+      ...(zhaopinTargets ? { zhaopin: { targets: zhaopinTargets } } : {}),
+      ...(workflow ? {
+        workflowRunId: workflow.id,
+        targetSuccessCount: workflow.targetSuccessCount,
+        replacementBuffer
+      } : {})
+    });
     const batchId = Number(db.prepare(`INSERT INTO communication_batches(
       site, profile_id, plan_id, browser_mode, status, policy_json, confirmed_at, created_at, updated_at
-    ) VALUES ('boss', ?, ?, ?, 'confirmed', ?, ?, ?, ?)`)
-      .run(plan.profileId, planId, browserMode, policyJson, now, now, now).lastInsertRowid);
+    ) VALUES (?, ?, ?, ?, 'confirmed', ?, ?, ?, ?)`)
+      .run(site, plan.profileId, planId, browserMode, policyJson, now, now, now).lastInsertRowid);
     const insertItem = db.prepare(`INSERT INTO communication_batch_items(
       batch_id, job_id, position, job_url, title_snapshot, company_snapshot, status, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)`);
@@ -162,9 +184,9 @@ function bindCommunicationBatchRuntime(db, input = {}) {
   try {
     const batch = getCommunicationBatch(db, batchId);
     if (!batch) throw codedError("COMMUNICATION_BATCH_NOT_FOUND", "communication batch not found");
-    const requested = validateBrowserBinding(input.browser, batch.browserMode);
+    const requested = validateBrowserBinding(input.browser, batch.browserMode, batch.site);
     const stored = batch.runtime?.browser
-      ? validateBrowserBinding(batch.runtime.browser, batch.browserMode)
+      ? validateBrowserBinding(batch.runtime.browser, batch.browserMode, batch.site)
       : null;
     let next = requested;
     if (!stored) {
@@ -509,12 +531,13 @@ function resolveAmbiguousCommunicationItem(db, input = {}) {
   }
 }
 
-function communicationQuotaSnapshot(db, { now } = {}) {
+function communicationQuotaSnapshot(db, { site = "boss", now } = {}) {
+  const normalizedSite = communicationSite(site);
   const at = timestamp(now);
   const endMs = Date.parse(at);
   const startMs = chinaDayStartMs(endMs);
   const since = new Date(startMs).toISOString();
-  const used = listSiteAccessEvents(db, { site: "boss", action: "communication_visit", since })
+  const used = listSiteAccessEvents(db, { site: normalizedSite, action: "communication_visit", since })
     .filter((event) => {
       const eventMs = Date.parse(event.createdAt);
       return Number.isFinite(eventMs) && eventMs >= startMs && eventMs <= endMs;
@@ -522,19 +545,20 @@ function communicationQuotaSnapshot(db, { now } = {}) {
   const reserved = Number(db.prepare(`SELECT COUNT(*) AS count
     FROM communication_batch_items items
     JOIN communication_batches batches ON batches.id = items.batch_id
-    WHERE batches.status IN ('confirmed', 'running', 'paused', 'stopping')
+    WHERE batches.site = ?
+      AND batches.status IN ('confirmed', 'running', 'paused', 'stopping')
       AND items.status IN ('pending', 'opening', 'verified', 'click_dispatched')
       AND NOT EXISTS (
         SELECT 1 FROM events access_events
         WHERE access_events.event_type = 'site_access'
           AND access_events.created_at >= ?
           AND access_events.created_at <= ?
-          AND json_extract(access_events.payload_json, '$.site') = 'boss'
+          AND json_extract(access_events.payload_json, '$.site') = ?
           AND json_extract(access_events.payload_json, '$.action') = 'communication_visit'
           AND json_extract(access_events.payload_json, '$.batchId') = batches.id
           AND json_extract(access_events.payload_json, '$.itemId') = items.id
-      )`).get(since, at).count);
-  const limit = Number(PRODUCT_POLICY.operations.bossCommunication.limits["24h"]);
+      )`).get(normalizedSite, since, at, normalizedSite).count);
+  const limit = Number(communicationPolicy(normalizedSite).limits["24h"]);
   return { limit, used, reserved, remaining: Math.max(0, limit - used - reserved) };
 }
 
@@ -542,15 +566,40 @@ function hasUserApplicationStatus(job) {
   return String(job?.applicationStatus ?? "").length > 0;
 }
 
-function isCommunicationJobEligible(db, job) {
-  if (!job || job.source !== 'boss' || job.archived || !ALLOWED_BUCKETS.has(job.decisionBucket) || !isBossJobUrl(job.url) || hasUserApplicationStatus(job)) {
+function isCommunicationJobEligible(db, job, { site = "boss" } = {}) {
+  const normalizedSite = communicationSite(site);
+  if (normalizedSite === "boss") {
+    if (!job || job.source !== 'boss' || job.archived || !ALLOWED_BUCKETS.has(job.decisionBucket) || !isBossJobUrl(job.url) || hasUserApplicationStatus(job)) {
+      return false;
+    }
+    if ((job.qualityTags || []).some((tag) => COMMUNICATION_ELIGIBILITY_BLOCKERS.has(tag))) return false;
+    return !hasExistingCommunication(db, job.id);
+  }
+  if (!job || job.source !== "zhaopin" || job.archived || !ALLOWED_BUCKETS.has(job.decisionBucket)
+    || hasUserApplicationStatus(job) || !String(job.sourceId || "").trim()
+    || String(job.keyword || "").trim() === "message-discovery-detail"
+    || String(job.description || "").trim().length < 120
+    || job.analysis?.semanticStatus !== "complete"
+    || job.analysis?.sourceAvailability === "offline"
+    || (job.qualityTags || []).some((tag) => COMMUNICATION_ELIGIBILITY_BLOCKERS.has(tag))) {
     return false;
   }
-  if ((job.qualityTags || []).some((tag) => COMMUNICATION_ELIGIBILITY_BLOCKERS.has(tag))) return false;
-  return !db.prepare(`SELECT 1 FROM communication_batch_items
+  const evidence = db.prepare("SELECT site FROM batches WHERE id = ?").get(Number(job.batchId));
+  if (evidence?.site !== "zhaopin") return false;
+  try {
+    const identity = zhaopinJobIdentity(job.url);
+    if (identity.sourceId !== String(job.sourceId)) return false;
+  } catch {
+    return false;
+  }
+  return !hasExistingCommunication(db, job.id);
+}
+
+function hasExistingCommunication(db, jobId) {
+  return Boolean(db.prepare(`SELECT 1 FROM communication_batch_items
     WHERE job_id = ?
       AND (click_count > 0 OR status IN ('click_dispatched', 'platform_rejected', 'transport_failed', 'ambiguous', 'succeeded', 'already_communicated'))
-    LIMIT 1`).get(Number(job.id));
+    LIMIT 1`).get(Number(jobId)));
 }
 
 function communicationBatchSummary(db, batchId) {
@@ -649,7 +698,8 @@ function normalizeWorkflowPortableCdpPort(value) {
   return value;
 }
 
-function validateBrowserBinding(value, expectedMode = "") {
+function validateBrowserBinding(value, expectedMode = "", site = "boss") {
+  const normalizedSite = communicationSite(site);
   const browser = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   for (const field of ["windowId", "bindingGeneration"]) {
     if (!Number.isInteger(browser[field]) || browser[field] <= 0) {
@@ -660,12 +710,13 @@ function validateBrowserBinding(value, expectedMode = "") {
     || (expectedMode && browser.mode !== expectedMode)) {
     throw codedError("COMMUNICATION_BROWSER_BINDING_INVALID", "runtime browser binding mode mismatch");
   }
-  for (const field of ["searchTabId", "messageTabId"]) {
+  const tabFields = normalizedSite === "zhaopin" ? ["searchTabId"] : ["searchTabId", "messageTabId"];
+  for (const field of tabFields) {
     if (!isBrowserTabId(browser[field])) {
       throw codedError("COMMUNICATION_BROWSER_BINDING_INVALID", `${field} must be a valid browser tab identifier`);
     }
   }
-  if (sameBrowserTabId(browser.searchTabId, browser.messageTabId)) {
+  if (normalizedSite === "boss" && sameBrowserTabId(browser.searchTabId, browser.messageTabId)) {
     throw codedError("COMMUNICATION_BROWSER_BINDING_INVALID", "fixed search and message tabs must be different");
   }
   if (!Number.isInteger(browser.searchScrollTop) || browser.searchScrollTop < 0) {
@@ -675,24 +726,74 @@ function validateBrowserBinding(value, expectedMode = "") {
   try {
     searchReturnUrl = new URL(browser.searchReturnUrl);
   } catch {
-    throw codedError("COMMUNICATION_BROWSER_BINDING_INVALID", "searchReturnUrl must be a trusted BOSS search URL");
+    throw codedError(
+      "COMMUNICATION_BROWSER_BINDING_INVALID",
+      `searchReturnUrl must be a trusted ${normalizedSite === "zhaopin" ? "Zhaopin" : "BOSS"} search URL`
+    );
   }
-  if (searchReturnUrl.origin !== "https://www.zhipin.com"
-    || searchReturnUrl.pathname !== "/web/geek/jobs"
-    || searchReturnUrl.username
-    || searchReturnUrl.password
-    || searchReturnUrl.hash) {
-    throw codedError("COMMUNICATION_BROWSER_BINDING_INVALID", "searchReturnUrl must be a trusted BOSS search URL");
+  if (normalizedSite === "boss") {
+    if (searchReturnUrl.origin !== "https://www.zhipin.com"
+      || searchReturnUrl.pathname !== "/web/geek/jobs"
+      || searchReturnUrl.username
+      || searchReturnUrl.password
+      || searchReturnUrl.hash) {
+      throw codedError("COMMUNICATION_BROWSER_BINDING_INVALID", "searchReturnUrl must be a trusted BOSS search URL");
+    }
+  } else {
+    try {
+      canonicalizeZhaopinSearchTemplate(searchReturnUrl.toString());
+    } catch {
+      throw codedError("COMMUNICATION_BROWSER_BINDING_INVALID", "searchReturnUrl must be a trusted Zhaopin search URL");
+    }
+    if (!String(searchReturnUrl.searchParams.get("kw") || "").trim() || searchReturnUrl.hash) {
+      throw codedError("COMMUNICATION_BROWSER_BINDING_INVALID", "searchReturnUrl must preserve the Zhaopin keyword");
+    }
   }
   return Object.freeze({
     mode: browser.mode,
     windowId: browser.windowId,
     searchTabId: browser.searchTabId,
-    messageTabId: browser.messageTabId,
+    ...(normalizedSite === "boss" ? { messageTabId: browser.messageTabId } : {}),
     searchReturnUrl: searchReturnUrl.toString(),
     searchScrollTop: browser.searchScrollTop,
     bindingGeneration: browser.bindingGeneration
   });
+}
+
+function frozenZhaopinTargets(db, planId, jobs) {
+  const context = getPlatformSearchContext(db, { planId, site: "zhaopin" });
+  if (!context) {
+    throw codedError(
+      "ZHAOPIN_COMMUNICATION_SEARCH_CONTEXT_REQUIRED",
+      "请先在智联搜索页准备并保存当前原生搜索条件，再确认沟通岗位。"
+    );
+  }
+  return Object.fromEntries(jobs.map((job) => [String(job.id), {
+    sourceId: String(job.sourceId),
+    searchUrl: buildZhaopinSearchUrl({ keyword: job.keyword, searchTemplate: context.searchTemplate })
+  }]));
+}
+
+function communicationPolicy(site) {
+  return PRODUCT_POLICY.operations[site === "zhaopin" ? "zhaopinCommunication" : "bossCommunication"];
+}
+
+function communicationCalibrationSnapshot(site) {
+  const calibration = communicationPolicy(site).calibration;
+  return {
+    implementation: calibration.implementation,
+    calibration: calibration.status,
+    acceptance: calibration.acceptance,
+    executionEnabled: calibration.executionEnabled
+  };
+}
+
+function communicationSite(value) {
+  const site = String(value || "").trim().toLowerCase();
+  if (!["boss", "zhaopin"].includes(site)) {
+    throw codedError("COMMUNICATION_SITE_INVALID", "communication site must be boss or zhaopin");
+  }
+  return site;
 }
 
 function sameBrowserBinding(left, right) {

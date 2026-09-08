@@ -242,14 +242,30 @@ function recordVerifiedCommunicationStart(db, input = {}) {
       });
     }
     card = getProgressCard(db, card.id);
-    ensureFunnelEntry(db, {
-      profileId: card.profileId,
-      planId: card.planId,
-      jobId: card.jobId,
-      cardId: card.id,
-      sourceKind: "communication",
-      startedAt: persisted.event.occurredAt
-    });
+    const zhaopin = batch.site === "zhaopin";
+    if (zhaopin) {
+      const owned = db.prepare(`SELECT 1
+        FROM jobs
+        JOIN job_observations observations ON observations.job_id = jobs.id
+        JOIN batches ON batches.id = observations.batch_id
+        WHERE jobs.id = ? AND jobs.source = 'zhaopin'
+          AND batches.site = 'zhaopin' AND batches.profile_id = ? AND batches.search_plan_id = ?
+        LIMIT 1`).get(jobId, Number(batch.profileId), Number(batch.planId));
+      if (!owned || card.source !== "zhaopin"
+        || card.profileId !== Number(batch.profileId) || card.planId !== Number(batch.planId)
+        || card.jobId !== jobId) {
+        throw progressError("PROGRESS_COMMUNICATION_SOURCE_MISMATCH", "verified communication progress source changed");
+      }
+    } else {
+      ensureFunnelEntry(db, {
+        profileId: card.profileId,
+        planId: card.planId,
+        jobId: card.jobId,
+        cardId: card.id,
+        sourceKind: "communication",
+        startedAt: persisted.event.occurredAt
+      });
+    }
     db.exec("RELEASE candidate_progress_verified");
     return card;
   } catch (error) {

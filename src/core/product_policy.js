@@ -144,6 +144,17 @@ const PRODUCT_POLICY = Object.freeze({
         "30m": Object.freeze(["detail_open", "communication_visit", "message_reply_send"]),
         "24h": Object.freeze(["communication_visit", "message_reply_send"])
       })
+    }),
+    zhaopinCommunication: Object.freeze({
+      calibration: Object.freeze({
+        implementation: "implemented",
+        status: "dom_verified",
+        acceptance: "e2e_pending",
+        executionEnabled: false
+      }),
+      selection: Object.freeze({ targetCount: 30, acceptableMin: 22 }),
+      delayMs: Object.freeze([15000, 20000]),
+      limits: BOSS_COMMUNICATION_LIMITS
     })
   }),
   matching: Object.freeze({

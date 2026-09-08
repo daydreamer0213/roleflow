@@ -11,14 +11,18 @@ function scanRuntimeBlock(db, { nowMs = Date.now(), site = "boss" } = {}) {
   return { reasonCode: state.reasonCode || (site === "zhaopin" ? "ZHAOPIN_RUNTIME_BLOCKED" : "BOSS_RUNTIME_BLOCKED"), blockedUntil };
 }
 
-function communicationRuntimeBlock(db, { nowMs = Date.now() } = {}) {
-  const state = getSiteRuntimeState(db, "boss");
+function communicationRuntimeBlock(db, { site = "boss", nowMs = Date.now() } = {}) {
+  const normalizedSite = communicationSite(site);
+  const state = getSiteRuntimeState(db, normalizedSite);
   if (!state || state.status !== "blocked") return null;
   const blockedUntil = state.details?.blockedUntil || null;
   const blockedUntilMs = Date.parse(blockedUntil || "");
-  const accessMode = resolveAccessMode(db, { site: "boss", nowMs });
+  const accessMode = resolveAccessMode(db, { site: normalizedSite, nowMs });
   if (accessMode !== "recovery" && Number.isFinite(blockedUntilMs) && blockedUntilMs <= nowMs) return null;
-  return { reasonCode: state.reasonCode || "BOSS_RUNTIME_BLOCKED", blockedUntil };
+  return {
+    reasonCode: state.reasonCode || (normalizedSite === "zhaopin" ? "ZHAOPIN_RUNTIME_BLOCKED" : "BOSS_RUNTIME_BLOCKED"),
+    blockedUntil
+  };
 }
 
 function assertBossRuntimeAvailable(db, { site = "boss" } = {}) {
@@ -27,10 +31,19 @@ function assertBossRuntimeAvailable(db, { site = "boss" } = {}) {
   throw appError(block.reasonCode, `${site === "zhaopin" ? "智联" : "BOSS"} 访问仍处于安全暂停期。`, { statusCode: 409 });
 }
 
-function assertCommunicationRuntimeAvailable(db) {
-  const block = communicationRuntimeBlock(db);
+function assertCommunicationRuntimeAvailable(db, { site = "boss" } = {}) {
+  const normalizedSite = communicationSite(site);
+  const block = communicationRuntimeBlock(db, { site: normalizedSite });
   if (!block) return;
-  throw appError(block.reasonCode, "BOSS 访问仍处于安全暂停期。", { statusCode: 409 });
+  throw appError(block.reasonCode, `${normalizedSite === "zhaopin" ? "智联" : "BOSS"} 访问仍处于安全暂停期。`, { statusCode: 409 });
+}
+
+function communicationSite(value) {
+  const site = String(value || "").trim().toLowerCase();
+  if (!["boss", "zhaopin"].includes(site)) {
+    throw appError("COMMUNICATION_SITE_INVALID", "communication site must be boss or zhaopin", { statusCode: 400 });
+  }
+  return site;
 }
 
 module.exports = {
