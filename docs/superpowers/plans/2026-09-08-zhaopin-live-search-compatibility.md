@@ -20,7 +20,7 @@
 
 **Files:**
 - Modify: `src/adapters/sites/zhaopin.js`
-- Modify narrowly: `src/dashboard/server.js` (`prepareZhaopinSearch` only)
+- Modify narrowly: `src/dashboard/server.js` (`prepareZhaopinSearch`, plus its `/api/platform-search/open` caller solely to propagate request cancellation)
 - Modify: `tests/zhaopin_readonly_smoke.js`, `tests/dashboard_zhaopin_smoke.js`
 - Create fixture: `tests/fixtures/zhaopin/search-current.html`
 
@@ -28,7 +28,7 @@
 
 **Interfaces:** Existing `readSearchState`, `waitForSearchReady`, `readVisiblePaneDetail`, `prepareZhaopinSearch` return contracts unchanged. Snapshot may carry structural readiness fields internally; adapters continue enforcing keyword/template/selected-card identity. Browser ids accept existing adapter's supported numeric or string type consistently (no hardcoded numeric conversion in generic scan path).
 
-- [ ] **Step 1: Add RED regressions reproducing both real failures.** New fixture represents current sibling summary + multiple JD cards, synthetic data, current keyword input and tags/company/url. Real reader must produce correct title/company/salary/location/experience/education/description and exact sourceId; a decoy related job/title/company/link in a separate panel must not be included. Preserve old fixture coverage for previous supported layout. Full-card location “合成市 甲区” versus summary “合成市·甲区” is equivalent punctuation only, not a license to accept another city.
+- [x] **Step 1: Add RED regressions reproducing both real failures.** New fixture represents current sibling summary + multiple JD cards, synthetic data, current keyword input and tags/company/url. Real reader must produce correct title/company/salary/location/experience/education/description and exact sourceId; a decoy related job/title/company/link in a separate panel must not be included. Preserve old fixture coverage for previous supported layout. Full-card location “合成市 甲区” versus summary “合成市·甲区” is equivalent punctuation only, not a license to accept another city.
 
 ```js
 const state = await adapter.readSearchState('ZHAOPIN-SEARCH');
@@ -41,7 +41,7 @@ assert.equal(state.detail.sourceId, 'CCSYNTH001J00000000001');
 
 In HTTP fake browser, `navigate` returns while `listTabs` still gives old URL for two reads, then desired URL. POST open succeeds after observing matching background target, and navigation call count is 1. Also cover created tab returning string identifier from Edge adapter where listTabs supplies numeric id, delayed visibility/closing, wrong window/active tab, actual same-host wrong keyword, old URL never changes -> specific timeout (inject sleep/time if needed, not real long sleep). No duplicate tab creation or attempted foreground recovery.
 
-- [ ] **Step 2: Implement minimal compatibility.** For current layout read one `.job-detail-panel` tied to selected card; fall back to legacy `.job-detail-card` only when no current panel exists. Read title/salary/meta and company from the same panel. In current meta map first location tag + identifiable experience/education. Client company semantics remain distinct; don't swap publisher/client fields. The same panel's trusted detail link must match selected position data (where the actual current component exposes it) and title/salary/company/location checks remain effective.
+- [x] **Step 2: Implement minimal compatibility.** For current layout read one `.job-detail-panel` tied to selected card; fall back to legacy `.job-detail-card` only when no current panel exists. Read title/salary/meta and company from the same panel. In current meta map first location tag + identifiable experience/education. Client company semantics remain distinct; don't swap publisher/client fields. The same panel's trusted detail link must match selected position data (where the actual current component exposes it) and title/salary/company/location checks remain effective.
 
 ```js
 const panel = document.querySelector('.job-detail-panel');
@@ -55,7 +55,9 @@ Fresh read-only evidence also confirms current `JobCard.$props.job.number`, `job
 
 After one navigate/create in `prepareZhaopinSearch`, poll the existing browser for that target committing to the expected canonical URL/keyword while checking same-window and unchanged active baseline. Target may be about:blank/previous URL transiently; an unrelated committed URL fails. Use bounded cancellation-friendly shared wait conventions; requested deadline 120000 ms, read interval 500 ms; injectable clock/sleep for tests. A failed create must clean only an attributable new tab and verify closure; never close an existing user search tab on timeout. Preserve all recognized native filters and reject unsupported params.
 
-- [ ] **Step 3: Run focused GREEN regression.**
+Cancellation must originate from the open request and reach this wait. Use the existing local request/response lifecycle or a native AbortController, not a new queue/controller framework. Normal completion of a POST request body must not be mistaken for cancellation. Check cancellation before browser work and before/after waits; if it occurs after creating an owned tab, perform only the required bounded ownership-checked cleanup. Keep `/save` behavior and unrelated browser operations unchanged.
+
+- [x] **Step 3: Run focused GREEN regression.**
 
 ```powershell
 $env:NODE_PATH='C:/Users/Administrator/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules'
@@ -70,4 +72,6 @@ git diff --check
 
 Expected exit 0. Known SQLite ExperimentalWarning retained. Main runs full suite after all phase work; don't repeat it here.
 
-- [ ] **Step 4: Commit and independent review.** Stage owned files only, report RED/GREEN commands/output, exact SHA, remaining live assumptions. Main rechecks product prepare/save/start against real search after code freeze; successful synthetic fixture isn't real account acceptance.
+- [x] **Step 4: Commit and independent review.** Stage owned files only, report RED/GREEN commands/output, exact SHA, remaining live assumptions. Main rechecks product prepare/save/start against real search after code freeze; successful synthetic fixture isn't real account acceptance.
+
+Task review complete at `6163af63e19cd04a76a0838bcdf58d9998331884`: original 4 focused checks passed; fix round 1 added RED/GREEN for target disappearance, ownership conflict, hidden ancestor loader and request cancellation. Scoped re-review closed all four findings with no new Critical/Important. Full-phase gate and actual prepare/save/start remain pending.
