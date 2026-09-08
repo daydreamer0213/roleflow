@@ -24,13 +24,15 @@
 
 ## Task 1: 当前面板公司字段兼容
 
+**本地实现与复核完成：** dc984dd 首次实现，1053b964466b40f9e02cf54f486a1ba0ada12fd9 修复唯一复审缺口；完整报告包含初次1RED、修正2RED及两次最终3项GREEN/语法/diff。发布公司独立校验且内部字段不进入最终岗位；helper6使已打开页面更新。独立定向复核无剩余问题，既有SQLite实验告警记为非阻塞。真实继续与最终完整检查仍由主控执行。
+
 **Ownership:** `src/adapters/sites/zhaopin.js`，`tests/zhaopin_readonly_smoke.js`，必要合成 `tests/fixtures/zhaopin/search-vue2.html` / `search-current.html`。不修改其他源码、存储或沟通逻辑。主控维护本计划。
 
-- [ ] 先用真实 helper + 合成 Vue2/current 面板复现 RED：卡片发布公司 A，summary 明确客户公司 B，同面板 publisher A；读取必须成功，company=A、clientCompany=B，现版本会失败。
-- [ ] 最小解析修复：复用既有显式 `^客户公司[：:]` 语义；current panel summary 与 publisher 分开读取，正常页面保持兼容。更新 helper 版本；同页已注入旧 helper 后再次读取应获得新语义。
-- [ ] 回归至少覆盖：显式客户公司且 publisher=A 成功；publisher=C 与卡片 A 不同仍失败；无客户标记的公司冲突仍失败；既有旧布局客户公司测试保持通过。现有编号不一致拒绝测试继续有效，不另写大规模矩阵或生产框架。
-- [ ] GREEN：`zhaopin_readonly_smoke`、`zhaopin_workflow_smoke`、`zhaopin_communication_adapter_smoke`；改动 JS 语法、`git diff --check`。自审后提交仅所有权文件，报告 RED/GREEN 命令与关键输出、确切 SHA、文件及疑点。
-- [ ] 主控生成独立 diff 包并做一次任务规格/质量审查；只对实际发现做定向修复，不重开历史整分支审查。
+- [x] 先用真实 helper + 合成 Vue2/current 面板复现 RED：卡片发布公司 A，summary 明确客户公司 B，同面板 publisher A；读取必须成功，company=A、clientCompany=B，现版本会失败。
+- [x] 最小解析修复：复用既有显式 `^客户公司[：:]` 语义；current panel summary 与 publisher 分开读取，正常页面保持兼容。更新 helper 版本；同页已注入旧 helper 后再次读取应获得新语义。
+- [x] 回归至少覆盖：显式客户公司且 publisher=A 成功；publisher=C 与卡片 A 不同仍失败；无客户标记的公司冲突仍失败；既有旧布局客户公司测试保持通过。现有编号不一致拒绝测试继续有效，不另写大规模矩阵或生产框架。
+- [x] GREEN：`zhaopin_readonly_smoke`、`zhaopin_workflow_smoke`、`zhaopin_communication_adapter_smoke`；改动 JS 语法、`git diff --check`。自审后提交仅所有权文件，报告 RED/GREEN 命令与关键输出、确切 SHA、文件及疑点。
+- [x] 主控生成独立 diff 包并做一次任务规格/质量审查；只对实际发现做定向修复，不重开历史整分支审查。
 
 ## 主控验收
 
