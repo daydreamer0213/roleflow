@@ -190,7 +190,12 @@
     location.reload();
   }
 
-  const structureChanged = (snapshot) => String(snapshot.progress.phaseKey || "") !== String(page.dataset.workflowPhaseKey || "");
+  const structureChanged = (snapshot) => {
+    const phaseChanged = String(snapshot.progress.phaseKey || "") !== String(page.dataset.workflowPhaseKey || "");
+    const status = String(snapshot.workflow.status || "");
+    const terminalStatusChanged = terminal.has(status) && status !== String(page.dataset.workflowStatus || "");
+    return phaseChanged || terminalStatusChanged;
+  };
 
   const pollProgress = async () => {
     if (pollInFlight || !runId) return;

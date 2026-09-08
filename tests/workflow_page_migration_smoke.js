@@ -348,16 +348,46 @@ async function assertClientContracts(vm) {
       progressSnapshot: validSnapshot("paused")
     }));
     const interruptedVm = buildWorkflowViewModel(fixture({ workflow: { status: "interrupted", communicationBatchId: 41, errorCode: "SAFE_STOP" }, progressSnapshot: null }));
+    const interruptedSnapshot = validSnapshot("interrupted");
+    interruptedSnapshot.workflow.errorCode = "SAFE_STOP";
+    interruptedSnapshot.controls.canStop = true;
+    const resumableInterruptedVm = buildWorkflowViewModel(fixture({
+      workflow: { status: "interrupted", communicationBatchId: null, errorCode: "SAFE_STOP" },
+      progressSnapshot: interruptedSnapshot
+    }));
     const pages = new Map([["/review", reviewVm], ["/paused", pausedVm], ["/interrupted", interruptedVm]]);
+    let transitionPageLoads = 0;
+    let transitionStatusRequests = 0;
     const reviewPage = await browser.newPage({ viewport: { width: 375, height: 812 } });
     server.removeAllListeners("request");
     server.on("request", (req, res) => {
       if (req.url === "/assets/workflow.js") return serve(res, "application/javascript", fs.readFileSync(asset));
       if (req.url === "/assets/roleflow.css") return serve(res, "text/css", fs.readFileSync(stylesheet));
-      if (req.url?.startsWith("/api/workflow-status")) return json(res, validSnapshot("paused"));
+      if (req.url?.startsWith("/api/workflow-status")) {
+        if (String(req.headers.referer || "").includes("/transition")) {
+          transitionStatusRequests += 1;
+          return json(res, interruptedSnapshot);
+        }
+        return json(res, validSnapshot("paused"));
+      }
+      if (req.url === "/transition") {
+        transitionPageLoads += 1;
+        return serve(res, "text/html", workflowDocument(transitionPageLoads === 1 ? vm : resumableInterruptedVm));
+      }
       if (pages.has(req.url)) return serve(res, "text/html", workflowDocument(pages.get(req.url)));
       res.writeHead(404); res.end();
     });
+    await reviewPage.goto(`${baseUrl}/transition`, { waitUntil: "networkidle" });
+    assert.strictEqual(await waitFor(() => transitionPageLoads === 2, 4000), true, "same-phase interruption must reload the server-rendered workflow page");
+    await reviewPage.waitForLoadState("networkidle");
+    await delay(150);
+    assert.strictEqual(transitionPageLoads, 2, "same-phase interruption must request exactly one navigation");
+    assert.strictEqual(transitionStatusRequests, 1, "terminal interruption must stop polling after the transition snapshot");
+    assert.strictEqual(await reviewPage.locator('[data-workflow-primary="true"]').filter({ hasText: "继续本轮" }).isVisible(), true, "interrupted page must show the resume action");
+    assert.strictEqual(await reviewPage.locator('[data-control-group="stop-only"] [data-action="stop-preview"]').isVisible(), true, "interrupted page must show the stop-only action");
+    assert.strictEqual(await reviewPage.getByText("没有阻塞", { exact: true }).count(), 0, "interrupted page must not retain the active no-blockage message");
+    assert.strictEqual(await reviewPage.locator(".workflow-alert").isVisible(), true, "interrupted page must show the server-rendered error explanation");
+
     await reviewPage.goto(`${baseUrl}/review`, { waitUntil: "networkidle" });
     await assertViewportPrimary(reviewPage, "确认清单");
     assert.strictEqual(await reviewPage.locator("#workflow-selected-count").evaluate((element) => element.value), "1");
