@@ -285,7 +285,7 @@ function selectedResult(snapshot, target) {
   return Object.freeze({
     platform: "zhaopin",
     conversationKey: target.conversationKey,
-    sourceJobId: `zhaopin:${target.jobNumber}`,
+    sourceJobId: target.sourceJobId,
     lastMessageId: parsed.lastMessageId,
     positionName: text(snapshot.positionName) || text(selectedRow.positionName),
     companyName: text(selectedRow.companyName),
@@ -310,31 +310,40 @@ function createZhaopinMessageReader({ browser, sleepFn = defaultSleep, nowFn = D
     try { return await operation(); } finally { busy = false; }
   }
 
-  async function assertActiveBindings() {
+  async function assertActiveBindings(signal) {
     if (!binding) throw codedError("ZHAOPIN_MESSAGE_TARGET_INVALID", "zhaopin message reader has no active binding");
+    throwIfAborted(signal);
     const current = resolveMessageTab(await browser.listTabs());
+    throwIfAborted(signal);
     if (current.tabId !== binding.tabId || current.windowId !== binding.windowId) {
       throw codedError("ZHAOPIN_MESSAGE_TAB_BINDING_LOST", "zhaopin message tab binding changed");
     }
     return current;
   }
 
-  async function readSnapshot(tabId) {
-    return normalizeSnapshot(await browser.evalValue(tabId, ZHAOPIN_MESSAGE_SNAPSHOT_EXPRESSION));
+  async function readSnapshot(tabId, signal) {
+    throwIfAborted(signal);
+    const snapshot = normalizeSnapshot(await browser.evalValue(tabId, ZHAOPIN_MESSAGE_SNAPSHOT_EXPRESSION));
+    throwIfAborted(signal);
+    return snapshot;
   }
 
   return {
-    scanConversationRows() {
+    scanConversationRows(signal) {
       return exclusive(async () => {
         binding = null;
         targetMap = new Map();
+        throwIfAborted(signal);
         const next = resolveMessageTab(await browser.listTabs());
+        throwIfAborted(signal);
         await browser.setPageLifecycleActive(next.tabId);
+        throwIfAborted(signal);
         const confirmed = resolveMessageTab(await browser.listTabs());
+        throwIfAborted(signal);
         if (confirmed.tabId !== next.tabId || confirmed.windowId !== next.windowId) {
           throw codedError("ZHAOPIN_MESSAGE_TAB_BINDING_LOST", "zhaopin message tab binding changed");
         }
-        const snapshot = await readSnapshot(next.tabId);
+        const snapshot = await readSnapshot(next.tabId, signal);
         if (snapshot.listError) throw codedError("ZHAOPIN_MESSAGE_LIST_FAILED", "zhaopin conversation list failed");
         const internalRows = snapshot.rows.map((row) => rowFromSnapshot(snapshot, row));
         const rows = internalRows.map(publicRow);
@@ -343,7 +352,7 @@ function createZhaopinMessageReader({ browser, sleepFn = defaultSleep, nowFn = D
         return Object.freeze({ tabId: next.tabId, platform: "zhaopin", scope: "loaded_conversations", rows: Object.freeze(rows) });
       });
     },
-    assertActiveBindings() { return exclusive(assertActiveBindings); },
+    assertActiveBindings(signal) { return exclusive(() => assertActiveBindings(signal)); },
     openQueuedConversation(target, signal) {
       return exclusive(async () => {
         throwIfAborted(signal);
@@ -352,17 +361,24 @@ function createZhaopinMessageReader({ browser, sleepFn = defaultSleep, nowFn = D
         if (!internal || target.previewDigest !== internal.previewDigest || target.sourceJobId !== internal.sourceJobId) {
           throw codedError("ZHAOPIN_MESSAGE_TARGET_INVALID", "zhaopin target is not from the active scan");
         }
-        await assertActiveBindings();
+        if (!validJobNumber(internal._raw.jobNumber) || !internal.sourceJobId) {
+          throw codedError("ZHAOPIN_MESSAGE_JOB_ID_INVALID", "zhaopin message job identity is invalid");
+        }
+        await assertActiveBindings(signal);
+        throwIfAborted(signal);
         await browser.setPageLifecycleActive(binding.tabId);
-        await assertActiveBindings();
+        throwIfAborted(signal);
+        await assertActiveBindings(signal);
+        throwIfAborted(signal);
         const guarded = await browser.evalValue(binding.tabId, buildSelectionExpression(internal._raw));
+        throwIfAborted(signal);
         if (!guarded || guarded.clicked !== true) throw guardedSelectionError(guarded?.reason);
         const deadline = nowFn() + timeoutMs;
         let identityMismatch = false;
         while (true) {
           throwIfAborted(signal);
-          await assertActiveBindings();
-          const snapshot = await readSnapshot(binding.tabId);
+          await assertActiveBindings(signal);
+          const snapshot = await readSnapshot(binding.tabId, signal);
           if (!selectedIdentityMatches(snapshot, internal._raw)) {
             identityMismatch = true;
           } else if (snapshot.timelineError) {

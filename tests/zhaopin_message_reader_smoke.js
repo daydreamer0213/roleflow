@@ -176,6 +176,50 @@ async function main() {
     const abortScan = await abortReader.scanConversationRows();
     const controller = new AbortController(); controller.abort();
     await assert.rejects(() => abortReader.openQueuedConversation({ ...abortScan.rows[0], tabId: IM_TAB_ID }, controller.signal), error => error.code === "ZHAOPIN_MESSAGE_ABORTED");
+
+    const preAbortedBridge = fakeBrowser(page);
+    const preAbortedReader = readerFor(preAbortedBridge);
+    const preAborted = new AbortController(); preAborted.abort();
+    await assert.rejects(() => preAbortedReader.scanConversationRows(preAborted.signal), error => error.code === "ZHAOPIN_MESSAGE_ABORTED");
+    assert.equal(preAbortedBridge.calls.length, 0, "a pre-aborted scan must not touch the browser");
+
+    const midScanBridge = fakeBrowser(page);
+    const midScanReader = readerFor(midScanBridge);
+    const midScan = new AbortController();
+    const listTabs = midScanBridge.listTabs;
+    let listCount = 0;
+    midScanBridge.listTabs = async () => {
+      const result = await listTabs();
+      if (++listCount === 1) midScan.abort();
+      return result;
+    };
+    await assert.rejects(() => midScanReader.scanConversationRows(midScan.signal), error => error.code === "ZHAOPIN_MESSAGE_ABORTED");
+    assert.equal(midScanBridge.calls.some(([name]) => name === "setPageLifecycleActive"), false, "a scan cancelled during listTabs must not wake the page");
+
+    await setFixture(page, { sessions: [first], active: first, timeline: richTimeline, loading: false });
+    const midOpenBridge = fakeBrowser(page);
+    const midOpenReader = readerFor(midOpenBridge);
+    const midOpenScan = await midOpenReader.scanConversationRows();
+    const midOpen = new AbortController();
+    const setPageLifecycleActive = midOpenBridge.setPageLifecycleActive;
+    midOpenBridge.setPageLifecycleActive = async (tabId) => {
+      const result = await setPageLifecycleActive(tabId);
+      midOpen.abort();
+      return result;
+    };
+    const clicksBeforeAbort = await page.evaluate(() => window.fixture.clicks);
+    await assert.rejects(() => midOpenReader.openQueuedConversation({ ...midOpenScan.rows[0], tabId: IM_TAB_ID }, midOpen.signal), error => error.code === "ZHAOPIN_MESSAGE_ABORTED");
+    assert.equal(await page.evaluate(() => window.fixture.clicks), clicksBeforeAbort, "an abort during lifecycle activation must stop before row.click()");
+
+    const invalidJob = session({ sessionId: "e".repeat(32), jobNumber: "" });
+    await setFixture(page, { sessions: [invalidJob], active: invalidJob, timeline: richTimeline, loading: false });
+    const invalidJobBridge = fakeBrowser(page);
+    const invalidJobReader = readerFor(invalidJobBridge);
+    const invalidJobScan = await invalidJobReader.scanConversationRows();
+    assert.equal(invalidJobScan.rows[0].sourceJobId, "");
+    const clicksBeforeInvalidJob = await page.evaluate(() => window.fixture.clicks);
+    await assert.rejects(() => invalidJobReader.openQueuedConversation({ ...invalidJobScan.rows[0], tabId: IM_TAB_ID }), error => error.code === "ZHAOPIN_MESSAGE_JOB_ID_INVALID");
+    assert.equal(await page.evaluate(() => window.fixture.clicks), clicksBeforeInvalidJob, "an invalid job identity must stop before row.click()");
   } finally {
     await browser.close();
   }
