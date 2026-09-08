@@ -8,7 +8,7 @@ const { openDb, createBatch, upsertJob, listOpenMessageReplyDrafts } = require("
 const { runBossMessageDiscovery } = require("../src/core/message_discovery");
 const { safeDigest } = require("../src/adapters/sites/boss_message_dom");
 const { createZhaopinMessageJobContextResolver } = require("../src/application/message_discovery/zhaopin_job_context");
-const { listUnresolvedMessageDiscoveryItems } = require("../src/core/message_preview_state");
+const { listPreviewStates, listUnresolvedMessageDiscoveryItems, recordUnresolvedMessageDiscoveryItem } = require("../src/core/message_preview_state");
 
 const NOW = "2026-09-08T08:00:00.000Z";
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-zhaopin-message-"));
@@ -49,22 +49,25 @@ async function run() {
           salary: "20-30K",
           city: "Shanghai",
           messages: Object.freeze([
-            Object.freeze({ direction: "platform", messageId: "900000", text: "系统提示", contentKind: "platform_notice" }),
             Object.freeze({ direction: "friend", messageId: "900001", text: "请介绍一下你的项目。", contentKind: "text" }),
             Object.freeze({ direction: "friend", messageId: "900002", text: "也请说明负责范围。", contentKind: "text" }),
-            Object.freeze({ direction: "friend", messageId: "900003", text: "HR 邀请你发送简历", contentKind: "resume_request" })
+            Object.freeze({ direction: "friend", messageId: "900003", text: "HR 邀请你发送简历", contentKind: "resume_request" }),
+            Object.freeze({ direction: "platform", messageId: "900004", text: "系统提示", contentKind: "platform_notice" })
           ])
         });
       }
     },
-    classifyMessageGroup: async () => ({
+    classifyMessageGroup: async ({ messages }) => {
+      assert.deepEqual(messages.map((item) => item.text), ["请介绍一下你的项目。", "也请说明负责范围。"]);
+      return {
       messageIntent: "information_request",
       messageCategory: "qualification",
       messageSummary: "招聘方正在确认项目经验。",
       missingFact: null,
       progressUpdate: { stage: "reply_ready" },
       messages: ["我负责过相关项目的交付。", "我可以补充具体负责范围。"]
-    }),
+      };
+    },
     resolveJobContext: createZhaopinMessageJobContextResolver({ db, profileId: fixture.profileId, now: () => NOW }),
     now: () => NOW,
     sleepFn: async () => {}
@@ -72,7 +75,27 @@ async function run() {
 
   assert.equal(summary.processed, 1);
   assert.equal(listOpenMessageReplyDrafts(db, { profileId: fixture.profileId }).length, 2);
-  assert.equal(db.prepare("SELECT count(*) AS n FROM candidate_funnel_entries f JOIN jobs j ON j.id = f.job_id WHERE j.source = 'boss'").get().n, 0);
+  assert.deepEqual(summary.results[0].inboundMessages, [
+    { kind: "text", text: "请介绍一下你的项目。" },
+    { kind: "text", text: "也请说明负责范围。" },
+    { kind: "resume_request", text: "HR 邀请你发送简历" }
+  ]);
+  assert.deepEqual(summary.results[0].manualActions, [{ kind: "resume_request" }]);
+  assert.equal(db.prepare("SELECT count(*) AS n FROM candidate_funnel_entries f JOIN jobs j ON j.id = f.job_id WHERE j.source = 'zhaopin'").get().n, 0);
+  const baseline = listPreviewStates(db, { profileId: fixture.profileId, platform: "zhaopin" })[0];
+  const emptySummary = await runBossMessageDiscovery({
+    db, profileId: fixture.profileId, platform: "zhaopin",
+    reader: {
+      async scanConversationRows() { return { tabId: 9, rows: [{ rowIndex: 0, unread: true, conversationKey,
+        previewDigest: safeDigest(["zhaopin", "preview-empty"]), previewKind: "possible_hr_reply", sourceJobId, lastMessageId: "900005", lastMessageDirection: "friend", identityVerified: true }] }; },
+      async openQueuedConversation() { return { sourceJobId, lastMessageId: "900005", positionName: "Zhaopin Engineer", companyName: "Zhaopin Fixture Co", messages: [] }; }
+    },
+    classifyMessageGroup: async () => { throw new Error("empty ZL content must remain pending"); },
+    resolveJobContext: createZhaopinMessageJobContextResolver({ db, profileId: fixture.profileId, now: () => NOW }), now: () => NOW, sleepFn: async () => {}
+  });
+  assert.equal(emptySummary.status, "needs_user_action");
+  assert.equal(listPreviewStates(db, { profileId: fixture.profileId, platform: "zhaopin" })[0].previewDigest, baseline.previewDigest);
+  assert.equal(listUnresolvedMessageDiscoveryItems(db, { profileId: fixture.profileId, platform: "zhaopin" }).length, 1);
   await unresolvedDisplaySmoke();
 }
 
@@ -121,6 +144,11 @@ async function unresolvedDisplaySmoke() {
   assert.deepEqual(afterFailure.inboundMessages, first.inboundMessages);
   assert.equal(afterFailure.positionTitle, first.positionTitle);
   const batchId = createBatch(db, "zhaopin", "zhaopin-retry", "zhaopin retry fixture", { profileId, searchPlanId: planId });
+  recordUnresolvedMessageDiscoveryItem(db, {
+    profileId, platform: "boss", conversationKey,
+    previewDigest: safeDigest(["boss", "unresolved-preview"]), previewKind: "possible_hr_reply",
+    reasonCode: "BOSS_MESSAGE_CARD_NOT_FOUND", observedAt: NOW, identity: { positionTitle: "BOSS unresolved" }
+  });
   upsertJob(db, {
     source: "zhaopin", sourceId: "zhaopin:ZL999999", keyword: "zhaopin-retry",
     title: "No cached JD", company: "Unknown Co", location: "Shanghai", salary: "20-30K",
@@ -138,6 +166,7 @@ async function unresolvedDisplaySmoke() {
   });
   assert.equal(retried.processed, 1);
   assert.equal(listUnresolvedMessageDiscoveryItems(db, { profileId, platform: "zhaopin" }).length, 0);
+  assert.equal(listUnresolvedMessageDiscoveryItems(db, { profileId, platform: "boss" }).length, 1);
 }
 
 function createFixture() {
