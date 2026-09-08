@@ -8,7 +8,7 @@ const { createCommunicationBatch } = require("../src/application/communication")
 const { listCommunicationBatchItems, setCommunicationBatchStatus } = require("../src/core/communication_batches");
 const { savePlatformSearchContext } = require("../src/storage/platform_search_context_store");
 const { createDashboardServer } = require("../src/dashboard/server");
-const { userFacingError } = require("../src/dashboard/user_facing_errors");
+const { userFacingError, communicationStopError } = require("../src/dashboard/user_facing_errors");
 const { communicationErrorLabel } = require("../src/dashboard/status_labels");
 const { communicate } = require("../src/cli");
 
@@ -21,6 +21,13 @@ async function main() {
   assert.match(userFacingError("ZHAOPIN_RISK_CONTROL").title, /智联搜索页/);
   assert.match(userFacingError("ZHAOPIN_MESSAGE_RISK_CONTROL").title, /智联沟通页/);
   assert.match(communicationErrorLabel("ZHAOPIN_MESSAGE_LOGIN_REQUIRED"), /智联沟通登录/);
+  for (const stopCode of ["BROWSER_TIMEOUT", "COMMUNICATION_ACTION_NOT_TRIGGERED", "COMMUNICATION_RESULT_AMBIGUOUS"]) {
+    const zhaopinGuidance = communicationStopError({ status: "interrupted", site: "zhaopin", stopCode });
+    assert.match(`${zhaopinGuidance.title} ${zhaopinGuidance.nextAction}`, /智联/, `${stopCode} must use the frozen Zhaopin source`);
+    assert.doesNotMatch(`${zhaopinGuidance.title} ${zhaopinGuidance.nextAction}`, /BOSS/);
+    const bossGuidance = communicationStopError({ status: "interrupted", site: "boss", stopCode });
+    assert.match(`${bossGuidance.title} ${bossGuidance.nextAction}`, /BOSS/, `${stopCode} must preserve BOSS guidance`);
+  }
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dashboard-zhaopin-communication-"));
   const dbPath = path.join(dir, "fixture.sqlite");
   let db = storage.openDb(dbPath);
@@ -97,6 +104,8 @@ async function main() {
     assert.doesNotMatch(builder, /合成 BOSS 岗位|今日额度|补扫|凑满/);
     assert.match(builder, /name="site" value="zhaopin"/);
     assert.match(builder, /当前可选 2 个岗位/);
+    assert.match(builder, new RegExp(`href="/communication\\?planId=${owner.planId}&amp;site=zhaopin"[^>]*>发送记录</a>`),
+      "the builder navigation returns to the communication center instead of linking to itself");
 
     let response = await postJson(`${base}/api/communication-batch`, {
       site: "zhaopin", planId: owner.planId, jobIds: [bossJobId], browserMode: "portable"
@@ -151,6 +160,9 @@ async function main() {
     assert.match(restored, /智联/);
     assert.match(restored, /页面已核对，正在进行单岗位验收/);
     assert.match(restored, /href="https:\/\/www\.zhaopin\.com\/jobdetail\/ZLMAIN1\.htm"/);
+    const jobs = await getText(`${base}/jobs?planId=${owner.planId}&site=zhaopin&status=all&batch=all`);
+    assert.match(jobs, new RegExp(`href="/communication/new\\?planId=${owner.planId}&amp;site=zhaopin"`));
+    assert.match(jobs, />选择岗位打招呼</);
 
     const conflictingSite = await getText(`${base}/communication?batchId=${created.body.batch.id}&site=boss`);
     assert.match(conflictingSite, /batch_site_mismatch/);

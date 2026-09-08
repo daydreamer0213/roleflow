@@ -405,7 +405,7 @@ async function communicate(
         let restoreError = null;
         if (sessionStarted) {
           try {
-            await adapter.restoreCommunicationSearchPage();
+            await adapter.restoreCommunicationSearchPage(signal);
           } catch (error) {
             restoreError = error;
             communicationLogger.error("communication_search_restore_failed", {

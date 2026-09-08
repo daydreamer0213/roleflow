@@ -126,33 +126,45 @@ class ZhaopinCommunicationAdapter extends ZhaopinSiteAdapter {
     return current.searchTab.id;
   }
 
-  async restoreCommunicationSearchPage() {
+  async restoreCommunicationSearchPage(signal = null) {
     await this.cleanupResources();
-    if (!this.binding || this.restored) return;
-    this.restored = true;
+    if (!this.binding || this.restored || signal?.aborted) return;
     const current = await this.assertBoundTabs({ allowIm: true });
+    throwIfAborted(signal);
     if (isZhaopinMessageUrl(current.searchTab.url)) {
       const snapshot = await this.browser.evalValue(this.binding.searchTabId, ZHAOPIN_MESSAGE_SNAPSHOT_EXPRESSION);
+      throwIfAborted(signal);
       hasZhaopinOutgoingTextSnapshot(snapshot, {});
     } else {
       await this.readSearchState(this.binding.searchTabId);
+      throwIfAborted(signal);
     }
     await this.reserve("list_navigation", { source: "zhaopin", restore: true });
+    throwIfAborted(signal);
     await this.pacing.waitWithPacing("list", {
+      signal,
       assertTabBindings: () => this.assertBoundTabs({ allowIm: true })
     });
+    throwIfAborted(signal);
     await this.assertBoundTabs({ allowIm: true });
+    throwIfAborted(signal);
     await this.browser.navigate(this.binding.searchTabId, this.binding.searchReturnUrl);
+    throwIfAborted(signal);
     const template = canonicalizeZhaopinSearchTemplate(this.binding.searchReturnUrl);
     const keyword = new URL(this.binding.searchReturnUrl).searchParams.get("kw") || "";
     await this.waitForSearchReady(this.binding.searchTabId, {
       searchTemplate: template,
       keyword,
+      signal,
       assertTabBindings: () => this.assertBoundTabs({ requireSearch: true })
     });
+    throwIfAborted(signal);
     await this.browser.evalValue(this.binding.searchTabId, `(() => {const requested=${JSON.stringify(this.binding.searchScrollTop)};const maximum=Math.max(0,document.documentElement.scrollHeight-innerHeight);const applied=Math.min(maximum,requested);scrollTo(0,applied);return {requested,applied}})()`);
+    throwIfAborted(signal);
     this.verifiedImResult = null;
     await this.assertBoundTabs({ requireSearch: true });
+    throwIfAborted(signal);
+    this.restored = true;
   }
 
   async inspectCommunicationJob(job, signal = null) {

@@ -10,9 +10,9 @@ function renderNavigation({ currentPath = "", todayPath = "", planId = "" } = {}
     const workflowHref = currentRoute === "/workflow" ? current : `${planHref}#today-discovery`;
     const zhaopin = new URL(todayPath || current || '/', 'http://localhost').searchParams.get('site') === 'zhaopin';
     const jobsHref = ["/queue", "/jobs"].includes(currentRoute) ? current : `${zhaopin ? '/jobs' : '/queue'}?planId=${encodedPlanId}${zhaopin ? '&site=zhaopin' : ''}`;
-    const communicationHref = ["/communication", "/communication/new"].includes(currentRoute)
+    const communicationHref = currentRoute === "/communication"
       ? current
-      : `${zhaopin ? "/communication" : "/communication/new"}?planId=${encodedPlanId}${zhaopin ? "&site=zhaopin" : ""}`;
+      : `${currentRoute === "/communication/new" || zhaopin ? "/communication" : "/communication/new"}?planId=${encodedPlanId}${zhaopin ? "&site=zhaopin" : ""}`;
     const messagesHref = currentRoute === "/messages" ? current : `/messages?planId=${encodedPlanId}${zhaopin ? '&workSite=zhaopin' : ''}`;
     const resumeRoutes = ["/resume-optimization", "/profile", "/resumes", "/onboarding"];
     const resumeHref = resumeRoutes.includes(currentRoute) ? current : `/resume-optimization?planId=${encodedPlanId}`;
@@ -27,7 +27,7 @@ function renderNavigation({ currentPath = "", todayPath = "", planId = "" } = {}
       ]),
       navigationGroup("沟通", [
         navigationLink(messagesHref, "消息与回复", currentRoute === "/messages"),
-        navigationLink(communicationHref, "发送记录", ["/communication", "/communication/new"].includes(currentRoute))
+        navigationLink(communicationHref, "发送记录", currentRoute === "/communication")
       ]),
       navigationGroup("成长", [
         navigationLink(resumeHref, "简历工作室", resumeRoutes.includes(currentRoute)),

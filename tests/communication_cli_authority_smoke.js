@@ -15,6 +15,7 @@ const {
   getSiteRuntimeState
 } = require("../src/core/storage");
 const { getCommunicationBatch, setCommunicationBatchStatus } = require("../src/core/communication_batches");
+const { withSiteScanLease } = require("../src/core/scan_execution");
 const { communicate } = require("../src/cli");
 
 const root = path.join(__dirname, "..");
@@ -507,6 +508,39 @@ let db;
     runCommunicationBatchFn: async () => ({ terminal: 0, total: 0 })
   }), (error) => error === lostLeaseError);
   assert.strictEqual(lostLeaseBrowserCreations, 0);
+
+  let renewLease = null;
+  let lostExecutionSignal = null;
+  let restoreSignal = null;
+  const lostDuringExecutionAdapter = {
+    ...zhaopinAdapter,
+    async restoreCommunicationSearchPage(signal) {
+      restoreSignal = signal;
+      zhaopinEvents.push("lost-restore");
+    }
+  };
+  await assert.rejects(() => communicate(db, { batch: zhaopinBatchId, browser: "edge", "single-item": "1" }, {
+    runWithSiteScanLeaseFn: (deps, input, run) => withSiteScanLease({
+      ...deps,
+      renew: async () => false,
+      setInterval(callback) {
+        renewLease = callback;
+        return { unref() {} };
+      },
+      clearInterval() {}
+    }, input, run),
+    createBrowserFn: () => zhaopinBrowser,
+    createSiteAdapterFn: () => lostDuringExecutionAdapter,
+    runCommunicationBatchFn: async ({ signal }) => {
+      lostExecutionSignal = signal;
+      await renewLease();
+      assert.strictEqual(signal.aborted, true);
+      throw signal.reason;
+    }
+  }), (error) => error.code === "SCAN_LEASE_LOST");
+  assert.strictEqual(lostExecutionSignal?.aborted, true, "renewal loss aborts the active executor");
+  assert.strictEqual(restoreSignal, lostExecutionSignal, "restoration receives the same cancelled lease signal");
+  assert.strictEqual(restoreSignal?.aborted, true);
 
   const riskError = Object.assign(new Error("fixture zhaopin IM risk"), { code: "ZHAOPIN_MESSAGE_RISK_CONTROL" });
   await assert.rejects(() => communicate(db, { batch: zhaopinBatchId, browser: "edge", "single-item": "1" }, {

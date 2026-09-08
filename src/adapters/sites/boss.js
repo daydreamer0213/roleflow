@@ -2095,15 +2095,19 @@ class BossSiteAdapter {
     return { searchTab, messageTab, windowId: binding.windowId };
   }
 
-  async restoreCommunicationSearchPage() {
+  async restoreCommunicationSearchPage(signal = null) {
     await this.cancelPreparedCommunicationDispatch();
-    if (!this.communicationTabsBound || this.communicationSearchRestored) return;
-    this.communicationSearchRestored = true;
+    if (!this.communicationTabsBound || this.communicationSearchRestored || signal?.aborted) return;
     const binding = this.communicationBinding;
+    throwIfAborted(signal);
     await this.assertBoundCommunicationTabs({ requireSearchPage: false });
+    throwIfAborted(signal);
     await this.browser.navigate(binding.searchTabId, binding.searchReturnUrl);
-    await this.waitWithPacing("detail");
+    throwIfAborted(signal);
+    await this.waitWithPacing("detail", { signal });
+    throwIfAborted(signal);
     await this.assertSearchPage(binding.searchTabId);
+    throwIfAborted(signal);
     await this.browser.evalValue(binding.searchTabId, `(() => {
       const requested = ${JSON.stringify(binding.searchScrollTop)};
       const maximum = Math.max(0, document.documentElement.scrollHeight - innerHeight);
@@ -2111,7 +2115,10 @@ class BossSiteAdapter {
       scrollTo(0, applied);
       return { requested, applied };
     })()`);
+    throwIfAborted(signal);
     await this.assertBoundCommunicationTabs({ requireSearchPage: true });
+    throwIfAborted(signal);
+    this.communicationSearchRestored = true;
   }
 
   async prepareCommunicationTabOnce(searchTabId = null) {

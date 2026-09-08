@@ -244,6 +244,39 @@ async function main() {
     assert.equal(directBrowser.calls.filter((call) => call.kind === "navigate").length, navigationBeforeRestore + 1, "restore runs once");
 
     await page.goto(SEARCH_URL);
+    const abortedCleanupBrowser = fakeBrowser(page);
+    const abortedCleanupAdapter = adapterFor(abortedCleanupBrowser);
+    await prepareSession(abortedCleanupAdapter, abortedCleanupBrowser);
+    const abortedCleanupInspection = await abortedCleanupAdapter.inspectCommunicationJob(JOB_A);
+    await abortedCleanupAdapter.prepareCommunicationDispatch(abortedCleanupInspection);
+    const abortedCleanupController = new AbortController();
+    abortedCleanupController.abort(Object.assign(new Error("fixture lease lost"), { code: "SCAN_LEASE_LOST" }));
+    const pageCallsBeforeAbortedCleanup = abortedCleanupBrowser.calls.filter((call) => ["listTabs", "evalValue", "navigate"].includes(call.kind)).length;
+    await abortedCleanupAdapter.restoreCommunicationSearchPage(abortedCleanupController.signal);
+    assert.equal(abortedCleanupBrowser.state.networkStarted, false, "lost-lease restoration still releases the network observer");
+    assert.equal(abortedCleanupBrowser.calls.filter((call) => call.kind === "stopNetworkLog").length, 1,
+      "lost-lease restoration performs resource cleanup once");
+    assert.equal(abortedCleanupBrowser.calls.filter((call) => ["listTabs", "evalValue", "navigate"].includes(call.kind)).length, pageCallsBeforeAbortedCleanup,
+      "lost-lease cleanup must not inspect, navigate, or scroll the page");
+
+    await page.goto(SEARCH_URL);
+    const waitAbortController = new AbortController();
+    let restoring = false;
+    const waitAbortBrowser = fakeBrowser(page);
+    const waitAbortAdapter = adapterFor(waitAbortBrowser, {
+      sleepFn: async () => {
+        waitAbortBrowser.state.clock += 5;
+        if (restoring) waitAbortController.abort(Object.assign(new Error("fixture lease lost during restore wait"), { code: "SCAN_LEASE_LOST" }));
+      }
+    });
+    await prepareSession(waitAbortAdapter, waitAbortBrowser);
+    restoring = true;
+    await assert.rejects(() => waitAbortAdapter.restoreCommunicationSearchPage(waitAbortController.signal),
+      (error) => error === waitAbortController.signal.reason);
+    assert.equal(waitAbortBrowser.calls.filter((call) => call.kind === "navigate").length, 0,
+      "lease loss during restore pacing must stop before navigation");
+
+    await page.goto(SEARCH_URL);
     const edgeBrowser = fakeBrowser(page, { transport: "edge", onClick: async ({ page, state }) => {
       state.sequence += 1;
       state.entries.push(rawEntry(JOB_B, state.clock, { sequence: state.sequence }));

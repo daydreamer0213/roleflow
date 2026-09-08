@@ -799,6 +799,50 @@ function assertNoPreparationAction(browser, before) {
     requested: 900,
     applied: 640
   }]);
+
+  const cancelledRestoreBrowser = fakeBrowser({
+    tabs: [
+      { id: 1995685534, url: searchUrl, windowId: 1995685675 },
+      { id: 1995685619, url: "https://www.zhipin.com/web/geek/chat", windowId: 1995685675 }
+    ]
+  });
+  const cancelledRestoreAdapter = new BossSiteAdapter({ browser: cancelledRestoreBrowser, sleepFn: async () => {} });
+  cancelledRestoreAdapter.bindCommunicationTabs(numericBinding());
+  await cancelledRestoreAdapter.beginCommunicationSession();
+  const cancelledRestoreInspection = await cancelledRestoreAdapter.inspectCommunicationJob(expectedJob);
+  await cancelledRestoreAdapter.prepareCommunicationDispatch(cancelledRestoreInspection);
+  const cancelledRestoreController = new AbortController();
+  cancelledRestoreController.abort(Object.assign(new Error("fixture lease lost"), { code: "SCAN_LEASE_LOST" }));
+  const navigationBeforeCancelledRestore = cancelledRestoreBrowser.calls.navigate.length;
+  await cancelledRestoreAdapter.restoreCommunicationSearchPage(cancelledRestoreController.signal);
+  assert.strictEqual(cancelledRestoreBrowser.calls.stopNetworkLog.length, 1,
+    "lost-lease BOSS restoration still cleans the prepared network observer");
+  assert.strictEqual(cancelledRestoreBrowser.calls.navigate.length, navigationBeforeCancelledRestore,
+    "lost-lease BOSS cleanup must not navigate the page");
+  assert.deepStrictEqual(cancelledRestoreBrowser.calls.restoreScroll, []);
+
+  const waitRestoreController = new AbortController();
+  let bossRestoring = false;
+  const waitRestoreBrowser = fakeBrowser({
+    tabs: [
+      { id: 1995685534, url: searchUrl, windowId: 1995685675 },
+      { id: 1995685619, url: "https://www.zhipin.com/web/geek/chat", windowId: 1995685675 }
+    ]
+  });
+  const waitRestoreAdapter = new BossSiteAdapter({
+    browser: waitRestoreBrowser,
+    sleepFn: async () => {
+      if (bossRestoring) waitRestoreController.abort(Object.assign(new Error("fixture lease lost during restore wait"), { code: "SCAN_LEASE_LOST" }));
+    }
+  });
+  waitRestoreAdapter.bindCommunicationTabs(numericBinding());
+  await waitRestoreAdapter.beginCommunicationSession();
+  bossRestoring = true;
+  await assert.rejects(() => waitRestoreAdapter.restoreCommunicationSearchPage(waitRestoreController.signal),
+    (error) => error === waitRestoreController.signal.reason);
+  assert.strictEqual(waitRestoreBrowser.calls.navigate.length, 1, "normal restore navigation begins before its pacing wait");
+  assert.deepStrictEqual(waitRestoreBrowser.calls.restoreScroll, [], "lease loss during restore wait stops before scrolling");
+
   const portableBrowser = fakeBrowser({
     tabs: [
       { id: "CDP-search", url: searchUrl, windowId: 17 },

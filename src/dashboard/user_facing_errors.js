@@ -93,9 +93,29 @@ const ERROR_GUIDANCE = Object.freeze({
   }
 });
 
-function userFacingError(code, technicalMessage = "") {
+const ZHAOPIN_ERROR_GUIDANCE = Object.freeze({
+  BROWSER_TIMEOUT: {
+    title: "智联页面响应较慢",
+    impact: "本次检查已经停止，RoleFlow 不会在后台自动重试。",
+    nextAction: "等智联页面加载完成后，回到这里重新检查。"
+  },
+  COMMUNICATION_ACTION_NOT_TRIGGERED: {
+    title: "未能确认本次沟通结果",
+    impact: "尚未获得可确认的沟通结果，不代表发送失败；系统已停止，不会自动重试。",
+    nextAction: "打开沟通明细，先核对该岗位在智联上的实际结果，再处理剩余岗位。"
+  },
+  COMMUNICATION_RESULT_AMBIGUOUS: {
+    title: "沟通结果需要人工核对",
+    impact: "系统已发出操作，但无法确认平台是否接受；这不代表发送失败。",
+    nextAction: "在智联核对对应岗位的结果，再到沟通明细填写处理依据。"
+  }
+});
+
+function userFacingError(code, technicalMessage = "", { site = "boss" } = {}) {
   const normalizedCode = String(code || "INTERNAL_ERROR").trim() || "INTERNAL_ERROR";
-  const known = ERROR_GUIDANCE[normalizedCode];
+  const known = String(site || "").trim().toLowerCase() === "zhaopin"
+    ? ZHAOPIN_ERROR_GUIDANCE[normalizedCode] || ERROR_GUIDANCE[normalizedCode]
+    : ERROR_GUIDANCE[normalizedCode];
   if (known) return { code: normalizedCode, ...known, technicalMessage: String(technicalMessage || "") };
   const readable = String(technicalMessage || "").trim();
   return {
@@ -111,7 +131,7 @@ function userFacingError(code, technicalMessage = "") {
 
 function communicationStopError(batch = {}) {
   if (!["interrupted", "failed"].includes(batch.status)) return null;
-  return userFacingError(batch.stopCode || "COMMUNICATION_PROCESS_FAILED", batch.stopMessage);
+  return userFacingError(batch.stopCode || "COMMUNICATION_PROCESS_FAILED", batch.stopMessage, { site: batch.site });
 }
 
 module.exports = { userFacingError, communicationStopError };
