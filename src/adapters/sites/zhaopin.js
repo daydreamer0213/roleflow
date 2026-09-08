@@ -8,6 +8,10 @@ const { buildScanExecutionSnapshot } = require('../../core/scan_snapshot');
 const { sourceContentHash } = require('../../storage/job_store');
 const { hasCompleteJobDescription } = require('../../core/job_description_readiness');
 
+const ZHAOPIN_DEFAULT_FILTER_LABELS = new Set([
+  '地区', '薪资', '学历', '经验', '公司性质', '融资阶段', '公司人数', '工作性质', '职位类别', '公司行业'
+]);
+
 const ZHAOPIN_COMPONENT_ACCESSORS_SOURCE = String.raw`
   const component = (node, name) => {
     let current = node?.__vueParentComponent || node?.__vue__;
@@ -153,6 +157,7 @@ class ZhaopinSiteAdapter {
     this.sleep = sleepFn;
     this.random = randomFn;
     this.accessController = accessController;
+    this.searchRenderScopes = new Map();
   }
 
   async preflight({ tabId } = {}) {
@@ -189,6 +194,7 @@ class ZhaopinSiteAdapter {
       const targetJobs = [];
       const startedAt = new Date().toISOString();
       let stopReason = 'scroll_limit', state;
+      let releaseSearchRendering = null;
       const url = buildZhaopinSearchUrl({ keyword: target.keyword, searchTemplate });
       const scoped = async () => {
         await active();
@@ -203,6 +209,7 @@ class ZhaopinSiteAdapter {
         await active();
         await this.browser.navigate(tabId, url);
         pages++;
+        releaseSearchRendering = await this.openSearchRenderScope(tabId);
         state = await this.waitForSearchReady(tabId, { searchTemplate, keyword: target.keyword, filterSummary: options.filterSummary, signal: options.signal, assertTabBindings: options.assertTabBindings });
         const seen = new Set();
         let scrolls = 0;
@@ -236,6 +243,7 @@ class ZhaopinSiteAdapter {
             if (!targetJobs.some(item => item.sourceId === job.sourceId)) targetJobs.push(job);
             jobs.set(job.sourceId, job);
             await options.onDetailCheckpoint?.({ job, targetKey: target.targetKey });
+            await options.onProgressCheckpoint?.({ jobs: [], targetKey: target.targetKey, activity: 'reading_detail', ...scanProgressCounters(target, targets, state, targetJobs) });
             await options.onDetailResult?.({ outcome: 'succeeded', reused, accessMode: 'visible_pane', job });
             seen.add(card.signature);
             await scoped();
@@ -250,20 +258,22 @@ class ZhaopinSiteAdapter {
           await this.browser.evalValue(tabId, '(() => window.__zhaopinScrollResults())()');
           scrolls++;
           await pace('list', scoped);
-          await options.onProgressCheckpoint?.({ jobs: [], targetKey: target.targetKey, activity: 'list_scroll', targetDiscovered: state.cards.length });
+          await options.onProgressCheckpoint?.({ jobs: [], targetKey: target.targetKey, activity: 'searching', ...scanProgressCounters(target, targets, state, targetJobs) });
         }
         const status = ['card_limit_reached', 'confirmed_end'].includes(stopReason) ? 'completed' : 'partial';
-        await options.onTargetComplete?.({ ...target, status, jobs: targetJobs, jobCount: targetJobs.length, targetPosition: targets.indexOf(target) + 1, targetTotal: targets.length, targetDiscovered: state.cards.length, detailPosition: targetJobs.length, detailTotal: targetJobs.length, details: { cardLimit: target.cardLimit, stopReason }, startedAt, finishedAt: new Date().toISOString() });
+        await options.onTargetComplete?.({ ...target, status, jobs: targetJobs, jobCount: targetJobs.length, ...scanProgressCounters(target, targets, state, targetJobs), details: { cardLimit: target.cardLimit, stopReason }, startedAt, finishedAt: new Date().toISOString() });
         await active();
         if (status === 'completed') completed++;
         else break;
         await pace('target', scoped);
       } catch (error) {
         if (!['WORKFLOW_PAUSE_REQUESTED', 'WORKFLOW_STOP_REQUESTED', 'ZHAOPIN_ABORTED', 'SCAN_ABORTED', 'SCAN_CHECKPOINT_FAILED', 'SCAN_LEASE_LOST', 'SCAN_RUN_LEASE_MISMATCH'].includes(error.code)) {
-          try { await options.onTargetComplete?.({ ...target, status: 'partial', jobs: targetJobs, jobCount: targetJobs.length, details: { cardLimit: target.cardLimit, stopReason: error.code || 'read_interrupted' }, errorCode: error.code || '', startedAt, finishedAt: new Date().toISOString() }); } catch {}
+          try { await options.onTargetComplete?.({ ...target, status: 'partial', jobs: targetJobs, jobCount: targetJobs.length, ...scanProgressCounters(target, targets, state, targetJobs), details: { cardLimit: target.cardLimit, stopReason: error.code || 'read_interrupted' }, errorCode: error.code || '', startedAt, finishedAt: new Date().toISOString() }); } catch {}
         }
         await options.onScanComplete?.({ status: 'partial', targetCount: targets.length, attemptedTargets: attempted, successfulTargets: completed, fatalErrorCode: error.code || '' });
         throw error;
+      } finally {
+        await releaseSearchRendering?.();
       }
     }
     const targetCount = selected ? selected.size : targets.length;
@@ -272,19 +282,62 @@ class ZhaopinSiteAdapter {
   }
 
   async waitForSearchReady(tabId, { searchTemplate, keyword, filterSummary, signal, assertTabBindings } = {}) {
-    for (let attempt = 0; attempt < 30; attempt++) {
-      throwIfAborted(signal);
-      await assertBindings(assertTabBindings);
-      throwIfAborted(signal);
-      const state = await this.readSearchState(tabId, signal);
-      const selected = state.cards[state.selectedIndex];
-      const readyResult = state.cards.length === 0 ? state.confirmedEnd === true
-        : selected && detailMatches(selected, state.detail, state.detailSourceIdConfirmed, state.detailSourceIdFullyConfirmed);
-      if (!state.loading && readyResult
-        && searchStateMatches(state, searchTemplate, keyword, filterSummary)) return state;
-      await this.waitWithChecks(signal, assertTabBindings);
+    const releaseSearchRendering = await this.openSearchRenderScope(tabId);
+    try {
+      for (let attempt = 0; attempt < 30; attempt++) {
+        throwIfAborted(signal);
+        await assertBindings(assertTabBindings);
+        throwIfAborted(signal);
+        const state = await this.readSearchState(tabId, signal);
+        const selected = state.cards[state.selectedIndex];
+        const readyResult = state.cards.length === 0 ? state.confirmedEnd === true
+          : selected && detailMatches(selected, state.detail, state.detailSourceIdConfirmed, state.detailSourceIdFullyConfirmed);
+        if (!state.loading && readyResult
+          && searchStateMatches(state, searchTemplate, keyword, filterSummary)) return state;
+        await this.waitWithChecks(signal, assertTabBindings);
+      }
+      throw zhaopinError('ZHAOPIN_SEARCH_RESTORE_TIMEOUT', '智联未能恢复保存的关键词和筛选条件，请在智联搜索页重新设置并保存条件后再开始。');
+    } finally {
+      await releaseSearchRendering();
     }
-    throw zhaopinError('ZHAOPIN_SEARCH_RESTORE_TIMEOUT', '智联未能恢复保存的关键词和筛选条件，请在智联搜索页重新设置并保存条件后再开始。');
+  }
+
+  async openSearchRenderScope(tabId) {
+    tabId = requiredTabId(tabId);
+    if (this.prepared?.focusEnabled === true || this.dispatch?.focusEnabled === true) return async () => {};
+    if (typeof this.browser?.setPageLifecycleActive !== 'function' || typeof this.browser?.cdp !== 'function') return async () => {};
+    const existing = this.searchRenderScopes.get(tabId);
+    if (existing) {
+      existing.depth += 1;
+      let released = false;
+      return async () => {
+        if (released) return;
+        released = true;
+        existing.depth -= 1;
+      };
+    }
+    const scope = { depth: 1, focusAttempted: false, closed: false };
+    this.searchRenderScopes.set(tabId, scope);
+    const close = async () => {
+      if (scope.closed) return;
+      scope.depth -= 1;
+      if (scope.depth > 0) return;
+      scope.closed = true;
+      this.searchRenderScopes.delete(tabId);
+      if (scope.focusAttempted) await this.browser.cdp(tabId, 'Emulation.setFocusEmulationEnabled', { enabled: false });
+    };
+    try {
+      await this.browser.setPageLifecycleActive(tabId);
+      scope.focusAttempted = true;
+      await this.browser.cdp(tabId, 'Emulation.setFocusEmulationEnabled', { enabled: true });
+      return close;
+    } catch (error) {
+      try { await close(); } catch (cleanupError) {
+        if (cleanupError.cause === undefined) cleanupError.cause = error;
+        throw cleanupError;
+      }
+      throw error;
+    }
   }
 
   async readSearchState(tabId, signal = null) {
@@ -453,10 +506,31 @@ function abortableSleep(promise, signal) {
 
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 
+function scanProgressCounters(target, targets, state, targetJobs) {
+  const cardLimit = Math.max(0, Math.floor(Number(target?.cardLimit) || 0));
+  const completed = Math.min(cardLimit, Array.isArray(targetJobs) ? targetJobs.length : 0);
+  const visible = Array.isArray(state?.cards) ? state.cards.length : 0;
+  const targetDiscovered = Math.min(cardLimit, Math.max(completed, visible));
+  return {
+    targetPosition: targets.indexOf(target) + 1,
+    targetTotal: targets.length,
+    targetDiscovered,
+    detailPosition: completed,
+    detailTotal: targetDiscovered
+  };
+}
+
 function searchStateMatches(state, template, keyword, filterSummary) {
   return canonicalizeZhaopinSearchTemplate(state.url).url === template.url
     && new URL(state.url).searchParams.get('kw') === keyword && state.keyword === keyword
-    && (!Array.isArray(filterSummary) || JSON.stringify(state.filterSummary) === JSON.stringify(filterSummary));
+    && (!Array.isArray(filterSummary) || sameFilterSummary(state.filterSummary, filterSummary));
+}
+
+function sameFilterSummary(current, saved) {
+  const selected = values => (Array.isArray(values) ? values : [])
+    .map(value => String(value || '').replace(/\s+/g, ' ').trim())
+    .filter(value => value && !ZHAOPIN_DEFAULT_FILTER_LABELS.has(value));
+  return JSON.stringify(selected(current)) === JSON.stringify(selected(saved));
 }
 
 async function resolveZhaopinSearchTab(browser, expectedTabId = null) {

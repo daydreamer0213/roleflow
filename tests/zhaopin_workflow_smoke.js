@@ -18,19 +18,19 @@ const { createSiteAccessController } = require('../src/core/site_access_budget')
 const fs = require('node:fs');
 const path = require('node:path');
 
-function fakeBrowser({ terminal = true, loadingOnSwitch = false } = {}) {
+function fakeBrowser({ terminal = true, loadingOnSwitch = false, cardCount = 3, navigateError = null } = {}) {
   let url = 'https://www.zhaopin.com/jobs/?pageMode=search&jl=548&kw=AI';
   let selectedIndex = 0;
   let windowId = 1;
   let dashboardPath = '/workflow';
   const overrides = {};
-  const cards = [0, 1, 2].map(index => ({ index, signature: `card-${index}`, title: `岗位${index}`, company: '公司', salary: '10-20K', location: '广州' }));
+  const cards = Array.from({ length: cardCount }, (_, index) => ({ index, signature: `card-${index}`, title: `岗位${index}`, company: '公司', salary: '10-20K', location: '广州' }));
   return {
     setState(value) { Object.assign(overrides, value); },
     moveToWindow(value) { windowId = value; },
     changeDashboardPage(value) { dashboardPath = value; },
     async listTabs() { return [{ id: 'dashboard', windowId: 1, url: `http://127.0.0.1${dashboardPath}`, active: true }, { id: 'cdp-zl', windowId, url, active: false }]; },
-    async navigate(id, target) { assert.equal(id, 'cdp-zl'); url = target; selectedIndex = 0; },
+    async navigate(id, target) { assert.equal(id, 'cdp-zl'); if (navigateError) throw navigateError; url = target; selectedIndex = 0; },
     async evalValue(id, expression) {
       assert.equal(id, 'cdp-zl');
       if (expression.includes('const clean =')) return true;
@@ -144,6 +144,7 @@ async function main() {
     assert.deepEqual(storage.listReportJobs(db, { batchId: movedBatch }).map(job => job.sourceId), ['SYNTH0']);
     assert.equal(movedTargets[0].status, 'partial', 'moving windows preserves the checkpoint and unfinished target');
   } finally { db.close(); }
+  await scanCheckpointContractSmoke();
   const flowDb = storage.openDb(':memory:');
   try {
     const saved = storage.saveProfileAnalysis(flowDb, { profile: { candidate: { name: '合成候选人', city: '广州', targetTitles: ['AI'] }, skills: [], projects: [] }, document: { originalFileName: 'test.txt', format: 'text', contentHash: 'workflow-synthetic', text: '合成简历', diagnostics: {} }, searchPlan: { name: '合成方案', cities: ['广州'], keywords: [{ word: 'AI', priority: 'A' }] } });
@@ -208,6 +209,116 @@ async function main() {
   } finally { flowDb.close(); }
   await durableResume();
   console.log('zhaopin_workflow_smoke ok');
+}
+
+async function scanCheckpointContractSmoke() {
+  const db = storage.openDb(':memory:');
+  const searchTemplate = canonicalizeZhaopinSearchTemplate('https://www.zhaopin.com/jobs/?pageMode=search&jl=548');
+  const keywordPlan = [
+    { word: '第一目标', priority: 'A', maxCards: 3 },
+    { word: '第二目标', priority: 'A', maxCards: 3 },
+    { word: '第三目标', priority: 'A', maxCards: 2 }
+  ];
+  const snapshot = buildScanExecutionSnapshot({ site: 'zhaopin', searchTemplate, keywordPlan, limits: { maxCards: 3 } });
+  const thirdTargetKey = snapshot.targets[2].targetKey;
+  const base = { tabId: 'cdp-zl', keywordPlan, searchTemplate, filterSummary: ['广东'], maxCards: 3, maxDetailTotal: 10, browserPageBudget: 3, targetKeys: [thirdTargetKey] };
+  let sequence = 0;
+  const withRun = async (label, run, execution = snapshot) => {
+    const owner = `checkpoint-${++sequence}-${label}`;
+    storage.acquireSiteScanLease(db, { site: 'zhaopin', owner, command: 'scan' });
+    storage.beginScanRun(db, { runId: owner, site: 'zhaopin', leaseOwner: owner, command: 'scan' });
+    const batchId = storage.createAndBindScanBatch(db, { runId: owner, leaseOwner: owner, site: 'zhaopin', keyword: label, filterSnapshot: { execution } });
+    let checkpointError = null;
+    const checkpointProgress = (result) => {
+      try {
+        const { jobs = [], ...scanProgress } = result;
+        storage.checkpointScanProgress(db, { runId: owner, batchId, leaseOwner: owner, jobs, runtime: { scanProgress: { version: 1, ...scanProgress, updatedAt: new Date().toISOString() } } });
+      } catch (error) { checkpointError = error; throw error; }
+    };
+    const checkpointTarget = (result) => {
+      try {
+        storage.checkpointScanTarget(db, {
+          runId: owner,
+          batchId,
+          leaseOwner: owner,
+          target: result,
+          jobs: result.jobs,
+          runtime: { scanProgress: { version: 1, activity: 'target_complete', targetKey: result.targetKey, targetPosition: result.targetPosition, targetTotal: result.targetTotal, targetDiscovered: result.targetDiscovered, detailPosition: result.detailPosition, detailTotal: result.detailTotal, updatedAt: new Date().toISOString() } }
+        });
+      } catch (error) { checkpointError = error; throw error; }
+    };
+    const checkpointDetail = ({ job }) => storage.checkpointScanProgress(db, { runId: owner, batchId, leaseOwner: owner, jobs: [job] });
+    try {
+      await run({ owner, batchId, checkpointProgress, checkpointTarget, checkpointDetail });
+      assert.equal(checkpointError, null, `${label} must not produce SCAN_PROGRESS_INVALID`);
+      return batchId;
+    } finally {
+      const active = storage.getScanRun(db, owner);
+      if (active?.status === 'running') storage.finishScanRun(db, { runId: owner, leaseOwner: owner, status: 'interrupted' });
+      storage.releaseSiteScanLease(db, { site: 'zhaopin', owner });
+    }
+  };
+
+  try {
+    const navigationFailure = Object.assign(new Error('synthetic navigation failure'), { code: 'ZHAOPIN_NAVIGATION_FAILED' });
+    const navigationBatchId = await withRun('navigation-failure', async ({ checkpointTarget }) => {
+      await assert.rejects(() => new ZhaopinSiteAdapter({ browser: fakeBrowser({ navigateError: navigationFailure }), sleepFn: async () => {}, randomFn: () => 0 }).scan({ ...base, targetKeys: [snapshot.targets[0].targetKey], onTargetComplete: checkpointTarget }), (error) => error === navigationFailure);
+    });
+    const navigationProgress = storage.getBatch(db, navigationBatchId).filterSnapshot.runtime.scanProgress;
+    assert.deepEqual({ targetPosition: navigationProgress.targetPosition, targetTotal: navigationProgress.targetTotal, targetDiscovered: navigationProgress.targetDiscovered, detailPosition: navigationProgress.detailPosition, detailTotal: navigationProgress.detailTotal },
+      { targetPosition: 1, targetTotal: 3, targetDiscovered: 0, detailPosition: 0, detailTotal: 0 });
+
+    await withRun('detail-then-failure', async ({ batchId, checkpointTarget, checkpointDetail }) => {
+      const bridge = fakeBrowser({ cardCount: 4 });
+      await assert.rejects(() => new ZhaopinSiteAdapter({ browser: bridge, sleepFn: async () => {}, randomFn: () => 0 }).scan({
+        ...base,
+        onDetailCheckpoint: (result) => { checkpointDetail(result); bridge.setState({ risk: true }); },
+        onTargetComplete: checkpointTarget
+      }), (error) => error.code === 'ZHAOPIN_RISK_CONTROL');
+      assert.equal(storage.listReportJobs(db, { batchId }).length, 1, 'a later target failure must not delete the independently committed JD');
+    });
+
+    const completedBatchId = await withRun('card-limit', async ({ checkpointTarget, checkpointDetail }) => {
+      await new ZhaopinSiteAdapter({ browser: fakeBrowser({ cardCount: 4 }), sleepFn: async () => {}, randomFn: () => 0 }).scan({ ...base, onDetailCheckpoint: checkpointDetail, onTargetComplete: checkpointTarget });
+    });
+    const completedProgress = storage.getBatch(db, completedBatchId).filterSnapshot.runtime.scanProgress;
+    assert.deepEqual({ targetPosition: completedProgress.targetPosition, targetTotal: completedProgress.targetTotal, targetDiscovered: completedProgress.targetDiscovered, detailPosition: completedProgress.detailPosition, detailTotal: completedProgress.detailTotal },
+      { targetPosition: 3, targetTotal: 3, targetDiscovered: 3, detailPosition: 3, detailTotal: 3 }, 'cardLimit bounds counters without hiding saved jobs');
+
+    let pauseRequested = false;
+    const scrollSnapshot = buildScanExecutionSnapshot({ site: 'zhaopin', searchTemplate, keywordPlan, limits: { maxCards: 4 } });
+    const pausedBatchId = await withRun('scroll-pause', async ({ checkpointProgress, checkpointDetail }) => {
+      const assertControl = () => { if (pauseRequested) throw Object.assign(new Error('pause'), { code: 'WORKFLOW_PAUSE_REQUESTED' }); };
+      const bridge = fakeBrowser({ terminal: false });
+      const focusStates = [];
+      let focusEnabled = false;
+      bridge.setPageLifecycleActive = async () => {};
+      bridge.cdp = async (_tabId, method, params) => {
+        assert.equal(method, 'Emulation.setFocusEmulationEnabled');
+        focusEnabled = params.enabled;
+        focusStates.push(params.enabled);
+      };
+      await assert.rejects(() => new ZhaopinSiteAdapter({ browser: bridge, sleepFn: async () => {}, randomFn: () => 0 }).scan({
+        ...base,
+        keywordPlan: keywordPlan.map((item, index) => index === 2 ? { ...item, maxCards: 4 } : item),
+        maxCards: 4,
+        assertTabBindings: assertControl,
+        onDetailCheckpoint: checkpointDetail,
+        onProgressCheckpoint: (result) => {
+          checkpointProgress(result);
+          if (result.activity === 'searching') {
+            assert.equal(focusEnabled, true, 'background rendering remains enabled while scrolling for newly rendered cards');
+            pauseRequested = true;
+          }
+        }
+      }), (error) => error.code === 'WORKFLOW_PAUSE_REQUESTED');
+      assert.deepEqual(focusStates, [true, false], 'the target-wide background rendering scope is released exactly once after pause');
+    }, scrollSnapshot);
+    const pausedProgress = storage.getBatch(db, pausedBatchId).filterSnapshot.runtime.scanProgress;
+    assert.equal(pausedProgress.activity, 'searching');
+    assert.deepEqual({ targetPosition: pausedProgress.targetPosition, targetTotal: pausedProgress.targetTotal, targetDiscovered: pausedProgress.targetDiscovered, detailPosition: pausedProgress.detailPosition, detailTotal: pausedProgress.detailTotal },
+      { targetPosition: 3, targetTotal: 3, targetDiscovered: 3, detailPosition: 3, detailTotal: 3 });
+  } finally { db.close(); }
 }
 
 async function durableResume() {

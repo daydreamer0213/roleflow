@@ -39,6 +39,15 @@ function localBrowser(page, url) {
       calls.push({ type: "navigate", tabId, target });
       assert.equal(tabId, "ZHAOPIN-SEARCH");
     },
+    async setPageLifecycleActive(tabId) {
+      calls.push({ type: "lifecycle", tabId });
+      assert.equal(tabId, "ZHAOPIN-SEARCH");
+    },
+    async cdp(tabId, method, params) {
+      calls.push({ type: "cdp", tabId, method, params });
+      assert.equal(tabId, "ZHAOPIN-SEARCH");
+      assert.equal(method, "Emulation.setFocusEmulationEnabled");
+    },
     async bringToFront() {
       throw new Error("readonly adapter must not activate a tab");
     }
@@ -273,6 +282,8 @@ async function main() {
       null,
       "equal titles must not override a current-layout sourceId mismatch"
     );
+    await backgroundReadinessSmoke(page, currentFixtureHtml);
+    await defaultFilterCompatibilitySmoke(page);
     await page.goto("https://www.zhaopin.com/jobs/?pageMode=search&jl=548&kw=%E5%90%88%E6%88%90%E5%85%B3%E9%94%AE%E8%AF%8D");
     await page.evaluate(() => {
       document.querySelectorAll('.job-card').forEach(node => node.remove());
@@ -298,6 +309,115 @@ async function main() {
     await browser.close();
   }
   console.log("zhaopin_readonly_smoke ok");
+}
+
+async function backgroundReadinessSmoke(page, fixtureHtml) {
+  const searchUrl = "https://www.zhaopin.com/jobs/?pageMode=search&kw=%E5%90%88%E6%88%90%E5%85%B3%E9%94%AE%E8%AF%8D";
+  await page.route("https://www.zhaopin.com/jobs-background/**", (route) => route.fulfill({ status: 200, contentType: "text/html; charset=utf-8", body: fixtureHtml }));
+  const reset = async () => {
+    await page.goto("https://www.zhaopin.com/jobs-background/?pageMode=search&kw=%E5%90%88%E6%88%90%E5%85%B3%E9%94%AE%E8%AF%8D");
+    await page.evaluate((url) => {
+      history.replaceState({}, "", url);
+      document.title = "后台合成智联搜索页";
+      document.querySelector("#current-card .vue-clamp__text").textContent = "";
+    }, searchUrl);
+  };
+  const options = {
+    searchTemplate: canonicalizeZhaopinSearchTemplate(searchUrl),
+    keyword: "合成关键词",
+    filterSummary: ["合成地区"]
+  };
+  const renderingBridge = (failDisable = null) => {
+    const bridge = localBrowser(page, searchUrl);
+    let lifecycleActive = false;
+    let focusEnabled = false;
+    bridge.setPageLifecycleActive = async (tabId) => {
+      bridge.calls.push({ type: "lifecycle", tabId });
+      lifecycleActive = true;
+    };
+    bridge.cdp = async (tabId, method, params) => {
+      bridge.calls.push({ type: "cdp", tabId, method, params });
+      assert.equal(method, "Emulation.setFocusEmulationEnabled");
+      focusEnabled = params.enabled;
+      if (!params.enabled && failDisable) throw failDisable;
+    };
+    return {
+      bridge,
+      render: async () => {
+        if (lifecycleActive && focusEnabled) {
+          await page.evaluate(() => { document.querySelector("#current-card .vue-clamp__text").textContent = "当前结构合成岗位"; });
+        }
+      }
+    };
+  };
+
+  await reset();
+  const success = renderingBridge();
+  const successAdapter = new ZhaopinSiteAdapter({ browser: success.bridge, sleepFn: success.render });
+  assert.equal((await successAdapter.waitForSearchReady("ZHAOPIN-SEARCH", options)).cards[0].title, "当前结构合成岗位");
+  assert.deepEqual(success.bridge.calls.filter((call) => call.type === "lifecycle" || call.type === "cdp").map((call) => call.type === "lifecycle" ? "lifecycle" : call.params.enabled), ["lifecycle", true, false]);
+  assert.equal((await success.bridge.listTabs()).find((tab) => tab.active).id, "dashboard", "background rendering must preserve the foreground tab");
+  assert.equal(success.bridge.calls.some((call) => call.type === "bringToFront"), false);
+
+  for (const [label, prepare, run] of [
+    ["timeout", reset, (adapter) => adapter.waitForSearchReady("ZHAOPIN-SEARCH", { ...options, keyword: "不同关键词" })],
+    ["login", async () => { await reset(); await page.evaluate(() => document.body.append("请登录")); }, (adapter) => adapter.waitForSearchReady("ZHAOPIN-SEARCH", options)],
+    ["risk", async () => { await reset(); await page.evaluate(() => { document.title = "安全验证"; }); }, (adapter) => adapter.waitForSearchReady("ZHAOPIN-SEARCH", options)]
+  ]) {
+    await prepare();
+    const scoped = renderingBridge();
+    const scopedAdapter = new ZhaopinSiteAdapter({ browser: scoped.bridge, sleepFn: async () => {} });
+    await assert.rejects(() => run(scopedAdapter));
+    assert.deepEqual(scoped.bridge.calls.filter((call) => call.type === "cdp").map((call) => call.params.enabled), [true, false], `${label} must release background focus emulation`);
+  }
+
+  await reset();
+  const cancelled = renderingBridge();
+  const controller = new AbortController();
+  const cancelledAdapter = new ZhaopinSiteAdapter({ browser: cancelled.bridge, sleepFn: async () => controller.abort() });
+  await assert.rejects(() => cancelledAdapter.waitForSearchReady("ZHAOPIN-SEARCH", { ...options, signal: controller.signal }), (error) => error.code === "ZHAOPIN_ABORTED");
+  assert.deepEqual(cancelled.bridge.calls.filter((call) => call.type === "cdp").map((call) => call.params.enabled), [true, false], "cancellation must release background focus emulation");
+
+  await reset();
+  await page.evaluate(() => { document.querySelector("#current-card .vue-clamp__text").textContent = "当前结构合成岗位"; });
+  const cleanupFailure = Object.assign(new Error("focus cleanup failed"), { code: "BROWSER_COMMAND_FAILED" });
+  const brokenCleanup = renderingBridge(cleanupFailure);
+  await assert.rejects(() => new ZhaopinSiteAdapter({ browser: brokenCleanup.bridge, sleepFn: async () => {} }).waitForSearchReady("ZHAOPIN-SEARCH", options), (error) => error === cleanupFailure);
+  assert.deepEqual(brokenCleanup.bridge.calls.filter((call) => call.type === "cdp").map((call) => call.params.enabled), [true, false], "cleanup failure must be surfaced after exactly one release attempt");
+}
+
+async function defaultFilterCompatibilitySmoke(page) {
+  const searchUrl = "https://www.zhaopin.com/jobs/?pageMode=search&kw=%E5%90%88%E6%88%90%E5%85%B3%E9%94%AE%E8%AF%8D";
+  await page.goto("https://www.zhaopin.com/jobs-background/?pageMode=search&kw=%E5%90%88%E6%88%90%E5%85%B3%E9%94%AE%E8%AF%8D");
+  await page.evaluate((url) => history.replaceState({}, "", url), searchUrl);
+  const defaults = ["地区", "薪资", "学历", "经验", "公司性质", "融资阶段", "公司人数", "工作性质", "职位类别", "公司行业"];
+  const setFilters = (labels) => page.evaluate((items) => {
+    document.querySelectorAll(".filter-select-box").forEach((node) => node.remove());
+    const input = document.querySelector(".query-sug__input");
+    for (const text of items) {
+      const box = document.createElement("div");
+      box.className = "filter-select-box";
+      const label = document.createElement("span");
+      label.className = "filter-select-box__label";
+      label.textContent = text;
+      box.append(label);
+      input.after(box);
+    }
+  }, labels);
+  const bridge = localBrowser(page, searchUrl);
+  const adapter = new ZhaopinSiteAdapter({ browser: bridge, sleepFn: async () => {} });
+  const base = { searchTemplate: canonicalizeZhaopinSearchTemplate(searchUrl), keyword: "合成关键词" };
+  await setFilters(defaults);
+  assert.equal((await adapter.waitForSearchReady("ZHAOPIN-SEARCH", { ...base, filterSummary: defaults.filter((item) => item !== "融资阶段") })).filterSummary.length, 10,
+    "a newly added verified default financing label is compatible with the saved nine defaults");
+  for (const [saved, current, label] of [
+    [defaults, defaults.map((item) => item === "融资阶段" ? "已融资" : item), "specific current selection"],
+    [["广东", ...defaults.slice(1)], defaults, "lost saved selection"],
+    [[...defaults, "未知标签甲"], [...defaults, "未知标签乙"], "changed unknown label"]
+  ]) {
+    await setFilters(current);
+    await assert.rejects(() => adapter.waitForSearchReady("ZHAOPIN-SEARCH", { ...base, filterSummary: saved }), (error) => error.code === "ZHAOPIN_SEARCH_RESTORE_TIMEOUT", `${label} must remain strict`);
+  }
 }
 
 main().catch((error) => {
