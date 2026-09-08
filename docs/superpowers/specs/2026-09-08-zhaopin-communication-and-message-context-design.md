@@ -36,6 +36,9 @@
 
 - 搜索页推荐列表有 20 张卡片，右侧完整 JD 已加载，后台 `document.hasFocus() === false`。
 - 当前岗位摘要区 `.job-detail-summary__actions` 同时具有独立的 `.job-detail-summary__prechat`（“先聊聊”）与 `.job-detail-summary__apply`（“立即投递”）。尚未点击，不声称前者已验证成功。
+- 继续只读检查已加载页面代码：搜索页 `preChat` 使用普通 IM 上下文创建流程，和 `apply` 投递流程分开；成功文案分别是“已向对方发送打招呼语”和“已向对方发送简历和打招呼语”。`openImDetail` 使用同页 `location.href`，不是此前推测的新窗弹出；不需要拦截 `window.open`。这是代码语义证据，真实点击与结果仍待验收。
+- 独立详情页的“立即沟通”是下载 APP 的悬浮二维码入口，不能当作网页“先聊聊”。普通沟通应复用搜索页的真实岗位面板；找回目标时按已冻结岗位编号核对，不以相同标题代替身份，也不要求用户保持旧搜索条件不变。
+- 当前搜索卡片 `JobCard.$props.job.number` 和岗位摘要 `JobDetailSummary` 的岗位数据暴露稳定编号；卡片 `.job-card__title-main`、公司与编号可交叉核对。只读取所需字段，不持久化完整平台对象或调用内部接口。
 - 已选消息的 `.im-chat-header__detail` 提供真实 `/jobdetail/…html` 链接，同时标记 `is-offline`、“职位已下线”。这是单条岗位事实，不代表全部消息岗位下线。
 - 当前 `zhaopin_job_context.js` 只查本地完整缓存；不是自动补资料已经实现。
 - 又核验一条用户提供过正文的 Python 会话：岗位详情仍在线，标题、稳定岗位编号匹配；公司侧栏短名与详情全称相差“有限公司”后缀。消息链接 `.html` 在平台上重定向为相同编号 `.htm`。
