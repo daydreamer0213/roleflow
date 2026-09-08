@@ -180,6 +180,7 @@ async function main() {
   await messageDiscoveryClientResponseSmoke(page.body);
   await messageDiscoveryFormActionSmoke(page.body);
   await messageDiscoveryDuplicateSubmitSmoke(page.body);
+  await messageDiscoveryNavigationSaveRaceSmoke(page.body);
   await messageDiscoveryPollingSmoke(page.body);
   await messageDiscoveryMalformedResponseSmoke(page.body);
   await messageDiscoveryActionPollRaceSmoke(page.body);
@@ -2109,6 +2110,30 @@ async function messageDiscoveryDuplicateSubmitSmoke(markup) {
   assert.strictEqual(client.reloads(), 1, "the accepted pending request must reload once");
 }
 
+async function messageDiscoveryNavigationSaveRaceSmoke(markup) {
+  for (const failLatest of [false, true]) {
+    const firstSave = deferred();
+    const enteredSave = deferred();
+    const posted = [];
+    const field = { value: "first edit", disabled: false, dataset: { draftId: "1" }, closest() { return null; }, addEventListener() {} };
+    const client = runMessageDiscoveryClient(markup, { async fetch(url, options) {
+      const body = JSON.parse(options.body);
+      posted.push(body.text);
+      if (posted.length === 1) { enteredSave.resolve(); return firstSave.promise; }
+      return failLatest ? jsonResponse(500, { errorCode: "SAVE_FAILED" }) : jsonResponse(200, { ok: true, revision: 2 });
+    } }, { fields: [field] });
+    const navigating = client.navigate();
+    await enteredSave.promise;
+    field.value = "second edit while saving";
+    firstSave.resolve(jsonResponse(200, { ok: true, revision: 1 }));
+    await navigating;
+    assert.deepEqual(posted, ["first edit", "second edit while saving"], "navigation must save the edit made during its pending first save");
+    assert.equal(client.href(), failLatest ? "/messages" : "/plan");
+    assert.equal(field.value, "second edit while saving");
+    if (failLatest) assert.match(client.feedback.textContent, /未能保存/);
+  }
+}
+
 function runMessageDiscoveryClient(markup, scenario, options = {}) {
   const script = markup.match(/<script>([\s\S]*?)<\/script>/)?.[1];
   assert(script, "message discovery must provide its client behavior");
@@ -2123,12 +2148,16 @@ function runMessageDiscoveryClient(markup, scenario, options = {}) {
     addEventListener(type, handler) { handlers.set(type, handler); }
   };
   const feedback = { textContent: "", dataset: {}, setAttribute(name, value) { if (name === "aria-busy") this.busy = value; } };
+  let navigate;
+  const link = { href: "/plan", addEventListener(type, handler) { if (type === "click") navigate = handler; } };
   const document = {
     querySelector(selector) {
       return selector === "[data-discovery-feedback]" ? feedback : null;
     },
     querySelectorAll(selector) {
       if (selector === "[data-discovery-form]") return [form];
+      if (selector === "[data-draft-text]") return options.fields || [];
+      if (selector === "[data-flush-drafts], .primary-nav a") return [link];
       if (selector === "[data-copy-draft]") return [];
       return [];
     },
@@ -2148,7 +2177,7 @@ function runMessageDiscoveryClient(markup, scenario, options = {}) {
       return scenario.response;
     },
     navigator: { clipboard: { writeText: async () => {} } },
-    location: { reload() { reloadCount += 1; } },
+    location: { href: "/messages", reload() { reloadCount += 1; } },
     setTimeout(callback) { timers.push(callback); return timers.length; },
     clearTimeout() {},
     encodeURIComponent,
@@ -2158,6 +2187,8 @@ function runMessageDiscoveryClient(markup, scenario, options = {}) {
   return {
     button,
     feedback,
+    navigate: () => navigate({ preventDefault() {} }),
+    href: () => context.location.href,
     fetchCalls: () => fetchCallCount,
     reloads: () => reloadCount,
     timerCount: () => timers.length,

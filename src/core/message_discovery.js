@@ -1,9 +1,12 @@
 const {
   listMessageDiscoveryCandidates,
+  getProgressCardById,
+  findMessageDiscoveryJobContext,
   recordDiscoveredMessageGroupClassification
 } = require("./candidate_progress");
 const {
   getCandidateProfile,
+  getActiveSearchPlan,
   listCandidateFacts,
   listCandidateAnswerMemories,
   recordMessageReplyDrafts,
@@ -296,6 +299,8 @@ async function runBossMessageDiscovery({
       return emitStopped(incoming.reasonCode, queue.length, results, logger, onStatus, retained, processed, counters);
     }
 
+    const capturedIdentity = selectedIdentity(selectedSnapshot);
+    const capturedPlan = source === "zhaopin" ? getActiveSearchPlan(db, profileId) : null;
     clearSelectedIdentity(selectedSnapshot);
     const inboundMessages = inboundDisplayMessages(incoming);
     let classification;
@@ -366,6 +371,18 @@ async function runBossMessageDiscovery({
     }
     throwIfAborted(signal);
     const committed = immediateTransaction(db, () => {
+      if (source === "zhaopin" && !currentZhaopinContext(db, profileId, resolved, selectedTarget, capturedPlan)) {
+        recordUnresolvedMessageDiscoveryItem(db, {
+          profileId, platform: source, conversationKey: target.conversationKey,
+          previewDigest: target.previewDigest, previewKind: target.previewKind,
+          reasonCode: "MESSAGE_DISCOVERY_JOB_CONTEXT_UNAVAILABLE", observedAt: now(),
+          identity: capturedIdentity,
+          ...(inboundMessages.length && validInboundIdentity(source, selectedTarget) ? {
+            inboundMessages, sourceJobId: selectedTarget.sourceJobId, lastMessageId: selectedTarget.lastMessageId
+          } : {})
+        });
+        return null;
+      }
       const card = recordDiscoveredMessageGroupClassification(db, {
       cardId: resolved.cardId,
       platform: source,
@@ -416,6 +433,10 @@ async function runBossMessageDiscovery({
     });
       return { card, drafts };
     });
+    if (!committed) {
+      retained = unresolvedSummary(db, profileId, source);
+      return emitStopped("MESSAGE_DISCOVERY_JOB_CONTEXT_UNAVAILABLE", queue.length, results, logger, onStatus, retained, processed, counters);
+    }
     const { card, drafts } = committed;
     retained = unresolvedSummary(db, profileId, source);
     results = results.filter((item) => item.cardId !== card.id);
@@ -564,6 +585,23 @@ function validResolvedContext(value, canonicalThreadKey, platform) {
     && value.card?.source === platform
     && value.job?.source === platform
     && hasCompleteJobContext(value.job);
+}
+
+function currentZhaopinContext(db, profileId, resolved, target, capturedPlan) {
+  const plan = getActiveSearchPlan(db, profileId);
+  if (!plan || plan.id !== resolved.card.planId || plan.id !== capturedPlan?.id
+    || plan.updatedAt !== capturedPlan.updatedAt || plan.profileVersionId !== capturedPlan.profileVersionId
+    || JSON.stringify(plan.plan) !== JSON.stringify(capturedPlan.plan)) return false;
+  const card = getProgressCardById(db, resolved.cardId);
+  if (!card || card.profileId !== Number(profileId) || card.planId !== plan.id
+    || card.jobId !== resolved.job.id || card.source !== "zhaopin"
+    || card.threadKey !== target.conversationKey || resolved.threadKey !== target.conversationKey
+    || target.sourceJobId !== `zhaopin:${resolved.job.sourceId}`) return false;
+  const context = findMessageDiscoveryJobContext(db, {
+    profileId, planId: plan.id, sourceId: resolved.job.sourceId, platform: "zhaopin"
+  });
+  return Boolean(context?.contextComplete && context.jobId === card.jobId
+    && context.observationId === resolved.job.observationId);
 }
 
 function contextFailureReason(error) {

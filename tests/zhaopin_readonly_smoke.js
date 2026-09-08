@@ -225,6 +225,27 @@ async function main() {
       null,
       "equal titles must not override a current-layout sourceId mismatch"
     );
+    await page.goto("https://www.zhaopin.com/jobs/?pageMode=search&jl=548&kw=%E5%90%88%E6%88%90%E5%85%B3%E9%94%AE%E8%AF%8D");
+    await page.evaluate(() => {
+      document.querySelectorAll('.job-card').forEach(node => node.remove());
+      document.querySelectorAll('.job-detail-panel,.job-detail-card').forEach(node => node.remove());
+      const status = document.createElement('div');
+      status.className = 'job-list-panel__status job-list-panel__status--more';
+      status.textContent = '没有更多了';
+      document.querySelector('.job-list-panel').append(status);
+    });
+    const emptyState = await adapter.readSearchState("ZHAOPIN-SEARCH");
+    assert.equal(emptyState.confirmedEnd, true);
+    assert.equal(emptyState.loading, false, "confirmed empty results must not be mistaken for loading");
+    let emptyWaits = 0;
+    const emptyAdapter = new ZhaopinSiteAdapter({ browser: bridge, sleepFn: async () => { emptyWaits++; }, randomFn: () => 0 });
+    const emptyOptions = { searchTemplate: canonicalizeZhaopinSearchTemplate(page.url()), keyword: "合成关键词", filterSummary: emptyState.filterSummary };
+    assert.equal((await emptyAdapter.waitForSearchReady("ZHAOPIN-SEARCH", emptyOptions)).cards.length, 0);
+    assert.equal(emptyWaits, 0, "confirmed empty result is immediately ready");
+    await assert.rejects(() => emptyAdapter.waitForSearchReady("ZHAOPIN-SEARCH", { ...emptyOptions, keyword: "different" }), error => error.code === "ZHAOPIN_SEARCH_RESTORE_TIMEOUT");
+    await page.evaluate(() => document.querySelector('.job-list-panel__status--more').remove());
+    assert.equal((await adapter.readSearchState("ZHAOPIN-SEARCH")).loading, true);
+    await assert.rejects(() => emptyAdapter.waitForSearchReady("ZHAOPIN-SEARCH", emptyOptions), error => error.code === "ZHAOPIN_SEARCH_RESTORE_TIMEOUT");
   } finally {
     await browser.close();
   }

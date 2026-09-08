@@ -221,7 +221,6 @@ class ZhaopinCommunicationAdapter extends ZhaopinSiteAdapter {
 
   async prepareCommunicationDispatch(inspection, signal = null) {
     this.begin("preparation");
-    let started = false;
     try {
       const expected = inspectionJob(inspection);
       if (!expected) throw communicationError("ZHAOPIN_COMMUNICATION_INSPECTION_INVALID", "需要刚刚核验通过的智联岗位。");
@@ -243,12 +242,11 @@ class ZhaopinCommunicationAdapter extends ZhaopinSiteAdapter {
         captureBodies: true,
         clear: true
       });
-      started = true;
+      const prepared = { expected, tabId, networkSequence: null, networkStarted: true, focusEnabled: false };
+      this.prepared = prepared;
       validateStart(start, tabId);
       const mark = await this.browser.getNetworkLogMark(tabId);
-      const networkSequence = validateMark(mark, tabId);
-      const prepared = { expected, tabId, networkSequence, networkStarted: true, focusEnabled: false };
-      this.prepared = prepared;
+      prepared.networkSequence = validateMark(mark, tabId);
       let cancelled = false;
       return {
         state: "prepared",
@@ -266,12 +264,11 @@ class ZhaopinCommunicationAdapter extends ZhaopinSiteAdapter {
           }
         }
       };
+    } catch (error) {
+      await this.cleanupResources();
+      throw error;
     } finally {
-      try {
-        if (started && !this.prepared) await this.safeStopNetworkLog(this.binding?.searchTabId);
-      } finally {
-        this.end("preparation");
-      }
+      this.end("preparation");
     }
   }
 
@@ -290,6 +287,7 @@ class ZhaopinCommunicationAdapter extends ZhaopinSiteAdapter {
       prepared.focusEnabled = true;
       await this.assertBoundTabs({ requireSearch: true });
       const guarded = await this.browser.evalValue(prepared.tabId, guardedPrechatExpression(expected));
+      throwIfAborted(signal);
       if (guarded?.ready !== true) throw guardedError(guarded?.reason);
       prepared.dispatchNotBeforeMs = this.now();
       if (!Number.isFinite(prepared.dispatchNotBeforeMs)) throw communicationError("ZHAOPIN_COMMUNICATION_CLOCK_INVALID", "无法建立智联发送时间边界。");
@@ -334,7 +332,7 @@ class ZhaopinCommunicationAdapter extends ZhaopinSiteAdapter {
         }
         if (network.state === "transport_failed") return { state: "transport_failed", evidence: lastEvidence };
         if (network.state === "platform_rejected") return { state: "platform_rejected", evidence: lastEvidence };
-        if (network.state === "accepted") {
+        if (network.state === "accepted" && log?.meta?.pendingRequests === 0) {
           const pageState = await this.verifyPageOutcome(expected, network.sessionId);
           if (pageState.succeeded) {
             this.verifiedImResult = pageState.sameTabIm ? Object.freeze({ sessionId: network.sessionId, jobNumber: expected.sourceId }) : null;
@@ -345,7 +343,7 @@ class ZhaopinCommunicationAdapter extends ZhaopinSiteAdapter {
         if (this.now() >= deadline) {
           return {
             state: "ambiguous",
-            errorCode: network.state === "none" && Number(log?.meta?.pendingRequests || 0) === 0
+            errorCode: network.state === "none" && log?.meta?.pendingRequests === 0
               ? "COMMUNICATION_ACTION_NOT_TRIGGERED" : "COMMUNICATION_RESULT_AMBIGUOUS",
             evidence: {
               ...lastEvidence,

@@ -123,6 +123,7 @@ async function run() {
   await manualOnlyReopenSmoke();
   await crossPlatformIdempotencySmoke();
   await resolverIsolationSmoke();
+  await contextChangedDuringReplySmoke();
   await zhaopinDetailControllerSmoke();
   await zhaopinFatalDetailRetentionSmoke();
   const regressions = [emptyTextPendingSmoke, unsupportedSelfPendingSmoke, pendingPacingSmoke, confirmedSelfBoundarySmoke];
@@ -131,6 +132,45 @@ async function run() {
     try { await regression(); } catch (error) { failures.push(`${regression.name}: ${error.stack}`); }
   }
   assert.deepEqual(failures, []);
+}
+
+async function contextChangedDuringReplySmoke() {
+  for (const change of ["deactivate", "replace", "planrevision", "thread", "context", "unchanged"]) {
+    const fixture = createFixture({ id: `ZLWAIT${change}`, title: "Waiting Engineer" });
+    const conversationKey = safeDigest(["zhaopin", "waiting", change]);
+    const reader = zhaopinReaderFor({ conversationKey, sourceJobId: `zhaopin:ZLWAIT${change}`, title: fixture.title,
+      messages: [{ direction: "friend", messageId: "889001", text: "请介绍相关项目经验。", contentKind: "text" }] });
+    let releaseModel;
+    let modelEntered;
+    const enteredModel = new Promise(resolve => { modelEntered = resolve; });
+    const run = runBossMessageDiscovery({
+      db, profileId: fixture.profileId, platform: "zhaopin", reader,
+      resolveJobContext: createZhaopinMessageJobContextResolver({ db, profileId: fixture.profileId, now: () => NOW }),
+      classifyMessageGroup: async () => {
+        modelEntered();
+        await new Promise(resolve => { releaseModel = resolve; });
+        return classification(["我可以介绍相关项目经验。"]);
+      }, now: () => NOW, sleepFn: async () => {}
+    });
+    await enteredModel;
+    if (change === "deactivate" || change === "replace") db.prepare("UPDATE search_plans SET is_active = 0 WHERE id = ?").run(fixture.planId);
+    if (change === "replace") db.prepare("INSERT INTO search_plans(profile_id, name, plan_json, is_active, created_at, updated_at) VALUES (?, 'replacement', '{}', 1, ?, ?)").run(fixture.profileId, NOW, NOW);
+    if (change === "planrevision") db.prepare("UPDATE search_plans SET updated_at = '2026-09-09T00:00:00.000Z' WHERE id = ?").run(fixture.planId);
+    if (change === "thread") db.prepare("UPDATE candidate_progress_cards SET thread_key = ? WHERE profile_id = ?").run(safeDigest(["another-thread"]), fixture.profileId);
+    if (change === "context") db.prepare("UPDATE job_observations SET analysis_json = '{}' WHERE job_id = ?").run(fixture.jobId);
+    releaseModel();
+    const result = await run;
+    assert.equal(result.processed, change === "unchanged" ? 1 : 0, `${change}: invalidated context must not mark the incoming group processed`);
+    assert.equal(listOpenMessageReplyDrafts(db, { profileId: fixture.profileId }).length, change === "unchanged" ? 1 : 0);
+    if (change !== "unchanged") {
+      assert.equal(result.status, "needs_user_action");
+      const retained = listUnresolvedMessageDiscoveryItems(db, { profileId: fixture.profileId, platform: "zhaopin" })[0];
+      assert.deepEqual(retained.inboundMessages, [{ kind: "text", text: "请介绍相关项目经验。" }]);
+      assert.equal(retained.positionTitle, fixture.title);
+      assert.equal(listPreviewStates(db, { profileId: fixture.profileId, platform: "zhaopin" }).length, 0);
+      assert.equal(db.prepare("SELECT COUNT(*) AS n FROM candidate_progress_events WHERE card_id IN (SELECT id FROM candidate_progress_cards WHERE profile_id = ?) AND idempotency_key LIKE 'message%'").get(fixture.profileId).n, 0);
+    }
+  }
 }
 
 async function zhaopinFatalDetailRetentionSmoke() {

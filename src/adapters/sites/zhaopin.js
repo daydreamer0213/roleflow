@@ -9,7 +9,7 @@ const { sourceContentHash } = require('../../storage/job_store');
 const { hasCompleteJobDescription } = require('../../core/job_description_readiness');
 
 const ZHAOPIN_PAGE_HELPERS_EXPRESSION = String.raw`(() => {
-  if (window.__zhaopinReadSearchState?.__roleflowVersion === 2) return true;
+  if (window.__zhaopinReadSearchState?.__roleflowVersion === 3) return true;
   const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
   const validSourceId = (value) => /^[A-Za-z0-9]{1,160}$/.test(String(value || '')) ? String(value) : '';
   const component = (node, name) => {
@@ -101,6 +101,7 @@ const ZHAOPIN_PAGE_HELPERS_EXPRESSION = String.raw`(() => {
     const detail = detailState();
     const bodyText = clean(document.body?.innerText);
     const pathname = location.pathname;
+    const confirmedEnd = Array.from(document.querySelectorAll('.job-list-panel__status.job-list-panel__status--more')).some(item => clean(item.textContent) === '没有更多了');
     const visibleLoader = Array.from(document.querySelectorAll('.job-detail-panel [class*="loading"], .job-detail-panel [class*="skeleton"], .job-detail-card [class*="loading"], .job-detail-card [class*="skeleton"], .job-list-panel [class*="loading"], .job-list-panel [class*="skeleton"]')).some((item) => {
       const style = getComputedStyle(item);
       return item.getClientRects().length > 0 && !item.hidden && item.getAttribute('aria-hidden') !== 'true' && style.display !== 'none' && style.visibility !== 'hidden';
@@ -112,14 +113,14 @@ const ZHAOPIN_PAGE_HELPERS_EXPRESSION = String.raw`(() => {
       cards,
       selectedIndex,
       detail,
-      loading: visibleLoader || cards.length === 0 || selectedIndex < 0 || !detail.title || !detail.description || !detail.url,
-      confirmedEnd: Array.from(document.querySelectorAll('.job-list-panel__status.job-list-panel__status--more')).some(item => clean(item.textContent) === '没有更多了'),
+      loading: visibleLoader || (cards.length === 0 ? !confirmedEnd : selectedIndex < 0 || !detail.title || !detail.description || !detail.url),
+      confirmedEnd,
       risk: /安全验证|访问异常|行为验证|访问受限/.test(document.title || '') || /账户存在异常行为|暂时无法访问/.test(bodyText),
       loginRequired: /登录后|请登录/.test(bodyText),
       isSearchPage: location.protocol === 'https:' && location.hostname === 'www.zhaopin.com' && pathname === '/jobs/' && new URL(location.href).searchParams.get('pageMode') === 'search'
     };
   };
-  window.__zhaopinReadSearchState.__roleflowVersion = 2;
+  window.__zhaopinReadSearchState.__roleflowVersion = 3;
   window.__zhaopinActivateCard = (expectedIndex, expectedSignature) => {
     const cards = Array.from(document.querySelectorAll('.job-list-panel .job-card'));
     const card = cards[Number(expectedIndex)];
@@ -269,7 +270,9 @@ class ZhaopinSiteAdapter {
       throwIfAborted(signal);
       const state = await this.readSearchState(tabId, signal);
       const selected = state.cards[state.selectedIndex];
-      if (!state.loading && selected && detailMatches(selected, state.detail, state.detailSourceIdConfirmed)
+      const readyResult = state.cards.length === 0 ? state.confirmedEnd === true
+        : selected && detailMatches(selected, state.detail, state.detailSourceIdConfirmed);
+      if (!state.loading && readyResult
         && searchStateMatches(state, searchTemplate, keyword, filterSummary)) return state;
       await this.waitWithChecks(signal, assertTabBindings);
     }

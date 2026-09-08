@@ -116,6 +116,7 @@ function decisionCardProjectionSmoke() {
     workSchedule: "工作安排未确认",
     salary: "15-25K·13薪",
     opportunityVerdict: "值得继续聊",
+    availability: "unknown",
     opportunitySummary: "岗位方向与候选人的 RAG 项目经历一致"
   });
 
@@ -338,6 +339,7 @@ async function uniqueCandidateAndPrivacySmoke() {
     workSchedule: "工作安排未确认",
     salary: "20-30K",
     opportunityVerdict: "可以了解，但要先确认关键问题",
+    availability: "unknown",
     opportunitySummary: "Spring 项目证据匹配；生产值班经验待确认"
   });
   assert.strictEqual(summary.results[0].contextSource, "local_cache");

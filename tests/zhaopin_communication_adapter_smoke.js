@@ -6,6 +6,7 @@ const {
   inspectZhaopinCommunicationTabs
 } = require("../src/adapters/sites/zhaopin_communication");
 const { createSiteAdapter } = require("../src/adapters/sites");
+const { CdpNetworkLog } = require("../src/adapters/browser/cdp_network_log");
 
 let chromium;
 try { ({ chromium } = require("playwright")); }
@@ -393,7 +394,136 @@ async function main() {
     assert.equal(retryCancelBrowser.calls.filter((call) => call.kind === "stopNetworkLog").length, 2,
       "preparation cancellation retries a retained observer once, then stays idempotent");
 
+    for (const markFailure of ["invalid", "throws"]) {
+      await page.goto(SEARCH_URL);
+      let failedStops = 0;
+      const markBrowser = fakeBrowser(page, { stopNetworkError: () => failedStops++ === 0 ? transientStopError : null });
+      const markAdapter = adapterFor(markBrowser);
+      await prepareSession(markAdapter, markBrowser);
+      const markInspection = await markAdapter.inspectCommunicationJob(JOB_A);
+      markBrowser.getNetworkLogMark = async () => {
+        if (markFailure === "throws") throw new Error("mark failed");
+        return { mark: { lastSequence: -1 } };
+      };
+      await assert.rejects(() => markAdapter.prepareCommunicationDispatch(markInspection));
+      assert.equal(markBrowser.state.networkStarted, true);
+      await markAdapter.restoreCommunicationSearchPage();
+      await markAdapter.restoreCommunicationSearchPage();
+      assert.equal(markBrowser.state.networkStarted, false, `${markFailure}: restore must retry the observer retained after failed preparation cleanup`);
+      assert.equal(markBrowser.calls.filter(call => call.kind === "stopNetworkLog").length, 2);
+      assert.equal(markBrowser.calls.filter(call => call.kind === "prechat").length, 0);
+      assert.equal(markAdapter.prepared, null);
+      await assert.rejects(() => markAdapter.dispatchCommunication(markInspection));
+      assert.equal(markBrowser.calls.filter(call => call.kind === "prechat").length, 0, "failed mark ownership cannot authorize dispatch");
+    }
+
+    await page.goto(SEARCH_URL);
+    const finalGuardBrowser = fakeBrowser(page);
+    const finalGuardAdapter = adapterFor(finalGuardBrowser);
+    await prepareSession(finalGuardAdapter, finalGuardBrowser);
+    const finalGuardInspection = await finalGuardAdapter.inspectCommunicationJob(JOB_A);
+    await finalGuardAdapter.prepareCommunicationDispatch(finalGuardInspection);
+    const finalGuardAbort = new AbortController();
+    const originalEval = finalGuardBrowser.evalValue.bind(finalGuardBrowser);
+    let releaseGuard;
+    let guardEntered;
+    const enteredGuard = new Promise(resolve => { guardEntered = resolve; });
+    finalGuardBrowser.evalValue = async (...args) => {
+      const result = await originalEval(...args);
+      if (result?.ready === true && result.clickPoint) {
+        guardEntered();
+        await new Promise(resolve => { releaseGuard = resolve; });
+      }
+      return result;
+    };
+    const cancelledDispatch = finalGuardAdapter.dispatchCommunication(finalGuardInspection, finalGuardAbort.signal);
+    await enteredGuard;
+    finalGuardAbort.abort();
+    releaseGuard();
+    await assert.rejects(() => cancelledDispatch, error => error.code === "ZHAOPIN_COMMUNICATION_ABORTED");
+    assert.equal(finalGuardBrowser.calls.filter(call => call.kind === "prechat").length, 0);
+    assert.equal(finalGuardAdapter.dispatchedSourceIds.size, 0, "cancelled final guard must not record a dispatch");
+    assert.equal(finalGuardBrowser.state.networkStarted, false);
+    assert.equal(finalGuardBrowser.state.focusEnabled, false);
+
+    for (const transport of ["direct", "edge"]) for (const pendingKind of ["application", "prechat"]) {
+      await page.goto(SEARCH_URL);
+      let observer;
+      let releasePending;
+      let pendingRead;
+      const pendingObserved = new Promise(resolve => { pendingRead = resolve; });
+      const pendingBrowser = fakeBrowser(page, { transport, onClick: async ({ state }) => {
+        if (transport === "direct") {
+          observer.onRequest({ requestId: "prechat", type: "Fetch", request: { url: rawEntry().url, method: "GET" } });
+          if (pendingKind === "application") {
+            observer.onResponse({ requestId: "prechat", response: { status: 200 } });
+            observer.onFinished({ requestId: "prechat" });
+            observer.onRequest({ requestId: "application", type: "Fetch", request: { url: "https://fe-api.zhaopin.com/c/pc/alan/jobs/application", method: "POST" } });
+          }
+        } else {
+          if (pendingKind === "application") state.entries.push(rawEntry(JOB_A, state.clock, { sequence: ++state.sequence }));
+          state.pendingRequests = 1;
+        }
+        await page.evaluate(() => window.fixture.modal());
+      } });
+      if (transport === "direct") {
+        pendingBrowser.startNetworkLog = async (tabId, options) => {
+          observer = new CdpNetworkLog({ options });
+          observer.opened = observer.enabled = true;
+          observer.command = async () => ({ body: JSON.stringify({ data: { sessionId: "a".repeat(32) } }) });
+          pendingBrowser.state.networkStarted = true;
+          return { started: true };
+        };
+        pendingBrowser.getNetworkLogMark = async () => observer.getMark();
+        pendingBrowser.readNetworkLog = async (tabId, options) => observer.read(options);
+        pendingBrowser.stopNetworkLog = async () => {
+          await observer.stop();
+          pendingBrowser.state.networkStarted = false;
+          return { stopped: true };
+        };
+      }
+      const pendingAdapter = adapterFor(pendingBrowser, { sleepFn: async () => {
+        pendingBrowser.state.clock += 5;
+        if (pendingBrowser.calls.some(call => call.kind === "prechat")) {
+          pendingRead();
+          await new Promise(resolve => { releasePending = resolve; });
+        }
+      } });
+      await prepareSession(pendingAdapter, pendingBrowser);
+      const pendingInspection = await pendingAdapter.inspectCommunicationJob(JOB_A);
+      await pendingAdapter.dispatchCommunication(pendingInspection);
+      let settled = false;
+      const pendingVerification = pendingAdapter.verifyCommunicationResult(JOB_A).then(result => { settled = true; return result; });
+      await Promise.race([pendingObserved, pendingVerification]);
+      assert.equal(settled, false, `${transport}: must not succeed while ${pendingKind} is in flight`);
+      assert.equal(pendingBrowser.state.networkStarted, true);
+      if (transport === "direct") {
+        observer.onResponse({ requestId: pendingKind, response: { status: 200 } });
+        observer.onFinished({ requestId: pendingKind });
+      }
+      else {
+        pendingBrowser.state.pendingRequests = 0;
+        pendingBrowser.state.entries.push(rawEntry(JOB_A, pendingBrowser.state.clock, { sequence: ++pendingBrowser.state.sequence,
+          ...(pendingKind === "application" ? { url: "https://fe-api.zhaopin.com/c/pc/alan/jobs/application", method: "POST" } : {}) }));
+      }
+      releasePending();
+      const pendingResult = await pendingVerification;
+      if (pendingKind === "application") assert.equal(pendingResult.errorCode, "ZHAOPIN_APPLICATION_ENDPOINT_OBSERVED");
+      else assert.equal(pendingResult.state, "succeeded");
+      assert.equal(pendingBrowser.state.networkStarted, false);
+    }
+
     const outcomes = [
+      ["accepted_without_pending_metadata", async ({ page, state }) => {
+        state.pendingRequests = undefined;
+        state.entries.push(safeEntry(JOB_A, state.clock, { sequence: ++state.sequence }));
+        await page.evaluate(() => window.fixture.modal());
+      }],
+      ["accepted_with_unsettled_request", async ({ page, state }) => {
+        state.pendingRequests = 1;
+        state.entries.push(safeEntry(JOB_A, state.clock, { sequence: ++state.sequence }));
+        await page.evaluate(() => window.fixture.modal());
+      }],
       ["stale", ({ state }) => state.entries.push(safeEntry(JOB_A, state.clock - 100, { sequence: ++state.sequence }))],
       ["premark_inflight_completion", ({ state }) => state.entries.push(safeEntry(JOB_A, state.clock - 100, {
         sequence: ++state.sequence,
