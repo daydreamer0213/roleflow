@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>Vue2 合成智联搜索页</title></head>
+<body>
+  <input class="query-sug__input" value="合成关键词">
+  <div class="filter-select-box"><span class="filter-select-box__label">北京</span></div>
+  <main class="job-list-panel">
+    <article class="job-card job-card--active" id="vue2-card">
+      <span class="job-card__title-main"><span class="vue-clamp__text">合成智能应用工程师</span></span>
+      <span class="job-card__salary">15-30K</span>
+      <a class="job-card__company-name">合成研发中心</a>
+      <span class="job-card__location">北京 朝阳 建外</span>
+    </article>
+  </main>
+  <section class="job-detail-panel">
+    <header class="job-detail-summary" id="vue2-summary">
+      <h1 class="job-detail-summary__title-text">合成智能应用工程师</h1>
+      <span class="job-detail-summary__salary">15-30K</span>
+      <a class="job-detail-summary__company-name">合成研发中心</a>
+      <ul class="job-detail-summary__tags"><li>北京·朝阳区</li><li>3-5年</li><li>本科</li></ul>
+    </header>
+    <section class="job-detail-card"><h2 class="job-detail-card__title">职位描述</h2><div class="job-detail-card__body">合成公开岗位职责，负责应用开发、质量验证与稳定交付。</div></section>
+    <section class="job-company-info"><a class="job-company-info__name">合成研发中心</a><a class="job-company-info__view-all" href="https://www.zhaopin.com/jobdetail/CCSYNTHV2A1J00000000001.htm">查看岗位</a></section>
+  </section>
+  <script>
+    const sourceId = "CCSYNTHV2A1J00000000001";
+    document.getElementById("vue2-card").__vue__ = {
+      $options: { name: "JobCard" },
+      $props: { job: { number: sourceId, name: "合成智能应用工程师", companyName: "合成研发中心" } }
+    };
+    document.getElementById("vue2-summary").__vue__ = {
+      $options: { name: "JobDetailSummary" },
+      $props: { jobDetail: { detailedPosition: { number: sourceId } } },
+      position: { number: sourceId }
+    };
+  </script>
+</body>
+</html>

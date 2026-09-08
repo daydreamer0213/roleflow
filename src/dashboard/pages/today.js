@@ -168,6 +168,9 @@ function renderClientScripts(runState, includeBrowserReadiness, runtime = {}) {
       let readinessInFlight = false;
       let queuedRefresh = false;
       let pollingStopped = false;
+      let readinessGeneration = 0;
+      let latestReadinessStatus = 'unknown';
+      let statusOwner = 'readiness';
       function readinessUrl() { return '/api/browser-readiness?site=${escapeAttr(runtime.site || 'boss')}'; }
       async function refreshReadiness({queueIfBusy=false}={}) {
         if (pollingStopped) return;
@@ -176,18 +179,27 @@ function renderClientScripts(runState, includeBrowserReadiness, runtime = {}) {
           return;
         }
         const requestUrl = readinessUrl();
+        const generation = readinessGeneration;
         readinessInFlight = true;
         button.disabled = true;
         try {
           const response = await fetch(requestUrl, {cache:'no-store'});
           if (!response.ok) throw new Error('readiness request failed');
           const state = await response.json();
-          statusNode.textContent = state.message || '浏览器状态未知。';
-          statusNode.dataset.status = state.status || 'unknown';
-          button.disabled = baseDisabled || state.status !== 'ready';
+          if (generation !== readinessGeneration || pollingStopped) return;
+          latestReadinessStatus = state.status || 'unknown';
+          if (statusOwner === 'readiness') {
+            statusNode.textContent = state.message || '浏览器状态未知。';
+            statusNode.dataset.status = latestReadinessStatus;
+          }
+          button.disabled = baseDisabled || latestReadinessStatus !== 'ready';
         } catch {
-          statusNode.textContent = ${JSON.stringify(`无法确认${browserLabel}状态，请检查本地服务。`)};
-          statusNode.dataset.status = 'browser_unavailable';
+          if (generation !== readinessGeneration || pollingStopped) return;
+          latestReadinessStatus = 'browser_unavailable';
+          if (statusOwner === 'readiness') {
+            statusNode.textContent = ${JSON.stringify(`无法确认${browserLabel}状态，请检查本地服务。`)};
+            statusNode.dataset.status = latestReadinessStatus;
+          }
           button.disabled = true;
         } finally {
           readinessInFlight = false;
@@ -203,6 +215,8 @@ function renderClientScripts(runState, includeBrowserReadiness, runtime = {}) {
         event.preventDefault();
         if (pollingStopped) return;
         pollingStopped = true;
+        readinessGeneration += 1;
+        statusOwner = 'starting';
         queuedRefresh = false;
         clearInterval(readinessInterval);
         button.disabled = true;
@@ -225,14 +239,16 @@ function renderClientScripts(runState, includeBrowserReadiness, runtime = {}) {
           const detail = [payload.errorCode, payload.requestId].filter(Boolean).join(' · ');
           statusNode.textContent = (payload.error || '本轮未能启动，请稍后重试。') + (detail ? '（' + detail + '）' : '');
           statusNode.dataset.status = 'start_failed';
+          statusOwner = 'start_failed';
           pollingStopped = false;
-          button.disabled = baseDisabled;
+          button.disabled = baseDisabled || latestReadinessStatus !== 'ready';
           readinessInterval = setInterval(refreshReadiness, 5000);
         } catch {
           statusNode.textContent = '本轮未能启动，请检查本地服务后重试。';
           statusNode.dataset.status = 'start_failed';
+          statusOwner = 'start_failed';
           pollingStopped = false;
-          button.disabled = baseDisabled;
+          button.disabled = baseDisabled || latestReadinessStatus !== 'ready';
           readinessInterval = setInterval(refreshReadiness, 5000);
         }
       });

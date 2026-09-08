@@ -122,7 +122,10 @@ function fakeBrowser(page, { transport = "direct", onClick = null, startError = 
       await page.evaluate(({ x, y }) => document.elementFromPoint(x, y).click(), point);
       if (onClick) await onClick({ page, state });
       else {
-        const sourceId = await page.evaluate(() => document.querySelector('.job-card--active').__vueParentComponent.proxy.$props.job.number);
+        const sourceId = await page.evaluate(() => {
+          const card = document.querySelector('.job-card--active');
+          return card.__vue__?.$props?.job?.number || card.__vueParentComponent?.proxy?.$props?.job?.number;
+        });
         const job = sourceId === JOB_B.sourceId ? JOB_B : JOB_A;
         state.sequence += 1;
         state.entries.push((transport === "edge" ? rawEntry : safeEntry)(job, state.clock, { sequence: state.sequence }));
@@ -287,6 +290,18 @@ async function main() {
     await directAdapter.restoreCommunicationSearchPage();
     await directAdapter.restoreCommunicationSearchPage();
     assert.equal(directBrowser.calls.filter((call) => call.kind === "navigate").length, navigationBeforeRestore + 1, "restore runs once");
+
+    await page.goto(SEARCH_URL);
+    await page.evaluate(() => window.fixture.useVue2());
+    const vue2Browser = fakeBrowser(page);
+    const vue2Adapter = adapterFor(vue2Browser);
+    await prepareSession(vue2Adapter, vue2Browser);
+    const vue2Inspection = await vue2Adapter.inspectCommunicationJob(JOB_A);
+    assert.equal(vue2Inspection.state, "ready", "Vue 2 component identity is accepted by readiness");
+    await vue2Adapter.dispatchCommunication(vue2Inspection);
+    assert.equal(vue2Browser.calls.filter((call) => call.kind === "prechat").length, 1,
+      "the final guarded expression rechecks all four Vue 2 IDs before one synthetic click");
+    assert.equal((await vue2Adapter.verifyCommunicationResult(JOB_A)).state, "succeeded");
 
     await page.goto(SEARCH_URL);
     const abortedCleanupBrowser = fakeBrowser(page);

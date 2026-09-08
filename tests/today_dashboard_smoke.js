@@ -143,12 +143,26 @@ async function assertPriorityPanelStaysCompactAtDesktopWidth() {
   }
   const browser = await chromium.launch({ channel: "msedge", headless: true });
   let releaseWorkflowRequest = () => {};
+  let releaseLateReadiness = () => {};
   try {
     const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+    await page.addInitScript(() => {
+      const nativeSetInterval = window.setInterval.bind(window);
+      window.setInterval = (callback, delay, ...args) => nativeSetInterval(callback, Math.min(Number(delay) || 0, 500), ...args);
+    });
     let workflowRequestType = "";
+    let workflowRequestCount = 0;
+    let readinessRequestCount = 0;
     let markWorkflowRequest;
     const workflowRequestStarted = new Promise((resolve) => { markWorkflowRequest = resolve; });
     const workflowRequestWait = new Promise((resolve) => { releaseWorkflowRequest = resolve; });
+    let markLateReadinessStarted;
+    const lateReadinessStarted = new Promise((resolve) => { markLateReadinessStarted = resolve; });
+    const lateReadinessWait = new Promise((resolve) => { releaseLateReadiness = resolve; });
+    let markLateReadinessFinished;
+    const lateReadinessFinished = new Promise((resolve) => { markLateReadinessFinished = resolve; });
+    let markRetryRequest;
+    const retryRequestStarted = new Promise((resolve) => { markRetryRequest = resolve; });
     let html = renderTodayPage({
       page: { todayPath: "/plan", planId: 1 },
       heading: { title: "今日任务" },
@@ -163,20 +177,30 @@ async function assertPriorityPanelStaysCompactAtDesktopWidth() {
         return route.fulfill({ status: 200, contentType: "text/html; charset=utf-8", body: html });
       }
       if (requestUrl.pathname === "/api/browser-readiness") {
-        return route.fulfill({
+        readinessRequestCount += 1;
+        if (readinessRequestCount === 2) {
+          markLateReadinessStarted();
+          await lateReadinessWait;
+        }
+        const result = await route.fulfill({
           status: 200,
           contentType: "application/json",
           body: JSON.stringify({ status: "ready", ready: true, message: "fixture ready" })
         });
+        if (readinessRequestCount === 2) markLateReadinessFinished();
+        return result;
       }
       if (requestUrl.pathname === "/api/workflow-run") {
+        workflowRequestCount += 1;
         workflowRequestType = route.request().resourceType();
-        markWorkflowRequest();
-        await workflowRequestWait;
+        if (workflowRequestCount === 1) {
+          markWorkflowRequest();
+          await workflowRequestWait;
+        } else if (workflowRequestCount === 2) markRetryRequest();
         return route.fulfill({
           status: 500,
           contentType: "application/json",
-          body: JSON.stringify({ error: "服务处理失败，请查看错误编号对应的诊断日志。", errorCode: "BROWSER_TIMEOUT", requestId: "fixture-1" })
+          body: JSON.stringify({ error: "服务处理失败，请查看错误编号对应的诊断日志。", errorCode: "BROWSER_TIMEOUT", requestId: `fixture-${workflowRequestCount}` })
         });
       }
       return route.fulfill({ status: 204, body: "" });
@@ -198,12 +222,25 @@ async function assertPriorityPanelStaysCompactAtDesktopWidth() {
     });
     assert.ok(layout.height <= 320, `desktop next-action panel must stay compact, got ${layout.height}px`);
     assert.ok(layout.copyWidth >= 180, `desktop next-action copy must retain readable width, got ${layout.copyWidth}px`);
-    const click = page.locator("[data-browser-readiness-button]").click({ noWaitAfter: true });
+    await lateReadinessStarted;
+    await page.locator(".workflow-start").evaluate((form) => form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
     await workflowRequestStarted;
     assert.strictEqual(workflowRequestType, "fetch", "workflow start must keep the Dashboard document stable while the server verifies the workspace");
+    assert.equal(await page.locator("#browser-readiness-status").textContent(), "正在启动本轮任务…");
+    releaseLateReadiness();
+    await lateReadinessFinished;
+    assert.equal(await page.locator("#browser-readiness-status").textContent(), "正在启动本轮任务…",
+      "a late pre-submit readiness result must not overwrite the current start state");
     releaseWorkflowRequest();
-    await click;
     await page.waitForFunction(() => document.getElementById("browser-readiness-status")?.textContent?.includes("BROWSER_TIMEOUT"));
+    await page.waitForFunction(() => document.querySelector("[data-browser-readiness-button]")?.disabled === false);
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    assert.match(await page.locator("#browser-readiness-status").textContent(), /BROWSER_TIMEOUT.+fixture-1/,
+      "later readiness polls must preserve the visible failure and request ID while refreshing the button");
+    await page.locator("[data-browser-readiness-button]").click({ noWaitAfter: true });
+    await retryRequestStarted;
+    await page.waitForFunction(() => document.getElementById("browser-readiness-status")?.textContent?.includes("fixture-2"));
+    assert.equal(workflowRequestCount, 2, "one explicit retry sends exactly one additional start request");
 
     html = renderTodayPage({
       page: { todayPath: "/plan", planId: 1 },
@@ -233,6 +270,7 @@ async function assertPriorityPanelStaysCompactAtDesktopWidth() {
     assert.strictEqual(await page.locator("[data-early-scan-dialog]").isVisible(), false);
     await page.close();
   } finally {
+    releaseLateReadiness();
     releaseWorkflowRequest();
     await browser.close();
   }

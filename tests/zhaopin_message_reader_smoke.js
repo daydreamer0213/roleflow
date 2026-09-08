@@ -317,6 +317,25 @@ async function main() {
 
 async function loginGuardSmoke(page, first) {
   const timeline = [message({ idServer: "602", body: "你好" })];
+  await page.evaluate(() => {
+    const header = document.createElement("header");
+    header.className = "header-nav__main fixture-detail-header";
+    header.innerHTML = '<div class="header-nav__login"><a class="header-nav__b-login">合成入口</a><div class="header-nav__c-login"><div class="c-login__top"><span class="c-login__name">合成账户</span><span class="c-login__photo"><img alt="合成头像"></span></div><ul hidden><li class="c-login__ul__item">合成菜单</li></ul></div><input class="nav-header-search__input" type="text"></div>';
+    document.body.prepend(header);
+  });
+  await setFixture(page, { sessions: [first], active: first, timeline });
+  assert.equal((await page.evaluate(ZHAOPIN_MESSAGE_SNAPSHOT_EXPRESSION)).state, "ready",
+    "the exact normal detail account header is not a login challenge in the shared guard");
+  await page.evaluate(() => {
+    const panel = document.createElement("section");
+    panel.className = "login-panel fixture-nested-login";
+    panel.textContent = "合成登录挑战";
+    document.querySelector(".header-nav__login").append(panel);
+  });
+  assert.equal((await page.evaluate(ZHAOPIN_MESSAGE_SNAPSHOT_EXPRESSION)).state, "login_required",
+    "the shared guard does not exempt an arbitrary visible login panel inside the header");
+  await page.evaluate(() => document.querySelector(".fixture-nested-login").remove());
+
   await setFixture(page, { sessions: [first], active: first, timeline, accountHeader: true });
   const accountBridge = fakeBrowser(page);
   const accountReader = readerFor(accountBridge);
@@ -343,6 +362,7 @@ async function loginGuardSmoke(page, first) {
   assert.equal(await page.evaluate(() => window.fixture.clicks), clicksBeforeOpen, "a real login panel appearing after scan must stop before row.click()");
   assert.deepEqual(await page.evaluate(() => [window.fixture.resumeClicks, window.fixture.senderClicks]), [0, 0]);
   for (const forbidden of ["bringToFront", "navigate", "createTab", "inputText"]) assert.equal(bridge.calls.some(([name]) => name === forbidden), false);
+  await page.evaluate(() => document.querySelector(".fixture-detail-header").remove());
   await setFixture(page, { sessions: [first], active: first, timeline });
 }
 

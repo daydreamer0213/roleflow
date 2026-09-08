@@ -1,6 +1,7 @@
 const { BossSiteAdapter } = require("./boss");
 const {
   ZhaopinSiteAdapter,
+  ZHAOPIN_COMPONENT_ACCESSORS_SOURCE,
   resolveZhaopinSearchTab,
   isZhaopinWorkspaceTab
 } = require("./zhaopin");
@@ -51,16 +52,16 @@ function guardedPrechatExpression(expected) {
     const expected = ${value};
     const clean = value => String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
     const company = value => clean(value).replace(/(?:有限责任公司|股份有限公司|有限公司)$/,'');
-    const component = (node,name) => { let current=node?.__vueParentComponent; while(current){if(current.type?.name===name||current.type?.__name===name)return current;current=current.parent} return null };
+    ${ZHAOPIN_COMPONENT_ACCESSORS_SOURCE}
     const validId = value => /^[A-Za-z0-9]{1,160}$/.test(String(value || '')) ? String(value) : '';
     const fail = reason => ({ ready:false, reason });
     if (location.protocol !== 'https:' || location.hostname !== 'www.zhaopin.com' || location.pathname !== '/jobs/' || new URL(location.href).searchParams.get('pageMode') !== 'search') return fail('page_lost');
     const bodyText=clean(document.body?.innerText).slice(0,3000);
     if (/安全验证|访问异常|行为验证|访问受限/.test(document.title || '') || /账户存在异常行为|暂时无法访问/.test(bodyText)) return fail('risk_control');
     const card=document.querySelector('.job-list-panel .job-card.job-card--active'); const summary=document.querySelector('.job-detail-panel .job-detail-summary');
-    const job=component(card,'JobCard')?.proxy?.$props?.job || component(card,'JobCard')?.props?.job;
-    const detailVm=component(summary,'JobDetailSummary'); const detail=detailVm?.proxy?.$props?.jobDetail || detailVm?.props?.jobDetail;
-    const computed=detailVm?.proxy?.position || detailVm?.ctx?.position;
+    const job=componentProps(component(card,'JobCard'))?.job;
+    const detailVm=component(summary,'JobDetailSummary'); const detail=componentProps(detailVm)?.jobDetail;
+    const computed=componentPosition(detailVm);
     const link=document.querySelector('.job-detail-panel .job-company-info__view-all[href*="/jobdetail/"]');
     let linkId=''; try { const url=new URL(link?.href || ''); linkId=(url.origin==='https://www.zhaopin.com' ? (url.pathname.match(/^\/jobdetail\/([A-Za-z0-9]+)\.html?$/i)||[])[1] : '') || '' } catch {}
     const ids=[validId(job?.number),validId(detail?.detailedPosition?.number),validId(computed?.number),linkId];

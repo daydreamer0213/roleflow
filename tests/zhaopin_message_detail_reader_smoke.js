@@ -119,7 +119,12 @@ async function read(reader, signal = null) {
   const edge = await chromium.launch({ channel: "msedge", headless: true });
   try {
     const page = await edge.newPage();
-    const body = `<!doctype html><html><head><meta charset="utf-8"></head><body>
+    const body = `<!doctype html><html><head><meta charset="utf-8"><style>.hidden-dropdown{display:none}</style></head><body>
+      <header class="header-nav__main"><div class="header-nav__login">
+        <a class="header-nav__b-login">合成入口</a>
+        <div class="header-nav__c-login"><div class="c-login__top"><span class="c-login__name">合成账户</span><span class="c-login__photo"><img alt="合成头像"></span></div><ul class="hidden-dropdown"><li class="c-login__ul__item">合成菜单</li></ul></div>
+        <input class="nav-header-search__input" type="text" value="合成搜索">
+      </div></header>
       <h1 class="summary-planes__title">合成软件工程师</h1>
       <strong class="summary-planes__salary">20-30K</strong>
       <ul class="summary-planes__info"><li>北京</li><li>3-5年</li><li>本科</li></ul>
@@ -129,11 +134,24 @@ async function read(reader, signal = null) {
     </body></html>`;
     await page.route(NAVIGATION_URL, (route) => route.fulfill({ status: 200, contentType: "text/html", body }));
     await page.goto(NAVIGATION_URL);
-    const observed = parseZhaopinMessageDetailSnapshot(await page.evaluate(ZHAOPIN_MESSAGE_DETAIL_SNAPSHOT_EXPRESSION));
+    const normalHeaderSnapshot = await page.evaluate(ZHAOPIN_MESSAGE_DETAIL_SNAPSHOT_EXPRESSION);
+    assert.equal(normalHeaderSnapshot.state, "ready", "the normal detail account header and hidden account dropdown are not a login challenge");
+    const observed = parseZhaopinMessageDetailSnapshot(normalHeaderSnapshot);
     assert.deepStrictEqual(
       [observed.sourceId, observed.title, observed.company, observed.location, observed.experience, observed.education, observed.description],
       [JOB_ID, "合成软件工程师", "合成科技有限公司", "北京", "3-5年", "本科", DESCRIPTION]
     );
+    await page.evaluate(() => {
+      const panel = document.createElement("section");
+      panel.className = "login-panel";
+      panel.textContent = "合成登录挑战";
+      document.querySelector(".header-nav__login").append(panel);
+    });
+    assert.equal((await page.evaluate(ZHAOPIN_MESSAGE_DETAIL_SNAPSHOT_EXPRESSION)).state, "login_required",
+      "a visible login panel inside the normal header remains blocking");
+    await page.evaluate(() => document.querySelector(".login-panel").remove());
+    await page.evaluate(() => { document.title = "安全验证"; });
+    assert.equal((await page.evaluate(ZHAOPIN_MESSAGE_DETAIL_SNAPSHOT_EXPRESSION)).state, "risk_control");
   } finally {
     await edge.close();
   }
@@ -213,6 +231,15 @@ async function read(reader, signal = null) {
   const incomplete = fakeBrowser({ samples: [snapshot({ description: "" })] });
   await assert.rejects(() => read(makeReader(incomplete, { timeoutMs: 10 }).reader), (error) => error.code === "ZHAOPIN_MESSAGE_DETAIL_INCOMPLETE");
   assert.deepStrictEqual(incomplete.tabs, baselineTabs());
+
+  for (const blocked of [
+    snapshot({ state: "login_required" }),
+    snapshot({ state: "risk_control" })
+  ]) {
+    const blockedBrowser = fakeBrowser({ samples: [blocked] });
+    await assert.rejects(() => read(makeReader(blockedBrowser).reader), (error) => error.code === (blocked.state === "login_required" ? "ZHAOPIN_MESSAGE_LOGIN_REQUIRED" : "ZHAOPIN_MESSAGE_RISK_CONTROL"));
+    assert.deepStrictEqual(blockedBrowser.tabs, baselineTabs(), `${blocked.state} must clean the temporary detail tab`);
+  }
 
   const wrongWindow = fakeBrowser({ created: { windowId: WINDOW_ID + 1 } });
   await assert.rejects(() => read(makeReader(wrongWindow).reader), (error) => error.code === "ZHAOPIN_MESSAGE_DETAIL_NOT_BACKGROUND");

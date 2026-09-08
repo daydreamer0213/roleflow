@@ -35,7 +35,7 @@
       { number: 'CCSYNTH002J00000000002', name: '同名合成岗位', companyName: '合成乙公司', salary: '20K-28K' }
     ];
     window.fixture = {
-      jobs, selected: 0, prechatClicks: 0, applyClicks: 0,
+      jobs, selected: 0, prechatClicks: 0, applyClicks: 0, vueVersion: 3,
       render() {
         const cards = [...document.querySelectorAll('.job-card')];
         cards.forEach((card,index) => {
@@ -45,7 +45,9 @@
           card.querySelector('.job-card__salary').textContent=job.salary;
           card.querySelector('.job-card__company-name').textContent=job.companyName;
           card.querySelector('.job-card__location').textContent='深圳 南山区';
-          card.__vueParentComponent={type:{name:'JobCard'},proxy:{$props:{job}}};
+          delete card.__vueParentComponent; delete card.__vue__;
+          if(this.vueVersion===2) card.__vue__={$options:{name:'JobCard'},$props:{job}};
+          else card.__vueParentComponent={type:{name:'JobCard'},proxy:{$props:{job}}};
           card.onclick=()=>{this.selected=index;this.render()};
         });
         const job=jobs[this.selected]; const summary=document.querySelector('.job-detail-summary');
@@ -54,10 +56,13 @@
         summary.querySelector('.job-detail-summary__company-name').textContent=job.companyName;
         document.querySelector('.job-company-info__name').textContent=job.companyName;
         document.querySelector('.job-company-info__view-all').href='https://www.zhaopin.com/jobdetail/'+job.number+'.htm';
-        summary.__vueParentComponent={type:{name:'JobDetailSummary'},proxy:{$props:{jobDetail:{detailedPosition:{number:job.number}}},position:{number:job.number}}};
+        delete summary.__vueParentComponent; delete summary.__vue__;
+        if(this.vueVersion===2) summary.__vue__={$options:{name:'JobDetailSummary'},$props:{jobDetail:{detailedPosition:{number:job.number}}},position:{number:job.number}};
+        else summary.__vueParentComponent={type:{name:'JobDetailSummary'},proxy:{$props:{jobDetail:{detailedPosition:{number:job.number}}},position:{number:job.number}}};
       },
       select(index){this.selected=index;this.render()},
-      reset(){document.title='智联合成沟通页';document.querySelector('.login-panel').hidden=true;document.querySelector('.fixture-modal').hidden=true;document.querySelector('.job-detail-summary__status').textContent='';document.querySelector('.job-detail-summary__prechat').textContent='先聊聊';this.render()},
+      useVue2(){this.vueVersion=2;this.render()},
+      reset(){this.vueVersion=3;document.title='智联合成沟通页';document.querySelector('.login-panel').hidden=true;document.querySelector('.fixture-modal').hidden=true;document.querySelector('.job-detail-summary__status').textContent='';document.querySelector('.job-detail-summary__prechat').textContent='先聊聊';this.render()},
       modal(){document.querySelector('.fixture-modal').hidden=false}
     };
     document.querySelector('.job-detail-summary__prechat').addEventListener('click',()=>window.fixture.prechatClicks++);

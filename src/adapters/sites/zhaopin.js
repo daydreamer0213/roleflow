@@ -8,21 +8,28 @@ const { buildScanExecutionSnapshot } = require('../../core/scan_snapshot');
 const { sourceContentHash } = require('../../storage/job_store');
 const { hasCompleteJobDescription } = require('../../core/job_description_readiness');
 
-const ZHAOPIN_PAGE_HELPERS_EXPRESSION = String.raw`(() => {
-  if (window.__zhaopinReadSearchState?.__roleflowVersion === 3) return true;
-  const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-  const validSourceId = (value) => /^[A-Za-z0-9]{1,160}$/.test(String(value || '')) ? String(value) : '';
+const ZHAOPIN_COMPONENT_ACCESSORS_SOURCE = String.raw`
   const component = (node, name) => {
-    let current = node?.__vueParentComponent;
+    let current = node?.__vueParentComponent || node?.__vue__;
     while (current) {
-      if (current.type?.name === name || current.type?.__name === name) return current;
-      current = current.parent;
+      const currentName = current.type?.name || current.type?.__name || current.$options?.name;
+      if (currentName === name) return current;
+      current = current.parent || current.$parent;
     }
     return null;
   };
+  const componentProps = (instance) => instance?.proxy?.$props || instance?.props || instance?.$props;
+  const componentPosition = (instance) => instance?.proxy?.position || instance?.ctx?.position || instance?.position;
+`;
+
+const ZHAOPIN_PAGE_HELPERS_EXPRESSION = String.raw`(() => {
+  if (window.__zhaopinReadSearchState?.__roleflowVersion === 4) return true;
+  const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const validSourceId = (value) => /^[A-Za-z0-9]{1,160}$/.test(String(value || '')) ? String(value) : '';
+  ${ZHAOPIN_COMPONENT_ACCESSORS_SOURCE}
   const cardJob = (card) => {
     const instance = component(card, 'JobCard');
-    return instance?.proxy?.$props?.job || instance?.props?.job;
+    return componentProps(instance)?.job;
   };
   const signature = (card, index) => [
     index,
@@ -73,9 +80,9 @@ const ZHAOPIN_PAGE_HELPERS_EXPRESSION = String.raw`(() => {
       ? Array.from(pane.querySelectorAll('.job-detail-card')).find((item) => /^职位描述$/.test(clean(item.querySelector('.job-detail-card__title, h1, h2, h3')?.textContent)))
       : pane;
     const summaryComponent = component(summary, 'JobDetailSummary');
-    const jobDetail = summaryComponent?.proxy?.$props?.jobDetail || summaryComponent?.props?.jobDetail;
+    const jobDetail = componentProps(summaryComponent)?.jobDetail;
     const rawDetailedSourceId = clean(jobDetail?.detailedPosition?.number);
-    const rawComputedSourceId = clean(summaryComponent?.proxy?.position?.number || summaryComponent?.ctx?.position?.number);
+    const rawComputedSourceId = clean(componentPosition(summaryComponent)?.number);
     const detailedSourceId = validSourceId(rawDetailedSourceId);
     const computedSourceId = validSourceId(rawComputedSourceId);
     const observedSourceIds = [detailedSourceId, computedSourceId].filter(Boolean);
@@ -91,6 +98,7 @@ const ZHAOPIN_PAGE_HELPERS_EXPRESSION = String.raw`(() => {
       url: link,
       observedSourceId: observedSourceIds[0] || '',
       observedSourceIdSupplied: Boolean(rawDetailedSourceId || rawComputedSourceId),
+      observedSourceIdsComplete: Boolean(detailedSourceId && computedSourceId && detailedSourceId === computedSourceId),
       observedSourceIdConflict: Boolean((rawDetailedSourceId && !detailedSourceId) || (rawComputedSourceId && !computedSourceId)) || new Set(observedSourceIds).size > 1
     };
   };
@@ -120,7 +128,7 @@ const ZHAOPIN_PAGE_HELPERS_EXPRESSION = String.raw`(() => {
       isSearchPage: location.protocol === 'https:' && location.hostname === 'www.zhaopin.com' && pathname === '/jobs/' && new URL(location.href).searchParams.get('pageMode') === 'search'
     };
   };
-  window.__zhaopinReadSearchState.__roleflowVersion = 3;
+  window.__zhaopinReadSearchState.__roleflowVersion = 4;
   window.__zhaopinActivateCard = (expectedIndex, expectedSignature) => {
     const cards = Array.from(document.querySelectorAll('.job-list-panel .job-card'));
     const card = cards[Number(expectedIndex)];
@@ -271,7 +279,7 @@ class ZhaopinSiteAdapter {
       const state = await this.readSearchState(tabId, signal);
       const selected = state.cards[state.selectedIndex];
       const readyResult = state.cards.length === 0 ? state.confirmedEnd === true
-        : selected && detailMatches(selected, state.detail, state.detailSourceIdConfirmed);
+        : selected && detailMatches(selected, state.detail, state.detailSourceIdConfirmed, state.detailSourceIdFullyConfirmed);
       if (!state.loading && readyResult
         && searchStateMatches(state, searchTemplate, keyword, filterSummary)) return state;
       await this.waitWithChecks(signal, assertTabBindings);
@@ -296,8 +304,11 @@ class ZhaopinSiteAdapter {
     state.detailSourceIdConfirmed = Boolean(identity)
       && state.detail?.observedSourceIdConflict !== true
       && (state.detail?.observedSourceIdSupplied !== true || observedSourceId === identity.sourceId);
+    state.detailSourceIdFullyConfirmed = state.detailSourceIdConfirmed
+      && state.detail?.observedSourceIdsComplete === true
+      && observedSourceId === identity?.sourceId;
     if (state.detail) {
-      const { observedSourceId: _observedSourceId, observedSourceIdSupplied: _observedSourceIdSupplied, observedSourceIdConflict: _observedSourceIdConflict, ...detail } = state.detail;
+      const { observedSourceId: _observedSourceId, observedSourceIdSupplied: _observedSourceIdSupplied, observedSourceIdsComplete: _observedSourceIdsComplete, observedSourceIdConflict: _observedSourceIdConflict, ...detail } = state.detail;
       state.detail = identity ? { ...detail, ...identity } : detail;
     }
     return state;
@@ -329,7 +340,7 @@ class ZhaopinSiteAdapter {
       throwIfAborted(signal);
       await assertBindings(assertTabBindings);
       const state = await this.readSearchState(tabId);
-      if (state.selectedIndex === refreshedCard.index && !state.loading && detailMatches(refreshedCard, state.detail, state.detailSourceIdConfirmed)) {
+      if (state.selectedIndex === refreshedCard.index && !state.loading && detailMatches(refreshedCard, state.detail, state.detailSourceIdConfirmed, state.detailSourceIdFullyConfirmed)) {
         if (!wasSelected && state.detail.url === beforeUrl) return null;
         const identity = safeIdentity(state.detail.url);
         if (!identity) return null;
@@ -374,22 +385,33 @@ function assertSafeSearchState(state) {
   return state;
 }
 
-function detailMatches(card, detail, detailSourceIdConfirmed = true) {
+function detailMatches(card, detail, detailSourceIdConfirmed = true, detailSourceIdFullyConfirmed = false) {
   const company = detail?.company || detail?.clientCompany || "";
+  const exactComponentIdentity = detailSourceIdFullyConfirmed === true && card?.currentSourceIdSupplied === true
+    && Boolean(card?.sourceId) && card.sourceId === detail?.sourceId;
   return detailSourceIdConfirmed === true && Boolean(detail?.title && detail?.description && detail?.url)
     && sameText(detail.title, card.title)
     && (!card.currentSourceIdSupplied || (Boolean(card.sourceId) && card.sourceId === detail.sourceId))
     && (!card.salary || sameText(detail.salary, card.salary))
     && (!card.company || sameText(company, card.company) || Boolean(detail.clientCompany))
-    && (!card.location || sameLocation(detail.location, card.location));
+    && (!card.location || sameLocation(detail.location, card.location, exactComponentIdentity));
 }
 
 function sameText(left, right) {
   return String(left || "").replace(/\s+/g, " ").trim() === String(right || "").replace(/\s+/g, " ").trim();
 }
 
-function sameLocation(left, right) {
-  return String(left || "").replace(/[·•・\s]+/g, "").trim() === String(right || "").replace(/[·•・\s]+/g, "").trim();
+function sameLocation(left, right, allowBusinessDistrict = false) {
+  const compact = value => String(value || "").replace(/[·•・\s]+/g, "").trim();
+  if (compact(left) === compact(right)) return true;
+  if (!allowBusinessDistrict) return false;
+  const parts = value => String(value || "").split(/[·•・\s]+/).map(item => item.trim()).filter(Boolean);
+  const leftParts = parts(left);
+  const rightParts = parts(right);
+  if (leftParts.length < 2 || rightParts.length < 2) return false;
+  const city = value => value.replace(/市$/, "");
+  const district = value => value.replace(/[区县]$/, "");
+  return city(leftParts[0]) === city(rightParts[0]) && district(leftParts[1]) === district(rightParts[1]);
 }
 
 function safeIdentity(url) {
@@ -466,4 +488,4 @@ function assertZhaopinWorkspaceWindow(tabs, search) {
   }
 }
 
-module.exports = { ZhaopinSiteAdapter, ZHAOPIN_PAGE_HELPERS_EXPRESSION, resolveZhaopinSearchTab, isZhaopinWorkspaceTab, assertZhaopinWorkspaceWindow };
+module.exports = { ZhaopinSiteAdapter, ZHAOPIN_PAGE_HELPERS_EXPRESSION, ZHAOPIN_COMPONENT_ACCESSORS_SOURCE, resolveZhaopinSearchTab, isZhaopinWorkspaceTab, assertZhaopinWorkspaceWindow };

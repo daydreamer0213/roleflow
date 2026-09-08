@@ -1,15 +1,15 @@
 "use strict";
 
 const { isBrowserTabId, sameBrowserTabId } = require("../../core/browser_tab_identity");
-const { isZhaopinMessageUrl } = require("./zhaopin_message_reader");
+const { isVisibleZhaopinLoginChallenge, isZhaopinMessageUrl } = require("./zhaopin_message_reader");
 
 const ZHAOPIN_MESSAGE_DETAIL_SNAPSHOT_EXPRESSION = String.raw`(() => {
   const text = (value) => String(value == null ? "" : value).replace(/\s+/g, " ").trim();
-  const visible = (node) => Boolean(node && !node.hidden && getComputedStyle(node).display !== "none" && getComputedStyle(node).visibility !== "hidden");
-  const loginChallenge = (node) => visible(node) && !(node.matches?.("a.home-header__b-login, a.home-header__c-no-login") && node.parentElement?.matches?.(".home-header__right"));
+  const visible = (node) => Boolean(node && !node.hidden && node.getClientRects().length > 0 && getComputedStyle(node).display !== "none" && getComputedStyle(node).visibility !== "hidden");
+  const isVisibleZhaopinLoginChallenge = ${isVisibleZhaopinLoginChallenge.toString()};
   const bodyText = text(document.body?.innerText).slice(0, 3000);
   if (/安全验证|访问异常|行为验证|访问受限/.test(text(document.title)) || /安全验证|访问异常|行为验证|访问受限/.test(bodyText)) return { state: "risk_control" };
-  if ([...document.querySelectorAll(".login, .login-panel, [class*='login']")].some(loginChallenge)) return { state: "login_required" };
+  if ([...document.querySelectorAll(".login, .login-panel, [class*='login']")].some(isVisibleZhaopinLoginChallenge)) return { state: "login_required" };
   const title = text(document.querySelector(".summary-planes__title")?.textContent);
   const company = text(document.querySelector(".company-info__name")?.textContent)
     || text(document.querySelector(".company-summary__name-link")?.textContent);

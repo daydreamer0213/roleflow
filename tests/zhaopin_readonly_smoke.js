@@ -192,6 +192,54 @@ async function main() {
     assert.equal(currentState.detail.sourceId, "CCSYNTH001J00000000001");
     assert.ok(await adapter.readVisiblePaneDetail("ZHAOPIN-SEARCH", currentState.cards[0]), "current selected card and summary IDs match the trusted link");
 
+    const vue2FixtureHtml = fs.readFileSync(path.join(__dirname, "fixtures", "zhaopin", "search-vue2.html"), "utf8");
+    await page.route("https://www.zhaopin.com/jobs-vue2/**", (route) => route.fulfill({
+      status: 200,
+      contentType: "text/html; charset=utf-8",
+      body: vue2FixtureHtml
+    }));
+    await page.goto("https://www.zhaopin.com/jobs-vue2/?pageMode=search&kw=%E5%90%88%E6%88%90%E5%85%B3%E9%94%AE%E8%AF%8D");
+    await page.evaluate(() => history.replaceState({}, "", "/jobs/?pageMode=search&kw=%E5%90%88%E6%88%90%E5%85%B3%E9%94%AE%E8%AF%8D"));
+    await page.evaluate(() => {
+      window.__zhaopinReadSearchState = () => ({ legacyFixture: true });
+      window.__zhaopinReadSearchState.__roleflowVersion = 3;
+    });
+    const vue2State = await adapter.readSearchState("ZHAOPIN-SEARCH");
+    assert.equal(await page.evaluate(() => window.__zhaopinReadSearchState.__roleflowVersion), 4,
+      "the upgraded injection replaces a previously cached version 3 helper");
+    assert.equal(vue2State.cards[0].sourceId, "CCSYNTHV2A1J00000000001", "Vue 2 JobCard exposes the trusted card ID");
+    assert.ok(await adapter.readVisiblePaneDetail("ZHAOPIN-SEARCH", vue2State.cards[0]), "same-ID 北京 朝阳 建外 and 北京·朝阳区 are one location");
+    const noExternalActionCount = bridge.calls.filter((call) => ["navigate", "bringToFront"].includes(call.type) || call === "bringToFront").length;
+
+    for (const [label, mutate] of [
+      ["cross-city", () => { document.querySelector("#vue2-card .job-card__location").textContent = "上海 朝阳 建外"; }],
+      ["different-district", () => { document.querySelector("#vue2-card .job-card__location").textContent = "北京 海淀 中关村"; }],
+      ["card-id", () => { document.getElementById("vue2-card").__vue__.$props.job.number = "CCWRONGCARD2J00000000001"; }],
+      ["detail-id", () => { document.getElementById("vue2-summary").__vue__.$props.jobDetail.detailedPosition.number = "CCWRONGDETAILJ00000000001"; }],
+      ["computed-id", () => { document.getElementById("vue2-summary").__vue__.position.number = "CCWRONGCOMPUTJ00000000001"; }],
+      ["link-id", () => { document.querySelector(".job-company-info__view-all").href = "https://www.zhaopin.com/jobdetail/CCWRONGLINK2J00000000001.htm"; }]
+    ]) {
+      await page.goto("https://www.zhaopin.com/jobs-vue2/?pageMode=search&kw=%E5%90%88%E6%88%90%E5%85%B3%E9%94%AE%E8%AF%8D");
+      await page.evaluate(() => history.replaceState({}, "", "/jobs/?pageMode=search&kw=%E5%90%88%E6%88%90%E5%85%B3%E9%94%AE%E8%AF%8D"));
+      await page.evaluate(mutate);
+      const unsafe = await adapter.readSearchState("ZHAOPIN-SEARCH");
+      assert.equal(await adapter.readVisiblePaneDetail("ZHAOPIN-SEARCH", unsafe.cards[0]), null, `${label} conflict must reject the detail`);
+    }
+    assert.equal(bridge.calls.filter((call) => ["navigate", "bringToFront"].includes(call.type) || call === "bringToFront").length, noExternalActionCount,
+      "rejected identity/location cases perform no external navigation or focus action");
+
+    await page.goto("https://www.zhaopin.com/jobs-vue2/?pageMode=search&kw=%E5%90%88%E6%88%90%E5%85%B3%E9%94%AE%E8%AF%8D");
+    await page.evaluate(() => {
+      history.replaceState({}, "", "/jobs/?pageMode=search&kw=%E5%90%88%E6%88%90%E5%85%B3%E9%94%AE%E8%AF%8D");
+      delete document.getElementById("vue2-card").__vue__;
+      delete document.getElementById("vue2-summary").__vue__;
+    });
+    const idlessState = await adapter.readSearchState("ZHAOPIN-SEARCH");
+    assert.equal(await adapter.readVisiblePaneDetail("ZHAOPIN-SEARCH", idlessState.cards[0]), null,
+      "without reliable component IDs the original strict location comparison remains in force");
+
+    await page.goto("https://www.zhaopin.com/jobs-current/?pageMode=search&kw=%E5%90%88%E6%88%90%E5%85%B3%E9%94%AE%E8%AF%8D");
+    await page.evaluate(() => history.replaceState({}, "", "/jobs/?pageMode=search&kw=%E5%90%88%E6%88%90%E5%85%B3%E9%94%AE%E8%AF%8D"));
     await page.evaluate(() => { document.querySelector("#current-card .job-card__location").textContent = "另一市 甲区"; });
     const wrongLocationState = await adapter.readSearchState("ZHAOPIN-SEARCH");
     assert.equal(
