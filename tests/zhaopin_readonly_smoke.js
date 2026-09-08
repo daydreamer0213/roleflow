@@ -11,6 +11,7 @@ const {
   ZhaopinSiteAdapter,
   ZHAOPIN_PAGE_HELPERS_EXPRESSION
 } = require("../src/adapters/sites/zhaopin");
+const { errorMeta } = require("../src/core/observability");
 
 async function loadPlaywright() {
   try {
@@ -384,6 +385,23 @@ async function backgroundReadinessSmoke(page, fixtureHtml) {
   const brokenCleanup = renderingBridge(cleanupFailure);
   await assert.rejects(() => new ZhaopinSiteAdapter({ browser: brokenCleanup.bridge, sleepFn: async () => {} }).waitForSearchReady("ZHAOPIN-SEARCH", options), (error) => error === cleanupFailure);
   assert.deepEqual(brokenCleanup.bridge.calls.filter((call) => call.type === "cdp").map((call) => call.params.enabled), [true, false], "cleanup failure must be surfaced after exactly one release attempt");
+
+  await reset();
+  await page.evaluate(() => { document.title = "安全验证"; });
+  const transportCause = Object.assign(new Error("transport disconnected"), { code: "BROWSER_DISCONNECTED" });
+  const doubleCleanupFailure = Object.assign(new Error("focus cleanup failed after risk"), { code: "BROWSER_COMMAND_FAILED", cause: transportCause });
+  const doubleFailure = renderingBridge(doubleCleanupFailure);
+  await assert.rejects(
+    () => new ZhaopinSiteAdapter({ browser: doubleFailure.bridge, sleepFn: async () => {} }).waitForSearchReady("ZHAOPIN-SEARCH", options),
+    (error) => {
+      assert.equal(error.code, "BROWSER_COMMAND_FAILED", "cleanup failure remains the outward error");
+      assert.equal(error.cause?.code, "ZHAOPIN_RISK_CONTROL", "the primary operation failure remains visible to errorMeta");
+      assert.deepEqual(error.errors, [doubleCleanupFailure, error.cause], "both cleanup and primary failures remain directly accessible");
+      assert.equal(doubleCleanupFailure.cause, transportCause, "the cleanup transport cause is not overwritten");
+      assert.equal(errorMeta(error).cause.message, error.cause.message);
+      return true;
+    }
+  );
 }
 
 async function defaultFilterCompatibilitySmoke(page) {

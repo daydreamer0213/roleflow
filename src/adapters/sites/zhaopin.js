@@ -195,6 +195,7 @@ class ZhaopinSiteAdapter {
       const startedAt = new Date().toISOString();
       let stopReason = 'scroll_limit', state;
       let releaseSearchRendering = null;
+      let operationError = null;
       const url = buildZhaopinSearchUrl({ keyword: target.keyword, searchTemplate });
       const scoped = async () => {
         await active();
@@ -267,13 +268,14 @@ class ZhaopinSiteAdapter {
         else break;
         await pace('target', scoped);
       } catch (error) {
+        operationError = error;
         if (!['WORKFLOW_PAUSE_REQUESTED', 'WORKFLOW_STOP_REQUESTED', 'ZHAOPIN_ABORTED', 'SCAN_ABORTED', 'SCAN_CHECKPOINT_FAILED', 'SCAN_LEASE_LOST', 'SCAN_RUN_LEASE_MISMATCH'].includes(error.code)) {
           try { await options.onTargetComplete?.({ ...target, status: 'partial', jobs: targetJobs, jobCount: targetJobs.length, ...scanProgressCounters(target, targets, state, targetJobs), details: { cardLimit: target.cardLimit, stopReason: error.code || 'read_interrupted' }, errorCode: error.code || '', startedAt, finishedAt: new Date().toISOString() }); } catch {}
         }
         await options.onScanComplete?.({ status: 'partial', targetCount: targets.length, attemptedTargets: attempted, successfulTargets: completed, fatalErrorCode: error.code || '' });
         throw error;
       } finally {
-        await releaseSearchRendering?.();
+        await releaseSearchRenderScope(releaseSearchRendering, operationError);
       }
     }
     const targetCount = selected ? selected.size : targets.length;
@@ -283,6 +285,7 @@ class ZhaopinSiteAdapter {
 
   async waitForSearchReady(tabId, { searchTemplate, keyword, filterSummary, signal, assertTabBindings } = {}) {
     const releaseSearchRendering = await this.openSearchRenderScope(tabId);
+    let operationError = null;
     try {
       for (let attempt = 0; attempt < 30; attempt++) {
         throwIfAborted(signal);
@@ -297,8 +300,11 @@ class ZhaopinSiteAdapter {
         await this.waitWithChecks(signal, assertTabBindings);
       }
       throw zhaopinError('ZHAOPIN_SEARCH_RESTORE_TIMEOUT', '智联未能恢复保存的关键词和筛选条件，请在智联搜索页重新设置并保存条件后再开始。');
+    } catch (error) {
+      operationError = error;
+      throw error;
     } finally {
-      await releaseSearchRendering();
+      await releaseSearchRenderScope(releaseSearchRendering, operationError);
     }
   }
 
@@ -505,6 +511,19 @@ function abortableSleep(promise, signal) {
 }
 
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+
+async function releaseSearchRenderScope(release, operationError = null) {
+  try {
+    await release?.();
+  } catch (cleanupError) {
+    if (!operationError) throw cleanupError;
+    const combined = new AggregateError([cleanupError, operationError], cleanupError.message, { cause: operationError });
+    for (const property of ['code', 'statusCode', 'details']) {
+      if (cleanupError[property] !== undefined) combined[property] = cleanupError[property];
+    }
+    throw combined;
+  }
+}
 
 function scanProgressCounters(target, targets, state, targetJobs) {
   const cardLimit = Math.max(0, Math.floor(Number(target?.cardLimit) || 0));

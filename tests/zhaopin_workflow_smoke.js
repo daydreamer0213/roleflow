@@ -292,11 +292,14 @@ async function scanCheckpointContractSmoke() {
       const bridge = fakeBrowser({ terminal: false });
       const focusStates = [];
       let focusEnabled = false;
+      const cleanupTransportCause = Object.assign(new Error('cleanup transport disconnected'), { code: 'BROWSER_DISCONNECTED' });
+      const cleanupFailure = Object.assign(new Error('scan focus cleanup failed'), { code: 'BROWSER_COMMAND_FAILED', cause: cleanupTransportCause });
       bridge.setPageLifecycleActive = async () => {};
       bridge.cdp = async (_tabId, method, params) => {
         assert.equal(method, 'Emulation.setFocusEmulationEnabled');
         focusEnabled = params.enabled;
         focusStates.push(params.enabled);
+        if (!params.enabled) throw cleanupFailure;
       };
       await assert.rejects(() => new ZhaopinSiteAdapter({ browser: bridge, sleepFn: async () => {}, randomFn: () => 0 }).scan({
         ...base,
@@ -311,7 +314,13 @@ async function scanCheckpointContractSmoke() {
             pauseRequested = true;
           }
         }
-      }), (error) => error.code === 'WORKFLOW_PAUSE_REQUESTED');
+      }), (error) => {
+        assert.equal(error.code, 'BROWSER_COMMAND_FAILED', 'scan cleanup failure remains the outward error');
+        assert.equal(error.cause?.code, 'WORKFLOW_PAUSE_REQUESTED', 'scan pause remains available as the primary cause');
+        assert.deepEqual(error.errors, [cleanupFailure, error.cause]);
+        assert.equal(cleanupFailure.cause, cleanupTransportCause, 'scan cleanup transport cause is preserved');
+        return true;
+      });
       assert.deepEqual(focusStates, [true, false], 'the target-wide background rendering scope is released exactly once after pause');
     }, scrollSnapshot);
     const pausedProgress = storage.getBatch(db, pausedBatchId).filterSnapshot.runtime.scanProgress;
