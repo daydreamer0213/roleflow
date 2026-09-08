@@ -10,6 +10,7 @@ const { createBrowserSupervisor } = require("./core/browser_supervisor");
 const { BossSiteAdapter, cleanDetailText, resolveBossSearchContext } = require("./adapters/sites/boss");
 const { createSiteAdapter } = require('./adapters/sites');
 const { resolveZhaopinSearchTab } = require('./adapters/sites/zhaopin');
+const { inspectZhaopinCommunicationTabs } = require('./adapters/sites/zhaopin_communication');
 const { scoreJob, decisionState } = require("./core/scoring");
 const { resolvePlannedKeywords } = require("./core/keyword_planner");
 const { createJobAnalysisRunner, runWorkflowAnalysisPhase } = require("./core/job_analysis");
@@ -50,6 +51,7 @@ const {
   checkpointScanTarget,
   listLatestScanTargetResults,
   getSitePacingState,
+  setSitePacingState,
   mergeBossPacingStates,
   getSiteRuntimeState,
   setSiteRuntimeState,
@@ -285,7 +287,8 @@ async function communicate(
     createBrowserFn = createBrowser,
     createSiteAdapterFn = createSiteAdapter,
     runCommunicationBatchFn = runCommunicationBatch,
-    communicationCalibrationStatusFn = communicationCalibrationStatus
+    communicationCalibrationStatusFn = communicationCalibrationStatus,
+    runWithSiteScanLeaseFn = runWithSiteScanLease
   } = {}
 ) {
   const batchId = Number(args.batch);
@@ -299,14 +302,12 @@ async function communicate(
   if (communicationAmbiguityStateForBatch(db, batchId).blocked) {
     throw codedError("COMMUNICATION_RESUME_REQUIRES_REVIEW", "请先人工确认结果不明确的岗位，再继续沟通。");
   }
-  if (communicationCalibrationStatusFn().acceptance === "e2e_pending" && singleItemId === null) {
+  const site = String(batch.site || "boss").trim().toLowerCase();
+  if (communicationCalibrationStatusFn(site).acceptance === "e2e_pending" && singleItemId === null) {
     throw codedError("COMMUNICATION_E2E_SINGLE_ITEM_REQUIRED", "端到端验收期间需要 --single-item <item ID>");
   }
   const browserArgs = resolveCommunicationBrowserAuthority(batch, args);
   const browserMode = browserArgs.browser;
-  const browser = createBrowserFn(browserArgs);
-  if (!browser) throw new Error("沟通执行需要已配置的 Edge 浏览器连接。");
-  assertCommunicationBrowserCapabilities(browser);
   const runId = `communication-${batchId}-${crypto.randomUUID()}`;
   const workflowRun = getWorkflowRunByCommunicationBatch(db, batchId);
   const communicationLogger = logger.child({
@@ -314,98 +315,124 @@ async function communicate(
     runId,
     batchId,
     planId: batch.planId,
-    site: "boss",
+    site,
     operation: "communication"
   });
-  const accessController = createSiteAccessController({ db, site: "boss", runId, logger: communicationLogger });
-  const adapter = createSiteAdapterFn("boss", { browser, logger: communicationLogger, accessController });
-  const stopHeartbeat = startCommunicationHeartbeat(db, batchId, communicationLogger);
-  let sessionStarted = false;
   let runError = null;
-  let restoreError = null;
   let summary = null;
 
   try {
-    const inspected = await inspectBossOperatorTabs({
-      browser,
-      inspectTab: (tabId) => adapter.preflight({ tabId })
-    });
-    if (typeof adapter.bindCommunicationTabs !== "function") {
-      throw codedError("BOSS_COMMUNICATION_BINDING_REQUIRED", "Communication requires fixed BOSS operator tab binding.");
-    }
-    if (typeof adapter.captureCommunicationSearchState !== "function"
-      || typeof adapter.beginCommunicationSession !== "function"
-      || typeof adapter.restoreCommunicationSearchPage !== "function") {
-      throw codedError("BOSS_COMMUNICATION_BINDING_REQUIRED", "Communication adapter is missing its fixed-tab lifecycle.");
-    }
-    const captured = await adapter.captureCommunicationSearchState(inspected.searchTab.id);
-    const current = getCommunicationBatch(db, batchId);
-    const bound = bindCommunicationBatchRuntime(db, {
-      batchId,
-      rebind: current.status === "paused" && Boolean(current.runtime?.browser),
-      browser: {
-        mode: browserMode,
-        windowId: inspected.windowId,
-        searchTabId: inspected.searchTab.id,
-        messageTabId: inspected.communicationTab.id,
-        searchReturnUrl: captured.url,
-        searchScrollTop: captured.scrollTop,
-        bindingGeneration: current.runtime?.browser?.bindingGeneration || 1
-      }
-    });
-    adapter.bindCommunicationTabs(bound.runtime.browser);
-    await adapter.beginCommunicationSession();
-    sessionStarted = true;
-    summary = await runCommunicationBatchFn({
-      db,
-      batchId,
-      adapter,
-      accessController,
-      logger: communicationLogger,
-      singleItemId,
-      beforeReadOnlyRetry: async ({ item, recoveryAttempt }) => {
-        await accessController.reserve("communication_visit", {
+    summary = await runWithSiteScanLeaseFn({
+      acquire: (input) => acquireSiteScanLease(db, input),
+      renew: (input) => renewSiteScanLease(db, input),
+      release: (input) => releaseSiteScanLease(db, input)
+    }, {
+      site,
+      owner: runId,
+      command: "communicate",
+      planId: batch.planId
+    }, async (signal) => {
+      assertScanActive(signal);
+      const browser = createBrowserFn(browserArgs);
+      if (!browser) throw new Error("沟通执行需要已配置的 Edge 浏览器连接。");
+      assertCommunicationBrowserCapabilities(browser, site);
+      const accessController = createSiteAccessController({ db, site, runId, logger: communicationLogger });
+      const adapter = createSiteAdapterFn(site, {
+        browser,
+        logger: communicationLogger,
+        accessController,
+        operation: "communication",
+        ...(site === "zhaopin" ? {
+          pacingState: getSitePacingState(db, site).pacing,
+          onPacingCheckpoint: (pacing) => setSitePacingState(db, { site, pacing })
+        } : {})
+      });
+      const stopHeartbeat = startCommunicationHeartbeat(db, batchId, communicationLogger);
+      let sessionStarted = false;
+      let executionError = null;
+      try {
+        const inspected = site === "zhaopin"
+          ? await inspectZhaopinCommunicationTabs({ browser, adapter })
+          : await inspectBossOperatorTabs({ browser, inspectTab: (tabId) => adapter.preflight({ tabId }) });
+        const bindingCode = site === "zhaopin" ? "ZHAOPIN_COMMUNICATION_BINDING_REQUIRED" : "BOSS_COMMUNICATION_BINDING_REQUIRED";
+        if (typeof adapter.bindCommunicationTabs !== "function") {
+          throw codedError(bindingCode, `Communication requires fixed ${site === "zhaopin" ? "Zhaopin" : "BOSS"} operator tab binding.`);
+        }
+        if (typeof adapter.captureCommunicationSearchState !== "function"
+          || typeof adapter.beginCommunicationSession !== "function"
+          || typeof adapter.restoreCommunicationSearchPage !== "function") {
+          throw codedError(bindingCode, "Communication adapter is missing its fixed-tab lifecycle.");
+        }
+        const captured = await adapter.captureCommunicationSearchState(inspected.searchTab.id);
+        const current = getCommunicationBatch(db, batchId);
+        const bound = bindCommunicationBatchRuntime(db, {
           batchId,
-          itemId: item.id,
-          jobId: item.jobId,
-          recoveryAttempt
+          rebind: current.status === "paused" && Boolean(current.runtime?.browser),
+          browser: {
+            mode: browserMode,
+            windowId: inspected.windowId,
+            searchTabId: inspected.searchTab.id,
+            ...(site === "boss" ? { messageTabId: inspected.communicationTab.id } : {}),
+            searchReturnUrl: captured.url,
+            searchScrollTop: captured.scrollTop,
+            bindingGeneration: current.runtime?.browser?.bindingGeneration || 1
+          }
         });
+        adapter.bindCommunicationTabs(bound.runtime.browser);
+        await adapter.beginCommunicationSession();
+        sessionStarted = true;
+        return await runCommunicationBatchFn({
+          db,
+          batchId,
+          adapter,
+          accessController,
+          logger: communicationLogger,
+          singleItemId,
+          signal,
+          beforeReadOnlyRetry: async ({ item, recoveryAttempt }) => {
+            await accessController.reserve("communication_visit", {
+              batchId,
+              itemId: item.id,
+              jobId: item.jobId,
+              recoveryAttempt
+            });
+          }
+        });
+      } catch (error) {
+        executionError = error;
+        throw error;
+      } finally {
+        let restoreError = null;
+        if (sessionStarted) {
+          try {
+            await adapter.restoreCommunicationSearchPage();
+          } catch (error) {
+            restoreError = error;
+            communicationLogger.error("communication_search_restore_failed", {
+              batchId,
+              code: error?.code || "COMMUNICATION_SEARCH_RESTORE_FAILED"
+            });
+          }
+        }
+        stopHeartbeat();
+        if (!executionError && restoreError) throw restoreError;
       }
     });
     return summary;
   } catch (error) {
     runError = error;
     settleCommunicationProcessFailure(db, batchId, error, communicationLogger);
-    if (error?.code === "BOSS_RISK_CONTROL") {
-      setSiteRuntimeState(db, "boss", {
-        status: "blocked",
-        reasonCode: error.code,
-        message: error.message,
-        details: { phase: "communication", batchId }
-      });
-      recordSiteAccessEvent(db, {
-        site: "boss",
-        action: "risk_control",
-        runId,
-        details: { batchId, errorCode: error.code, errorMessage: error.message }
+    try {
+      persistBossRiskControl(db, { site, runId, phase: "communication", error });
+    } catch (persistError) {
+      communicationLogger.error("communication_risk_persist_failed", {
+        originalError: errorMeta(error),
+        persistError: errorMeta(persistError)
       });
     }
     throw error;
   } finally {
-    if (sessionStarted) {
-      try {
-        await adapter.restoreCommunicationSearchPage();
-      } catch (error) {
-        restoreError = error;
-        communicationLogger.error("communication_search_restore_failed", {
-          batchId,
-          code: error?.code || "COMMUNICATION_SEARCH_RESTORE_FAILED"
-        });
-      }
-    }
-    stopHeartbeat();
-    if (!runError && restoreError) throw restoreError;
-    if (!runError && !restoreError && summary) {
+    if (!runError && summary) {
       const finished = getCommunicationBatch(db, batchId);
       if (finished?.stopCode === "COMMUNICATION_SINGLE_ITEM_CHECKPOINT") {
         console.log(`沟通批次 #${batchId} 已在单岗位验收后暂停：${summary.terminal}/${summary.total}`);
@@ -416,11 +443,11 @@ async function communicate(
   }
 }
 
-function assertCommunicationBrowserCapabilities(browser) {
+function assertCommunicationBrowserCapabilities(browser, site = "boss") {
   const missing = COMMUNICATION_BROWSER_METHODS.filter((method) => typeof browser?.[method] !== "function");
   if (!missing.length) return;
   throw codedError(
-    "BOSS_COMMUNICATION_BROWSER_CAPABILITY_MISSING",
+    site === "zhaopin" ? "ZHAOPIN_COMMUNICATION_BROWSER_CAPABILITY_MISSING" : "BOSS_COMMUNICATION_BROWSER_CAPABILITY_MISSING",
     `沟通浏览器缺少必要能力：${missing.join(", ")}`
   );
 }
@@ -2128,7 +2155,8 @@ function persistBossRiskControl(db, {
   nowMs,
   accessLedgerDb = db
 } = {}) {
-  if (!isBossRiskControl(error) && !(site === 'zhaopin' && error?.code === 'ZHAOPIN_RISK_CONTROL')) return false;
+  const zhaopinRiskCodes = new Set(["ZHAOPIN_RISK_CONTROL", "ZHAOPIN_MESSAGE_RISK_CONTROL"]);
+  if (!isBossRiskControl(error) && !(site === "zhaopin" && zhaopinRiskCodes.has(error?.code))) return false;
   const riskWindow = resolveBossRiskWindow({ nowMs, requestedBlockedUntil: error?.blockedUntil });
   const observedLocation = safeBossRiskLocation(error?.observedLocation);
   const details = {
@@ -2147,7 +2175,9 @@ function persistBossRiskControl(db, {
       setSiteRuntimeState(targetDb, site, {
         status: "blocked",
         reasonCode: details.errorCode,
-        message: "BOSS risk control detected; scanning safely stopped.",
+        message: site === "zhaopin"
+          ? "Zhaopin risk control detected; communication safely stopped."
+          : "BOSS risk control detected; scanning safely stopped.",
         details
       });
       recordSiteAccessEvent(targetDb, {

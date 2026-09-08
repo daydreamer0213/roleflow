@@ -150,7 +150,7 @@ const PRODUCT_POLICY = Object.freeze({
         implementation: "implemented",
         status: "dom_verified",
         acceptance: "e2e_pending",
-        executionEnabled: false
+        executionEnabled: true
       }),
       selection: Object.freeze({ targetCount: 30, acceptableMin: 22 }),
       delayMs: Object.freeze([15000, 20000]),

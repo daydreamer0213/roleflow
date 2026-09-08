@@ -69,7 +69,7 @@ function storageAndEligibilitySmoke() {
       input: { site: "zhaopin", planId: fixture.planId, jobIds: [second], browserMode: "edge" }
     }).batch;
     assert.equal(applicationBatch.site, "zhaopin");
-    assert.equal(applicationBatch.policySnapshot.calibration.executionEnabled, false);
+    assert.equal(applicationBatch.policySnapshot.calibration.executionEnabled, true);
     const inferredApplicationJob = addJob(fixture, "ZLINFERREDAPP");
     const inferredApplicationBatch = createApplicationCommunicationBatch({
       db: fixture.db,
@@ -77,7 +77,7 @@ function storageAndEligibilitySmoke() {
     }).batch;
     assert.equal(inferredApplicationBatch.site, "zhaopin");
     assert.equal(inferredApplicationBatch.policySnapshot.calibration.acceptance, "e2e_pending");
-    assert.equal(inferredApplicationBatch.policySnapshot.calibration.executionEnabled, false);
+    assert.equal(inferredApplicationBatch.policySnapshot.calibration.executionEnabled, true);
 
     fixture.db.prepare("UPDATE job_observations SET keyword = 'changed keyword' WHERE job_id = ?").run(good);
     fixture.db.prepare("UPDATE search_plans SET plan_json = ? WHERE id = ?")
@@ -314,10 +314,9 @@ function calibrationAndBrowserBindingSmoke() {
     implementation: "implemented",
     calibration: "dom_verified",
     acceptance: "e2e_pending",
-    executionEnabled: false
+    executionEnabled: true
   });
-  assert.throws(() => assertCommunicationExecutionEnabled("zhaopin"), (error) =>
-    error.code === "ZHAOPIN_COMMUNICATION_CALIBRATION_REQUIRED" && /智联/.test(error.message));
+  assert.equal(assertCommunicationExecutionEnabled("zhaopin").executionEnabled, true);
   assert.throws(() => communicationCalibrationStatus("invalid"), { code: "COMMUNICATION_SITE_INVALID" });
   assert.deepEqual(PRODUCT_POLICY.operations.zhaopinCommunication.selection, { targetCount: 30, acceptableMin: 22 });
   assert.deepEqual(PRODUCT_POLICY.operations.zhaopinCommunication.delayMs, [15000, 20000]);

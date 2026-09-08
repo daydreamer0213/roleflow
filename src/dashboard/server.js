@@ -307,7 +307,9 @@ const { createMessageFollowUpService } = require("../application/message_follow_
 const { prepareInitialSearchPage } = require("../application/onboarding/initial_search_page");
 const { createModelAdapter } = require("../adapters/models");
 const boss = require("../adapters/sites/boss");
+const { createSiteAdapter } = require("../adapters/sites");
 const { ZhaopinSiteAdapter, resolveZhaopinSearchTab, isZhaopinWorkspaceTab, assertZhaopinWorkspaceWindow } = require('../adapters/sites/zhaopin');
+const { inspectZhaopinCommunicationTabs } = require('../adapters/sites/zhaopin_communication');
 const { canonicalizeZhaopinSearchTemplate, buildZhaopinSearchUrl } = require('../core/zhaopin_search_scope');
 const { compileZhaopinPlatformRuntimePolicy } = require('../core/platform_runtime_policy');
 const { getPlatformSearchContext, savePlatformSearchContext } = require('../storage/platform_search_context_store');
@@ -4711,7 +4713,7 @@ async function handleCommunicationBatch(req, res, { db, browserAuthority }) {
     const workflowRunId = String(params.workflowRunId || "").trim();
     const back = workflowRunId
       ? `/workflow?runId=${encodeURIComponent(workflowRunId)}`
-      : planId ? `/communication/new?planId=${planId}` : "/queue";
+      : planId ? `/communication/new?planId=${planId}${params.site === "zhaopin" ? "&site=zhaopin" : ""}` : "/queue";
     return sendHtml(res, renderErrorPage(message, back, {
       code: result.body.errorCode
     }), result.statusCode);
@@ -4818,11 +4820,13 @@ async function inspectAndBindCommunicationBrowser({
 }) {
   const cdpPort = batch.browserMode === "portable" ? portableCommunicationCdpPort(batch) : null;
   const browser = browserFactory({ browserMode: batch.browserMode, cdpPort });
-  const adapter = new boss.BossSiteAdapter({ browser, logger });
-  const inspected = await inspectBossOperatorTabs({
-    browser,
-    inspectTab: (tabId) => adapter.preflight({ tabId })
-  });
+  const site = batch.site || "boss";
+  const adapter = site === "zhaopin"
+    ? createSiteAdapter(site, { browser, logger, operation: "communication" })
+    : new boss.BossSiteAdapter({ browser, logger });
+  const inspected = site === "zhaopin"
+    ? await inspectZhaopinCommunicationTabs({ browser, adapter })
+    : await inspectBossOperatorTabs({ browser, inspectTab: (tabId) => adapter.preflight({ tabId }) });
   const captured = await adapter.captureCommunicationSearchState(inspected.searchTab.id);
   return bindCommunicationBatchRuntime(db, {
     batchId: batch.id,
@@ -4830,7 +4834,7 @@ async function inspectAndBindCommunicationBrowser({
       mode: batch.browserMode,
       windowId: inspected.windowId,
       searchTabId: inspected.searchTab.id,
-      messageTabId: inspected.communicationTab.id,
+      ...(site === "boss" ? { messageTabId: inspected.communicationTab.id } : {}),
       searchReturnUrl: captured.url,
       searchScrollTop: captured.scrollTop,
       bindingGeneration: batch.runtime.browser.bindingGeneration
@@ -4987,8 +4991,8 @@ async function communicationApiResultAsync(action) {
   }
 }
 
-function communicationQuota(db) {
-  return communicationQuotaSnapshot(db);
+function communicationQuota(db, options = {}) {
+  return communicationQuotaSnapshot(db, options);
 }
 
 function communicationStatus(db, batchId) {
@@ -6365,16 +6369,22 @@ function outcomeUnclassifiedCounts(aggregate) {
 function renderCommunicationBuilderPage({ db, searchParams, browserAuthority }) {
   const plan = getSearchPlan(db, searchParams.get("planId"));
   if (!plan) return renderErrorPage("没有可用的筛选方案。", "/queue");
-  const quota = communicationQuota(db);
-  const runtimeBlock = communicationRuntimeBlock(db);
-  const eligible = listDecisionPool(db, { planId: plan.id }).filter((job) => isCommunicationJobEligible(db, job));
-  const selection = PRODUCT_POLICY.operations.bossCommunication.selection;
+  const site = requestedSite(searchParams.get("site"));
+  const quota = communicationQuota(db, { site });
+  const runtimeBlock = communicationRuntimeBlock(db, { site });
+  const eligible = listDecisionPool(db, { planId: plan.id, site })
+    .filter((job) => isCommunicationJobEligible(db, job, { site, planId: plan.id, profileId: plan.profileId }));
+  const selection = site === "zhaopin"
+    ? PRODUCT_POLICY.operations.zhaopinCommunication.selection
+    : PRODUCT_POLICY.operations.bossCommunication.selection;
   const defaultIds = new Set(eligible
     .filter((job) => defaultSelectedForBatch(job.decisionBucket))
     .slice(0, selection.targetCount)
     .map((job) => job.id));
   const defaultCount = defaultIds.size;
-  const targetNotice = defaultCount >= selection.acceptableMin
+  const targetNotice = site === "zhaopin"
+    ? `当前可选 ${eligible.length} 个岗位。`
+    : defaultCount >= selection.acceptableMin
     ? `已达到日常沟通区间，无需为凑满 ${selection.targetCount} 个补扫。`
     : `当前可沟通候选不足 ${selection.acceptableMin} 个，可在风险额度允许时补扫一轮。`;
   const rows = eligible.map((job) => {
@@ -6386,7 +6396,9 @@ function renderCommunicationBuilderPage({ db, searchParams, browserAuthority }) 
   const browserLabel = authority.browserMode === "portable"
     ? "RoleFlow 专用 Edge（推荐）"
     : "使用当前 Edge（高级，需要浏览器连接组件）";
-  return renderLegacyDashboardPage({ title: "批量沟通清单", currentPath: `/communication/new?planId=${plan.id}`, todayPath: `/plan?planId=${plan.id}`, planId: plan.id, stage: "沟通", body: `<style>.communication-layout{max-width:860px}.communication-job{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid #d8e0e6}.communication-job input{width:auto;margin-top:4px}.communication-summary{position:sticky;bottom:0;background:#fff;border-top:1px solid #ccd7df;padding:12px 0}.communication-warning{color:#9a4b42;font-weight:700}</style><main id="main-content" class="communication-layout"><h1>批量沟通清单</h1>${blockNotice}<p>今日额度：已用 ${quota.used}，预留 ${quota.reserved}，剩余 ${quota.remaining}/${quota.limit}。</p><p>${escapeHtml(targetNotice)}</p><form id="communication-batch-form" method="post" action="/api/communication-batch"><input type="hidden" name="planId" value="${escapeAttr(plan.id)}"><input type="hidden" name="browserMode" value="${escapeAttr(authority.browserMode)}"><p>浏览器：${escapeHtml(browserLabel)}（Dashboard 已固定）</p><section>${rows}</section><div class="communication-summary">已选 <output id="selected-count" for="communication-batch-form">0</output> 项 <button${quota.remaining ? "" : " disabled"}>确认清单</button></div></form></main><script>(function(){const form=document.getElementById('communication-batch-form');const output=document.getElementById('selected-count');const update=()=>{output.value=form.querySelectorAll('input[name="jobIds"]:checked').length};form.addEventListener('change',update);update()}());</script>` });
+  const siteQuery = site === "zhaopin" ? "&site=zhaopin" : "";
+  const quotaCopy = site === "zhaopin" ? "" : `<p>今日额度：已用 ${quota.used}，预留 ${quota.reserved}，剩余 ${quota.remaining}/${quota.limit}。</p>`;
+  return renderLegacyDashboardPage({ title: "批量沟通清单", currentPath: `/communication/new?planId=${plan.id}${siteQuery}`, todayPath: `/plan?planId=${plan.id}${siteQuery}`, planId: plan.id, stage: "沟通", body: `<style>.communication-layout{max-width:860px}.communication-job{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid #d8e0e6}.communication-job input{width:auto;margin-top:4px}.communication-summary{position:sticky;bottom:0;background:#fff;border-top:1px solid #ccd7df;padding:12px 0}.communication-warning{color:#9a4b42;font-weight:700}</style><main id="main-content" class="communication-layout"><h1>批量沟通清单</h1>${blockNotice}${quotaCopy}<p>${escapeHtml(targetNotice)}</p><form id="communication-batch-form" method="post" action="/api/communication-batch"><input type="hidden" name="planId" value="${escapeAttr(plan.id)}">${site === "zhaopin" ? '<input type="hidden" name="site" value="zhaopin">' : ""}<input type="hidden" name="browserMode" value="${escapeAttr(authority.browserMode)}"><p>浏览器：${escapeHtml(browserLabel)}（Dashboard 已固定）</p><section>${rows}</section><div class="communication-summary">已选 <output id="selected-count" for="communication-batch-form">0</output> 项 <button${quota.remaining ? "" : " disabled"}>确认清单</button></div></form></main><script>(function(){const form=document.getElementById('communication-batch-form');const output=document.getElementById('selected-count');const update=()=>{output.value=form.querySelectorAll('input[name="jobIds"]:checked').length};form.addEventListener('change',update);update()}());</script>` });
 }
 
 function dataRootCliArgs(root, dataRoot) {
@@ -6398,6 +6410,8 @@ function renderCommunicationCenterPage({ db, searchParams }) {
   const directBatchId = searchParams.get("batchId");
   const requestedPlanId = Number(searchParams.get("planId") || 0);
   const requestedProfileId = Number(searchParams.get("profileId") || 0);
+  const requestedSitePresent = searchParams.has("site");
+  const site = requestedSite(searchParams.get("site"));
   if (directBatchId) {
     const result = communicationApiResult(() => communicationStatus(db, directBatchId));
     if (!result.ok) return renderErrorPage(result.body.error, "/queue", { code: result.body.errorCode });
@@ -6407,10 +6421,15 @@ function renderCommunicationCenterPage({ db, searchParams }) {
     const workflow = getWorkflowRunByCommunicationBatch(db, batch.id);
     const integrityIssue = requestedPlanId && requestedPlanId !== batch.planId ? "batch_plan_mismatch"
       : requestedProfileId && requestedProfileId !== batch.profileId ? "batch_profile_mismatch"
+        : requestedSitePresent && site !== batch.site ? "batch_site_mismatch"
         : workflow && (workflow.planId !== batch.planId || workflow.profileId !== batch.profileId) ? "workflow_batch_owner_mismatch" : "";
-    const detailsByJobId = workflow && !integrityIssue ? communicationDetailsByJobId(db, workflow) : new Map();
+    const detailsByJobId = !integrityIssue
+      ? workflow ? communicationDetailsByJobId(db, workflow)
+        : batch.site === "zhaopin" ? communicationDetailsByPlan(db, { planId: batch.planId, site: batch.site })
+          : new Map()
+      : new Map();
     return renderPage("自动沟通", renderCommunicationDocument(buildCommunicationViewModel({
-      scope: { profile, plan }, current: result.body, directBatch: !workflow, integrityIssue, detailsByJobId
+      scope: { profile, plan, site: batch.site }, current: result.body, directBatch: !workflow, exactBatch: true, integrityIssue, detailsByJobId
     })));
   }
   const requestedPlanPresent = searchParams.has("planId");
@@ -6426,7 +6445,28 @@ function renderCommunicationCenterPage({ db, searchParams }) {
   const profile = requestedProfile || (requestedPlan ? getCandidateProfile(db, requestedPlan.profileId) : listCandidateProfiles(db)[0]) || null;
   const plan = requestedPlan || (profile ? getActiveSearchPlan(db, profile.id) : null);
   if (!plan || !profile) return renderPage("自动沟通", renderCommunicationDocument(buildCommunicationViewModel({ scope: { profile, plan } })));
-  const runs = listWorkflowRuns(db, { profileId: profile.id, planId: plan.id, limit: 20 });
+  const runs = site === "zhaopin"
+    ? listWorkflowRuns(db, { profileId: profile.id, planId: plan.id, site, limit: 20 })
+    : listWorkflowRuns(db, { profileId: profile.id, planId: plan.id, limit: 20 });
+  if (site === "zhaopin") {
+    const runByBatchId = new Map(runs.filter((run) => run.communicationBatchId).map((run) => [Number(run.communicationBatchId), run]));
+    const rows = db.prepare(`SELECT id FROM communication_batches
+      WHERE plan_id = ? AND profile_id = ? AND site = ?
+      ORDER BY CASE WHEN status IN ('completed', 'stopped', 'failed') THEN 1 ELSE 0 END, updated_at DESC, id DESC
+      LIMIT 20`).all(plan.id, profile.id, site);
+    const batches = rows.map(({ id }) => communicationApiResult(() => communicationStatus(db, id)));
+    if (batches.some((result) => !result.ok)) return renderPage("自动沟通", renderCommunicationDocument(buildCommunicationViewModel({ scope: { profile, plan, site }, integrityIssue: "communication_batch_unreadable", discoveredWorkflowRuns: runs })));
+    const scoped = batches.map((result) => result.body);
+    if (scoped.some(({ batch }) => batch.planId !== plan.id || batch.profileId !== profile.id || batch.site !== site)) {
+      return renderPage("自动沟通", renderCommunicationDocument(buildCommunicationViewModel({ scope: { profile, plan, site }, integrityIssue: "communication_batch_owner_mismatch", discoveredWorkflowRuns: runs })));
+    }
+    const current = scoped[0] || null;
+    const currentRun = current ? runByBatchId.get(Number(current.batch.id)) : null;
+    return renderPage("自动沟通", renderCommunicationDocument(buildCommunicationViewModel({
+      scope: { profile, plan, site }, current, history: scoped.slice(1, 6), discoveredWorkflowRuns: runs,
+      detailsByJobId: current ? communicationDetailsByPlan(db, { planId: plan.id, site, workflow: currentRun }) : new Map()
+    })));
+  }
   const linked = [];
   for (const run of runs) {
     if (!run.communicationBatchId) continue;
@@ -6448,6 +6488,12 @@ function renderCommunicationCenterPage({ db, searchParams }) {
 function communicationDetailsByJobId(db, workflow) {
   const details = listWorkflowReviewCandidates(db, workflow.id);
   const fallback = listDecisionPool(db, { planId: workflow.planId });
+  return new Map([...fallback, ...details].map((job) => [Number(job.id), job]));
+}
+
+function communicationDetailsByPlan(db, { planId, site, workflow = null }) {
+  const details = workflow ? listWorkflowReviewCandidates(db, workflow.id) : [];
+  const fallback = listDecisionPool(db, { planId, site });
   return new Map([...fallback, ...details].map((job) => [Number(job.id), job]));
 }
 
@@ -6503,7 +6549,7 @@ function renderCompactPoolTabs(queue, planId, profileId = "") {
   const scopes = [["all", "全部待处理", queue.scopeCounts.all || 0], ["new", "本轮新增", queue.scopeCounts.new || 0], ["repeated", "本轮重复", queue.scopeCounts.repeated || 0], ["backlog", "历史未处理", queue.scopeCounts.backlog || 0]];
   const tabs = [["focus", "主投 + 可投", (queue.counts.primary || 0) + (queue.counts.apply || 0)], ["primary", "主投", queue.counts.primary || 0], ["apply", "可投", queue.counts.apply || 0], ["caution", "慎投", queue.counts.caution || 0], ["analysis_pending", "待语义分析", queue.counts.analysis_pending || 0], ["detail_pending", "待读详情", queue.counts.detail_pending || 0], ["activity_pending", "活跃待核验", queue.counts.activity_pending || 0], ["no_reply", "无回复跟进", queue.counts.no_reply || 0], ["waiting_reply", "等待回复", queue.counts.waiting_reply || 0], ["needs_user_action", "需要处理", queue.counts.needs_user_action || 0], ["interview", "面试进展", queue.counts.interview || 0], ["not_recommended", "不推荐", queue.counts.not_recommended || 0]];
   const scopeLinks = scopes.map(([key, label, count]) => `<a class="pool-tab ${queue.scope === key ? "active" : ""}" href="${queueHref(planId, queue.pool, key, 1, queue.site)}">${escapeHtml(label)} ${count}</a>`).join("")
-    + (queue.site === 'zhaopin' ? '' : `<a class="pool-tab" href="/communication/new?planId=${escapeAttr(planId)}">批量沟通清单</a>`)
+    + `<a class="pool-tab" href="/communication/new?planId=${escapeAttr(planId)}${queue.site === 'zhaopin' ? '&site=zhaopin' : ''}">${queue.site === 'zhaopin' ? '选择岗位打招呼' : '批量沟通清单'}</a>`
     + (profileId ? `<a class="pool-tab" href="/messages?profileId=${escapeAttr(profileId)}${queue.site === 'zhaopin' ? '&workSite=zhaopin' : ''}">消息发现</a>` : "");
   const poolLinks = tabs.filter(([key]) => queue.site !== 'zhaopin' || !['activity_pending', 'no_reply', 'waiting_reply', 'needs_user_action', 'interview'].includes(key)).map(([key, label, count]) => `<a class="pool-tab ${queue.pool === key ? "active" : ""}" href="${queueHref(planId, key, queue.scope, 1, queue.site)}">${escapeHtml(label)} ${count}</a>`).join("");
   const from = queue.total ? (queue.page - 1) * queue.pageSize + 1 : 0;

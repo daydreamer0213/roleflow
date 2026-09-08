@@ -126,8 +126,8 @@ function buildTodayViewModel(input = {}) {
   vm.runtime.site = vm.page.site;
   if (vm.page.site === 'zhaopin') {
     vm.page.todayPath += '&site=zhaopin';
-    vm.heading.title = '发现并分析值得关注的岗位。';
-    vm.heading.lede = '智联只读找岗：保留完整 JD 与匹配分析，供你查看和比较。';
+    vm.heading.title = '发现并分析岗位，再选择合适的岗位打招呼。';
+    vm.heading.lede = '智联找岗阶段保持只读：保留完整 JD 与匹配分析，供你查看、比较，再由你选择岗位。';
     vm.heading.meta[0] += ' · 智联';
     vm.followUp = null;
     vm.form.acquisition.mode = 'inherited';

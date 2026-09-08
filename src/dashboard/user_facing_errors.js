@@ -41,6 +41,36 @@ const ERROR_GUIDANCE = Object.freeze({
     impact: "RoleFlow 已立即停止页面访问，不会自动重试。",
     nextAction: "请先人工完成安全验证，再重新检查工作区。"
   },
+  ZHAOPIN_LOGIN_REQUIRED: {
+    title: "智联登录已经失效",
+    impact: "RoleFlow 已停止访问页面，当前进度仍然保留。",
+    nextAction: "在固定智联搜索页重新登录，然后回到这里继续。"
+  },
+  ZHAOPIN_MESSAGE_LOGIN_REQUIRED: {
+    title: "智联沟通登录已经失效",
+    impact: "RoleFlow 已停止沟通检查，当前进度仍然保留。",
+    nextAction: "在智联重新登录，恢复固定搜索页后再继续。"
+  },
+  ZHAOPIN_RISK_CONTROL: {
+    title: "智联搜索页要求安全验证",
+    impact: "RoleFlow 已立即停止页面访问，不会自动重试。",
+    nextAction: "请先人工完成安全验证，再重新检查智联搜索页。"
+  },
+  ZHAOPIN_MESSAGE_RISK_CONTROL: {
+    title: "智联沟通页要求安全验证",
+    impact: "RoleFlow 已立即停止本次沟通，不会自动重试。",
+    nextAction: "请先人工完成安全验证，再恢复固定搜索页继续。"
+  },
+  ZHAOPIN_SEARCH_PAGE_LOST: {
+    title: "智联搜索页已离开固定范围",
+    impact: "RoleFlow 已停止本次沟通，确认清单和结果仍然保留。",
+    nextAction: "恢复固定智联搜索页后，重新检查浏览器页面。"
+  },
+  ZHAOPIN_ACTIVE_TAB_CHANGED: {
+    title: "智联窗口的活动页面发生变化",
+    impact: "RoleFlow 已停止本次沟通，没有继续操作后续岗位。",
+    nextAction: "恢复原来的活动页面，再重新检查浏览器页面。"
+  },
   BOSS_COMMUNICATION_SCOPE_MISMATCH: {
     title: "上次沟通被搜索条件检查拦住",
     impact: "已确认的岗位清单仍然保留。",

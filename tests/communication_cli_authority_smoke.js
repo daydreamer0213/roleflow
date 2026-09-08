@@ -6,7 +6,13 @@ const {
   openDb,
   createWorkflowRun,
   transitionWorkflowRun,
-  attachWorkflowCommunication
+  attachWorkflowCommunication,
+  getSiteScanLease,
+  acquireSiteScanLease,
+  releaseSiteScanLease,
+  getSitePacingState,
+  setSitePacingState,
+  getSiteRuntimeState
 } = require("../src/core/storage");
 const { getCommunicationBatch, setCommunicationBatchStatus } = require("../src/core/communication_batches");
 const { communicate } = require("../src/cli");
@@ -423,6 +429,93 @@ let db;
     createBrowserFn: () => edgeBrowser, createSiteAdapterFn: () => edgeAdapter,
     runCommunicationBatchFn: async () => { throw new Error("must not execute after a running binding changed"); }
   }), (error) => error.code === "COMMUNICATION_BROWSER_BINDING_MISMATCH");
+
+  const zhaopinBatchId = Number(db.prepare(`INSERT INTO communication_batches(
+    site, profile_id, plan_id, browser_mode, status, policy_json,
+    confirmed_at, created_at, updated_at
+  ) VALUES ('zhaopin', ?, ?, 'edge', 'confirmed', ?, ?, ?, ?)`)
+    .run(profileId, planId, JSON.stringify({ browser: { mode: "edge" } }), now, now, now).lastInsertRowid);
+  const zhaopinSearchUrl = "https://www.zhaopin.com/jobs/?pageMode=search&kw=Java";
+  const zhaopinBrowser = {
+    async listTabs() {
+      return [
+        { id: 701, windowId: 88, url: "http://127.0.0.1:3000/communication" },
+        { id: 702, windowId: 88, url: zhaopinSearchUrl }
+      ];
+    },
+    async createTab() { throw new Error("zhaopin communication must not create tabs"); },
+    async navigate() {}, async cdp() {}, async evalValue() {}, async clickAt() {},
+    async startNetworkLog() {}, async getNetworkLogMark() { return 0; },
+    async readNetworkLog() { return []; }, async stopNetworkLog() {}
+  };
+  setSitePacingState(db, { site: "zhaopin", pacing: { pacedActions: 1, nextPacingCooldownAt: 2, detailActions: 3, nextDetailMicroCooldownAt: 4, nextDetailMacroCooldownAt: 5 } });
+  const zhaopinEvents = [];
+  let adapterContext = null;
+  const zhaopinAdapter = {
+    async preflight({ tabId }) { zhaopinEvents.push(`preflight:${tabId}`); },
+    async captureCommunicationSearchState(tabId) { zhaopinEvents.push(`capture:${tabId}`); return { url: zhaopinSearchUrl, scrollTop: 321 }; },
+    bindCommunicationTabs(binding) { zhaopinEvents.push(["bind", binding]); },
+    async beginCommunicationSession() { zhaopinEvents.push("begin"); },
+    async restoreCommunicationSearchPage() { zhaopinEvents.push("restore"); }
+  };
+  assert.deepStrictEqual(await communicate(db, { batch: zhaopinBatchId, browser: "edge", "single-item": "1" }, {
+    createBrowserFn: () => zhaopinBrowser,
+    createSiteAdapterFn: (site, context) => {
+      assert.strictEqual(site, "zhaopin");
+      assert.strictEqual(context.operation, "communication");
+      adapterContext = context;
+      return zhaopinAdapter;
+    },
+    runCommunicationBatchFn: async ({ adapter, signal }) => {
+      assert.strictEqual(adapter, zhaopinAdapter);
+      assert.ok(signal instanceof AbortSignal);
+      assert.strictEqual(signal.aborted, false);
+      adapterContext.onPacingCheckpoint({ pacedActions: 6, nextPacingCooldownAt: 7, detailActions: 8, nextDetailMicroCooldownAt: 9, nextDetailMacroCooldownAt: 10 });
+      zhaopinEvents.push("run");
+      return { terminal: 0, total: 0 };
+    }
+  }), { terminal: 0, total: 0 });
+  assert.deepStrictEqual(zhaopinEvents, [
+    "preflight:702", "capture:702",
+    ["bind", { mode: "edge", windowId: 88, searchTabId: 702, searchReturnUrl: zhaopinSearchUrl, searchScrollTop: 321, bindingGeneration: 1 }],
+    "begin", "run", "restore"
+  ]);
+  assert.strictEqual(getSiteScanLease(db, "zhaopin"), null);
+  assert.deepStrictEqual(getSitePacingState(db, "zhaopin").pacing, { pacedActions: 6, nextPacingCooldownAt: 7, detailActions: 8, nextDetailMicroCooldownAt: 9, nextDetailMacroCooldownAt: 10 });
+
+  const conflictingLease = acquireSiteScanLease(db, { site: "boss", owner: "fixture-owner", command: "scan", planId });
+  let blockedBrowserCreations = 0;
+  await assert.rejects(() => communicate(db, { batch: zhaopinBatchId, browser: "edge", "single-item": "1" }, {
+    createBrowserFn: () => { blockedBrowserCreations += 1; return zhaopinBrowser; },
+    createSiteAdapterFn: () => zhaopinAdapter,
+    runCommunicationBatchFn: async () => ({ terminal: 0, total: 0 })
+  }), (error) => error.code === "SCAN_ALREADY_RUNNING");
+  assert.strictEqual(blockedBrowserCreations, 0);
+  assert.ok(getSiteScanLease(db, conflictingLease.site));
+  assert.strictEqual(releaseSiteScanLease(db, { site: conflictingLease.site, owner: conflictingLease.owner }), true);
+
+  let lostLeaseBrowserCreations = 0;
+  const lostLeaseError = Object.assign(new Error("fixture lease lost"), { code: "SCAN_LEASE_LOST" });
+  await assert.rejects(() => communicate(db, { batch: zhaopinBatchId, browser: "edge", "single-item": "1" }, {
+    runWithSiteScanLeaseFn: async (_deps, _input, run) => {
+      const controller = new AbortController();
+      controller.abort(lostLeaseError);
+      return run(controller.signal);
+    },
+    createBrowserFn: () => { lostLeaseBrowserCreations += 1; return zhaopinBrowser; },
+    createSiteAdapterFn: () => zhaopinAdapter,
+    runCommunicationBatchFn: async () => ({ terminal: 0, total: 0 })
+  }), (error) => error === lostLeaseError);
+  assert.strictEqual(lostLeaseBrowserCreations, 0);
+
+  const riskError = Object.assign(new Error("fixture zhaopin IM risk"), { code: "ZHAOPIN_MESSAGE_RISK_CONTROL" });
+  await assert.rejects(() => communicate(db, { batch: zhaopinBatchId, browser: "edge", "single-item": "1" }, {
+    createBrowserFn: () => zhaopinBrowser,
+    createSiteAdapterFn: () => zhaopinAdapter,
+    runCommunicationBatchFn: async () => { throw riskError; }
+  }), (error) => error === riskError);
+  assert.strictEqual(getSiteRuntimeState(db, "zhaopin").reasonCode, "ZHAOPIN_MESSAGE_RISK_CONTROL");
+  assert.strictEqual(getSiteScanLease(db, "zhaopin"), null);
 
   console.log("communication_cli_authority_smoke ok");
 })().catch((error) => {

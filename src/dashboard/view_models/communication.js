@@ -2,6 +2,7 @@
 
 const { communicationAmbiguityState } = require("../../core/communication_ambiguity");
 const { isBossJobUrl } = require("../../core/scoring");
+const { zhaopinJobIdentity } = require("../../core/zhaopin_search_scope");
 const { communicationStopError } = require("../user_facing_errors");
 
 const COMPLETED_BATCH_STATUSES = new Set(["completed", "stopped", "failed"]);
@@ -9,16 +10,25 @@ const POLLING_TERMINAL_BATCH_STATUSES = new Set(["completed", "stopped", "interr
 const VERIFIED_OUTCOMES = new Set(["succeeded", "already_communicated"]);
 
 function buildCommunicationViewModel({
-  scope = {}, current = null, history = [], directBatch = false,
+  scope = {}, current = null, history = [], directBatch = false, exactBatch = false,
   integrityIssue = "", discoveredWorkflowRuns = [], detailsByJobId = new Map()
 } = {}) {
   const planId = number(scope.plan?.id);
   const profileId = number(scope.profile?.id || scope.plan?.profileId);
+  const site = text(current?.batch?.site || scope.site || "boss");
+  const siteQuery = site === "zhaopin" ? "&site=zhaopin" : "";
   const discoveredBatchIds = [...new Set((discoveredWorkflowRuns || [])
     .filter((run) => number(run.planId) === planId && (!profileId || !number(run.profileId) || number(run.profileId) === profileId))
     .map((run) => number(run.communicationBatchId))
     .filter(Boolean))];
-  const page = { planId, profileId, planName: text(scope.plan?.name), planHref: planId ? `/plan?planId=${encodeURIComponent(planId)}` : "/plan", currentPath: planId ? `/communication?planId=${encodeURIComponent(planId)}` : "/communication" };
+  const page = {
+    planId, profileId, site, planName: text(scope.plan?.name),
+    planHref: planId ? `/plan?planId=${encodeURIComponent(planId)}${siteQuery}` : "/plan",
+    builderHref: planId ? `/communication/new?planId=${encodeURIComponent(planId)}${siteQuery}` : "/plan",
+    currentPath: exactBatch && current?.batch?.id
+      ? `/communication?batchId=${encodeURIComponent(number(current.batch.id))}`
+      : planId ? `/communication?planId=${encodeURIComponent(planId)}${siteQuery}` : "/communication"
+  };
   if (integrityIssue) return blockedView({ page, integrityIssue, discoveredBatchIds });
   if (!current) return emptyView({ page, discoveredBatchIds });
 
@@ -26,7 +36,7 @@ function buildCommunicationViewModel({
   const summary = current.summary || {};
   const ambiguity = communicationAmbiguityState(summary, current.items);
   const items = (Array.isArray(current.items) ? current.items : [])
-    .map((item) => itemView(item, detailsByJobId))
+    .map((item) => itemView(item, detailsByJobId, site))
     .sort((left, right) => Number(right.status === "ambiguous") - Number(left.status === "ambiguous") || left.position - right.position || left.id - right.id);
   const state = ambiguity.blocked ? "needs_resolution" : stateFor(batch, summary);
   const action = batch.status === "confirmed" ? "start" : ["paused", "interrupted"].includes(batch.status) ? "resume" : "";
@@ -96,15 +106,16 @@ function stateFor(batch, summary) {
 }
 
 function batchView(batch, summary) {
-  return { id: number(batch.id), browserMode: text(batch.browserMode), status: text(batch.status), total: number(summary.total), terminal: number(summary.terminal), remaining: number(summary.remaining), statusCounts: countMap(summary.statusCounts), confirmedAt: text(batch.confirmedAt) };
+  const site = text(batch.site || "boss");
+  return { id: number(batch.id), site, browserMode: text(batch.browserMode), status: text(batch.status), total: number(summary.total), terminal: number(summary.terminal), remaining: number(summary.remaining), statusCounts: countMap(summary.statusCounts), confirmedAt: text(batch.confirmedAt) };
 }
 
-function itemView(item = {}, detailsByJobId) {
+function itemView(item = {}, detailsByJobId, site = "boss") {
   const detail = detailsByJobId instanceof Map ? detailsByJobId.get(number(item.jobId)) || {} : {};
   const analysis = detail.analysis || {};
   return {
     id: number(item.id), batchId: number(item.batchId), jobId: number(item.jobId), position: number(item.position), status: text(item.status), clickCount: number(item.clickCount),
-    title: text(item.titleSnapshot || detail.title), company: text(item.companySnapshot || detail.company), jobUrl: safeBossJobUrl(item.jobUrl || detail.url),
+    title: text(item.titleSnapshot || detail.title), company: text(item.companySnapshot || detail.company), jobUrl: safeJobUrl(item.jobUrl || detail.url, site),
     salary: text(detail.salary || item.salarySnapshot || "未保存"), location: text(detail.location || item.locationSnapshot || "未保存"),
     tier: text(detail.decisionBucket || item.tierSnapshot || "未保存"), evidence: stringList(analysis.fitReasons || detail.matches || item.evidenceSnapshot || item.evidence?.resume || []),
     risks: stringList(analysis.riskQuestions || detail.risks || item.riskSnapshot || []), proposalReason: text((analysis.fitReasons || [])[0] || item.proposalReasonSnapshot || "依据已确认的岗位清单"),
@@ -116,7 +127,8 @@ function itemView(item = {}, detailsByJobId) {
 function historyView(status = {}) {
   const batch = status.batch || {};
   const summary = status.summary || {};
-  return { batchId: number(batch.id || summary.batchId), status: text(batch.status || summary.batchStatus), total: number(summary.total), succeeded: number(summary.statusCounts?.succeeded) + number(summary.statusCounts?.already_communicated), href: `/communication?batchId=${encodeURIComponent(number(batch.id || summary.batchId))}` };
+  const site = text(batch.site || "boss");
+  return { batchId: number(batch.id || summary.batchId), site, status: text(batch.status || summary.batchStatus), total: number(summary.total), succeeded: number(summary.statusCounts?.succeeded) + number(summary.statusCounts?.already_communicated), href: `/communication?batchId=${encodeURIComponent(number(batch.id || summary.batchId))}` };
 }
 
 function quotaView(quota = {}) { return { limit: number(quota.limit), used: number(quota.used), reserved: number(quota.reserved), remaining: number(quota.remaining) }; }
@@ -125,6 +137,11 @@ function calibrationView(calibration = {}) { return { status: text(calibration.s
 function countMap(value) { return Object.fromEntries(Object.entries(value || {}).filter(([key, count]) => /^[a-z_]+$/.test(key) && Number.isFinite(Number(count))).map(([key, count]) => [key, number(count)])); }
 function stringList(value) { return (Array.isArray(value) ? value : []).map(text).filter(Boolean); }
 function safeBossJobUrl(value) { const url = text(value); return isBossJobUrl(url) ? url : ""; }
+function safeJobUrl(value, site) {
+  const url = text(value);
+  if (site !== "zhaopin") return safeBossJobUrl(url);
+  try { return zhaopinJobIdentity(url).url; } catch { return ""; }
+}
 function number(value) { const parsed = Number(value); return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : 0; }
 function text(value) { return String(value || "").trim(); }
 

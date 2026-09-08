@@ -101,6 +101,7 @@ const tests = [
   "workflow_end_to_end_smoke.js",
   "communication_batch_storage_smoke.js",
   "zhaopin_communication_storage_smoke.js",
+  "dashboard_zhaopin_communication_smoke.js",
   "communication_executor_smoke.js",
   "dashboard_communication_batch_smoke.js",
   "communication_calibration_gate_smoke.js",

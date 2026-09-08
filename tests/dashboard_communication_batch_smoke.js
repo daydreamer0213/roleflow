@@ -867,7 +867,7 @@ async function assertCommunicationClient() {
   await expectApiError(baseUrl, "/api/communication-control", { batchId: protectedBatch.body.batch.id, action: "discard" }, "COMMUNICATION_DISCARD_PROTECTED");
 
   for (let index = 0; index < 150; index += 1) recordSiteAccessEvent(db, { site: "boss", action: "communication_visit" });
-  await expectApiError(baseUrl, "/api/communication-batch", { planId: fixture.planId, jobIds: fixture.safeId, browserMode: "edge" }, "COMMUNICATION_QUOTA_EXHAUSTED");
+  await expectApiError(baseUrl, "/api/communication-batch", { planId: fixture.planId, jobIds: fixture.talkId, browserMode: "edge" }, "COMMUNICATION_QUOTA_EXHAUSTED");
   setSiteRuntimeState(db, "boss", { status: "blocked", reasonCode: "BOSS_RISK_CONTROL", details: { blockedUntil: "2099-01-01T00:00:00.000Z" } });
   const blockedBuilder = await getText(baseUrl, `/communication/new?planId=${fixture.planId}`);
   assert.match(blockedBuilder.body, /BOSS_RISK_CONTROL/);

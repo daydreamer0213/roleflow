@@ -58,7 +58,7 @@ async function main() {
     const ids = [];
     for (const [source, title] of [['boss', '旧BOSS岗位'], ['zhaopin', '智联完整岗位'], ['boss', '新BOSS岗位']]) {
       const batchId = storage.createBatch(db, source, 'AI', 'synthetic', { profileId: saved.profileId, searchPlanId: saved.planId, filterSnapshot: { execution: { site: source } } });
-      storage.upsertJob(db, { source, sourceId: String(batchId), title, company: '招聘发布方', clientCompany: source === 'zhaopin' ? '实际用人公司' : '', url: source === 'boss' ? `https://www.zhipin.com/job_detail/synthetic${batchId}.html` : `https://www.zhaopin.com/jobdetail/SYNTH${batchId}.htm`, description: '完整职责和任职要求。'.repeat(40), score: 90, level: '优先', decisionBucket: 'primary', analysis: { semanticStatus: 'complete', recommendation: 'apply', companyOpportunity: '实际用人公司负责产品研发', roleSummary: '设计和实现 AI 服务', fitReasons: ['Python 经验匹配'] } }, batchId);
+      storage.upsertJob(db, { source, sourceId: source === 'zhaopin' ? `SYNTH${batchId}` : String(batchId), title, company: '招聘发布方', clientCompany: source === 'zhaopin' ? '实际用人公司' : '', url: source === 'boss' ? `https://www.zhipin.com/job_detail/synthetic${batchId}.html` : `https://www.zhaopin.com/jobdetail/SYNTH${batchId}.htm`, description: '完整职责和任职要求。'.repeat(40), score: 90, level: '优先', decisionBucket: 'primary', analysis: { semanticStatus: 'complete', recommendation: 'apply', companyOpportunity: '实际用人公司负责产品研发', roleSummary: '设计和实现 AI 服务', fitReasons: ['Python 经验匹配'] } }, batchId);
       ids.push({ batchId, job: storage.listReportJobs(db, { batchId })[0] });
     }
     assert.equal(storage.getLatestBatchId(db, { planId: saved.planId, site: 'zhaopin' }), ids[1].batchId, 'latest batch must belong to selected platform');
@@ -121,7 +121,8 @@ async function main() {
     assert.match(jobs, /用人公司.*实际用人公司/);
     assert.doesNotMatch(jobs, /生成定制招呼语|生成 HR 回复|<button[^>]*value="applied"/);
     const queue = await (await fetch(`${base}/queue?planId=${saved.planId}&site=zhaopin&scope=new`)).text();
-    assert.match(queue, /智联完整岗位/); assert.doesNotMatch(queue, /新BOSS岗位|批量沟通清单|活跃待核验/);
+    assert.match(queue, /智联完整岗位/); assert.doesNotMatch(queue, /新BOSS岗位|活跃待核验/);
+    assert.match(queue, /选择岗位打招呼/);
     const mixed = await (await fetch(`${base}/jobs?planId=${saved.planId}&site=all&batch=all&status=all`)).text();
     assert.match(mixed, /智联完整岗位/); assert.match(mixed, /新BOSS岗位/);
     assert.match(mixed, /来源：BOSS/);
@@ -138,6 +139,9 @@ async function main() {
     assert.deepEqual(mixedRows.filter(row => row['来源'] === '智联').map(row => row['用人公司']), ['实际用人公司']);
     assert.equal(mixedRows.filter(row => row['来源'] === 'BOSS').length, 2);
     assert(mixedRows.every(row => row['公司'] === '招聘发布方'), 'legacy company column preserved');
+    const builder = await (await fetch(`${base}/communication/new?planId=${saved.planId}&site=zhaopin`)).text();
+    assert.match(builder, /智联完整岗位/);
+    assert.doesNotMatch(builder, /新BOSS岗位/);
     response = await post('/api/mark', { profileId: saved.profileId, planId: saved.planId, jobId: ids[1].job.id, status: 'applied' });
     assert.equal(response.status, 400, await response.text());
     assert.equal(db.prepare('SELECT COUNT(*) n FROM candidate_funnel_entries').get().n, 0);
@@ -151,9 +155,6 @@ async function main() {
     assert.equal(progress.getProgressCardById(db, card.id).stage, 'contact_started');
     assert.equal(progress.listProgressEvents(db, card.id).length, 0);
     assert.equal(db.prepare('SELECT COUNT(*) n FROM candidate_funnel_entries').get().n, 0);
-    response = await post('/api/communication-batch', { profileId: saved.profileId, planId: saved.planId, jobIds: [ids[1].job.id] });
-    assert.notEqual(response.status, 200);
-    assert.equal(db.prepare('SELECT COUNT(*) n FROM communication_batches').get().n, 0);
     const mixedReport = renderReports([ids[0].job, ids[1].job], dir);
     assert.match(path.basename(mixedReport.htmlPath), /^mixed_/);
     assert.match(fs.readFileSync(mixedReport.htmlPath, 'utf8'), /来源：智联/);
@@ -475,7 +476,7 @@ async function journey() {
     assert.equal(await page.getByLabel('本次找岗平台').inputValue(), 'boss');
     await page.getByLabel('本次找岗平台').selectOption('zhaopin');
     await page.waitForURL(/site=zhaopin/);
-    assert.equal(await page.locator('h1').innerText(), '发现并分析值得关注的岗位。');
+    assert.equal(await page.locator('h1').innerText(), '发现并分析岗位，再选择合适的岗位打招呼。');
     assert.equal(await page.locator('[data-today-primary]').innerText(), '准备智联搜索页');
     await audit('first-use');
     await page.getByRole('button', { name: '准备智联搜索页', exact: true }).click();
