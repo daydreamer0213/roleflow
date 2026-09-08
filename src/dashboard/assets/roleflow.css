@@ -181,8 +181,8 @@ h2{font-size:19px;font-weight:600}
 .message-list-item small{margin-top:2px;color:var(--rf-ink-soft)}
 .message-list-item em{margin-top:7px;color:var(--rf-ink-soft);font-size:12px;font-style:normal;line-height:1.45}
 .message-detail{min-width:0}
-.message-detail .message-result{margin:0;padding:20px 22px}
-.message-detail .message-result[hidden]{display:none}
+.message-detail .message-result,.message-detail .message-unresolved{margin:0;padding:20px 22px}
+.message-detail [data-message-detail-panel][hidden]{display:none}
 .message-inbound{margin:16px 0;padding:14px 16px;background:#f3f7f5;border-left:4px solid var(--rf-teal)}
 .message-inbound h3{margin:0 0 8px;font-size:14px}
 .message-inbound .line{white-space:pre-wrap}

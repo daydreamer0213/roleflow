@@ -438,6 +438,9 @@ async function main() {
   assert.match(completedPage.body, /class="[^"]*message-workspace/);
   assert.match(completedPage.body, /class="[^"]*message-list/);
   assert.match(completedPage.body, /class="[^"]*message-detail/);
+  const resultViewKey = completedPage.body.match(/data-message-view="(result-[a-f0-9]{64})"/)?.[1];
+  assert(resultViewKey, "analyzed messages must use a stable result selection key");
+  assert(completedPage.body.includes(`data-message-detail-panel="${resultViewKey}"`), "the result list row and detail must share one selection key");
   assert.match(completedPage.body, /HR 消息原文/);
   assert.doesNotMatch(completedPage.body, /<h2>已读 \d+<\/h2>|<h2>送达 \d+<\/h2>/);
   assert(!completedPage.body.includes("工作安排：工作安排未确认"));
@@ -764,6 +767,10 @@ async function main() {
   assertNoPrivateData(durableStatus);
   let durablePage = await request(base, `/messages?profileId=${retainedFixture.profileId}`);
   assert(durablePage.body.includes("\u672a\u89e3\u51b3 1"), "the no-run page state must show durable unresolved work");
+  const unresolvedViewKey = durablePage.body.match(/data-message-view="(unresolved-[a-f0-9]{64})"/)?.[1];
+  assert(unresolvedViewKey, "pending-only pages must expose a selectable stable unresolved key");
+  assert(durablePage.body.includes(`data-message-detail-panel="${unresolvedViewKey}"`), "the pending list row and detail must share one selection key");
+  assert.match(durablePage.body, /class="message-workspace"[\s\S]*class="panel message-unresolved"/, "pending-only pages must keep the detail inside the unified workspace");
   assertNoPrivateData(durablePage.body);
   scenarios.push(completedRun({ fixture: retainedFixture, drafts: ["durable-cleanup-draft"] }));
   await startAndWait(base, retainedFixture.profileId, "completed");
