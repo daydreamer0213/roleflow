@@ -421,6 +421,14 @@ async function journey() {
   reports.renderReports = originalReport;
   try {
     const saved = seed(db);
+    const historicalBoss = storage.createWorkflowRun(db, {
+      id: 'historical-boss-interrupted', site: 'boss', profileId: saved.profileId, planId: saved.planId,
+      localDay: '2026-09-03', sequence: 1, scanNeeded: false
+    });
+    storage.transitionWorkflowRun(db, { id: historicalBoss.id, status: 'review_required' });
+    storage.transitionWorkflowRun(db, { id: historicalBoss.id, status: 'communicating' });
+    storage.transitionWorkflowRun(db, { id: historicalBoss.id, status: 'interrupted', errorCode: 'SYNTHETIC_BOSS_INTERRUPTED' });
+    const historicalBossSnapshot = storage.getWorkflowRun(db, historicalBoss.id);
     const bossBefore = storage.getSearchPlan(db, saved.planId).plan;
     const settings = require('../src/core/model_settings');
     const mockConfig = { provider: 'mock', concurrency: 1, providers: { mock: { model: 'offline-structured-mock' } } };
@@ -504,6 +512,17 @@ async function journey() {
     await page.getByRole('button', { name: '开始一轮岗位发现', exact: true }).click();
     await page.waitForURL(/workflow\?runId=/);
     const runId = new URL(page.url()).searchParams.get('runId');
+    assert.notEqual(runId, historicalBoss.id, 'selected ZL start must not reuse an interrupted BOSS run');
+    assert.equal(storage.getWorkflowRun(db, runId).site, 'zhaopin', 'selected ZL start creates a ZL run');
+    assert.deepEqual(storage.getWorkflowRun(db, historicalBoss.id), historicalBossSnapshot, 'selected ZL start leaves the old BOSS run unchanged');
+    assert.equal(calls.length, 1, 'fresh selected-site start launches one ZL scan');
+    assert.equal(calls[0][calls[0].indexOf('--site') + 1], 'zhaopin');
+    const repeatedStart = await fetch(base + '/api/workflow-run', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ planId: saved.planId, site: 'zhaopin', confirmEarlyScan: '1' }), redirect: 'manual' });
+    assert.equal(repeatedStart.status, 303, await repeatedStart.text());
+    assert.equal(new URL(repeatedStart.headers.get('location'), base).searchParams.get('runId'), runId, 'same-site repeated start reuses the active ZL run');
+    assert.equal(storage.listWorkflowRuns(db, { site: 'zhaopin', planId: saved.planId }).length, 1);
+    assert.deepEqual(storage.getWorkflowRun(db, historicalBoss.id), historicalBossSnapshot, 'same-site reuse also leaves the old BOSS run unchanged');
+    assert.equal(calls.length, 1, 'same-site reuse does not launch a duplicate scan');
     await waitFor(() => analysisCalls >= 2 || failures.length, 'real CLI reaches second synthetic analysis');
     assert.deepEqual(failures, []);
     const beforePause = storage.listReportJobs(db, { batchId: storage.getWorkflowRun(db, runId).scanBatchId });

@@ -34,7 +34,7 @@ async function startWorkflow({ db, input = {}, deps = {} }) {
   }
   const matchingContext = getCandidateMatchingContext(db, plan.profileId);
   const frozenPlan = freezeWorkflowPlan(plan.plan);
-  const activeWorkflow = getActiveWorkflow(db, plan);
+  const activeWorkflow = getActiveWorkflow(db, plan, site);
   if (activeWorkflow) return { workflow: activeWorkflow, alreadyActive: true };
   assertSearchPlanReady(
     plan,

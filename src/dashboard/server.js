@@ -3034,7 +3034,7 @@ async function handleWorkflowRunStart(req, res, {
       deps: {
         appError, getSearchPlan, getCandidateProfile, getCandidateMatchingContext, getSearchPlanDependency,
         assertSearchPlanReady,
-        getActiveWorkflow: (database, record) => getActiveWorkflowRun(database, { profileId: record.profileId, planId: record.id }),
+        getActiveWorkflow: (database, record, site) => getActiveWorkflowRun(database, { profileId: record.profileId, planId: record.id, site }),
         buildDashboardState: buildWorkflowDashboardState, workflowBlockedMessage,
         resolveNewWorkflowBrowser: () => browserAuthority, acquisitionContextResolver, assertAcquisitionContext,
         acquisitionModeOf, freezeWorkflowPlan,

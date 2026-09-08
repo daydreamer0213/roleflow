@@ -304,13 +304,14 @@ async function portableAnalysisControlKeepsAuthorityWithoutBrowserProbe() {
 async function activeWorkflowSkipsPreparation() {
   const events = [];
   const deps = startDeps(events);
-  deps.getActiveWorkflow = () => {
+  deps.getActiveWorkflow = (_db, _plan, site) => {
+    assert.strictEqual(site, "zhaopin", "the early active lookup receives the normalized selected site");
     events.push("active-check");
     return { id: "already-running", planner: {} };
   };
   const result = await startWorkflow({
     db: {},
-    input: { planId: 41, browserMode: "edge", confirmEarlyScan: "1", modelReady: true, modelState: modelState() },
+    input: { planId: 41, site: " ZHAOPIN ", browserMode: "edge", confirmEarlyScan: "1", modelReady: true, modelState: modelState() },
     deps
   });
   assert.strictEqual(result.alreadyActive, true);

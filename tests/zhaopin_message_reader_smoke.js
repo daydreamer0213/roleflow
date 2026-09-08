@@ -31,16 +31,19 @@ function message({ idServer, flow = "in", fromMe = false, from = 501, type = "te
 
 function fixtureHtml() {
   return `<!doctype html><html><head><meta charset="utf-8"></head><body>
-    <nav class="home-header__right"><a class="home-header__b-login">我要招人</a><a class="home-header__c-no-login">登录/注册</a></nav>
+    <nav class="home-header__right"><a class="home-header__b-login">我要招人</a><a class="home-header__c-no-login">登录/注册</a><div class="home-header__c-login" hidden><div class="c-login__top"><span class="c-login__top__name">合成账号</span><span class="c-login__top__photo"><img class="c-login__top__img" alt="合成头像"></span></div></div></nav>
+    <div class="home-header__c-login fixture-misplaced-account" hidden><div class="c-login__top"><span class="c-login__top__name">错误父级下的合成账号</span></div></div>
     <section class="login-panel" hidden>请登录</section>
     <main class="im-side-panel"></main><button class="im-send-button">发送</button><textarea class="im-input"></textarea>
     <section class="im-main-panel"><header class="im-chat-header"><a class="im-chat-header__detail"></a><span class="im-chat-header__job-title"></span><span class="im-chat-header__salary"></span><span class="im-chat-header__city"></span></header><div class="im-timeline"></div></section>
     <script>
       window.fixture = {
         sessions: [], active: null, timeline: [], loading: false, timelineError: "", selectWrong: "", clicks: 0, resumeClicks: 0, senderClicks: 0,
-        set(data) { this.sessions = data.sessions; this.active = data.active || data.sessions[0] || null; this.timeline = data.timeline || []; this.loading = Boolean(data.loading); this.listLoading = data.listLoading === true; this.loginPanel = data.loginPanel === true; this.timelineError = data.timelineError || ""; this.selectWrong = data.selectWrong || ""; this.offline = data.offline === true; this.render(); },
+        set(data) { this.sessions = data.sessions; this.active = data.active || data.sessions[0] || null; this.timeline = data.timeline || []; this.loading = Boolean(data.loading); this.listLoading = data.listLoading === true; this.loginPanel = data.loginPanel === true; this.accountHeader = data.accountHeader === true; this.misplacedAccountHeader = data.misplacedAccountHeader === true; this.timelineError = data.timelineError || ""; this.selectWrong = data.selectWrong || ""; this.offline = data.offline === true; this.render(); },
         render() {
           document.querySelector('.login-panel').hidden = !this.loginPanel;
+          document.querySelector('.home-header__right > .home-header__c-login').hidden = !this.accountHeader;
+          document.querySelector('.fixture-misplaced-account').hidden = !this.misplacedAccountHeader;
           const side = document.querySelector('.im-side-panel'); side.replaceChildren();
           side.__vue__ = { $options: { name: 'SidePanelThreeColumns' }, listLoading: this.listLoading, listError: '', sessions: this.sessions };
           for (const current of this.sessions) {
@@ -314,6 +317,17 @@ async function main() {
 
 async function loginGuardSmoke(page, first) {
   const timeline = [message({ idServer: "602", body: "你好" })];
+  await setFixture(page, { sessions: [first], active: first, timeline, accountHeader: true });
+  const accountBridge = fakeBrowser(page);
+  const accountReader = readerFor(accountBridge);
+  const accountScan = await accountReader.scanConversationRows();
+  assert.equal((await page.evaluate(ZHAOPIN_MESSAGE_SNAPSHOT_EXPRESSION)).state, "ready", "the ordinary authenticated account header permits snapshot reads");
+  const accountSelected = await accountReader.openQueuedConversation({ ...accountScan.rows[0], tabId: accountScan.tabId });
+  assert.equal(accountSelected.sourceJobId, `zhaopin:${JOB_A}`, "the ordinary authenticated account header permits guarded selection");
+
+  await setFixture(page, { sessions: [first], active: first, timeline, misplacedAccountHeader: true });
+  await assert.rejects(() => readerFor(fakeBrowser(page)).scanConversationRows(), error => error.code === "ZHAOPIN_MESSAGE_LOGIN_REQUIRED", "the account class outside the exact header parent remains a login challenge");
+
   await setFixture(page, { sessions: [first], active: first, timeline, loginPanel: true });
   const clicksBeforeScan = await page.evaluate(() => window.fixture.clicks);
   await assert.rejects(() => readerFor(fakeBrowser(page)).scanConversationRows(), error => error.code === "ZHAOPIN_MESSAGE_LOGIN_REQUIRED");

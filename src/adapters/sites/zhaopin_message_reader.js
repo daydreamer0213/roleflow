@@ -12,7 +12,8 @@ function isVisibleZhaopinLoginChallenge(node) {
   if (!node || node.offsetParent === null) return false;
   const ordinaryHeaderLink = node.matches?.("a.home-header__b-login, a.home-header__c-no-login")
     && node.parentElement?.matches?.(".home-header__right");
-  return !ordinaryHeaderLink;
+  const ordinaryAccountHeader = node.closest?.(".home-header__c-login");
+  return !(ordinaryHeaderLink || ordinaryAccountHeader?.parentElement?.matches?.(".home-header__right"));
 }
 
 const ZHAOPIN_MESSAGE_SNAPSHOT_EXPRESSION = String.raw`(() => {
