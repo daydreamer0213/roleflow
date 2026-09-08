@@ -66,7 +66,7 @@ function rawEntry(job = JOB_A, clock = 1000, overrides = {}) {
   };
 }
 
-function fakeBrowser(page, { transport = "direct", onClick = null, startError = null, startResult = null, clickError = null, focusDisableError = null } = {}) {
+function fakeBrowser(page, { transport = "direct", onClick = null, startError = null, startResult = null, clickError = null, focusDisableError = null, stopNetworkError = null } = {}) {
   const state = {
     activeTabId: DASHBOARD_TAB,
     windowId: WINDOW_ID,
@@ -107,7 +107,11 @@ function fakeBrowser(page, { transport = "direct", onClick = null, startError = 
     },
     async cdp(tabId, method, params) {
       calls.push({ kind: "focus", tabId, method, enabled: params?.enabled });
-      if (params?.enabled === false && focusDisableError) throw focusDisableError;
+      if (params?.enabled === false && focusDisableError) {
+        const failure = typeof focusDisableError === "function" ? focusDisableError() : focusDisableError;
+        if (failure) throw failure;
+      }
+      if (method === "Emulation.setFocusEmulationEnabled") state.focusEnabled = params?.enabled === true;
       return {};
     },
     async clickAt(tabId, point) {
@@ -151,6 +155,10 @@ function fakeBrowser(page, { transport = "direct", onClick = null, startError = 
     },
     async stopNetworkLog(tabId) {
       calls.push({ kind: "stopNetworkLog", tabId });
+      if (stopNetworkError) {
+        const failure = typeof stopNetworkError === "function" ? stopNetworkError() : stopNetworkError;
+        if (failure) throw failure;
+      }
       state.networkStarted = false;
       return { stopped: true };
     },
@@ -296,6 +304,18 @@ async function main() {
     assert.equal(cancelPreparationBrowser.calls.filter((call) => call.kind === "stopNetworkLog").length, 1, "pre-click cancellation is idempotent");
     assert.equal(cancelPreparationBrowser.calls.filter((call) => call.kind === "prechat").length, 0);
 
+    await page.goto(SEARCH_URL);
+    const transientStopError = Object.assign(new Error("transient observer cleanup failure"), { code: "BROWSER_COMMAND_FAILED" });
+    let stopFailures = 0;
+    const retryCancelBrowser = fakeBrowser(page, { stopNetworkError: () => stopFailures++ === 0 ? transientStopError : null });
+    const retryCancelAdapter = adapterFor(retryCancelBrowser); await prepareSession(retryCancelAdapter, retryCancelBrowser);
+    const retryCancelInspection = await retryCancelAdapter.inspectCommunicationJob(JOB_A);
+    const retryableCancel = await retryCancelAdapter.prepareCommunicationDispatch(retryCancelInspection);
+    await assert.rejects(() => retryableCancel.cancel(), (error) => error === transientStopError);
+    await retryableCancel.cancel(); await retryableCancel.cancel();
+    assert.equal(retryCancelBrowser.calls.filter((call) => call.kind === "stopNetworkLog").length, 2,
+      "preparation cancellation retries a retained observer once, then stays idempotent");
+
     const outcomes = [
       ["stale", ({ state }) => state.entries.push(safeEntry(JOB_A, state.clock - 100, { sequence: ++state.sequence }))],
       ["premark_inflight_completion", ({ state }) => state.entries.push(safeEntry(JOB_A, state.clock - 100, {
@@ -393,6 +413,26 @@ async function main() {
     assert.equal((await delayedAdapter.verifyCommunicationResult(JOB_A)).state, "succeeded", "a delayed joined response is polled without a second click");
     assert.equal(delayedBrowser.calls.filter((call) => call.kind === "prechat").length, 1);
     assert.equal(delayedBrowser.calls.filter((call) => call.kind === "focus" && call.enabled === false).length, 1);
+
+    await page.goto(SEARCH_URL);
+    const transientDisableError = Object.assign(new Error("transient focus cleanup failure"), { code: "BROWSER_COMMAND_FAILED" });
+    let disableFailures = 0;
+    const recoveringBrowser = fakeBrowser(page, { focusDisableError: () => disableFailures++ === 0 ? transientDisableError : null });
+    const recoveringAdapter = adapterFor(recoveringBrowser); await prepareSession(recoveringAdapter, recoveringBrowser);
+    const recoveringInspection = await recoveringAdapter.inspectCommunicationJob(JOB_A); await recoveringAdapter.dispatchCommunication(recoveringInspection);
+    await assert.rejects(() => recoveringAdapter.verifyCommunicationResult(JOB_A), (error) => error === transientDisableError);
+    assert.equal(recoveringBrowser.calls.filter((call) => call.kind === "stopNetworkLog").length, 1,
+      "network cleanup is attempted even when focus cleanup fails");
+    assert.equal(recoveringBrowser.calls.filter((call) => call.kind === "focus" && call.enabled === false).length, 1);
+    await recoveringAdapter.restoreCommunicationSearchPage();
+    assert.equal(recoveringBrowser.calls.filter((call) => call.kind === "focus" && call.enabled === false).length, 2,
+      "restore retries the retained focus cleanup resource");
+    assert.equal(recoveringBrowser.calls.filter((call) => call.kind === "stopNetworkLog").length, 1,
+      "an already released observer is not stopped twice");
+    assert.equal(recoveringBrowser.state.focusEnabled, false);
+    await page.evaluate(() => window.fixture.reset());
+    assert.equal((await recoveringAdapter.inspectCommunicationJob(JOB_A)).state, "ready",
+      "a cleanup failure cannot leave the adapter operation busy");
 
     await page.goto(SEARCH_URL);
     const cancelBrowser = fakeBrowser(page, { onClick: ({ state }) => { state.pendingRequests = 1; } }); const cancelAdapter = adapterFor(cancelBrowser); await prepareSession(cancelAdapter, cancelBrowser);

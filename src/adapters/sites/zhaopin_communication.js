@@ -243,13 +243,23 @@ class ZhaopinCommunicationAdapter extends ZhaopinSiteAdapter {
         sourceId: expected.sourceId,
         cancel: async () => {
           if (cancelled) return;
-          cancelled = true;
-          if (this.prepared === prepared) await this.cleanupResources();
+          if (this.prepared !== prepared) {
+            cancelled = true;
+            return;
+          }
+          try {
+            await this.cleanupResources();
+          } finally {
+            cancelled = this.prepared !== prepared;
+          }
         }
       };
     } finally {
-      if (started && !this.prepared) await this.safeStopNetworkLog(this.binding?.searchTabId);
-      this.end("preparation");
+      try {
+        if (started && !this.prepared) await this.safeStopNetworkLog(this.binding?.searchTabId);
+      } finally {
+        this.end("preparation");
+      }
     }
   }
 
@@ -334,8 +344,11 @@ class ZhaopinCommunicationAdapter extends ZhaopinSiteAdapter {
         await abortableSleep(this.sleep(this.pollIntervalMs), signal);
       }
     } finally {
-      await this.cleanupResources();
-      this.end("verification");
+      try {
+        await this.cleanupResources();
+      } finally {
+        this.end("verification");
+      }
     }
   }
 
@@ -444,16 +457,19 @@ class ZhaopinCommunicationAdapter extends ZhaopinSiteAdapter {
   }
 
   async cleanupResources() {
-    const resources = [this.prepared, this.dispatch].filter(Boolean);
-    this.prepared = null;
-    this.dispatch = null;
+    const resources = [["prepared", this.prepared], ["dispatch", this.dispatch]].filter(([, resource]) => resource);
     let failure = null;
-    for (const resource of resources) {
+    for (const [owner, resource] of resources) {
       try { await this.disableFocus(resource); } catch (error) { failure ||= error; }
       if (resource.networkStarted) {
-        resource.networkStarted = false;
-        try { await this.safeStopNetworkLog(resource.tabId); } catch (error) { failure ||= error; }
+        try {
+          await this.safeStopNetworkLog(resource.tabId);
+          resource.networkStarted = false;
+        } catch (error) {
+          failure ||= error;
+        }
       }
+      if (!resource.focusEnabled && !resource.networkStarted && this[owner] === resource) this[owner] = null;
     }
     if (failure) throw failure;
   }
