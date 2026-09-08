@@ -329,11 +329,12 @@ async function loginGuardSmoke(page, first) {
   await page.evaluate(() => {
     const panel = document.createElement("section");
     panel.className = "login-panel fixture-nested-login";
-    panel.textContent = "合成登录挑战";
+    panel.style.cssText = "position:fixed;left:20px;top:20px;width:320px;height:200px;background:white";
+    panel.innerHTML = '<label>合成口令<input type="password"></label>';
     document.querySelector(".header-nav__login").append(panel);
   });
   assert.equal((await page.evaluate(ZHAOPIN_MESSAGE_SNAPSHOT_EXPRESSION)).state, "login_required",
-    "the shared guard does not exempt an arbitrary visible login panel inside the header");
+    "the shared guard does not exempt a fixed-position visible login panel inside the header");
   await page.evaluate(() => document.querySelector(".fixture-nested-login").remove());
 
   await setFixture(page, { sessions: [first], active: first, timeline, accountHeader: true });

@@ -161,6 +161,10 @@ async function assertPriorityPanelStaysCompactAtDesktopWidth() {
     const lateReadinessWait = new Promise((resolve) => { releaseLateReadiness = resolve; });
     let markLateReadinessFinished;
     const lateReadinessFinished = new Promise((resolve) => { markLateReadinessFinished = resolve; });
+    let markUnsafeReadinessFinished;
+    const unsafeReadinessFinished = new Promise((resolve) => { markUnsafeReadinessFinished = resolve; });
+    let markReadyReadinessFinished;
+    const readyReadinessFinished = new Promise((resolve) => { markReadyReadinessFinished = resolve; });
     let markRetryRequest;
     const retryRequestStarted = new Promise((resolve) => { markRetryRequest = resolve; });
     let html = renderTodayPage({
@@ -177,17 +181,22 @@ async function assertPriorityPanelStaysCompactAtDesktopWidth() {
         return route.fulfill({ status: 200, contentType: "text/html; charset=utf-8", body: html });
       }
       if (requestUrl.pathname === "/api/browser-readiness") {
-        readinessRequestCount += 1;
-        if (readinessRequestCount === 2) {
+        const readinessOrdinal = ++readinessRequestCount;
+        if (readinessOrdinal === 2) {
           markLateReadinessStarted();
           await lateReadinessWait;
         }
+        const readinessState = readinessOrdinal === 3
+          ? { status: "browser_unavailable", ready: false, message: "fixture unsafe" }
+          : { status: "ready", ready: true, message: "fixture ready" };
         const result = await route.fulfill({
           status: 200,
           contentType: "application/json",
-          body: JSON.stringify({ status: "ready", ready: true, message: "fixture ready" })
+          body: JSON.stringify(readinessState)
         });
-        if (readinessRequestCount === 2) markLateReadinessFinished();
+        if (readinessOrdinal === 2) markLateReadinessFinished();
+        if (readinessOrdinal === 3) markUnsafeReadinessFinished();
+        if (readinessOrdinal === 4) markReadyReadinessFinished();
         return result;
       }
       if (requestUrl.pathname === "/api/workflow-run") {
@@ -233,10 +242,14 @@ async function assertPriorityPanelStaysCompactAtDesktopWidth() {
       "a late pre-submit readiness result must not overwrite the current start state");
     releaseWorkflowRequest();
     await page.waitForFunction(() => document.getElementById("browser-readiness-status")?.textContent?.includes("BROWSER_TIMEOUT"));
-    await page.waitForFunction(() => document.querySelector("[data-browser-readiness-button]")?.disabled === false);
-    await new Promise((resolve) => setTimeout(resolve, 120));
+    await unsafeReadinessFinished;
+    await page.waitForFunction(() => document.querySelector("[data-browser-readiness-button]")?.disabled === true);
     assert.match(await page.locator("#browser-readiness-status").textContent(), /BROWSER_TIMEOUT.+fixture-1/,
-      "later readiness polls must preserve the visible failure and request ID while refreshing the button");
+      "an unsafe post-failure readiness poll must preserve the visible failure and request ID while disabling retry");
+    await readyReadinessFinished;
+    await page.waitForFunction(() => document.querySelector("[data-browser-readiness-button]")?.disabled === false);
+    assert.match(await page.locator("#browser-readiness-status").textContent(), /BROWSER_TIMEOUT.+fixture-1/,
+      "a later ready poll must preserve the visible failure and request ID while enabling retry");
     await page.locator("[data-browser-readiness-button]").click({ noWaitAfter: true });
     await retryRequestStarted;
     await page.waitForFunction(() => document.getElementById("browser-readiness-status")?.textContent?.includes("fixture-2"));

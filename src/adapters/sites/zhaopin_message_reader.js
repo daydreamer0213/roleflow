@@ -9,7 +9,9 @@ function isZhaopinMessageUrl(value) {
 }
 
 function isVisibleZhaopinLoginChallenge(node) {
-  if (!node || node.offsetParent === null || node.getClientRects?.().length === 0) return false;
+  if (!node || node.hidden || node.getAttribute?.("aria-hidden") === "true" || node.getClientRects?.().length === 0) return false;
+  const style = getComputedStyle(node);
+  if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
   const ordinaryHeaderLink = node.matches?.("a.home-header__b-login, a.home-header__c-no-login")
     && node.parentElement?.matches?.(".home-header__right");
   const ordinaryAccountHeader = node.closest?.(".home-header__c-login");

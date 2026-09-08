@@ -144,11 +144,12 @@ async function read(reader, signal = null) {
     await page.evaluate(() => {
       const panel = document.createElement("section");
       panel.className = "login-panel";
-      panel.textContent = "合成登录挑战";
+      panel.style.cssText = "position:fixed;left:20px;top:20px;width:320px;height:200px;background:white";
+      panel.innerHTML = '<label>合成口令<input type="password"></label>';
       document.querySelector(".header-nav__login").append(panel);
     });
     assert.equal((await page.evaluate(ZHAOPIN_MESSAGE_DETAIL_SNAPSHOT_EXPRESSION)).state, "login_required",
-      "a visible login panel inside the normal header remains blocking");
+      "a visible fixed-position login panel inside the normal header remains blocking");
     await page.evaluate(() => document.querySelector(".login-panel").remove());
     await page.evaluate(() => { document.title = "安全验证"; });
     assert.equal((await page.evaluate(ZHAOPIN_MESSAGE_DETAIL_SNAPSHOT_EXPRESSION)).state, "risk_control");
