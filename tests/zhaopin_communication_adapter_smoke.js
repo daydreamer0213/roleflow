@@ -144,7 +144,10 @@ function fakeBrowser(page, { transport = "direct", onClick = null, startError = 
     },
     async readNetworkLog(tabId, options) {
       calls.push({ kind: "readNetworkLog", tabId, options });
-      return { entries: state.entries.filter((entry) => entry.sequence > Number(options.sinceSequence || 0)), meta: { pendingRequests: state.pendingRequests } };
+      return {
+        entries: state.entries.filter((entry) => !Number.isInteger(entry.sequence) || entry.sequence > Number(options.sinceSequence || 0)),
+        meta: { pendingRequests: state.pendingRequests }
+      };
     },
     async stopNetworkLog(tabId) {
       calls.push({ kind: "stopNetworkLog", tabId });
@@ -312,6 +315,16 @@ async function main() {
           url: `https://cgate.zhaopin.com/imapi/imV2/createAndUpdateContextV2?jobNumber=${JOB_A.sourceId}&jobNumber=${JOB_B.sourceId}&positionChatBeforeDeliveryScene=2&positionChatBeforeDeliveryOperateType=2`
         }));
         await page.evaluate(() => window.fixture.modal());
+      }],
+      ["valid_plus_missing_started_at", async ({ page, state }) => {
+        state.entries.push(safeEntry(JOB_A, state.clock, { sequence: ++state.sequence }));
+        state.entries.push(safeEntry(JOB_A, state.clock, { sequence: ++state.sequence, startedAt: "" }));
+        await page.evaluate(() => window.fixture.modal());
+      }],
+      ["valid_plus_missing_sequence", async ({ page, state }) => {
+        state.entries.push(safeEntry(JOB_A, state.clock, { sequence: ++state.sequence }));
+        state.entries.push(safeEntry(JOB_A, state.clock, { sequence: undefined }));
+        await page.evaluate(() => window.fixture.modal());
       }]
     ];
     for (const [name, onClick] of outcomes) {
@@ -324,6 +337,27 @@ async function main() {
       assert.equal(outcomeBrowser.calls.filter((call) => call.kind === "prechat").length, 1, `${name} must never retry`);
       assert.equal(outcomeBrowser.state.networkStarted, false, `${name} cleanup stops the network log`);
     }
+
+    await page.goto(SEARCH_URL);
+    const pendingRiskBrowser = fakeBrowser(page, { onClick: async ({ page, state }) => {
+      state.pendingRequests = 1;
+      await page.evaluate(() => { document.title = "安全验证"; });
+    } });
+    const pendingRiskAdapter = adapterFor(pendingRiskBrowser); await prepareSession(pendingRiskAdapter, pendingRiskBrowser);
+    const pendingRiskInspection = await pendingRiskAdapter.inspectCommunicationJob(JOB_A); await pendingRiskAdapter.dispatchCommunication(pendingRiskInspection);
+    await assert.rejects(() => pendingRiskAdapter.verifyCommunicationResult(JOB_A), (error) => error.code === "ZHAOPIN_RISK_CONTROL",
+      "each verification poll stops on current-page risk state before reading pending network evidence");
+    assert.equal(pendingRiskBrowser.calls.filter((call) => call.kind === "readNetworkLog").length, 0);
+
+    await page.goto(SEARCH_URL);
+    const missingStatusBrowser = fakeBrowser(page, { onClick: async ({ page, state }) => {
+      state.entries.push(safeEntry(JOB_A, state.clock, { sequence: ++state.sequence, status: undefined }));
+      await page.evaluate(() => window.fixture.modal());
+    } });
+    const missingStatusAdapter = adapterFor(missingStatusBrowser); await prepareSession(missingStatusAdapter, missingStatusBrowser);
+    const missingStatusInspection = await missingStatusAdapter.inspectCommunicationJob(JOB_A); await missingStatusAdapter.dispatchCommunication(missingStatusInspection);
+    const missingStatus = await missingStatusAdapter.verifyCommunicationResult(JOB_A);
+    assert.equal(missingStatus.state, "ambiguous", "a missing HTTP status is unknown, not a definite platform rejection");
 
     for (const body of [{ statusCode: 2024, data: { sessionId: "a".repeat(32) } }, { actionCode: 3000, sessionId: "a".repeat(32) }]) {
       await page.goto(SEARCH_URL);
@@ -354,8 +388,11 @@ async function main() {
     });
     await prepareSession(delayedAdapter, delayedBrowser);
     const delayedInspection = await delayedAdapter.inspectCommunicationJob(JOB_A); await delayedAdapter.dispatchCommunication(delayedInspection);
+    assert.equal(delayedBrowser.calls.filter((call) => call.kind === "focus" && call.enabled === false).length, 0,
+      "focus emulation remains held until verification owns final cleanup");
     assert.equal((await delayedAdapter.verifyCommunicationResult(JOB_A)).state, "succeeded", "a delayed joined response is polled without a second click");
     assert.equal(delayedBrowser.calls.filter((call) => call.kind === "prechat").length, 1);
+    assert.equal(delayedBrowser.calls.filter((call) => call.kind === "focus" && call.enabled === false).length, 1);
 
     await page.goto(SEARCH_URL);
     const cancelBrowser = fakeBrowser(page, { onClick: ({ state }) => { state.pendingRequests = 1; } }); const cancelAdapter = adapterFor(cancelBrowser); await prepareSession(cancelAdapter, cancelBrowser);
@@ -374,23 +411,42 @@ async function main() {
     assert.equal(uncertainBrowser.state.networkStarted, false);
 
     await page.goto(SEARCH_URL);
-    const imBrowser = fakeBrowser(page, { onClick: ({ state }) => {
+    const imBrowser = fakeBrowser(page, { onClick: async ({ page, state }) => {
+      const sourceId = await page.evaluate(() => document.querySelector('.job-card--active').__vueParentComponent.proxy.$props.job.number);
+      const job = sourceId === JOB_B.sourceId ? JOB_B : JOB_A;
       state.sequence += 1;
-      state.entries.push(safeEntry(JOB_A, state.clock, { sequence: state.sequence }));
-      state.urlOverride = `https://i.zhaopin.com/im?sessionId=${"a".repeat(32)}`;
-      const selected = { rowIndex: 0, selected: true, sessionId: "a".repeat(32), jobNumber: JOB_A.sourceId, peerPartnerId: "501", senderId: "501", userId: "900", previewText: "合成预览" };
-      state.imSnapshot = {
-        state: "ready", listLoading: false, listError: "", rows: [selected],
-        activeSessionId: selected.sessionId, activeSessionIdFromObject: selected.sessionId, activeJobNumber: selected.jobNumber,
-        headerSessionId: selected.sessionId, headerJobNumber: selected.jobNumber, timelineLoading: false, timelineError: "",
-        messages: [{ sessionId: selected.sessionId, jobNumber: selected.jobNumber, idServer: "801", flow: "out", fromMe: true, from: "900", type: "text", cardType: "", body: "您好", hasText: true, text: "您好" }]
-      };
+      state.entries.push(safeEntry(job, state.clock, { sequence: state.sequence }));
+      if (job === JOB_A) {
+        state.urlOverride = `https://i.zhaopin.com/im?sessionId=${"a".repeat(32)}`;
+        const selected = { rowIndex: 0, selected: true, sessionId: "a".repeat(32), jobNumber: JOB_A.sourceId, peerPartnerId: "501", senderId: "501", userId: "900", previewText: "合成预览" };
+        state.imSnapshot = {
+          state: "ready", listLoading: false, listError: "", rows: [selected],
+          activeSessionId: selected.sessionId, activeSessionIdFromObject: selected.sessionId, activeJobNumber: selected.jobNumber,
+          headerSessionId: selected.sessionId, headerJobNumber: selected.jobNumber, timelineLoading: false, timelineError: "",
+          messages: [{ sessionId: selected.sessionId, jobNumber: selected.jobNumber, idServer: "801", flow: "out", fromMe: true, from: "900", type: "text", cardType: "", body: "您好", hasText: true, text: "您好" }]
+        };
+      } else {
+        await page.evaluate(() => window.fixture.modal());
+      }
     } });
     const imAdapter = adapterFor(imBrowser); await prepareSession(imAdapter, imBrowser);
     const imInspection = await imAdapter.inspectCommunicationJob(JOB_A); await imAdapter.dispatchCommunication(imInspection);
     assert.equal((await imAdapter.verifyCommunicationResult(JOB_A)).state, "succeeded", "same-tab IM success requires matching session/job and current outgoing text");
+    const nextAfterIm = await imAdapter.inspectCommunicationJob(JOB_B);
+    assert.equal(nextAfterIm.state, "ready", "a verified same-tab IM result can return through normal frozen lookup for the next job");
+    await imAdapter.dispatchCommunication(nextAfterIm);
+    assert.equal((await imAdapter.verifyCommunicationResult(JOB_B)).state, "succeeded");
+    assert.equal(imBrowser.calls.filter((call) => call.kind === "prechat").length, 2);
     await imAdapter.restoreCommunicationSearchPage();
-    assert.equal(imBrowser.calls.filter((call) => call.kind === "navigate").length, 1, "same-tab IM result restores the captured search page");
+    assert.equal(imBrowser.calls.filter((call) => call.kind === "navigate").length, 2, "verified IM return and final restore each use one normal navigation");
+
+    await page.goto(SEARCH_URL);
+    const unverifiedImBrowser = fakeBrowser(page); const unverifiedImAdapter = adapterFor(unverifiedImBrowser); await prepareSession(unverifiedImAdapter, unverifiedImBrowser);
+    unverifiedImBrowser.state.urlOverride = `https://i.zhaopin.com/im?sessionId=${"a".repeat(32)}`;
+    unverifiedImBrowser.state.imSnapshot = imBrowser.state.imSnapshot;
+    await assert.rejects(() => unverifiedImAdapter.inspectCommunicationJob(JOB_B), (error) => error.code === "ZHAOPIN_SEARCH_PAGE_LOST",
+      "an arbitrary same-tab IM drift cannot authorize return navigation");
+    assert.equal(unverifiedImBrowser.calls.filter((call) => call.kind === "navigate").length, 0);
 
     for (const mutateBinding of [
       (state) => { state.activeTabId = SEARCH_TAB; },

@@ -517,6 +517,7 @@ async function main() {
       requestId: "allowed-success",
       url: "https://www.zhipin.com/wapi/zpgeek/friend/add.json?securityId=private",
       type: "Fetch",
+      method: "GET",
       headers: { Cookie: "must-not-leak", Authorization: "must-not-leak" },
       postData: "must-not-leak"
     });

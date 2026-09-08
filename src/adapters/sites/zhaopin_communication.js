@@ -93,6 +93,7 @@ class ZhaopinCommunicationAdapter extends ZhaopinSiteAdapter {
     this.prepared = null;
     this.dispatch = null;
     this.dispatchedSourceIds = new Set();
+    this.verifiedImResult = null;
     this.busy = "";
     this.restored = false;
   }
@@ -120,6 +121,7 @@ class ZhaopinCommunicationAdapter extends ZhaopinSiteAdapter {
   async beginCommunicationSession() {
     if (!this.binding) throw communicationError("ZHAOPIN_COMMUNICATION_BINDING_REQUIRED", "智联沟通需要固定搜索标签页绑定。");
     const current = await this.assertBoundTabs({ requireSearch: true, establishActiveBaseline: true });
+    this.verifiedImResult = null;
     this.restored = false;
     return current.searchTab.id;
   }
@@ -149,6 +151,7 @@ class ZhaopinCommunicationAdapter extends ZhaopinSiteAdapter {
       assertTabBindings: () => this.assertBoundTabs({ requireSearch: true })
     });
     await this.browser.evalValue(this.binding.searchTabId, `(() => {const requested=${JSON.stringify(this.binding.searchScrollTop)};const maximum=Math.max(0,document.documentElement.scrollHeight-innerHeight);const applied=Math.min(maximum,requested);scrollTo(0,applied);return {requested,applied}})()`);
+    this.verifiedImResult = null;
     await this.assertBoundTabs({ requireSearch: true });
   }
 
@@ -157,13 +160,27 @@ class ZhaopinCommunicationAdapter extends ZhaopinSiteAdapter {
     try {
       const expected = normalizeJob(job);
       throwIfAborted(signal);
-      await this.assertBoundTabs({ requireSearch: true });
-      const current = await this.currentSelectedInspection(expected, signal);
-      if (current) return current;
+      const bound = await this.assertBoundTabs({ allowIm: true });
+      const returningFromIm = isZhaopinMessageUrl(bound.searchTab.url);
+      if (returningFromIm) {
+        const previous = this.verifiedImResult;
+        const snapshot = await this.browser.evalValue(this.binding.searchTabId, ZHAOPIN_MESSAGE_SNAPSHOT_EXPRESSION);
+        if (!previous || !hasZhaopinOutgoingTextSnapshot(snapshot, previous)) {
+          throw communicationError("ZHAOPIN_SEARCH_PAGE_LOST", "智联工作标签页进入了未经核验的沟通页面。");
+        }
+      } else {
+        this.verifiedImResult = null;
+        const current = await this.currentSelectedInspection(expected, signal);
+        if (current) return current;
+      }
       await this.reserve("list_navigation", { source: "zhaopin", sourceId: expected.sourceId });
-      await this.pace("list", signal);
-      await this.assertBoundTabs({ requireSearch: true });
+      await this.pacing.waitWithPacing("list", {
+        signal,
+        assertTabBindings: () => this.assertBoundTabs(returningFromIm ? { allowIm: true } : { requireSearch: true })
+      });
+      await this.assertBoundTabs(returningFromIm ? { allowIm: true } : { requireSearch: true });
       await this.browser.navigate(this.binding.searchTabId, expected.searchUrl);
+      this.verifiedImResult = null;
       const template = canonicalizeZhaopinSearchTemplate(expected.searchUrl);
       const keyword = new URL(expected.searchUrl).searchParams.get("kw") || "";
       await this.waitForSearchReady(this.binding.searchTabId, {
@@ -263,14 +280,7 @@ class ZhaopinCommunicationAdapter extends ZhaopinSiteAdapter {
       if (this.dispatch || this.prepared) await this.cleanupResources();
       throw error;
     } finally {
-      try {
-        await this.disableFocus(this.dispatch || this.prepared);
-      } catch (error) {
-        await this.cleanupResources();
-        throw error;
-      } finally {
-        this.end("dispatch");
-      }
+      this.end("dispatch");
     }
   }
 
@@ -286,7 +296,7 @@ class ZhaopinCommunicationAdapter extends ZhaopinSiteAdapter {
       let lastEvidence = { endpoints: [], pageState: "no_matching_request", diagnostics: {} };
       while (true) {
         throwIfAborted(signal);
-        await this.assertBoundTabs({ allowIm: true });
+        await this.assertVerificationPageSafe();
         const log = await this.browser.readNetworkLog(dispatch.tabId, {
           sinceSequence: dispatch.networkSequence,
           maxEntries: 12,
@@ -305,6 +315,7 @@ class ZhaopinCommunicationAdapter extends ZhaopinSiteAdapter {
         if (network.state === "accepted") {
           const pageState = await this.verifyPageOutcome(expected, network.sessionId);
           if (pageState.succeeded) {
+            this.verifiedImResult = pageState.sameTabIm ? Object.freeze({ sessionId: network.sessionId, jobNumber: expected.sourceId }) : null;
             return { state: "succeeded", evidence: { ...lastEvidence, pageState: pageState.pageState, diagnostics: pageState.diagnostics } };
           }
           lastEvidence = { ...lastEvidence, pageState: pageState.pageState, diagnostics: pageState.diagnostics };
@@ -373,14 +384,24 @@ class ZhaopinCommunicationAdapter extends ZhaopinSiteAdapter {
     if (isZhaopinMessageUrl(current.searchTab.url)) {
       const snapshot = await this.browser.evalValue(this.binding.searchTabId, ZHAOPIN_MESSAGE_SNAPSHOT_EXPRESSION);
       const succeeded = hasZhaopinOutgoingTextSnapshot(snapshot, { sessionId, jobNumber: expected.sourceId });
-      return { succeeded, pageState: succeeded ? "succeeded" : "page_unverified", diagnostics: { dialogVisible: false } };
+      return { succeeded, sameTabIm: true, pageState: succeeded ? "succeeded" : "page_unverified", diagnostics: { dialogVisible: false } };
     }
     const state = await this.readSearchState(this.binding.searchTabId);
     const card = state.cards[state.selectedIndex];
     const exact = !state.loading && card && card.sourceId === expected.sourceId && sameTarget(expected, card, state.detail);
     const snapshot = await this.readCommunicationSnapshot();
     const succeeded = Boolean(exact && snapshot.greetingModal === true);
-    return { succeeded, pageState: succeeded ? "confirmation_dialog" : "page_unverified", diagnostics: { dialogVisible: snapshot.greetingModal === true } };
+    return { succeeded, sameTabIm: false, pageState: succeeded ? "confirmation_dialog" : "page_unverified", diagnostics: { dialogVisible: snapshot.greetingModal === true } };
+  }
+
+  async assertVerificationPageSafe() {
+    const current = await this.assertBoundTabs({ allowIm: true });
+    if (isZhaopinMessageUrl(current.searchTab.url)) {
+      const snapshot = await this.browser.evalValue(this.binding.searchTabId, ZHAOPIN_MESSAGE_SNAPSHOT_EXPRESSION);
+      hasZhaopinOutgoingTextSnapshot(snapshot, {});
+    } else {
+      await this.readCommunicationSnapshot();
+    }
   }
 
   async assertBoundTabs({ requireSearch = false, allowIm = false, establishActiveBaseline = false } = {}) {
@@ -539,12 +560,12 @@ function classifyNetworkLog(log, dispatch) {
     const observation = normalizeNetworkEntry(entry, dispatch);
     if (observation) observations.push(observation);
   }
-  const application = observations.find((entry) => entry.kind === "application");
-  if (application) return { state: "application_observed", evidence: { endpoints: [], pageState: "request_conflict", diagnostics: diagnostics(log) } };
   const matching = observations.filter((entry) => entry.kind === "prechat" && entry.targetMatched);
-  if (observations.some((entry) => entry.kind === "prechat" && (entry.malformed || !entry.targetMatched))) {
+  if (observations.some((entry) => entry.malformed || (entry.kind === "prechat" && !entry.targetMatched))) {
     return { state: "ambiguous", evidence: { endpoints: matching.map(safeEndpoint), pageState: "request_conflict", diagnostics: diagnostics(log) } };
   }
+  const application = observations.find((entry) => entry.kind === "application");
+  if (application) return { state: "application_observed", evidence: { endpoints: [], pageState: "request_conflict", diagnostics: diagnostics(log) } };
   if (!matching.length) return { state: "none", evidence: { endpoints: [], pageState: Number(log?.meta?.pendingRequests || 0) > 0 ? "request_pending" : "no_matching_request", diagnostics: diagnostics(log) } };
   if (matching.length !== 1) return { state: "ambiguous", evidence: { endpoints: matching.map(safeEndpoint), pageState: "request_conflict", diagnostics: diagnostics(log) } };
   const entry = matching[0];
@@ -553,25 +574,29 @@ function classifyNetworkLog(log, dispatch) {
 }
 
 function normalizeNetworkEntry(entry, dispatch) {
-  if (!Number.isInteger(entry?.sequence) || entry.sequence <= dispatch.networkSequence) return null;
-  const started = Date.parse(String(entry.startedAt || ""));
-  const completed = Date.parse(String(entry.completedAt || ""));
-  if (!Number.isFinite(started) || started < dispatch.dispatchNotBeforeMs || !Number.isFinite(completed)) return null;
   let url;
   try { url = new URL(String(entry.url || "")); } catch { return null; }
   const method = String(entry.method || "").toUpperCase();
-  if (url.origin === "https://fe-api.zhaopin.com" && url.pathname === APPLICATION_PATH && method === "POST") {
-    return { kind: "application" };
-  }
-  if (url.origin !== "https://cgate.zhaopin.com" || url.pathname !== PRECHAT_PATH || method !== "GET") return null;
+  const kind = url.origin === "https://fe-api.zhaopin.com" && url.pathname === APPLICATION_PATH && method === "POST"
+    ? "application"
+    : url.origin === "https://cgate.zhaopin.com" && url.pathname === PRECHAT_PATH && method === "GET" ? "prechat" : "";
+  if (!kind) return null;
+  if (Number.isInteger(entry?.sequence) && entry.sequence <= dispatch.networkSequence) return null;
+  const started = Date.parse(String(entry.startedAt || ""));
+  if (Number.isFinite(started) && started < dispatch.dispatchNotBeforeMs) return null;
+  if (!Number.isInteger(entry?.sequence) || !Number.isFinite(started)) return { kind, malformed: true };
+  const completed = Date.parse(String(entry.completedAt || ""));
+  if (!Number.isFinite(completed)) return null;
+  if (kind === "application") return { kind };
   const target = entry.requestTarget && typeof entry.requestTarget === "object"
     ? entry.requestTarget : targetFromRawUrl(url);
   if (!target) return { kind: "prechat", malformed: true };
   const targetMatched = target.jobNumber === dispatch.expected.sourceId && target.scene === "2" && target.operateType === "2";
-  const status = Number(entry.status);
   const elapsedMs = Math.max(0, Math.min(60000, completed - started));
   if (entry.failed === true) return { kind: "prechat", targetMatched, state: "transport_failed", businessCategory: "network_rejected", pageState: "request_failed", elapsedMs };
-  if (!Number.isInteger(status) || status < 200 || status >= 300) return { kind: "prechat", targetMatched, state: "platform_rejected", httpStatus: status, businessCategory: "http_failure", pageState: "request_rejected", elapsedMs };
+  const status = entry.status;
+  if (!Number.isInteger(status)) return { kind: "prechat", targetMatched, state: "ambiguous", businessCategory: "response_unparsed", pageState: "request_unparsed", elapsedMs };
+  if (status < 200 || status >= 300) return { kind: "prechat", targetMatched, state: "platform_rejected", httpStatus: status, businessCategory: "http_failure", pageState: "request_rejected", elapsedMs };
   const outcome = responseOutcome(entry.content);
   return { kind: "prechat", targetMatched, httpStatus: status, elapsedMs, ...outcome };
 }

@@ -341,7 +341,7 @@ function allowedEndpoint(value, method, allowed) {
     method = String(method || "").toUpperCase();
     if (!endpoint
       || parsed.origin !== endpoint.origin
-      || method !== endpoint.method
+      || (endpoint.kind !== "boss" && method !== endpoint.method)
       || parsed.username
       || parsed.password
       || !allowed.has(parsed.pathname)) return null;
