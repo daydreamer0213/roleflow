@@ -101,7 +101,7 @@ function renderMessageDiscoveryPage({ db, searchParams, controller, replySendCon
         : "岗位资料来源待确认";
     const decisionCard = `<section class="message-job-understanding">
       <p class="line"><strong>沟通结论：</strong>${escapeHtml(messageIntentLabel(result.messageIntent))}${result.messageSummary ? ` · ${escapeHtml(result.messageSummary)}` : ""}</p>
-      <p class="line"><strong>这份机会：</strong>${escapeHtml(job.opportunityVerdict || "信息不足，暂时无法判断")}${job.opportunitySummary ? ` · ${escapeHtml(job.opportunitySummary)}` : ""}</p>
+      <p class="line"><strong>这份机会：</strong>${escapeHtml(job.availability === "offline" ? "职位已下线，以下资料用于理解这段沟通" : job.opportunityVerdict || "信息不足，暂时无法判断")}${job.availability !== "offline" && job.opportunitySummary ? ` · ${escapeHtml(job.opportunitySummary)}` : ""}</p>
       <p class="line"><strong>岗位主要做什么：</strong>${escapeHtml(job.roleSummary || "岗位职责分析尚未完成。")}</p>
       <p class="line"><strong>匹配与安排：</strong>${escapeHtml(job.fitLabel || "待确认")}${job.fitSummary ? ` · ${escapeHtml(job.fitSummary)}` : ""} · ${job.workSchedule && job.workSchedule !== "工作安排未确认"
         ? `工作安排：${escapeHtml(job.workSchedule)}`

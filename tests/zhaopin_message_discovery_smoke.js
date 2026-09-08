@@ -6,12 +6,12 @@ const os = require("node:os");
 const path = require("node:path");
 const {
   openDb, createBatch, upsertJob, listOpenMessageReplyDrafts,
-  listMessageInboundContexts
+  listMessageInboundContexts, listSiteAccessEvents, getSitePacingState
 } = require("../src/core/storage");
-const { runBossMessageDiscovery } = require("../src/core/message_discovery");
+const { runBossMessageDiscovery, projectMessageDecisionCard } = require("../src/core/message_discovery");
 const { ensureProgressCard, findMessageDiscoveryJobContext } = require("../src/core/candidate_progress");
 const { zhaopinJobIdentity } = require("../src/core/zhaopin_search_scope");
-const { createMessageDiscoveryController } = require("../src/dashboard/message_discovery_controller");
+const { createMessageDiscoveryController, createMessageDiscoveryDetailSafety } = require("../src/dashboard/message_discovery_controller");
 const { safeDigest } = require("../src/adapters/sites/boss_message_dom");
 const { createZhaopinMessageJobContextResolver } = require("../src/application/message_discovery/zhaopin_job_context");
 const { listPreviewStates, listUnresolvedMessageDiscoveryItems, recordUnresolvedMessageDiscoveryItem } = require("../src/core/message_preview_state");
@@ -21,6 +21,11 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-zhaopin-message-"))
 let db = openDb(path.join(root, "message-discovery.sqlite"));
 
 async function run() {
+  const offlineInput = { availability: "offline", analysis: { recommendation: "apply", fitLevel: "A" } };
+  const offlineProjection = projectMessageDecisionCard(offlineInput);
+  assert.equal(offlineProjection.availability, "offline");
+  assert.equal(offlineProjection.opportunityVerdict, "职位已下线，以下资料用于理解这段沟通");
+  assert.equal(offlineInput.analysis.recommendation, "apply", "source availability must not rewrite the frozen model decision");
   const fixture = createFixture();
   assert.equal(db.prepare("SELECT source_id FROM jobs WHERE id = ?").get(fixture.jobId).source_id, "ZL123456");
   assert.equal(findMessageDiscoveryJobContext(db, { profileId: fixture.profileId, planId: fixture.planId, platform: "zhaopin", sourceId: "ZL123456" }).contextComplete, true);
@@ -117,12 +122,87 @@ async function run() {
   await manualOnlyReopenSmoke();
   await crossPlatformIdempotencySmoke();
   await resolverIsolationSmoke();
+  await zhaopinDetailControllerSmoke();
+  await zhaopinFatalDetailRetentionSmoke();
   const regressions = [emptyTextPendingSmoke, unsupportedSelfPendingSmoke, pendingPacingSmoke, confirmedSelfBoundarySmoke];
   const failures = [];
   for (const regression of regressions) {
     try { await regression(); } catch (error) { failures.push(`${regression.name}: ${error.stack}`); }
   }
   assert.deepEqual(failures, []);
+}
+
+async function zhaopinFatalDetailRetentionSmoke() {
+  const fixture = createFixture({ id: "ZLFATAL001", title: "Fatal Detail Engineer" });
+  const conversationKey = safeDigest(["zhaopin", "fatal-detail"]);
+  const sourceJobId = "zhaopin:ZLFATAL001";
+  const reader = zhaopinReaderFor({
+    conversationKey, sourceJobId, title: fixture.title,
+    messages: [{ direction: "friend", messageId: "880001", text: "请介绍你的项目。", contentKind: "text" }]
+  });
+  const summary = await runBossMessageDiscovery({
+    db, profileId: fixture.profileId, platform: "zhaopin", reader,
+    classifyMessageGroup: async () => { throw new Error("fatal context must stop before drafting"); },
+    resolveJobContext: async () => { throw Object.assign(new Error("background changed"), { code: "ZHAOPIN_MESSAGE_DETAIL_NOT_BACKGROUND" }); },
+    now: () => NOW, sleepFn: async () => {}
+  });
+  assert.equal(summary.status, "needs_user_action");
+  assert.equal(summary.reasonCode, "ZHAOPIN_MESSAGE_DETAIL_NOT_BACKGROUND");
+  const retained = listUnresolvedMessageDiscoveryItems(db, { profileId: fixture.profileId, platform: "zhaopin" })[0];
+  assert.deepEqual(retained.inboundMessages, [{ kind: "text", text: "请介绍你的项目。" }]);
+  assert.equal(listOpenMessageReplyDrafts(db, { profileId: fixture.profileId }).length, 0);
+}
+
+async function zhaopinDetailControllerSmoke() {
+  const safety = createMessageDiscoveryDetailSafety({
+    db,
+    profileId: 1,
+    owner: "zhaopin-detail-safety",
+    platform: "zhaopin",
+    now: () => new Date(NOW),
+    sleepFn: async () => {},
+    randomFn: () => 0
+  });
+  await safety.beforeOpen({ jobId: "ZLSAFETY001", assertTabBindings: async () => {} });
+  await safety.afterIssuedAttempt({ jobId: "ZLSAFETY001", assertTabBindings: async () => {} });
+  assert.deepEqual(listSiteAccessEvents(db, { site: "zhaopin" }).slice(-2).map((event) => event.action), ["pane_detail_read", "detail_open"]);
+  assert.equal(getSitePacingState(db, "zhaopin").pacing.detailActions, 1);
+
+  const fixture = createFixture({ id: "ZLCONTROLLER001", title: "Controller Engineer" });
+  const created = [];
+  const controller = createMessageDiscoveryController({
+    db,
+    modelReady: () => true,
+    getModelConfig: () => ({ provider: "fixture" }),
+    acquireLease: () => {}, renewLease: () => {}, releaseLease: () => {},
+    createBrowser: async () => ({
+      async listTabs() { return [{ id: 202, windowId: 7, active: false, url: "https://i.zhaopin.com/im" }]; }
+    }),
+    cleanupBrowser: async () => {},
+    createReader: ({ platform }) => ({ platform, async readSelectedJobTarget() { return {}; } }),
+    createDetailSafety: ({ platform }) => {
+      created.push(["safety", platform]);
+      return { beforeOpen: async () => {}, afterIssuedAttempt: async () => {} };
+    },
+    createDetailReader: ({ platform, messageReader }) => {
+      created.push(["detail", platform, messageReader.platform]);
+      return { readSelectedJobDetail: async () => ({}) };
+    },
+    createJobContextResolver: ({ platform, detailReader }) => {
+      created.push(["resolver", platform, Boolean(detailReader)]);
+      return async () => ({});
+    },
+    runDiscovery: async ({ platform }) => ({ status: "completed", reasonCode: "", queued: 0, processed: 0, unresolved: 0, counters: { platform }, results: [] }),
+    setInterval: () => 1,
+    clearInterval: () => {},
+    now: () => new Date(NOW)
+  });
+  controller.start(fixture.profileId);
+  for (let attempt = 0; attempt < 10 && created.length < 3; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  await controller.close();
+  assert.deepEqual(created, [["safety", "zhaopin"], ["detail", "zhaopin", "zhaopin"], ["resolver", "zhaopin", true]]);
 }
 
 async function emptyTextPendingSmoke() {

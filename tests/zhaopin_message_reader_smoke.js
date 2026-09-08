@@ -33,11 +33,11 @@ function fixtureHtml() {
     <nav class="home-header__right"><a class="home-header__b-login">我要招人</a><a class="home-header__c-no-login">登录/注册</a></nav>
     <section class="login-panel" hidden>请登录</section>
     <main class="im-side-panel"></main><button class="im-send-button">发送</button><textarea class="im-input"></textarea>
-    <section class="im-main-panel"><header class="im-chat-header"><span class="im-chat-header__job-title"></span><span class="im-chat-header__salary"></span><span class="im-chat-header__city"></span></header><div class="im-timeline"></div></section>
+    <section class="im-main-panel"><header class="im-chat-header"><a class="im-chat-header__detail"></a><span class="im-chat-header__job-title"></span><span class="im-chat-header__salary"></span><span class="im-chat-header__city"></span></header><div class="im-timeline"></div></section>
     <script>
       window.fixture = {
         sessions: [], active: null, timeline: [], loading: false, timelineError: "", selectWrong: "", clicks: 0, resumeClicks: 0, senderClicks: 0,
-        set(data) { this.sessions = data.sessions; this.active = data.active || data.sessions[0] || null; this.timeline = data.timeline || []; this.loading = Boolean(data.loading); this.listLoading = data.listLoading === true; this.loginPanel = data.loginPanel === true; this.timelineError = data.timelineError || ""; this.selectWrong = data.selectWrong || ""; this.render(); },
+        set(data) { this.sessions = data.sessions; this.active = data.active || data.sessions[0] || null; this.timeline = data.timeline || []; this.loading = Boolean(data.loading); this.listLoading = data.listLoading === true; this.loginPanel = data.loginPanel === true; this.timelineError = data.timelineError || ""; this.selectWrong = data.selectWrong || ""; this.offline = data.offline === true; this.render(); },
         render() {
           document.querySelector('.login-panel').hidden = !this.loginPanel;
           const side = document.querySelector('.im-side-panel'); side.replaceChildren();
@@ -51,7 +51,7 @@ function fixtureHtml() {
             row.addEventListener('click', () => { this.clicks += 1; this.active = current; this.render(); }); side.append(row);
           }
           const main = document.querySelector('.im-main-panel'); main.__vue__ = { $options: { name: 'MainPanelThreeColumns' }, activeSessionId: this.active?.sessionId || '', activeSession: this.active, activeTimeline: this.timeline, timelineLoading: this.loading, timelineError: this.timelineError };
-          const header = document.querySelector('.im-chat-header'); header.__vue__ = { $props: { session: this.active } }; header.querySelector('.im-chat-header__job-title').textContent = this.active ? '合成职位' : ''; header.querySelector('.im-chat-header__salary').textContent = this.active ? '20-30K' : ''; header.querySelector('.im-chat-header__city').textContent = this.active ? '深圳' : '';
+          const header = document.querySelector('.im-chat-header'); header.__vue__ = { $props: { session: this.active } }; header.classList.toggle('is-offline', this.offline); header.querySelector('.im-chat-header__detail').href = this.active ? 'https://www.zhaopin.com/jobdetail/' + this.active.jobNumber + '.html' : ''; header.querySelector('.im-chat-header__job-title').textContent = this.active ? '合成职位' : ''; header.querySelector('.im-chat-header__salary').textContent = this.active ? '20-30K' : ''; header.querySelector('.im-chat-header__city').textContent = this.active ? '深圳' : '';
           const timeline = document.querySelector('.im-timeline'); timeline.replaceChildren();
           for (const current of this.timeline) {
             const row = document.createElement('article'); row.className = 'im-message' + (current.tip ? ' im-message--tip' : '');
@@ -133,6 +133,25 @@ async function main() {
     assert.strictEqual(selected.messages.filter(m => m.contentKind === "text").length, 2);
     assert.strictEqual(selected.sourceJobId, "zhaopin:CCL1234567890J00123456789");
     assert.equal(selected.lastMessageId, "104", "the detail reader returns a real final meaningful ID");
+    assert.deepStrictEqual(await reader.readSelectedJobTarget(selected), {
+      jobId: JOB_A,
+      navigationUrl: `https://www.zhaopin.com/jobdetail/${JOB_A}.html`,
+      canonicalUrl: `https://www.zhaopin.com/jobdetail/${JOB_A}.htm`,
+      availability: "unknown"
+    });
+    await assert.rejects(
+      () => reader.readSelectedJobTarget({ ...selected }),
+      (error) => error.code === "ZHAOPIN_MESSAGE_TARGET_INVALID",
+      "a copied caller object must not become a trusted selected result"
+    );
+    await setFixture(page, { sessions: [first, second], active: first, timeline: richTimeline, loading: false, offline: true });
+    assert.equal((await reader.readSelectedJobTarget(selected)).availability, "offline");
+    await page.evaluate(() => { document.querySelector('.im-chat-header__detail').href = 'https://evil.example/jobdetail/CCL1234567890J00123456789.html'; });
+    await assert.rejects(() => reader.readSelectedJobTarget(selected), (error) => error.code === "ZHAOPIN_MESSAGE_JOB_TARGET_UNAVAILABLE");
+    await setFixture(page, { sessions: [first, second], active: first, timeline: richTimeline, loading: false });
+    await page.evaluate(() => { document.querySelector('.im-chat-header').__vue__.$props.session = { ...window.fixture.active, jobNumber: 'CCWRONG001J00000000001' }; });
+    await assert.rejects(() => reader.readSelectedJobTarget(selected), (error) => error.code === "ZHAOPIN_MESSAGE_TARGET_MISMATCH");
+    await setFixture(page, { sessions: [first, second], active: first, timeline: richTimeline, loading: false });
     assert.equal((await page.evaluate(ZHAOPIN_MESSAGE_SNAPSHOT_EXPRESSION)).rows.length, 2, "exported snapshot expression must run against mounted DOM with normal header login links");
     assert.deepEqual(await page.evaluate(() => [window.fixture.resumeClicks,window.fixture.senderClicks]), [0,0]);
     for (const forbidden of ["bringToFront", "navigate", "createTab", "inputText"]) assert.equal(bridge.calls.some(([name]) => name === forbidden), false);

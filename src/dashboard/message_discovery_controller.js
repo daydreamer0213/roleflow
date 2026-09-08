@@ -4,6 +4,7 @@ const { createZhaopinMessageReader, isZhaopinMessageUrl } = require("../adapters
 const { createZhaopinMessageJobContextResolver } = require("../application/message_discovery/zhaopin_job_context");
 const { findMessageDiscoveryJobContext } = require("../core/candidate_progress");
 const { createBossMessageDetailReader } = require("../adapters/sites/boss_message_detail_reader");
+const { createZhaopinMessageDetailReader } = require("../adapters/sites/zhaopin_message_detail_reader");
 const { BossSiteAdapter } = require("../adapters/sites/boss");
 const { createMessageDiscoveryJobContextResolver } = require("../application/message_discovery/job_context");
 const { runBossMessageDiscovery, projectMessageDecisionCard } = require("../core/message_discovery");
@@ -12,7 +13,7 @@ const {
   listUnresolvedMessageDiscoveryItems
 } = require("../core/message_preview_state");
 const { createSiteAccessController } = require("../core/site_access_budget");
-const { communicationRuntimeBlock } = require("../core/communication_runtime");
+const { communicationRuntimeBlock, scanRuntimeBlock } = require("../core/communication_runtime");
 const { resolveBossRiskWindow } = require("../core/boss_risk_window");
 const {
   getSitePacingState,
@@ -44,7 +45,7 @@ function createMessageDiscoveryController(deps = {}) {
     logger = null,
     getModelConfig = () => ({ provider: "mock", providers: { mock: {} } }),
     modelReady = () => true,
-    assertRuntimeAvailable = () => assertMessageDiscoveryRuntimeAvailable(db, now),
+    assertRuntimeAvailable = (input) => assertMessageDiscoveryRuntimeAvailable(db, now, input),
     recordRiskControl = (input) => persistMessageDiscoveryRiskControl(db, input),
     acquireLease,
     renewLease,
@@ -58,7 +59,8 @@ function createMessageDiscoveryController(deps = {}) {
     createReader = ({ browser, platform }) => platform === "zhaopin"
       ? createZhaopinMessageReader({ browser }) : createBossMessageReader({ browser }),
     createDetailSafety = (options) => createMessageDiscoveryDetailSafety(options),
-    createDetailReader = (options) => createBossMessageDetailReader(options),
+    createDetailReader = (options) => options.platform === "zhaopin"
+      ? createZhaopinMessageDetailReader(options) : createBossMessageDetailReader(options),
     createJobContextResolver = (options) => options.platform === "zhaopin"
       ? createZhaopinMessageJobContextResolver(options) : createMessageDiscoveryJobContextResolver(options),
     createAnalyzer = ({ modelConfig, logger: analyzerLogger }) => createMessageReplyAnalyzer({
@@ -140,7 +142,7 @@ function createMessageDiscoveryController(deps = {}) {
       cleanupTimer: null,
       clearedCardIds: new Set(),
       closed: false,
-      riskRecorded: false,
+      riskRecorded: new Set(),
       completion: null
     };
     runs.set(profileId, run);
@@ -199,24 +201,40 @@ function createMessageDiscoveryController(deps = {}) {
         let readingStarted = false;
         try {
           entry.status = "running";
-          if (platform === "boss") assertRuntimeAvailable({ profileId });
+          if (platform === "boss") assertRuntimeAvailable({ profileId, platform });
+          else assertMessageDiscoveryRuntimeAvailable(db, now, { platform });
           readingStarted = true;
           setDetailPhase(run, "reading_messages", now);
           const reader = createReader({ browser, platform });
-          let detailReader = null;
-          if (platform === "boss") {
-            const safety = createDetailSafety({ db, profileId, owner, run, logger, signal: abortController.signal, now, sleepFn: pacingSleepFn, randomFn: pacingRandomFn });
-            detailReader = createDetailReader({ browser, messageReader: reader, logger, beforeOpen: safety.beforeOpen, afterIssuedAttempt: safety.afterIssuedAttempt, sleepFn: detailSleepFn });
+          const safety = createDetailSafety({ db, profileId, owner, run, logger, signal: abortController.signal, now, sleepFn: pacingSleepFn, randomFn: pacingRandomFn, platform });
+          const detailOptions = { browser, messageReader: reader, logger, beforeOpen: safety.beforeOpen, afterIssuedAttempt: safety.afterIssuedAttempt, sleepFn: detailSleepFn, platform };
+          let actualDetailReader = platform === "boss" || Object.hasOwn(deps, "createDetailReader")
+            ? createDetailReader(detailOptions)
+            : null;
+          const detailReader = actualDetailReader || {
+            readSelectedJobDetail(input) {
+              actualDetailReader ||= createDetailReader(detailOptions);
+              return actualDetailReader.readSelectedJobDetail(input);
+            }
+          };
+          const resolverOptions = { platform, db, profileId, modelConfig, root, logger };
+          if (platform !== "zhaopin" || typeof reader.readSelectedJobTarget === "function") {
+            resolverOptions.messageReader = reader;
+            resolverOptions.detailReader = detailReader;
           }
-          const resolveJobContext = createJobContextResolver({ platform, db, profileId, messageReader: reader, detailReader, modelConfig, root, logger });
+          const resolveJobContext = createJobContextResolver(resolverOptions);
           const summary = await runDiscovery({ platform, db, profileId, reader, signal: abortController.signal, logger,
             classifyMessageGroup: createAnalyzer({ modelConfig, logger }), resolveJobContext, onStatus: checkpoint });
           checkpoint(summary);
-          if (platform === "boss" && summary?.reasonCode === "BOSS_RISK_CONTROL") recordRiskOnce(run, summary.reasonCode, "BOSS requires security verification");
+          if (summary?.reasonCode === `${platform === "zhaopin" ? "ZHAOPIN" : "BOSS"}_RISK_CONTROL`) {
+            recordRiskOnce(run, platform, summary.reasonCode, `${platform} requires security verification`);
+          }
         } catch (error) {
           entry.reasonCode = messageDiscoveryErrorCode(error);
           entry.status = /RISK_CONTROL|RUNTIME_BLOCKED|LOGIN_REQUIRED|PAGE_LOST|TAB_|BINDING/.test(entry.reasonCode) ? "needs_user_action" : "stopped";
-          if (readingStarted && platform === "boss" && entry.reasonCode === "BOSS_RISK_CONTROL") recordRiskOnce(run, entry.reasonCode, error.message);
+          if (readingStarted && entry.reasonCode === `${platform === "zhaopin" ? "ZHAOPIN" : "BOSS"}_RISK_CONTROL`) {
+            recordRiskOnce(run, platform, entry.reasonCode, error.message);
+          }
         }
       }
       for (const entry of run.platformRuns) if (entry.status === "pending") entry.status = "stopped";
@@ -226,7 +244,7 @@ function createMessageDiscoveryController(deps = {}) {
         reasonCode: abortController.signal.aborted ? messageDiscoveryErrorCode(abortController.signal.reason) : issue?.reasonCode || "" });
     }).catch((error) => {
       const code = messageDiscoveryErrorCode(error);
-      if (code === "BOSS_RISK_CONTROL") recordRiskOnce(run, code, error?.message);
+      if (code === "BOSS_RISK_CONTROL") recordRiskOnce(run, "boss", code, error?.message);
       if (runs.get(profileId) !== run) return;
       updateRun(run, {
         status: ["MESSAGE_DISCOVERY_LEASE_LOST", "BOSS_RISK_CONTROL"].includes(code)
@@ -371,15 +389,16 @@ function createMessageDiscoveryController(deps = {}) {
     return closePromise;
   }
 
-  function recordRiskOnce(run, errorCode, message) {
-    if (run.riskRecorded) return;
+  function recordRiskOnce(run, platform, errorCode, message) {
+    if (run.riskRecorded.has(platform)) return;
     recordRiskControl({
+      platform,
       profileId: run.profileId,
       errorCode,
       message: String(message || ""),
       occurredAt: nowDate().toISOString()
     });
-    run.riskRecorded = true;
+    run.riskRecorded.add(platform);
   }
 
   function updateRun(run, statusValue) {
@@ -737,19 +756,21 @@ function createMessageDiscoveryDetailSafety({
   sleepFn,
   randomFn = Math.random,
   createAccessController = createSiteAccessController,
-  createPacingAdapter = (options) => new BossSiteAdapter(options)
+  createPacingAdapter = (options) => new BossSiteAdapter(options),
+  platform = "boss"
 } = {}) {
+  const site = ["boss", "zhaopin"].includes(platform) ? platform : "boss";
   let assertActiveBindings = null;
   const onWait = ({ durationMs }) => setDetailWait(run, durationMs, now);
   const checkpointPacing = async (state) => setSitePacingState(db, {
-    site: "boss",
+    site,
     pacing: state,
     updatedAt: safeNow(now).toISOString()
   });
   const accessController = createAccessController({
     db,
     auditDb: db,
-    site: "boss",
+    site,
     runId: owner,
     logger,
     signal,
@@ -761,7 +782,7 @@ function createMessageDiscoveryDetailSafety({
     }
   });
   const pacing = createPacingAdapter({ logger, sleepFn, randomFn, accessController });
-  pacing.restorePacing(getSitePacingState(db, "boss").pacing);
+  pacing.restorePacing(getSitePacingState(db, site).pacing);
 
   return {
     pacing,
@@ -844,7 +865,8 @@ function sanitizeJobUnderstanding(value) {
     workSchedule: safeInlineText(job.workSchedule, 180),
     salary: safeInlineText(job.salary, 80),
     opportunityVerdict: safeInlineText(job.opportunityVerdict, 80),
-    opportunitySummary: safeInlineText(job.opportunitySummary, 180)
+    opportunitySummary: safeInlineText(job.opportunitySummary, 180),
+    availability: job.availability === "offline" ? "offline" : "unknown"
   };
 }
 
@@ -903,26 +925,31 @@ function messageDiscoveryError(code, message, statusCode = 500) {
   return error;
 }
 
-function assertMessageDiscoveryRuntimeAvailable(db, now) {
+function assertMessageDiscoveryRuntimeAvailable(db, now, { platform = "boss" } = {}) {
   const nowValue = typeof now === "function" ? now() : new Date();
   const nowMs = nowValue instanceof Date ? nowValue.getTime() : Date.parse(nowValue);
-  const block = communicationRuntimeBlock(db, { nowMs });
+  const site = platform === "zhaopin" ? "zhaopin" : "boss";
+  const block = site === "boss"
+    ? communicationRuntimeBlock(db, { nowMs })
+    : scanRuntimeBlock(db, { nowMs, site });
   if (!block) return;
   throw messageDiscoveryError(
     block.reasonCode,
-    "BOSS access is paused by the central runtime safety guard",
+    `${site} access is paused by the central runtime safety guard`,
     409
   );
 }
 
 function persistMessageDiscoveryRiskControl(db, {
+  platform = "boss",
   profileId,
   errorCode = "BOSS_RISK_CONTROL",
   message = "",
   occurredAt = new Date().toISOString()
 } = {}) {
+  const site = platform === "zhaopin" ? "zhaopin" : "boss";
   const riskWindow = resolveBossRiskWindow({ nowMs: Date.parse(occurredAt) });
-  setSiteRuntimeState(db, "boss", {
+  setSiteRuntimeState(db, site, {
     status: "blocked",
     reasonCode: errorCode,
     message,
@@ -934,7 +961,7 @@ function persistMessageDiscoveryRiskControl(db, {
     }
   });
   recordSiteAccessEvent(db, {
-    site: "boss",
+    site,
     action: "risk_control",
     runId: "",
     details: {

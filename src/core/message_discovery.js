@@ -54,6 +54,19 @@ const CONTEXT_TERMINAL_CODES = new Set([
   "BOSS_SEARCH_TAB_CHANGED",
   "BOSS_TAB_REQUIRED",
   "BOSS_WINDOW_MISMATCH",
+  "ZHAOPIN_MESSAGE_LOGIN_REQUIRED",
+  "ZHAOPIN_MESSAGE_PAGE_LOST",
+  "ZHAOPIN_MESSAGE_RISK_CONTROL",
+  "ZHAOPIN_MESSAGE_STRUCTURE_CHANGED",
+  "ZHAOPIN_MESSAGE_TAB_BINDING_LOST",
+  "ZHAOPIN_MESSAGE_TARGET_MISMATCH",
+  "ZHAOPIN_MESSAGE_DETAIL_BASELINE_NOT_RESTORED",
+  "ZHAOPIN_MESSAGE_DETAIL_BINDING_INVALID",
+  "ZHAOPIN_MESSAGE_DETAIL_BROWSER_FAILED",
+  "ZHAOPIN_MESSAGE_DETAIL_CLOSE_FAILED",
+  "ZHAOPIN_MESSAGE_DETAIL_NOT_BACKGROUND",
+  "ZHAOPIN_MESSAGE_DETAIL_PAGE_LOST",
+  "ZHAOPIN_MESSAGE_DETAIL_TARGET_MISMATCH",
   "BROWSER_COMMAND_FAILED"
 ]);
 
@@ -167,7 +180,7 @@ async function runBossMessageDiscovery({
     if (canResolveContext && typeof resolveJobContext === "function") {
       try {
         const candidate = resolved.ok ? resolved.candidate : null;
-        const context = await resolveJobContext({ target: selectedTarget, selected: selectedSnapshot, candidate, signal });
+        const context = await resolveJobContext({ target: selectedTarget, selected, candidate, signal });
         if (!validResolvedContext(context, target.conversationKey, source)) {
           throw discoveryError("MESSAGE_DISCOVERY_JOB_CONTEXT_UNAVAILABLE", "job context is unavailable");
         }
@@ -557,7 +570,8 @@ function contextFailureReason(error) {
   const code = errorCode(error);
   return [
     "MESSAGE_DISCOVERY_JOB_DETAIL_INCOMPLETE",
-    "MESSAGE_DISCOVERY_JOB_ANALYSIS_INCOMPLETE"
+    "MESSAGE_DISCOVERY_JOB_ANALYSIS_INCOMPLETE",
+    "ZHAOPIN_MESSAGE_DETAIL_INCOMPLETE"
   ].includes(code)
     ? code
     : "MESSAGE_DISCOVERY_JOB_CONTEXT_UNAVAILABLE";
@@ -872,6 +886,7 @@ function projectMessageDecisionCard(job = {}) {
   const fitLabel = decisionFitLabel(analysis.fitLevel);
   const fitSummary = decisionFitSummary(analysis, fitLabel);
   const opportunitySummary = decisionOpportunitySummary(analysis, fitSummary);
+  const availability = job.availability === "offline" || analysis.sourceAvailability === "offline" ? "offline" : "unknown";
   return {
     title: safeProjectionText(job.title, 160),
     company: safeProjectionText(job.company, 160),
@@ -881,8 +896,11 @@ function projectMessageDecisionCard(job = {}) {
     fitSummary,
     workSchedule: decisionWorkSchedule(analysis),
     salary: safeProjectionText(job.salary, 80),
-    opportunityVerdict: opportunityVerdict(analysis.recommendation),
-    opportunitySummary
+    opportunityVerdict: availability === "offline"
+      ? "职位已下线，以下资料用于理解这段沟通"
+      : opportunityVerdict(analysis.recommendation),
+    opportunitySummary: availability === "offline" ? "" : opportunitySummary,
+    availability
   };
 }
 

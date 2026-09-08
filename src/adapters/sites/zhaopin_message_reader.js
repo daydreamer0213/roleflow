@@ -93,6 +93,8 @@ const ZHAOPIN_MESSAGE_SNAPSHOT_EXPRESSION = String.raw`(() => {
       activeJobNumber: String(active?.jobNumber == null ? "" : active.jobNumber),
       headerSessionId: String(header.__vue__.$props.session?.sessionId == null ? "" : header.__vue__.$props.session.sessionId),
       headerJobNumber: String(header.__vue__.$props.session?.jobNumber == null ? "" : header.__vue__.$props.session.jobNumber),
+      jobDetailHref: String(header.querySelector(".im-chat-header__detail")?.href || ""),
+      jobOffline: header.classList.contains("is-offline") || Boolean(header.querySelector(".is-offline")),
       positionName: text(header.querySelector(".im-chat-header__job-title")?.textContent),
       salary: text(header.querySelector(".im-chat-header__salary")?.textContent),
       city: text(header.querySelector(".im-chat-header__city")?.textContent),
@@ -316,6 +318,28 @@ function selectedResult(snapshot, target) {
   });
 }
 
+function selectedJobTarget(snapshot, target) {
+  if (!selectedIdentityMatches(snapshot, target)) {
+    throw codedError("ZHAOPIN_MESSAGE_TARGET_MISMATCH", "zhaopin selected conversation changed");
+  }
+  const jobId = String(target.jobNumber || "").trim();
+  let navigation;
+  try { navigation = new URL(String(snapshot.jobDetailHref || "")); }
+  catch { throw codedError("ZHAOPIN_MESSAGE_JOB_TARGET_UNAVAILABLE", "selected zhaopin job target is unavailable"); }
+  if (!validJobNumber(jobId)
+    || navigation.origin !== "https://www.zhaopin.com"
+    || ![`/jobdetail/${jobId}.htm`, `/jobdetail/${jobId}.html`].includes(navigation.pathname)
+    || navigation.search || navigation.hash || navigation.username || navigation.password) {
+    throw codedError("ZHAOPIN_MESSAGE_JOB_TARGET_UNAVAILABLE", "selected zhaopin job target is unavailable");
+  }
+  return Object.freeze({
+    jobId,
+    navigationUrl: navigation.toString(),
+    canonicalUrl: `https://www.zhaopin.com/jobdetail/${jobId}.htm`,
+    availability: snapshot.jobOffline === true ? "offline" : "unknown"
+  });
+}
+
 function createZhaopinMessageReader({ browser, sleepFn = defaultSleep, nowFn = Date.now, timeoutMs = 120000, pollIntervalMs = 500 } = {}) {
   assertBrowser(browser);
   if (typeof sleepFn !== "function" || typeof nowFn !== "function" || !Number.isFinite(timeoutMs) || timeoutMs <= 0 || !Number.isFinite(pollIntervalMs) || pollIntervalMs < 0) {
@@ -323,6 +347,8 @@ function createZhaopinMessageReader({ browser, sleepFn = defaultSleep, nowFn = D
   }
   let binding = null;
   let targetMap = new Map();
+  let activeSelectedResult = null;
+  let activeSelectedTarget = null;
   let busy = false;
 
   async function exclusive(operation) {
@@ -354,6 +380,8 @@ function createZhaopinMessageReader({ browser, sleepFn = defaultSleep, nowFn = D
       return exclusive(async () => {
         binding = null;
         targetMap = new Map();
+        activeSelectedResult = null;
+        activeSelectedTarget = null;
         throwIfAborted(signal);
         const next = resolveMessageTab(await browser.listTabs());
         throwIfAborted(signal);
@@ -383,6 +411,20 @@ function createZhaopinMessageReader({ browser, sleepFn = defaultSleep, nowFn = D
       });
     },
     assertActiveBindings(signal) { return exclusive(() => assertActiveBindings(signal)); },
+    readSelectedJobTarget(selected, signal) {
+      return exclusive(async () => {
+        if (!activeSelectedResult || selected !== activeSelectedResult || !activeSelectedTarget) {
+          throw codedError("ZHAOPIN_MESSAGE_TARGET_INVALID", "selected zhaopin message target is not active");
+        }
+        await assertActiveBindings(signal);
+        await browser.setPageLifecycleActive(binding.tabId);
+        await assertActiveBindings(signal);
+        const snapshot = await readSnapshot(binding.tabId, signal);
+        const result = selectedJobTarget(snapshot, activeSelectedTarget);
+        await assertActiveBindings(signal);
+        return result;
+      });
+    },
     openQueuedConversation(target, signal) {
       return exclusive(async () => {
         throwIfAborted(signal);
@@ -414,7 +456,9 @@ function createZhaopinMessageReader({ browser, sleepFn = defaultSleep, nowFn = D
           } else if (snapshot.timelineError) {
             throw codedError("ZHAOPIN_MESSAGE_TIMELINE_FAILED", "zhaopin conversation timeline failed");
           } else if (!snapshot.timelineLoading && snapshot.messages.length > 0) {
-            return selectedResult(snapshot, { ...internal, ...internal._raw });
+            activeSelectedTarget = { ...internal, ...internal._raw };
+            activeSelectedResult = selectedResult(snapshot, activeSelectedTarget);
+            return activeSelectedResult;
           }
           if (nowFn() >= deadline) {
             if (identityMismatch) throw codedError("ZHAOPIN_MESSAGE_TARGET_MISMATCH", "zhaopin selected conversation changed");

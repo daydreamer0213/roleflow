@@ -69,16 +69,23 @@ async function retryJobAnalyses({ db, input, deps, bulk }) {
     if (decisionState(scored) !== "ready" && !needsMessageContext) {
       return { job, scored, sourcePending: true, analysis: job.analysis };
     }
-    const analysis = await analyze(
+    let analysis = await analyze(
       { ...job, ...scored, greeting: job.greeting || "" },
       { signal: deps.signal || null }
     );
+    throwIfAborted(deps.signal);
+    if (needsMessageContext && job.source === "zhaopin") {
+      const sourceAvailability = job.analysis?.sourceAvailability === "offline" ? "offline" : "unknown";
+      analysis = { ...analysis, sourceAvailability };
+    }
     return { job, scored, sourcePending: false, analysis };
   });
+  throwIfAborted(deps.signal);
   let completed = 0;
   let failed = 0;
   let sourcePending = 0;
   for (const result of results) {
+    throwIfAborted(deps.signal);
     if (result.sourcePending) {
       sourcePending += 1;
       continue;
@@ -100,6 +107,10 @@ async function retryJobAnalyses({ db, input, deps, bulk }) {
     concurrency,
     results
   };
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw signal.reason || Object.assign(new Error("message discovery stopped"), { code: "MESSAGE_DISCOVERY_STOPPED" });
 }
 
 module.exports = {
