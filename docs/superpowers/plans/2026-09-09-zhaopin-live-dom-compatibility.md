@@ -22,19 +22,21 @@
 
 ## Task 1: 最小真实 DOM 兼容与可见错误保留
 
+代码任务已完成：07de183 初次实现，f6e83ab 修复一次任务复审的固定定位登录层漏挡和确定性后续轮询测试缺口；两项复核关闭。实际RED均有记录，初次8项、修复5项定向/相邻检查通过，语法与差异检查通过。主控实站readSearchState+waitForSearchReady核验Vue2四编号及商圈/区级地址成功；Python独立详情原reader读到257字，正常页头不再误判登录。随后公司展示名不能验证导致整轮停止，已转独立 `2026-09-09-zhaopin-message-context-isolation.md`，不重开本任务。
+
 **生产所有权：** `src/adapters/sites/zhaopin.js`、`src/adapters/sites/zhaopin_communication.js`、`src/adapters/sites/zhaopin_message_detail_reader.js`、`src/dashboard/pages/today.js`；如复用已有登录纯函数，仅允许窄改 `src/adapters/sites/zhaopin_message_reader.js` 的该函数/导出。不改这几个文件的无关路径。
 
 **测试所有权：** 对应既有 `tests/zhaopin_readonly_smoke.js`、`tests/zhaopin_communication_adapter_smoke.js`、`tests/zhaopin_message_detail_reader_smoke.js`、`tests/today_dashboard_smoke.js` 及所用 `tests/fixtures/zhaopin/` 合成页；共享登录函数如改变需覆盖 `tests/zhaopin_message_reader_smoke.js`。不新增fixture真实账户、HR正文、简历或密钥。必要时仅扩展已有Dashboard智联旅程以覆盖实际入口，不复制一套新runner。
 
-- [ ] RED：用真实表达式和合成Vue2/Vue3页面复现读取/就绪/最后guard行为，不用假的readSearchState成功绕开要验证的代码。地点正例是同ID下“北京 朝阳 建外”对“北京·朝阳区”；跨城、同城不同区、同名错ID、卡片/详情/计算/链接ID冲突必须拒绝且零外部动作。无可靠ID时仍使用原严格地点比较，不享受新增兼容。
-- [ ] 实现：在既有读取模块内薄适配 Vue2 `$options.name/$props/position/$parent` 与既有 Vue3 结构，统一读取合同，避免搜索和最后guard各自忘掉一个版本。不调用组件方法。更新注入helper缓存版本，回归实际旧版本能够被替换。保持四个明确ID的一致性；地点只在明确同ID条件下容许同城同区的区后缀/额外商圈，不做任意前缀或仅城市匹配。
-- [ ] RED与实现：真实渲染/浏览器测试覆盖正常详情页头及隐藏下拉不阻止JD读取；真正可见登录挑战、风控仍停止并清理临时页；不能按“有JD正文”跳过登录保护，不能豁免整个header下任意登录弹窗。以实际结构作窄豁免，复用既有纯函数时避免复制新的通用框架。
-- [ ] RED与实现：启动失败经历后续轮询和迟到的旧就绪响应仍可见，保留错误和定位编号；就绪检查仍能更新按钮能否启动；用户明确再次启动能正常重试且一次请求，不用永久停止轮询来误挡重试。
-- [ ] 自查并运行上述定向检查，加 `dashboard_zhaopin_smoke`、`zhaopin_message_discovery_smoke`、`communication_cli_authority_smoke` 的实际覆盖检查；所有改动JS语法、git diff --check；提交仅所有权文件，报告每个实际RED/最终GREEN、命令输出、变更和疑点。不要运行完整npm test或真实浏览器，主控负责。
+- [x] RED：用真实表达式和合成Vue2/Vue3页面复现读取/就绪/最后guard行为，不用假的readSearchState成功绕开要验证的代码。地点正例是同ID下“北京 朝阳 建外”对“北京·朝阳区”；跨城、同城不同区、同名错ID、卡片/详情/计算/链接ID冲突必须拒绝且零外部动作。无可靠ID时仍使用原严格地点比较，不享受新增兼容。
+- [x] 实现：在既有读取模块内薄适配 Vue2 `$options.name/$props/position/$parent` 与既有 Vue3 结构，统一读取合同，避免搜索和最后guard各自忘掉一个版本。不调用组件方法。更新注入helper缓存版本，回归实际旧版本能够被替换。保持四个明确ID的一致性；地点只在明确同ID条件下容许同城同区的区后缀/额外商圈，不做任意前缀或仅城市匹配。
+- [x] RED与实现：真实渲染/浏览器测试覆盖正常详情页头及隐藏下拉不阻止JD读取；真正可见登录挑战、风控仍停止并清理临时页；不能按“有JD正文”跳过登录保护，不能豁免整个header下任意登录弹窗。以实际结构作窄豁免，复用既有纯函数时避免复制新的通用框架。
+- [x] RED与实现：启动失败经历后续轮询和迟到的旧就绪响应仍可见，保留错误和定位编号；就绪检查仍能更新按钮能否启动；用户明确再次启动能正常重试且一次请求，不用永久停止轮询来误挡重试。
+- [x] 自查并运行上述定向检查，加 `dashboard_zhaopin_smoke`、`zhaopin_message_discovery_smoke`、`communication_cli_authority_smoke` 的实际覆盖检查；所有改动JS语法、git diff --check；提交仅所有权文件，报告每个实际RED/最终GREEN、命令输出、变更和疑点。完整npm test和真实浏览器仍由主控负责。
 
 ## 主控验证与交付
 
-- [ ] 实施完成后做一次仅针对本任务的规格/质量复核；不重复全分支综合审查。
+- [x] 实施完成后做一次仅针对本任务的规格/质量复核；不重复全分支综合审查。两项针对性修复后已批准。
 - [ ] 定向检查与复核通过后，先对隔离环境进行受控只读实站验证，确认刚修正的真实结构确实可用，再继续实际消息/JD/分析/草稿保存。这是对离线fixture盲区的直接验证，不是对旧测试结果的替代，不包含任何外部发送。
 - [ ] 源码稳定后执行新鲜严格完整npm test，记录精确SHA、数量和退出码；只有通过后才能执行至多一次普通初次招呼。需要扫描样本时走现有正常阶段：采集完成/预算正常返回后才进入分析，不修改隐藏参数，不用全方案重试把旧BOSS岗位拉进来。
 - [ ] 记录真实结果、编辑/切换/重载保留、平台动作数量和未验证前提；停在回复发送之前。仅文档提交之后做与改动相称的最终复验，不把只读部分通过包装成整条通过。

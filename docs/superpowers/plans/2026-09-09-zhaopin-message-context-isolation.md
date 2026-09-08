@@ -29,14 +29,15 @@
 **Files / ownership:**
 - Modify `src/adapters/sites/zhaopin_message_detail_reader.js`: 只拆分 assertSnapshotIdentity 的公司不能验证错误。
 - Modify `src/core/message_discovery.js`: 只在 contextFailureReason 白名单保留新原因；不得扩展任何其他终止错误的继续条件。
+- Modify `src/core/message_preview_state.js`: 只在 UNRESOLVED_REASON_CODES 现有枚举接受同一新代码。实施时真实临时数据库回归报 PREVIEW_REASON_INVALID，证明这是保存待处理原因所必需；不得改其他校验或引入枚举存在性测试。
 - Modify `src/dashboard/message_discovery_view.js`: 在已有 messageDiscoveryRecoveryMessages 中增加准确原因提示。
 - Test `tests/zhaopin_message_detail_reader_smoke.js`, `tests/zhaopin_message_discovery_smoke.js`, `tests/dashboard_message_discovery_smoke.js`；必要相邻验证 `tests/zhaopin_message_job_context_smoke.js`。仅在现有这些测试里添加合成用例，不使用真实公司/消息/简历。
 
 **Interfaces:** 既有 reader 仍抛带 code 的 Error；新增代码 `ZHAOPIN_MESSAGE_DETAIL_COMPANY_UNVERIFIED` 经过现有 unresolved 保存和继续分支，不加入 CONTEXT_TERMINAL_CODES。`ZHAOPIN_MESSAGE_DETAIL_TARGET_MISMATCH` 的编号/标题/关闭后会话变化仍不变。
 
-- [ ] RED：合成同ID同标题但公司“合成数字”/“合成数字技术有限公司”，真实详情表达式/reader 返回新待核对错误而不是 TARGET_MISMATCH；临时页必关闭。真实不同ID或标题仍 TARGET_MISMATCH，原法定后缀正例保持成功。
-- [ ] RED：队列首项 resolver 抛上述新原因，第二项已有完整合成上下文。必须保存首项原文/原因、不为它关联/分析/草拟，但第二项得到真实现有草稿路径结果。覆盖同队列 TARGET_MISMATCH 时第二项不得调用；使用现有注入点和临时数据库，不用假的整个run成功代替代码。
-- [ ] 实现最小分支：
+- [x] RED：合成同ID同标题但公司“合成数字”/“合成数字技术有限公司”，真实详情表达式/reader 返回新待核对错误而不是 TARGET_MISMATCH；临时页必关闭。真实不同ID或标题仍 TARGET_MISMATCH，原法定后缀正例保持成功。
+- [x] RED：队列首项 resolver 抛上述新原因，第二项已有完整合成上下文。必须保存首项原文/原因、不为它关联/分析/草拟，但第二项得到真实现有草稿路径结果。覆盖同队列 TARGET_MISMATCH 时第二项不得调用；使用现有注入点和临时数据库，不用假的整个run成功代替代码。
+- [x] 实现最小分支：
 
 ```js
 if (normalizedText(raw?.currentJobId) !== target.jobId
@@ -48,14 +49,14 @@ if (company && !compatibleCompany(company, selected?.companyName)) {
 }
 ```
 
-在 contextFailureReason 原有三项白名单增加同一新代码，不修改终止集合。已有 sanitizeError 接受 ZHAOPIN_MESSAGE_ 前缀，不新增框架。
+在 contextFailureReason 原有三项白名单和 UNRESOLVED_REASON_CODES 持久化校验枚举增加同一新代码，不修改终止集合。已有 sanitizeError 接受 ZHAOPIN_MESSAGE_ 前缀，不新增框架。
 
-- [ ] UI 准确显示：新原因“会话与岗位详情的公司名称暂时无法核对。消息已保留，未关联岗位或生成草稿；你可以到智联原始会话核对。”；真正 TARGET_MISMATCH 显示“会话与岗位详情不一致，本次只读发现已停止。请核对智联当前会话后再重试。”；ZHAOPIN_MESSAGE_DETAIL_INCOMPLETE 显示“这份岗位详情还不完整，消息已保留，暂不生成草稿。可稍后重新只读发现。”。通过现有渲染行为检查，无文案源码存在性测试。
-- [ ] GREEN：三个更改路径检查和 zhaopin_message_job_context_smoke；四个产品/测试模块实际覆盖如需增加文件先向主控说明原因。所有更改JS语法、git diff --check；仅暂存所有权文件并提交。
-- [ ] 自查、完整报告 task-1-report.md 写清实际RED/GREEN命令、结果、文件、提交和疑点。不要运行全 npm test，主控负责。
+- [x] UI 准确显示：新原因“会话与岗位详情的公司名称暂时无法核对。消息已保留，未关联岗位或生成草稿；你可以到智联原始会话核对。”；真正 TARGET_MISMATCH 显示“会话与岗位详情不一致，本次只读发现已停止。请核对智联当前会话后再重试。”；ZHAOPIN_MESSAGE_DETAIL_INCOMPLETE 显示“这份岗位详情还不完整，消息已保留，暂不生成草稿。可稍后重新只读发现。”。通过现有渲染行为检查，无文案源码存在性测试。
+- [x] GREEN：三个更改路径检查和 zhaopin_message_job_context_smoke，加现有 message_preview_state_smoke；所有更改JS语法、git diff --check；仅暂存所有权文件并提交。结果5/5检查、7/7语法、差异检查通过。
+- [x] 自查、完整报告 task-1-report.md 写清实际RED/GREEN命令、结果、文件、提交和疑点。完整 npm test 仍由主控负责。
 
 ## 主控后续
 
-- [ ] 读取报告、不可变BASE..HEAD任务复核一次；不重开前一DOM/历史综合审查。
+- [x] 读取报告、不可变BASE..HEAD任务复核一次；不重开前一DOM/历史综合审查。`b4ed583a8877df9417c6658e05eeddd25393e30a` 规格通过、质量通过（一个非阻塞测试缺口：后续改动时补唯一草稿直接属于第二会话的断言；已有第一项无job/分类及仅第二项分类、单草稿验证）。未改变的登录/风控/清理仍由已有定向测试及最终完整门禁覆盖，不人为触发真实风控。
 - [ ] 重启自己的隔离服务，用实际UI再次读取，确认目标待处理不会产生虚假关联，其他有效消息能走JD/模型/草稿并自动保存。
 - [ ] 源码稳定后冻结并新鲜完整 npm test；只有通过后才至多一次普通初次招呼。保留真实结果和未验证项，不把部分成功当作所有历史会话通过。
