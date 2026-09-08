@@ -106,7 +106,7 @@ Selected result supplies existing processing fields: `{platform:"zhaopin", conve
 - Query current loaded conversation rows only, do not scroll/fetch historical pages. Normal native click is only `row.click()` after immediate sessionId/job/preview recheck; not child links, buttons, mouse events, navigation, focus, or sender input.
 - Call existing browser.setPageLifecycleActive before selection without focus, then read page readiness with bounded cancellable polling. Missing/ambiguous tab, changed URL/window/session identity, visible risk/login panel, failed timeline, or unsupported structure produce a typed ZHAOPIN_MESSAGE_* error. Empty/loading timeline is not a successful empty conversation: `ZHAOPIN_MESSAGE_CONTENT_PENDING`. Never access broad store, credentials, or private APIs. Current evidence is in `D:/DevData/RoleFlow-zhaopin-messages-20260908/message-contract.json` if one field needs confirmation; no real names/body there.
 
-- [ ] **Step 1: Write realistic synthetic mounted-DOM regression.** Use installed local Playwright and fake browser boundary; execute actual exported expressions against synthetic HTML with Vue2 props. Derive expected output by hand:
+- [x] **Step 1: Write realistic synthetic mounted-DOM regression.** Use installed local Playwright and fake browser boundary; execute actual exported expressions against synthetic HTML with Vue2 props. Derive expected output by hand:
 
 ```js
 assert.deepStrictEqual(selected.messages.map(m => [m.direction, m.contentKind]), [
@@ -118,7 +118,7 @@ assert.strictEqual(selected.sourceJobId, "zhaopin:CCL1234567890J00123456789");
 
 Also catch same-title/different-session selection, changed preview before click (no click), inner renderer duplicate counting, self/unknown direction, malformed IDs, unknown custom card, timelineLoading followed by ready, permanent empty/timeouts, and abort. Spy on actual browser calls and sender controls: no bringToFront/navigate/createTab/input/resume actions; only intended root row click can happen. Test missing optional known fields as unknown, not invented statuses.
 
-- [ ] **Step 2: Run `node tests/zhaopin_message_reader_smoke.js` and capture expected RED, then implement minimal adapter.**
+- [x] **Step 2: Run `node tests/zhaopin_message_reader_smoke.js` and capture expected RED, then implement minimal adapter.**
 
 ```js
 // Never call a site method or application store action to select a row.
@@ -129,7 +129,7 @@ const row = rows.find(el => el.__vue__?.$props?.session?.sessionId === expected.
 
 Existing queue planner copies only fixed fields, so reader's internal target map is keyed by tabId + rowIndex + conversationKey; revalidate the row's stored raw identity there. Return source-scoped display fields but no account identifiers in errors/logs. Poll for both correct selected identity and non-loading visible content; use elapsed timeout and AbortSignal, not a fixed sleep presented as success.
 
-- [ ] **Step 3: Run GREEN plus `tests/message_preview_state_smoke.js` and `tests/message_discovery_smoke.js`; inspect diff, commit reader/test registration only.** Main owns full gate and documentation; return TDD report as before.
+- [x] **Step 3: Run GREEN plus `tests/message_preview_state_smoke.js` and `tests/message_discovery_smoke.js`; inspect diff, commit reader/test registration only.** Main owns full gate and documentation; return TDD report as before.
 
 ### Task 3: Source-aware processing and durable inbound display
 
@@ -171,7 +171,7 @@ Before discarding a ZL selected snapshot for missing context, extract validated 
 
 **Interfaces:** Existing POST `/api/message-discovery` start/stop/dismiss and GET status remain. Start derives connected platforms from frozen browser authority's existing tabs, not `workSite`/today's selection. Add source-aware factory defaults in the existing controller, retaining dependency injection compatibility for existing BOSS tests. One shared lease (existing boss/zhaopin mutually exclusive lease can cover the entire serial operation), one AbortController, one browser lifecycle. `platformRuns` entries `{platform,status,reasonCode,counters}` distinguish not_connected/running/completed/stopped/needs_user_action; overall UI never equates not_connected with success/zero. BOSS-specific runtime/detail safety is evaluated only when BOSS is actually processed. No BOSS readiness helper may auto-open/require BOSS for ZL-only discovery. No new background scheduler or platform mode selector.
 
-Display source comes from persisted jobs/cards (not browser/user-supplied capability flags), and result shaping retains it. Default combined list, source filter `{all,boss,zhaopin}` is a labelled native display control. It must save pending edits before hiding a row; failed save keeps current content visible. Switching source cannot start a scan, clear drafts, switch Today platform, or reload away unsaved text. The selected first visible message updates consistently; empty filtered results have clear text. Keep the existing desktop two-column message layout, existing tokens/typefaces, one primary “开始只读发现” button. Use compact textual source badges, not giant extra platform cards or new decorative panels. Show platform-specific connection/result notices compactly, and BOSS read/delivered counts labelled as BOSS-only; ZL unknown status omitted or labelled “暂不提供已读/送达统计”, never displayed as zero.
+Display source comes from persisted jobs/cards (not browser/user-supplied capability flags), and result shaping retains it. Default combined list, source filter `{all,boss,zhaopin}` is a labelled native display control. It must save pending edits before hiding a row; failed save keeps current content visible. Switching source cannot start a scan, clear drafts, switch Today platform, or reload away unsaved text. The selected first visible message updates consistently; empty filtered results have clear text. Keep the existing desktop two-column message layout, existing tokens/typefaces, one primary “开始只读发现” button. Use compact textual source badges, not giant extra platform cards or new decorative panels. Show platform-specific connection/result notices compactly, and BOSS read/delivered counts labelled as BOSS-only; ZL unknown status omitted or labelled “暂不提供已读/送达统计”, never displayed as zero. During ZL reading use a plain-language loading/reading status and keep safe stop available; content-pending explains that messages have not loaded yet and remain retryable. Do not claim a diagnosed network cause, show raw internal codes as the primary explanation, or ask users to foreground the page.
 
 - [ ] **Step 1: Add failing local HTTP/SQLite/headless tests for user outcomes.**
 
