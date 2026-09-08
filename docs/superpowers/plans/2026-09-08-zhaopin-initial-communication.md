@@ -135,4 +135,10 @@ Task 3 completed task review at `d7e7340317b7c9015a39230980f9136cf750a56f`: impl
 
 ## Final verification by main
 
+- [x] One broad phase review on `0253540..e2ed097`; six Important findings, no Critical. Task-level green results did not supersede these findings.
+- [x] One consolidated fix wave at `2d88e700bfb567feadf119a8eb51ee9c0dc0ddf4`: last-await cancellation, pending request observation, early cleanup ownership, transaction-time plan/context revalidation, confirmed-empty readiness and stable navigation saves. Every finding has actual RED→GREEN; ten affected checks, changed-file syntax and diff checks passed. Two old assertion drifts were separately reproduced on BASE and synchronized only in tests.
+- [x] One scoped fix re-review of `e2ed097..2d88e70`: all six findings addressed; no new Critical/Important or out-of-scope observations. No repeated covering tests or real platform access by reviewer.
+- [ ] Fresh strict complete test gate at exact frozen SHA, with actual count and exit recorded.
+- [ ] Isolated real product journey, one ordinary greeting maximum, message/JD/analysis/draft retention; stop before reply send.
+
 After all tasks and the other current phase plans pass task review, run one broad review and fresh full `npm test` at frozen code. Restart only the isolated acceptance service. From actual local product UI use existing resume/plan, prepare/save native ZL search, read a small new set of full JDs, run actual model analysis, select one eligible exact job and execute one ordinary greeting, then read existing genuine inbound messages and save generated reply draft. Record which reply was historical; do not wait for or invent instant HR responses. Stop before reply send. If any unavoidable real platform action exceeds ordinary greeting, preserve the result and ask the user only for that new authority.
