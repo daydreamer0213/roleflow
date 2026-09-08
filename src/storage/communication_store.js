@@ -116,7 +116,7 @@ function createCommunicationBatch(db, input = {}) {
       : null;
     for (const job of selected) {
       if ((workflowReviewIds && !workflowReviewIds.has(Number(job.id)))
-        || !isCommunicationJobEligible(db, job, { site })) {
+        || !isCommunicationJobEligible(db, job, { site, planId, profileId: plan.profileId })) {
         throw codedError("COMMUNICATION_JOB_INELIGIBLE", `job ${job.id} is not eligible for communication`);
       }
     }
@@ -566,7 +566,11 @@ function hasUserApplicationStatus(job) {
   return String(job?.applicationStatus ?? "").length > 0;
 }
 
-function isCommunicationJobEligible(db, job, { site = "boss" } = {}) {
+function isCommunicationJobEligible(db, job, {
+  site = "boss",
+  planId = job?.searchPlanId,
+  profileId = job?.profileId
+} = {}) {
   const normalizedSite = communicationSite(site);
   if (normalizedSite === "boss") {
     if (!job || job.source !== 'boss' || job.archived || !ALLOWED_BUCKETS.has(job.decisionBucket) || !isBossJobUrl(job.url) || hasUserApplicationStatus(job)) {
@@ -584,8 +588,13 @@ function isCommunicationJobEligible(db, job, { site = "boss" } = {}) {
     || (job.qualityTags || []).some((tag) => COMMUNICATION_ELIGIBILITY_BLOCKERS.has(tag))) {
     return false;
   }
-  const evidence = db.prepare("SELECT site FROM batches WHERE id = ?").get(Number(job.batchId));
-  if (evidence?.site !== "zhaopin") return false;
+  const evidence = db.prepare(`SELECT 1
+    FROM batches observations
+    JOIN search_plans plans ON plans.id = observations.search_plan_id
+    WHERE observations.id = ? AND observations.site = 'zhaopin'
+      AND observations.search_plan_id = ? AND observations.profile_id = ?
+      AND plans.profile_id = observations.profile_id`).get(Number(job.batchId), Number(planId), Number(profileId));
+  if (!evidence) return false;
   try {
     const identity = zhaopinJobIdentity(job.url);
     if (identity.sourceId !== String(job.sourceId)) return false;

@@ -134,6 +134,15 @@ function storageAndEligibilitySmoke() {
     const wrongProfile = upsertJob(fixture.db, zhaopinJob("ZLPROFILE2"), otherProfileBatch);
     assertRejected(fixture, wrongProfile);
 
+    const samePlanWrongProfileBatch = createBatch(fixture.db, "zhaopin", "AI Agent", "same plan wrong profile", {
+      profileId: otherProfile,
+      searchPlanId: fixture.planId
+    });
+    const samePlanWrongProfile = upsertJob(fixture.db, zhaopinJob("ZLSAMEPLANWRONGPROFILE"), samePlanWrongProfileBatch);
+    const beforeWrongProfile = batchCount(fixture.db);
+    assertRejected(fixture, samePlanWrongProfile);
+    assert.equal(batchCount(fixture.db), beforeWrongProfile);
+
     for (const [sourceId, overrides] of [
       ["", { sourceId: "" }],
       ["ZLSHORT", { description: "short JD" }],
