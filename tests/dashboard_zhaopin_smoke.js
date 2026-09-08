@@ -30,16 +30,21 @@ function seed(db) {
 
 function fakeBrowser() {
   const tabs = [{ id: 'dashboard', windowId: 'window', active: true, url: 'http://127.0.0.1/plan' }];
-  return {
+  const browser = {
     tabs,
+    prepareSearchClock: 0,
+    prepareSearchNow: () => browser.prepareSearchClock,
+    prepareSearchSleep: async ms => { browser.prepareSearchClock += ms; },
     async listTabs() { return tabs.map(tab => ({ ...tab })); },
     async createTab(openerId, url) { assert.equal(openerId, 'dashboard'); const tab = { id: 'zl-search', windowId: 'window', active: false, url }; tabs.push(tab); return tab; },
     async evalValue(id, expression) {
       assert.equal(id, 'zl-search');
       if (expression.includes('const clean =')) return true;
       return { url: tabs.find(tab => tab.id === id).url, filterSummary: ['广东'], cards: [], loading: false, risk: false, loginRequired: false, isSearchPage: true };
-    }
+    },
+    async bringToFront() { throw new Error('prepare must not recover by foregrounding a tab'); }
   };
+  return browser;
 }
 
 async function main() {
@@ -162,11 +167,92 @@ async function main() {
     assert.match(fs.readFileSync(report.mdPath, 'utf8'), /用人公司.*发布方/);
     assert.throws(() => renderReports([], path.join(dir, 'invalid-report'), { site: '../escape' }), /source|来源/i);
     assert.equal(fs.existsSync(path.join(dir, 'invalid-report')), false, 'invalid source rejected before output writes');
-    bridge.tabs.splice(0, bridge.tabs.length, { id: 12, windowId: 4, active: true, url: `${base}/plan` });
-    bridge.createTab = async (openerId, url) => { assert.equal(openerId, 12); bridge.tabs.push({ id: 27, windowId: 4, active: false, url }); return { id: 27 }; };
+    let navigationCalls = 0;
+    let pendingUrl = '';
+    let postNavigationReads = 0;
+    bridge.tabs.splice(0, bridge.tabs.length,
+      { id: 12, windowId: 4, active: true, url: `${base}/plan` },
+      { id: 20, windowId: 4, active: false, url: 'https://www.zhaopin.com/jobs/?pageMode=recommend' }
+    );
+    bridge.listTabs = async () => {
+      if (pendingUrl && postNavigationReads++ >= 2) bridge.tabs[1].url = pendingUrl;
+      return bridge.tabs.map(tab => ({ ...tab }));
+    };
+    bridge.navigate = async (id, url) => { assert.equal(id, 20); navigationCalls += 1; pendingUrl = url; };
     response = await post('/api/platform-search/open', { planId: saved.planId, site: 'zhaopin' });
     assert.equal(response.status, 200, await response.text());
-    assert.equal(bridge.tabs[1].id, 27, 'Edge numeric IDs remain numeric');
+    assert.equal(navigationCalls, 1, 'navigation settling must not issue a second navigate');
+    assert.equal(new URL(bridge.tabs[1].url).searchParams.get('kw'), 'AI工程师');
+
+    let createCalls = 0;
+    let createListReads = 0;
+    const delayedCreated = { id: 27, windowId: 4, active: false, url: '' };
+    bridge.tabs.splice(0, bridge.tabs.length, { id: 12, windowId: 4, active: true, url: `${base}/plan` });
+    bridge.listTabs = async () => {
+      if (createCalls && createListReads++ >= 2 && !bridge.tabs.includes(delayedCreated)) bridge.tabs.push(delayedCreated);
+      return bridge.tabs.map(tab => ({ ...tab }));
+    };
+    bridge.createTab = async (openerId, url) => { assert.equal(openerId, 12); createCalls += 1; delayedCreated.url = url; return '27'; };
+    response = await post('/api/platform-search/open', { planId: saved.planId, site: 'zhaopin' });
+    assert.equal(response.status, 200, await response.text());
+    assert.equal(createCalls, 1, 'delayed tab discovery must not create a duplicate');
+    assert.equal(bridge.tabs[1].id, 27, 'fresh Edge list ID remains numeric even when create returns a string');
+
+    for (const unsafe of [
+      { id: 28, windowId: 9, active: false, label: 'wrong-window' },
+      { id: 28, windowId: 4, active: true, label: 'active-tab' }
+    ]) {
+      let closeCalls = 0;
+      bridge.tabs.splice(0, bridge.tabs.length, { id: 12, windowId: 4, active: true, url: `${base}/plan` });
+      bridge.listTabs = async () => bridge.tabs.map(tab => ({ ...tab }));
+      bridge.createTab = async (_openerId, url) => { createCalls += 1; bridge.tabs.push({ ...unsafe, url }); return '28'; };
+      bridge.closeTab = async id => { closeCalls += 1; assert.equal(id, 28); bridge.tabs.splice(bridge.tabs.findIndex(tab => tab.id === id), 1); };
+      response = await post('/api/platform-search/open', { planId: saved.planId, site: 'zhaopin' });
+      assert.equal(response.status, 409, `${unsafe.label} created tab must be rejected`);
+      assert.equal(closeCalls, 1, 'only the attributable new tab is cleaned');
+      assert.deepEqual(bridge.tabs.map(tab => tab.id), [12]);
+    }
+
+    let existingCloseCalls = 0;
+    bridge.tabs.splice(0, bridge.tabs.length,
+      { id: 12, windowId: 4, active: true, url: `${base}/plan` },
+      { id: 20, windowId: 4, active: false, url: 'https://www.zhaopin.com/jobs/?pageMode=recommend' }
+    );
+    bridge.listTabs = async () => bridge.tabs.map(tab => ({ ...tab }));
+    bridge.navigate = async (_id, url) => { navigationCalls += 1; const wrong = new URL(url); wrong.searchParams.set('kw', '另一个关键词'); bridge.tabs[1].url = wrong.toString(); };
+    bridge.closeTab = async () => { existingCloseCalls += 1; };
+    response = await post('/api/platform-search/open', { planId: saved.planId, site: 'zhaopin' });
+    assert.equal(response.status, 409, 'a committed same-host URL with the wrong keyword must fail');
+    assert.equal(existingCloseCalls, 0, 'an existing user search tab must never be closed');
+
+    bridge.prepareSearchClock = 0;
+    bridge.tabs[1].url = 'https://www.zhaopin.com/jobs/?pageMode=recommend';
+    bridge.navigate = async () => { navigationCalls += 1; };
+    response = await post('/api/platform-search/open', { planId: saved.planId, site: 'zhaopin' });
+    const timeoutBody = await response.text();
+    assert.equal(response.status, 409, timeoutBody);
+    assert.match(timeoutBody, /ZHAOPIN_SEARCH_NAVIGATION_TIMEOUT/, 'unchanged old URL gets the specific bounded timeout');
+    assert.equal(existingCloseCalls, 0, 'navigation timeout must not close an existing tab');
+
+    let closeVisibilityReads = 0;
+    let closingId = null;
+    bridge.prepareSearchClock = 0;
+    bridge.tabs.splice(0, bridge.tabs.length, { id: 12, windowId: 4, active: true, url: `${base}/plan` });
+    bridge.listTabs = async () => {
+      if (closingId !== null && closeVisibilityReads++ >= 2) {
+        bridge.tabs.splice(bridge.tabs.findIndex(tab => tab.id === closingId), 1);
+        closingId = null;
+      }
+      return bridge.tabs.map(tab => ({ ...tab }));
+    };
+    bridge.createTab = async (_openerId, url) => {
+      bridge.tabs.push({ id: 29, windowId: 4, active: false, url });
+      throw Object.assign(new Error('synthetic create failure'), { code: 'BROWSER_COMMAND_FAILED' });
+    };
+    bridge.closeTab = async id => { assert.equal(id, 29); closingId = id; };
+    response = await post('/api/platform-search/open', { planId: saved.planId, site: 'zhaopin' });
+    assert.equal(response.status, 409, await response.text());
+    assert.deepEqual(bridge.tabs.map(tab => tab.id), [12], 'failed create cleanup waits until the attributable tab is gone');
     console.log('dashboard_zhaopin_smoke HTTP/storage/report ok');
   } finally {
     if (server) await new Promise(resolve => server.close(resolve));

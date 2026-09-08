@@ -2757,6 +2757,13 @@ function requestedSite(value) {
 }
 
 async function prepareZhaopinSearch({ db, plan, browser }) {
+  const { isBrowserTabId, sameBrowserTabId, sortedBrowserTabIds } = require('../core/browser_tab_identity');
+  const nowFn = typeof browser.prepareSearchNow === 'function' ? browser.prepareSearchNow : Date.now;
+  const sleepFn = typeof browser.prepareSearchSleep === 'function'
+    ? browser.prepareSearchSleep
+    : ms => new Promise(resolve => setTimeout(resolve, ms));
+  const deadlineMs = 120000;
+  const pollIntervalMs = 500;
   const before = await browser.listTabs();
   const dashboards = before.filter(isZhaopinWorkspaceTab);
   const searches = before.filter(tab => {
@@ -2771,11 +2778,14 @@ async function prepareZhaopinSearch({ db, plan, browser }) {
       if (!currentUrl.searchParams.has('pageMode') || currentUrl.searchParams.get('pageMode') === 'recommend') currentUrl.searchParams.set('pageMode', 'search');
       const template = canonicalizeZhaopinSearchTemplate(currentUrl.toString());
       if (search.active) throw appError('ZHAOPIN_BACKGROUND_OPEN_FAILED', '请回到同窗 RoleFlow 页面后再准备智联搜索。', { statusCode: 409 });
-      await browser.navigate(search.id, buildZhaopinSearchUrl({ searchTemplate: template, keyword: planKeywords(plan.plan)[0] }));
-      const after = await browser.listTabs();
-      const target = after.find(tab => tab.id === search.id);
-      if (!target || target.windowId !== search.windowId || target.active || JSON.stringify(after.filter(tab => tab.active).map(tab => tab.id)) !== JSON.stringify(before.filter(tab => tab.active).map(tab => tab.id))) throw appError('ZHAOPIN_BACKGROUND_OPEN_FAILED', '无法确认智联搜索页仍在同窗后台，已停止。', { statusCode: 409 });
-      canonicalizeZhaopinSearchTemplate(target.url);
+      const targetUrl = buildZhaopinSearchUrl({ searchTemplate: template, keyword: planKeywords(plan.plan)[0] });
+      await browser.navigate(search.id, targetUrl);
+      await waitForPreparedTab({
+        findTarget: tabs => tabs.find(tab => sameBrowserTabId(tab.id, search.id)),
+        previousUrl: search.url,
+        expectedUrl: targetUrl,
+        windowId: search.windowId
+      });
     } else canonicalizeZhaopinSearchTemplate(search.url);
     return { site: 'zhaopin', message: '已找到智联搜索页。设置原生条件后，点击“保存智联条件”。' };
   }
@@ -2784,17 +2794,109 @@ async function prepareZhaopinSearch({ db, plan, browser }) {
   assertZhaopinWorkspaceWindow(before, opener);
   const template = getPlatformSearchContext(db, { planId: plan.id, site: 'zhaopin' })?.searchTemplate || { url: 'https://www.zhaopin.com/jobs/?pageMode=search' };
   const url = buildZhaopinSearchUrl({ searchTemplate: template, keyword: planKeywords(plan.plan)[0] });
-  const created = await browser.createTab(opener.id, url);
-  const createdId = created?.id ?? created?.tabId ?? created;
-  const after = await browser.listTabs();
-  const target = after.find(tab => tab.id === createdId);
-  const active = tabs => tabs.filter(tab => tab.active).map(tab => tab.id);
-  if (!target || target.windowId !== opener.windowId || target.active || JSON.stringify(active(before)) !== JSON.stringify(active(after))) {
-    if (target && browser.closeTab) await browser.closeTab(createdId);
-    throw appError('ZHAOPIN_BACKGROUND_OPEN_FAILED', '未能确认后台同窗打开，已停止。请检查浏览器工作区后重试。', { statusCode: 409 });
+  let reportedCreatedId = null;
+  let target = null;
+  try {
+    const created = await browser.createTab(opener.id, url);
+    reportedCreatedId = created?.id ?? created?.tabId ?? created;
+    target = await waitForPreparedTab({
+      findTarget: tabs => resolveFreshCreatedTab(before, tabs, reportedCreatedId),
+      previousUrl: 'about:blank',
+      expectedUrl: url,
+      windowId: opener.windowId
+    });
+  } catch (error) {
+    const current = await browser.listTabs();
+    const attributable = target || attributableCreatedTab(before, current, reportedCreatedId, url);
+    if (attributable && typeof browser.closeTab === 'function') {
+      try { await closeAndVerify(attributable.id); }
+      catch (cleanupError) {
+        throw appError('ZHAOPIN_BACKGROUND_OPEN_FAILED', '智联后台标签页清理未能确认，已停止。请检查浏览器工作区后重试。', { statusCode: 409, cause: cleanupError });
+      }
+    }
+    if (error?.code === 'ZHAOPIN_SEARCH_NAVIGATION_TIMEOUT') throw error;
+    throw appError('ZHAOPIN_BACKGROUND_OPEN_FAILED', '未能确认后台同窗打开，已停止。请检查浏览器工作区后重试。', { statusCode: 409, cause: error });
   }
-  canonicalizeZhaopinSearchTemplate(target.url);
   return { site: 'zhaopin', message: '智联搜索页已在同窗后台准备。设置条件后，点击“保存智联条件”。' };
+
+  async function waitForPreparedTab({ findTarget, previousUrl, expectedUrl, windowId }) {
+    const deadline = nowFn() + deadlineMs;
+    while (true) {
+      const tabs = await browser.listTabs();
+      const target = findTarget(tabs);
+      if (target) {
+        if (target.windowId !== windowId || target.active === true || !sameActiveTabs(before, tabs)) {
+          throw appError('ZHAOPIN_BACKGROUND_OPEN_FAILED', '无法确认智联搜索页仍在同窗后台，已停止。', { statusCode: 409 });
+        }
+        const status = preparedUrlStatus(target.url, previousUrl, expectedUrl);
+        if (status === 'ready') return target;
+        if (status === 'wrong') {
+          throw appError('ZHAOPIN_BACKGROUND_OPEN_FAILED', '智联搜索页进入了非预期地址，已停止。请检查浏览器工作区后重试。', { statusCode: 409 });
+        }
+      }
+      if (nowFn() >= deadline) {
+        throw appError('ZHAOPIN_SEARCH_NAVIGATION_TIMEOUT', '智联搜索页导航未在限定时间内就绪，已停止。请检查该后台标签页后重试。', { statusCode: 409 });
+      }
+      await sleepFn(pollIntervalMs);
+    }
+  }
+
+  function preparedUrlStatus(rawUrl, previousUrl, expectedUrl) {
+    const value = String(rawUrl || '');
+    if (!value || value === 'about:blank' || value === String(previousUrl || '')) return 'pending';
+    try {
+      const actual = new URL(value);
+      const expected = new URL(expectedUrl);
+      const actualTemplate = canonicalizeZhaopinSearchTemplate(actual.toString());
+      const expectedTemplate = canonicalizeZhaopinSearchTemplate(expected.toString());
+      return actualTemplate.url === expectedTemplate.url && actual.searchParams.get('kw') === expected.searchParams.get('kw') ? 'ready' : 'wrong';
+    } catch (error) {
+      if (error?.code === 'ZHAOPIN_SEARCH_PARAM_UNSUPPORTED') throw error;
+      return 'wrong';
+    }
+  }
+
+  function resolveFreshCreatedTab(baseline, tabs, reportedId) {
+    const fresh = tabs.filter(tab => !baseline.some(item => sameBrowserTabId(item.id, tab.id)));
+    if (fresh.length !== 1 || !isBrowserTabId(fresh[0]?.id)) {
+      if (fresh.length > 1) throw appError('ZHAOPIN_BACKGROUND_OPEN_FAILED', '新建智联标签页身份不明确，已停止。', { statusCode: 409 });
+      return null;
+    }
+    if (!sameCreatedTabId(reportedId, fresh[0].id)) {
+      throw appError('ZHAOPIN_BACKGROUND_OPEN_FAILED', '新建智联标签页身份不一致，已停止。', { statusCode: 409 });
+    }
+    return fresh[0];
+  }
+
+  function attributableCreatedTab(baseline, tabs, reportedId, expectedUrl) {
+    const fresh = tabs.filter(tab => !baseline.some(item => sameBrowserTabId(item.id, tab.id)));
+    if (fresh.length !== 1 || !isBrowserTabId(fresh[0]?.id)) return null;
+    if (sameCreatedTabId(reportedId, fresh[0].id)) return fresh[0];
+    return preparedUrlStatus(fresh[0].url, 'about:blank', expectedUrl) === 'ready' ? fresh[0] : null;
+  }
+
+  function sameCreatedTabId(reportedId, listedId) {
+    if (sameBrowserTabId(reportedId, listedId)) return true;
+    return typeof reportedId === 'string' && /^\d+$/.test(reportedId)
+      && Number.isInteger(listedId) && listedId > 0 && reportedId === String(listedId);
+  }
+
+  function sameActiveTabs(left, right) {
+    const first = sortedBrowserTabIds(left.filter(tab => tab.active === true).map(tab => tab.id));
+    const second = sortedBrowserTabIds(right.filter(tab => tab.active === true).map(tab => tab.id));
+    return first.length === second.length && first.every((id, index) => sameBrowserTabId(id, second[index]));
+  }
+
+  async function closeAndVerify(tabId) {
+    await browser.closeTab(tabId);
+    const deadline = nowFn() + deadlineMs;
+    while (true) {
+      const tabs = await browser.listTabs();
+      if (!tabs.some(tab => sameBrowserTabId(tab.id, tabId))) return;
+      if (nowFn() >= deadline) throw new Error('created tab close was not observed');
+      await sleepFn(pollIntervalMs);
+    }
+  }
 }
 
 async function resolveLiveZhaopinContext({ db, plan, matchingContext, logger, browserMode = 'edge', cdpPort = null, browserFactory = createDashboardBrowser, requireSaved = true }) {

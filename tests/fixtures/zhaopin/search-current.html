@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head><meta charset="utf-8"><title>当前结构合成智联搜索页</title></head>
+  <body>
+    <main class="jobs-split-page">
+      <input class="query-sug__input" value="合成关键词">
+      <div class="filter-select-box"><span class="filter-select-box__label">合成地区</span></div>
+      <div class="job-list-panel">
+        <article class="job-card job-card--active" id="current-card">
+          <div class="job-card__title-main"><span class="vue-clamp__text">当前结构合成岗位</span></div>
+          <span class="job-card__salary">18K-25K</span>
+          <span class="job-card__skill-tag">3-5年</span>
+          <span class="job-card__skill-tag">本科</span>
+          <a class="job-card__company-name">合成甲公司</a>
+          <div class="job-card__location">合成市 甲区</div>
+        </article>
+        <article class="job-card" id="other-card">
+          <div class="job-card__title-main"><span class="vue-clamp__text">另一个合成岗位</span></div>
+          <span class="job-card__salary">10K-12K</span>
+          <span class="job-card__skill-tag">经验不限</span>
+          <span class="job-card__skill-tag">大专</span>
+          <a class="job-card__company-name">合成乙公司</a>
+          <div class="job-card__location">另一市·乙区</div>
+        </article>
+      </div>
+
+      <aside class="related-job-panel">
+        <h1 class="job-detail-summary__title-text">诱饵相关岗位</h1>
+        <span class="job-detail-summary__salary">99K-100K</span>
+        <a class="job-detail-summary__company-name">诱饵公司</a>
+        <a class="job-company-info__view-all" href="https://www.zhaopin.com/jobdetail/CCDECOY001J00000000001.htm">诱饵链接</a>
+        <section class="job-detail-card">
+          <h2>职位描述</h2>
+          <div class="job-detail-card__body">诱饵职位描述绝不能被读取。</div>
+        </section>
+      </aside>
+
+      <section class="job-detail-panel" id="current-panel">
+        <div class="job-detail-modules">
+          <header class="job-detail-summary" id="current-summary">
+            <h1 class="job-detail-summary__title"><span class="job-detail-summary__title-text">当前结构合成岗位</span><span class="job-detail-summary__salary">18K-25K</span></h1>
+            <ul class="job-detail-summary__tags">
+              <li>合成市·甲区</li>
+              <li>3-5年</li>
+              <li>本科</li>
+              <li>全职</li>
+            </ul>
+          </header>
+          <div class="job-loading" hidden>加载中</div>
+          <section class="job-detail-card">
+            <h2 class="job-detail-card__title">职位亮点</h2>
+            <div class="job-detail-card__body">这张同类卡片不是职位描述。</div>
+          </section>
+          <section class="job-detail-card" id="description-card">
+            <h2 class="job-detail-card__title">职位描述</h2>
+            <div class="job-detail-card__body">职位描述：当前结构合成职责，要求独立完成可靠交付。</div>
+          </section>
+          <section class="job-company-info">
+            <a class="job-company-info__name">合成甲公司</a>
+            <a class="job-company-info__view-all" href="https://www.zhaopin.com/jobdetail/CCSYNTH001J00000000001.htm?utm_source=fixture">查看岗位</a>
+          </section>
+        </div>
+      </section>
+    </main>
+    <script>
+      const selectedId = 'CCSYNTH001J00000000001';
+      document.getElementById('current-card').__vueParentComponent = {
+        type: { name: 'JobCard' },
+        proxy: { $props: { job: { number: selectedId, name: '当前结构合成岗位', companyName: '合成甲公司', ignoredPrivateField: '不得读取' } } }
+      };
+      document.getElementById('other-card').__vueParentComponent = {
+        type: { name: 'JobCard' },
+        proxy: { $props: { job: { number: 'CCSYNTH002J00000000002', name: '另一个合成岗位', companyName: '合成乙公司' } } }
+      };
+      document.getElementById('current-summary').__vueParentComponent = {
+        type: { name: 'JobDetailSummary' },
+        proxy: {
+          $props: { jobDetail: { detailedPosition: { number: selectedId, name: '当前结构合成岗位' }, ignoredPrivateField: '不得读取' } },
+          position: { number: selectedId }
+        }
+      };
+    </script>
+  </body>
+</html>

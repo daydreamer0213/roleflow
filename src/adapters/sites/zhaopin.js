@@ -9,10 +9,24 @@ const { sourceContentHash } = require('../../storage/job_store');
 const { hasCompleteJobDescription } = require('../../core/job_description_readiness');
 
 const ZHAOPIN_PAGE_HELPERS_EXPRESSION = String.raw`(() => {
-  if (window.__zhaopinReadSearchState) return true;
+  if (window.__zhaopinReadSearchState?.__roleflowVersion === 2) return true;
   const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const validSourceId = (value) => /^[A-Za-z0-9]{1,160}$/.test(String(value || '')) ? String(value) : '';
+  const component = (node, name) => {
+    let current = node?.__vueParentComponent;
+    while (current) {
+      if (current.type?.name === name || current.type?.__name === name) return current;
+      current = current.parent;
+    }
+    return null;
+  };
+  const cardJob = (card) => {
+    const instance = component(card, 'JobCard');
+    return instance?.proxy?.$props?.job || instance?.props?.job;
+  };
   const signature = (card, index) => [
     index,
+    validSourceId(cardJob(card)?.number),
     clean(card.querySelector('.vue-clamp__text, .job-card__title-main')?.textContent),
     clean(card.querySelector('.job-card__salary')?.textContent),
     clean(card.querySelector('.job-card__company-name')?.textContent),
@@ -21,58 +35,91 @@ const ZHAOPIN_PAGE_HELPERS_EXPRESSION = String.raw`(() => {
   ].join('|');
   const cardState = (card, index) => {
     const tags = Array.from(card.querySelectorAll('.job-card__skill-tag')).map((item) => clean(item.textContent)).filter(Boolean);
+    const title = clean(card.querySelector('.vue-clamp__text, .job-card__title-main')?.textContent);
+    const company = clean(card.querySelector('.job-card__company-name')?.textContent);
+    const job = cardJob(card);
+    const rawSourceId = clean(job?.number);
+    const sourceId = validSourceId(job?.number);
     return {
       index,
       signature: signature(card, index),
-      title: clean(card.querySelector('.vue-clamp__text, .job-card__title-main')?.textContent),
+      ...(sourceId && clean(job?.name) === title && clean(job?.companyName) === company ? { sourceId } : {}),
+      ...(rawSourceId ? { currentSourceIdSupplied: true } : {}),
+      title,
       salary: clean(card.querySelector('.job-card__salary')?.textContent),
-      company: clean(card.querySelector('.job-card__company-name')?.textContent),
+      company,
       location: clean(card.querySelector('.job-card__location')?.textContent),
       experience: tags.find((item) => /经验不限|\d+(?:-\d+)?年|年以上|以下/.test(item)) || '',
       education: tags.find((item) => /本科|大专|硕士|博士|高中|中专|MBA/.test(item)) || ''
     };
   };
   const detailState = () => {
-    const pane = document.querySelector('.job-detail-card');
+    const panel = document.querySelector('.job-detail-panel');
+    const pane = panel || document.querySelector('.job-detail-card');
     if (!pane) return { title: '', salary: '', company: '', clientCompany: '', location: '', experience: '', education: '', description: '', url: '' };
-    const textLines = String(pane.querySelector('.job-detail-summary__meta')?.innerText || '').split(/\n+/).map(clean).filter(Boolean);
-    const location = textLines.find((item) => item.includes('·')) || '';
+    const summary = pane.querySelector('.job-detail-summary');
+    const textLines = panel
+      ? Array.from(summary?.querySelectorAll('.job-detail-summary__tags li') || []).map((item) => clean(item.textContent)).filter(Boolean)
+      : String(pane.querySelector('.job-detail-summary__meta')?.innerText || '').split(/\n+/).map(clean).filter(Boolean);
+    const location = panel ? textLines[0] || '' : textLines.find((item) => item.includes('·')) || '';
     const experience = textLines.find((item) => /经验不限|\d+(?:-\d+)?年|年以上|以下/.test(item)) || '';
     const education = textLines.find((item) => /本科|大专|硕士|博士|高中|中专|MBA/.test(item)) || '';
     const companyLine = textLines.find((item) => item !== location && item !== experience && item !== education) || '';
     const clientMatch = companyLine.match(/^客户公司[：:]\s*(.+)$/);
-    const link = Array.from(pane.querySelectorAll('a[href*="/jobdetail/"]')).map((item) => item.href).find(Boolean) || '';
+    const link = panel
+      ? clean(pane.querySelector('.job-company-info__view-all[href*="/jobdetail/"]')?.href)
+      : Array.from(pane.querySelectorAll('a[href*="/jobdetail/"]')).map((item) => item.href).find(Boolean) || '';
+    const descriptionCard = panel
+      ? Array.from(pane.querySelectorAll('.job-detail-card')).find((item) => /^职位描述$/.test(clean(item.querySelector('.job-detail-card__title, h1, h2, h3')?.textContent)))
+      : pane;
+    const summaryComponent = component(summary, 'JobDetailSummary');
+    const jobDetail = summaryComponent?.proxy?.$props?.jobDetail || summaryComponent?.props?.jobDetail;
+    const rawDetailedSourceId = clean(jobDetail?.detailedPosition?.number);
+    const rawComputedSourceId = clean(summaryComponent?.proxy?.position?.number || summaryComponent?.ctx?.position?.number);
+    const detailedSourceId = validSourceId(rawDetailedSourceId);
+    const computedSourceId = validSourceId(rawComputedSourceId);
+    const observedSourceIds = [detailedSourceId, computedSourceId].filter(Boolean);
     return {
       title: clean(pane.querySelector('.job-detail-summary__title-text')?.textContent),
       salary: clean(pane.querySelector('.job-detail-summary__salary')?.textContent),
-      company: clientMatch ? '' : companyLine,
-      clientCompany: clientMatch ? clean(clientMatch[1]) : '',
+      company: panel ? clean(pane.querySelector('.job-detail-summary__company-name, .job-company-info__name')?.textContent) : clientMatch ? '' : companyLine,
+      clientCompany: panel ? '' : clientMatch ? clean(clientMatch[1]) : '',
       location,
       experience,
       education,
-      description: clean(pane.querySelector('.job-detail-card__body')?.innerText),
-      url: link
+      description: clean(descriptionCard?.querySelector('.job-detail-card__body')?.innerText),
+      url: link,
+      observedSourceId: observedSourceIds[0] || '',
+      observedSourceIdSupplied: Boolean(rawDetailedSourceId || rawComputedSourceId),
+      observedSourceIdConflict: Boolean((rawDetailedSourceId && !detailedSourceId) || (rawComputedSourceId && !computedSourceId)) || new Set(observedSourceIds).size > 1
     };
   };
   window.__zhaopinReadSearchState = () => {
-    const cards = Array.from(document.querySelectorAll('.job-list-panel .job-card')).map(cardState);
-    const selectedIndex = Array.from(document.querySelectorAll('.job-list-panel .job-card')).findIndex((item) => item.classList.contains('job-card--active'));
+    const cardNodes = Array.from(document.querySelectorAll('.job-list-panel .job-card'));
+    const cards = cardNodes.map(cardState);
+    const selectedIndex = cardNodes.findIndex((item) => item.classList.contains('job-card--active'));
+    const detail = detailState();
     const bodyText = clean(document.body?.innerText);
     const pathname = location.pathname;
+    const visibleLoader = Array.from(document.querySelectorAll('.job-detail-panel [class*="loading"], .job-detail-panel [class*="skeleton"], .job-detail-card [class*="loading"], .job-detail-card [class*="skeleton"], .job-list-panel [class*="loading"], .job-list-panel [class*="skeleton"]')).some((item) => {
+      const style = getComputedStyle(item);
+      return !item.hidden && item.getAttribute('aria-hidden') !== 'true' && style.display !== 'none' && style.visibility !== 'hidden';
+    });
     return {
       url: location.href,
-      keyword: clean(document.querySelector('.search-keyword-input, input[aria-label*="搜索"]')?.value),
+      keyword: clean(document.querySelector('.query-sug__input, .search-keyword-input, input[aria-label*="搜索"]')?.value),
       filterSummary: Array.from(document.querySelectorAll('.filter-select-box__label')).map((item) => clean(item.textContent)).filter(Boolean),
       cards,
       selectedIndex,
-      detail: detailState(),
-      loading: document.readyState !== 'complete' || Boolean(document.querySelector('.job-detail-card [class*="loading"], .job-list-panel [class*="loading"]')),
+      detail,
+      loading: visibleLoader || cards.length === 0 || selectedIndex < 0 || !detail.title || !detail.description || !detail.url,
       confirmedEnd: Array.from(document.querySelectorAll('.job-list-panel__status.job-list-panel__status--more')).some(item => clean(item.textContent) === '没有更多了'),
       risk: /安全验证|访问异常|行为验证|访问受限/.test(document.title || '') || /账户存在异常行为|暂时无法访问/.test(bodyText),
       loginRequired: /登录后|请登录/.test(bodyText),
       isSearchPage: location.protocol === 'https:' && location.hostname === 'www.zhaopin.com' && pathname === '/jobs/' && new URL(location.href).searchParams.get('pageMode') === 'search'
     };
   };
+  window.__zhaopinReadSearchState.__roleflowVersion = 2;
   window.__zhaopinActivateCard = (expectedIndex, expectedSignature) => {
     const cards = Array.from(document.querySelectorAll('.job-list-panel .job-card'));
     const card = cards[Number(expectedIndex)];
@@ -220,7 +267,9 @@ class ZhaopinSiteAdapter {
       throwIfAborted(signal);
       await assertBindings(assertTabBindings);
       const state = await this.readSearchState(tabId);
-      if (!state.loading && searchStateMatches(state, searchTemplate, keyword, filterSummary)) return state;
+      const selected = state.cards[state.selectedIndex];
+      if (!state.loading && selected && detailMatches(selected, state.detail, state.detailSourceIdConfirmed)
+        && searchStateMatches(state, searchTemplate, keyword, filterSummary)) return state;
       await this.waitWithChecks(signal, assertTabBindings);
     }
     throw zhaopinError('ZHAOPIN_SEARCH_RESTORE_TIMEOUT', '智联未能恢复保存的关键词和筛选条件，请在智联搜索页重新设置并保存条件后再开始。');
@@ -233,7 +282,14 @@ class ZhaopinSiteAdapter {
     await this.assertBoundTab(tabId);
     const state = assertSafeSearchState(await this.browser.evalValue(tabId, "(() => window.__zhaopinReadSearchState())()"));
     const identity = safeIdentity(state.detail?.url);
-    if (identity) state.detail = { ...state.detail, ...identity };
+    const observedSourceId = state.detail?.observedSourceId;
+    state.detailSourceIdConfirmed = Boolean(identity)
+      && state.detail?.observedSourceIdConflict !== true
+      && (state.detail?.observedSourceIdSupplied !== true || observedSourceId === identity.sourceId);
+    if (state.detail) {
+      const { observedSourceId: _observedSourceId, observedSourceIdSupplied: _observedSourceIdSupplied, observedSourceIdConflict: _observedSourceIdConflict, ...detail } = state.detail;
+      state.detail = identity ? { ...detail, ...identity } : detail;
+    }
     return state;
   }
 
@@ -263,7 +319,7 @@ class ZhaopinSiteAdapter {
       throwIfAborted(signal);
       await assertBindings(assertTabBindings);
       const state = await this.readSearchState(tabId);
-      if (state.selectedIndex === refreshedCard.index && !state.loading && detailMatches(refreshedCard, state.detail)) {
+      if (state.selectedIndex === refreshedCard.index && !state.loading && detailMatches(refreshedCard, state.detail, state.detailSourceIdConfirmed)) {
         if (!wasSelected && state.detail.url === beforeUrl) return null;
         const identity = safeIdentity(state.detail.url);
         if (!identity) return null;
@@ -308,17 +364,22 @@ function assertSafeSearchState(state) {
   return state;
 }
 
-function detailMatches(card, detail) {
+function detailMatches(card, detail, detailSourceIdConfirmed = true) {
   const company = detail?.company || detail?.clientCompany || "";
-  return Boolean(detail?.title && detail?.description && detail?.url)
+  return detailSourceIdConfirmed === true && Boolean(detail?.title && detail?.description && detail?.url)
     && sameText(detail.title, card.title)
+    && (!card.currentSourceIdSupplied || (Boolean(card.sourceId) && card.sourceId === detail.sourceId))
     && (!card.salary || sameText(detail.salary, card.salary))
     && (!card.company || sameText(company, card.company) || Boolean(detail.clientCompany))
-    && (!card.location || sameText(detail.location, card.location));
+    && (!card.location || sameLocation(detail.location, card.location));
 }
 
 function sameText(left, right) {
   return String(left || "").replace(/\s+/g, " ").trim() === String(right || "").replace(/\s+/g, " ").trim();
+}
+
+function sameLocation(left, right) {
+  return String(left || "").replace(/[·•・\s]+/g, "").trim() === String(right || "").replace(/[·•・\s]+/g, "").trim();
 }
 
 function safeIdentity(url) {

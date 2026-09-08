@@ -169,6 +169,62 @@ async function main() {
       (error) => error.code === "ZHAOPIN_ABORTED"
     );
     assert.equal(bridge.calls.includes("bringToFront"), false);
+
+    const currentFixtureHtml = fs.readFileSync(path.join(__dirname, "fixtures", "zhaopin", "search-current.html"), "utf8");
+    await page.route("https://www.zhaopin.com/jobs-current/**", (route) => route.fulfill({
+      status: 200,
+      contentType: "text/html; charset=utf-8",
+      body: currentFixtureHtml
+    }));
+    await page.goto("https://www.zhaopin.com/jobs-current/?pageMode=search&kw=%E5%90%88%E6%88%90%E5%85%B3%E9%94%AE%E8%AF%8D");
+    await page.evaluate(() => history.replaceState({}, "", "/jobs/?pageMode=search&kw=%E5%90%88%E6%88%90%E5%85%B3%E9%94%AE%E8%AF%8D"));
+    const currentState = await adapter.readSearchState("ZHAOPIN-SEARCH");
+    assert.equal(currentState.keyword, "合成关键词");
+    assert.equal(currentState.cards[0].sourceId, "CCSYNTH001J00000000001");
+    assert.equal(currentState.detail.title, "当前结构合成岗位");
+    assert.equal(currentState.detail.company, "合成甲公司");
+    assert.equal(currentState.detail.salary, "18K-25K");
+    assert.equal(currentState.detail.location, "合成市·甲区");
+    assert.equal(currentState.detail.experience, "3-5年");
+    assert.equal(currentState.detail.education, "本科");
+    assert.equal(currentState.detail.description, "职位描述：当前结构合成职责，要求独立完成可靠交付。");
+    assert.equal(currentState.detail.description.includes("诱饵"), false);
+    assert.equal(currentState.detail.sourceId, "CCSYNTH001J00000000001");
+    assert.ok(await adapter.readVisiblePaneDetail("ZHAOPIN-SEARCH", currentState.cards[0]), "current selected card and summary IDs match the trusted link");
+
+    await page.evaluate(() => { document.querySelector("#current-card .job-card__location").textContent = "另一市 甲区"; });
+    const wrongLocationState = await adapter.readSearchState("ZHAOPIN-SEARCH");
+    assert.equal(
+      await adapter.readVisiblePaneDetail("ZHAOPIN-SEARCH", wrongLocationState.cards[0]),
+      null,
+      "location punctuation equivalence must not accept another city"
+    );
+    await page.evaluate(() => { document.querySelector("#current-card .job-card__location").textContent = "合成市 甲区"; });
+
+    await page.evaluate(() => {
+      document.getElementById("current-card").__vueParentComponent.proxy.$props.job.number = "CCWRONGCARD1J00000000001";
+    });
+    const wrongCardIdState = await adapter.readSearchState("ZHAOPIN-SEARCH");
+    assert.equal(wrongCardIdState.cards[0].title, wrongCardIdState.detail.title);
+    assert.equal(
+      await adapter.readVisiblePaneDetail("ZHAOPIN-SEARCH", wrongCardIdState.cards[0]),
+      null,
+      "an equal-title current card sourceId must still match the trusted link"
+    );
+    await page.evaluate(() => {
+      document.getElementById("current-card").__vueParentComponent.proxy.$props.job.number = "CCSYNTH001J00000000001";
+    });
+
+    await page.evaluate(() => {
+      const summary = document.getElementById("current-summary").__vueParentComponent;
+      summary.proxy.$props.jobDetail.detailedPosition.number = "CCWRONG001J00000000001";
+      summary.proxy.position.number = "CCWRONG001J00000000001";
+    });
+    assert.equal(
+      await adapter.readVisiblePaneDetail("ZHAOPIN-SEARCH", currentState.cards[0]),
+      null,
+      "equal titles must not override a current-layout sourceId mismatch"
+    );
   } finally {
     await browser.close();
   }
