@@ -29,15 +29,17 @@
 
 ## Task 1: 后台扫描就绪及检查点合同
 
+**本地实现与复核完成：** 8cb39ff 完成两条真实RED、5项指定及8项相邻GREEN；一次复审指出双异常覆盖原错，a61e34c 以两条RED、三项GREEN修复，唯一发现已复核关闭。没有新增阻塞，实际平台复验及稳定SHA全测仍由主控接着执行。下列实现项均已完成。
+
 **Ownership:** `src/adapters/sites/zhaopin.js`；测试 `tests/zhaopin_readonly_smoke.js`、`tests/zhaopin_workflow_smoke.js`、`tests/fixtures/zhaopin/` 的合成内容。必要相邻测试可运行，不修改 storage/CLI/browser transport/communication 模块；确需扩大先告知主控。
 
 **Interfaces:** 保持 `ZhaopinSiteAdapter` 公开接口；`waitForSearchReady` 同时被 dashboard 预检和沟通检查/恢复使用，改动须覆盖这些调用且不拆掉沟通已有 focus scope。`onProgressCheckpoint` 需要 storage 合法 activity=`searching|reading_detail|target_complete` 与完整冻结计数；`onTargetComplete` 同样需要五个计数。真实阶段仍是扫描完成后分析。
 
-- [ ] RED：合成后台页标题初始空，既有后台渲染开启后通过可见 DOM 出现；成功、超时、登录/风控、取消与清理失败分别证明 scope 释放，前台不变、无激活，不吞清理异常。不要以假 readSearchState 直接返回成功替代真实 helper 行为。考虑滚动新增卡片仍需要后台渲染，以及继承类沟通 scope 不被提前释放。选最小充分的有界作用域，不写新的全平台管理器；不能仅把超时加长或退回组件标题。
-- [ ] RED：同模板/关键词下，保存九项默认标签与当前新增默认融资阶段兼容；一旦出现具体筛选值、丢失原选中值、未知标签变化、URL/关键词变化仍拒绝。实现只忽略已验证的默认类别标签 `地区/薪资/学历/经验/公司性质/融资阶段/公司人数/工作性质/职位类别/公司行业`，保留其余实际选择的严格比较，不改已保存数据，不删除任意未知摘要。
-- [ ] RED：适配器真实 callback 接入临时 SQLite 的既有 checkpoint 函数，覆盖首次导航失败、读过一条再失败、正常 cardLimit 小于页面卡数、滚动后进度、暂停/恢复。检查不再产生 `SCAN_PROGRESS_INVALID`，错误仍保留原原因，已存 JD 不丢，恢复目标位置仍按完整冻结 targets 编号。
-- [ ] 实现最小局部进度构造并在所有输出路径复用：`targetPosition = targets.indexOf(target)+1`，`targetTotal=targets.length`；进度的 `targetDiscovered/detailTotal/detailPosition` 在当前 target.cardLimit 内且关系一致，用当前已知卡片与已完成条数计算，不以0覆盖已完成值。例：页面20卡、cardLimit2、成功2 => discovered2/detailTotal2/detailPosition2；导航未成功=> discovered0/detailTotal0/detailPosition0，但位置/总数仍1/3。不要截断实际保存的合格已读岗位以掩盖计数错误。
-- [ ] 跑最小RED确认后实现；定向GREEN至少覆盖 readonly、workflow、communication_adapter、dashboard_zhaopin 和 workflow_scan 相关；所有改动JS语法、diff --check；仅提交所有权文件，报告真实RED/GREEN/边界/疑点。由主控发独立任务复核。
+- [x] RED：合成后台页标题初始空，既有后台渲染开启后通过可见 DOM 出现；成功、超时、登录/风控、取消与清理失败分别证明 scope 释放，前台不变、无激活，不吞清理异常。不要以假 readSearchState 直接返回成功替代真实 helper 行为。考虑滚动新增卡片仍需要后台渲染，以及继承类沟通 scope 不被提前释放。选最小充分的有界作用域，不写新的全平台管理器；不能仅把超时加长或退回组件标题。
+- [x] RED：同模板/关键词下，保存九项默认标签与当前新增默认融资阶段兼容；一旦出现具体筛选值、丢失原选中值、未知标签变化、URL/关键词变化仍拒绝。实现只忽略已验证的默认类别标签 `地区/薪资/学历/经验/公司性质/融资阶段/公司人数/工作性质/职位类别/公司行业`，保留其余实际选择的严格比较，不改已保存数据，不删除任意未知摘要。
+- [x] RED：适配器真实 callback 接入临时 SQLite 的既有 checkpoint 函数，覆盖首次导航失败、读过一条再失败、正常 cardLimit 小于页面卡数、滚动后进度、暂停/恢复。检查不再产生 `SCAN_PROGRESS_INVALID`，错误仍保留原原因，已存 JD 不丢，恢复目标位置仍按完整冻结 targets 编号。
+- [x] 实现最小局部进度构造并在所有输出路径复用：`targetPosition = targets.indexOf(target)+1`，`targetTotal=targets.length`；进度的 `targetDiscovered/detailTotal/detailPosition` 在当前 target.cardLimit 内且关系一致，用当前已知卡片与已完成条数计算，不以0覆盖已完成值。例：页面20卡、cardLimit2、成功2 => discovered2/detailTotal2/detailPosition2；导航未成功=> discovered0/detailTotal0/detailPosition0，但位置/总数仍1/3。不要截断实际保存的合格已读岗位以掩盖计数错误。
+- [x] 跑最小RED确认后实现；定向GREEN至少覆盖 readonly、workflow、communication_adapter、dashboard_zhaopin 和 workflow_scan 相关；所有改动JS语法、diff --check；仅提交所有权文件，报告真实RED/GREEN/边界/疑点。由主控发独立任务复核。
 
 ## Task 2: 中断立即展示真实状态
 
@@ -45,9 +47,9 @@
 
 **Interfaces:** `/api/workflow-status` 给出 workflow.status、errorCode、progress.phaseKey、controls；server 已能正确展示中断页面及 stop-only 控制。
 
-- [ ] RED：从 rendered scanning 页开始，通过真实客户端脚本收到 interrupted、相同 acquisition phaseKey、canStop=true 的 snapshot；断言会加载正确的服务端中断页且只有一次导航，而不是静态匹配代码文本。验证 interrupted 后错误、继续/结束按钮可见，不再显示“没有阻塞”。
-- [ ] 实现：结构性的终态变化除 phaseKey 外也触发既有 reload 路径；在设置 dataset.status、停止轮询前正确判断，保留 reloadRequested 防重复。不要对每个 progressRevision/计数/控制值变化无限刷新；暂停/恢复、通信阶段、BOSS 现有流程保持原语义。
-- [ ] GREEN：覆盖同阶段终态、相同活动状态不刷新、已有阶段切换/暂停/停止；语法、diff --check、现有相关页面测试；仅提交所有权文件，提供报告，由主控独立任务复核。
+- [x] RED：从 rendered scanning 页开始，通过真实客户端脚本收到 interrupted、相同 acquisition phaseKey、canStop=true 的 snapshot；断言会加载正确的服务端中断页且只有一次导航，而不是静态匹配代码文本。验证 interrupted 后错误、继续/结束按钮可见，不再显示“没有阻塞”。
+- [x] 实现：结构性的终态变化除 phaseKey 外也触发既有 reload 路径；在设置 dataset.status、停止轮询前正确判断，保留 reloadRequested 防重复。不要对每个 progressRevision/计数/控制值变化无限刷新；暂停/恢复、通信阶段、BOSS 现有流程保持原语义。
+- [x] GREEN：覆盖同阶段终态、相同活动状态不刷新、已有阶段切换/暂停/停止；语法、diff --check、现有相关页面测试；仅提交所有权文件，提供报告，由主控独立任务复核。e0258bc 已通过一次真实RED、两项相关GREEN、语法/diff及规格/质量复核；既有SQLite实验警告记为非阻塞，不为消除输出而扩范围。
 
 ## 主控后续
 
