@@ -15,7 +15,7 @@
 | 统一消息布局 | 任务复核和本地浏览器回归完成；待阶段最终复核与真实验收 | `622e0ce`、`767c22b`、`e975a92`；整组草稿稳定保存后才切换。主控在 `17cc3d4` 新鲜严格旅程退出码 0 |
 | 消息岗位资料补全 | 实现、定向回归和独立任务复核完成；真实验收待完成 | `ab7a246` 后的两项重要问题由 `5664310` 修复；补充回归通过，复核确认两项关闭且无新增重要问题 |
 | 新版搜索结构与准备页等待 | 实现和独立任务复核完成；真实 prepare/save/start 待验收 | `5ffabe7` 通过 4 项定向检查；`6163af6` 补齐页面消失、严格清理归属、祖先隐藏 loader 与取消来源，新增失败回归后两项覆盖检查、语法和差异检查通过；四项复核问题关闭，无新增重要问题 |
-| 智联普通初次沟通 | 来源批次/运行控制完成任务复核；浏览器适配与产品入口待实现 | `d67e4ec`、`8c13026`；来源/岗位/搜索条件冻结，未点击项可恢复，不混入 BOSS 漏斗；执行仍关闭 |
+| 智联普通初次沟通 | 来源批次/运行控制与浏览器适配完成任务复核；产品入口待接线 | 底层 `d67e4ec`、`8c13026`；适配器 `bf40787`、`44555a0`、`9108e0c`；双重结果核对、串行 IM 返回及清理恢复已补回归并复核关闭；执行仍关闭 |
 | 当前代码完整门禁 | 未运行 | 完成各任务及复核后，从头运行一次严格完整门禁并记录精确 SHA |
 | 当前真实端到端 | 未运行 | 尚未发起本轮普通打招呼、回复、简历处理或投递 |
 
@@ -36,6 +36,8 @@
 独立复核随后复现两项缺陷：正确编号但标题/公司尚空的骨架页立即被误判为错岗位；详情层的 `ZHAOPIN_MESSAGE_RISK_CONTROL` 未被控制器识别，停止当轮却没有保存后续智联阻断。`5664310c1048badf2dc7f1c13e7701ec0d087168` 先补真实失败回归，再分别允许缺失字段等待、统一识别两种实际智联风险码。`zhaopin_message_detail_reader_smoke`、`zhaopin_message_discovery_smoke`、`dashboard_message_discovery_smoke` 和 `git diff --check` 均退出码 0。修复复核确认两项均已处理，没有新增 Critical/Important；普通加载超时不会进入风险冷却，BOSS 状态不变。
 
 ## 实际环境与资料保护
+
+普通沟通浏览器适配 `bf407876be73987ebce9e73a7c4948cd4b08f26f` 的 6 项定向检查（adapter、browser transport、message reader、readonly search、communication executor、CLI authority）全部退出码 0，8 项 JS 语法和差异检查通过。独立审查提出 5 项重要问题：焦点释放过早、IM 成功后不能继续下一项、等待网络时不独立检查风险、损坏证据误分类，以及不应缩小 BOSS 既有方法范围；`44555a0` 补齐逐项失败回归并修复，adapter/transport 检查通过。该修复又暴露一次清理失败后资源引用丢失的问题；`9108e0c1ee6032856ebecf301d64972b3c2fcdab` 保留未释放资源、确保结束操作，并通过真实调用计数的合成恢复回归。最终差异复核确认原 5 项和清理恢复问题全部关闭，无新增 Critical/Important。以上均为本地合成验证，未运行本阶段完整门禁或真实发送。
 
 普通沟通存储/控制任务在 `d67e4ec` 完成 6 项新鲜定向检查：`zhaopin_communication_storage_smoke`、`communication_batch_storage_smoke`、`communication_application_smoke`、`communication_runtime_smoke`、`communication_calibration_gate_smoke`、`communication_executor_smoke`，均退出码 0。独立复核发现“同计划、不同用户资料的观察记录”可过晚才被拒绝；`8c130267bbf877da192996b309e9fd0cfbcea8cb` 新增失败回归后，提前在创建事务核对观察记录的资料/计划/来源，拒绝时不产生批次。3 项覆盖回归、语法和差异检查通过，修复复核无新增重要问题。BOSS 行为不变，智联仍为 `dom_verified / e2e_pending / executionEnabled:false`。
 
