@@ -130,6 +130,7 @@ function loadLinkableJob(db, { profileId, planId, jobId, unresolved }) {
   const row = db.prepare(`SELECT jobs.*
     FROM jobs
     WHERE jobs.id = ?
+      AND jobs.source = 'boss'
       AND (
         EXISTS (
           SELECT 1 FROM candidate_progress_cards cards

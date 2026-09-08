@@ -111,7 +111,21 @@ try {
     previewKind: "possible_hr_reply",
     observedAt: now
   });
-  assert.strictEqual(listPreviewStates(db, { profileId }).length, 1);
+  recordPreviewState(db, {
+    profileId,
+    platform: "zhaopin",
+    conversationKey: digest("conversation-a"),
+    previewDigest: digest("zhaopin-first"),
+    previewKind: "possible_hr_reply",
+    observedAt: now
+  });
+  assert.deepStrictEqual(listPreviewStates(db, { profileId }).map((item) => item.platform), ["boss"]);
+  assert.deepStrictEqual(listPreviewStates(db, { profileId, platform: "zhaopin" }).map((item) => item.platform), ["zhaopin"]);
+  assert.strictEqual(listPreviewStates(db, { profileId, platform: null }).length, 2);
+  assert.throws(
+    () => listPreviewStates(db, { profileId, platform: "other" }),
+    (error) => error.code === "PREVIEW_PLATFORM_INVALID"
+  );
 
   planned = planMessageDiscoveryQueue({
     rows: [readRow(digest("conversation-a"), digest("changed"))],
@@ -175,7 +189,27 @@ try {
       messageText: "禁止保存的消息正文"
     }
   });
+  recordUnresolvedMessageDiscoveryItem(db, {
+    profileId,
+    platform: "zhaopin",
+    conversationKey: digest("conversation-c"),
+    previewDigest: digest("zhaopin-unmatched"),
+    previewKind: "possible_hr_reply",
+    reasonCode: "BOSS_MESSAGE_CARD_NOT_FOUND",
+    observedAt: now,
+    identity: { positionTitle: "Zhaopin RAG 应用工程师", company: "示例科技" }
+  });
   const unresolved = listUnresolvedMessageDiscoveryItems(db, { profileId });
+  assert.deepStrictEqual(unresolved.map((item) => item.platform), ["boss"]);
+  assert.deepStrictEqual(
+    listUnresolvedMessageDiscoveryItems(db, { profileId, platform: "zhaopin" }).map((item) => item.platform),
+    ["zhaopin"]
+  );
+  assert.strictEqual(listUnresolvedMessageDiscoveryItems(db, { profileId, platform: null }).length, 2);
+  assert.throws(
+    () => listUnresolvedMessageDiscoveryItems(db, { profileId, platform: "other" }),
+    (error) => error.code === "PREVIEW_PLATFORM_INVALID"
+  );
   assert.deepStrictEqual(unresolved, [{
     profileId,
     platform,

@@ -313,6 +313,73 @@ try {
     contextCandidate
   );
 
+  const zhaopinBatchId = createBatch(db, "zhaopin", "zhaopin-message-context", "zhaopin context fixture", {
+    profileId: contextFixture.profileId,
+    searchPlanId: contextFixture.planId
+  });
+  const zhaopinJobId = upsertJob(db, {
+    source: "zhaopin",
+    sourceId: "job-context",
+    keyword: "zhaopin-message-context",
+    title: "Zhaopin context",
+    company: "Zhaopin Co",
+    location: "Shanghai",
+    salary: "30-40K",
+    experience: "3-5年",
+    education: "本科",
+    bossActiveText: "",
+    url: "https://www.zhaopin.com/job/job-context.html",
+    tags: [],
+    description: "ZHAOPIN_COMPLETE_JD ".repeat(12),
+    qualityTags: [],
+    analysis: { semanticStatus: "complete", marker: "zhaopin" }
+  }, zhaopinBatchId);
+  ensureProgressCard(db, {
+    profileId: contextFixture.profileId,
+    planId: contextFixture.planId,
+    jobId: zhaopinJobId,
+    source: "zhaopin",
+    now
+  });
+  assert.deepStrictEqual(
+    listMessageDiscoveryCandidates(db, { profileId: contextFixture.profileId }).map((item) => item.source),
+    ["boss"]
+  );
+  const zhaopinCandidate = listMessageDiscoveryCandidates(db, {
+    profileId: contextFixture.profileId,
+    platform: "zhaopin"
+  }).find((item) => item.jobId === zhaopinJobId);
+  assert.strictEqual(zhaopinCandidate.source, "zhaopin");
+  assert.strictEqual(
+    findMessageDiscoveryJobContext(db, {
+      profileId: contextFixture.profileId,
+      planId: contextFixture.planId,
+      sourceId: "job-context",
+      platform: "zhaopin"
+    }).jobId,
+    zhaopinJobId
+  );
+  assert.throws(
+    () => listMessageDiscoveryCandidates(db, { profileId: contextFixture.profileId, platform: "other" }),
+    (error) => error.code === "PROGRESS_PLATFORM_INVALID"
+  );
+  assert.throws(
+    () => findMessageDiscoveryJobContext(db, {
+      profileId: contextFixture.profileId,
+      planId: contextFixture.planId,
+      sourceId: "job-context",
+      platform: "other"
+    }),
+    (error) => error.code === "PROGRESS_PLATFORM_INVALID"
+  );
+  db.prepare("UPDATE candidate_progress_cards SET source = 'boss' WHERE job_id = ?").run(zhaopinJobId);
+  assert.strictEqual(
+    listMessageDiscoveryCandidates(db, { profileId: contextFixture.profileId })
+      .some((item) => item.jobId === zhaopinJobId),
+    false,
+    "a card must not be discovered through a job from another platform"
+  );
+
   console.log("candidate_progress_storage_smoke ok");
 } finally {
   try { db?.close(); } catch {}

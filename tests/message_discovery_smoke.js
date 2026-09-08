@@ -896,6 +896,30 @@ async function unmatchedRetentionSmoke() {
 
 function inboundLocalActionsSmoke() {
   const fixture = createFixture({ suffix: "inbound-local", title: "Inbound Engineer" });
+  const zhaopinJobId = upsertJob(db, {
+    source: "zhaopin",
+    sourceId: "zhaopin-inbound-link",
+    keyword: "message-discovery-fixture",
+    title: fixture.title,
+    company: fixture.company,
+    location: fixture.city,
+    salary: fixture.salary,
+    experience: "3-5年",
+    education: "本科",
+    bossActiveText: "",
+    url: "https://www.zhaopin.com/job/inbound-link.html",
+    tags: [],
+    description: "",
+    qualityTags: [],
+    analysis: {}
+  }, null);
+  ensureProgressCard(db, {
+    profileId: fixture.profileId,
+    planId: fixture.planId,
+    jobId: zhaopinJobId,
+    source: "zhaopin",
+    now: NOW
+  });
   const createdKey = safeDigest(["conversation", "inbound-create"]);
   const createdPreview = safeDigest(["preview", "inbound-create"]);
   recordUnresolvedMessageDiscoveryItem(db, {
@@ -974,6 +998,72 @@ function inboundLocalActionsSmoke() {
     .some((item) => item.conversationKey === linkKey), true);
   assert.strictEqual(listPreviewStates(db, { profileId: fixture.profileId })
     .some((item) => item.conversationKey === linkKey), false);
+
+  const zhaopinLinkKey = safeDigest(["conversation", "inbound-zhaopin-link"]);
+  const zhaopinLinkPreview = safeDigest(["preview", "inbound-zhaopin-link"]);
+  recordUnresolvedMessageDiscoveryItem(db, {
+    profileId: fixture.profileId,
+    platform: "boss",
+    conversationKey: zhaopinLinkKey,
+    previewDigest: zhaopinLinkPreview,
+    previewKind: "possible_hr_reply",
+    reasonCode: "BOSS_MESSAGE_CARD_NOT_FOUND",
+    observedAt: NOW,
+    identity: { positionTitle: fixture.title, company: fixture.company }
+  });
+  assert.throws(
+    () => resolveInboundOpportunity({
+      db,
+      input: {
+        profileId: fixture.profileId,
+        conversationKey: zhaopinLinkKey,
+        previewDigest: zhaopinLinkPreview,
+        action: "link",
+        jobId: zhaopinJobId
+      },
+      now: () => NOW
+    }),
+    (error) => error.code === "INBOUND_JOB_NOT_LINKABLE"
+  );
+
+  const sharedKey = safeDigest(["conversation", "inbound-platform-isolation"]);
+  const sharedPreview = safeDigest(["preview", "inbound-platform-isolation"]);
+  recordUnresolvedMessageDiscoveryItem(db, {
+    profileId: fixture.profileId,
+    platform: "zhaopin",
+    conversationKey: sharedKey,
+    previewDigest: sharedPreview,
+    previewKind: "possible_hr_reply",
+    reasonCode: "BOSS_MESSAGE_CARD_NOT_FOUND",
+    observedAt: NOW,
+    identity: { positionTitle: "Zhaopin Inbound", company: "Zhaopin Company" }
+  });
+  recordUnresolvedMessageDiscoveryItem(db, {
+    profileId: fixture.profileId,
+    platform: "boss",
+    conversationKey: sharedKey,
+    previewDigest: sharedPreview,
+    previewKind: "possible_hr_reply",
+    reasonCode: "BOSS_MESSAGE_CARD_NOT_FOUND",
+    observedAt: "2026-07-30T01:00:01.000Z",
+    identity: { positionTitle: "Boss Inbound", company: "Boss Company" }
+  });
+  resolveInboundOpportunity({
+    db,
+    input: {
+      profileId: fixture.profileId,
+      conversationKey: sharedKey,
+      previewDigest: sharedPreview,
+      action: "ignore"
+    },
+    now: () => "2026-07-30T01:00:02.000Z"
+  });
+  assert.strictEqual(
+    listUnresolvedMessageDiscoveryItems(db, { profileId: fixture.profileId, platform: "zhaopin" })
+      .some((item) => item.conversationKey === sharedKey),
+    true,
+    "BOSS ignore must not settle an equally keyed Zhaopin unresolved item"
+  );
 
   const ignoredKey = safeDigest(["conversation", "inbound-ignore"]);
   const ignoredPreview = safeDigest(["preview", "inbound-ignore"]);

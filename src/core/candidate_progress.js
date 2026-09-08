@@ -736,7 +736,8 @@ function listProgressCards(db, input = {}) {
     .map(mapCard);
 }
 
-function listMessageDiscoveryCandidates(db, { profileId } = {}) {
+function listMessageDiscoveryCandidates(db, { profileId, platform = "boss" } = {}) {
+  const source = discoveryPlatform(platform);
   return db.prepare(`SELECT
       cards.id AS card_id,
       cards.profile_id,
@@ -777,17 +778,19 @@ function listMessageDiscoveryCandidates(db, { profileId } = {}) {
       LIMIT 1
     )
     WHERE cards.profile_id = ?
-      AND cards.source = 'boss'
+      AND jobs.source = ?
+      AND cards.source = jobs.source
       AND cards.stage NOT IN ('rejected', 'closed')
     ORDER BY cards.updated_at DESC, cards.id DESC`)
-    .all(positiveInteger(profileId, "profileId"))
+    .all(positiveInteger(profileId, "profileId"), source)
     .map(mapDiscoveryCandidate);
 }
 
-function findMessageDiscoveryJobContext(db, { profileId, planId, sourceId } = {}) {
+function findMessageDiscoveryJobContext(db, { profileId, planId, sourceId, platform = "boss" } = {}) {
   const normalizedProfileId = positiveInteger(profileId, "profileId");
   const normalizedPlanId = positiveInteger(planId, "planId");
   const normalizedSourceId = shortText(sourceId, 160);
+  const source = discoveryPlatform(platform);
   if (!normalizedSourceId) {
     throw progressError("PROGRESS_JOB_SOURCE_ID_REQUIRED", "job source id is required");
   }
@@ -796,7 +799,7 @@ function findMessageDiscoveryJobContext(db, { profileId, planId, sourceId } = {}
       context_batches.profile_id,
       jobs.id AS job_id,
       context_batches.search_plan_id AS plan_id,
-      'boss' AS source,
+      jobs.source AS source,
       COALESCE(cards.stage, '') AS stage,
       COALESCE(cards.thread_key, '') AS thread_key,
       jobs.source_id,
@@ -819,8 +822,10 @@ function findMessageDiscoveryJobContext(db, { profileId, planId, sourceId } = {}
     JOIN job_observations context ON context.job_id = jobs.id
     JOIN batches context_batches ON context_batches.id = context.batch_id
     LEFT JOIN candidate_progress_cards cards
-      ON cards.profile_id = context_batches.profile_id AND cards.job_id = jobs.id
-    WHERE jobs.source = 'boss'
+      ON cards.profile_id = context_batches.profile_id
+        AND cards.job_id = jobs.id
+        AND cards.source = jobs.source
+    WHERE jobs.source = ?
       AND jobs.source_id = ?
       AND context_batches.profile_id = ?
       AND context_batches.search_plan_id = ?
@@ -828,7 +833,7 @@ function findMessageDiscoveryJobContext(db, { profileId, planId, sourceId } = {}
       AND json_valid(context.analysis_json) = 1
       AND json_extract(context.analysis_json, '$.semanticStatus') = 'complete'
     ORDER BY context.seen_at DESC, context.id DESC
-    LIMIT 1`).get(normalizedSourceId, normalizedProfileId, normalizedPlanId);
+    LIMIT 1`).get(source, normalizedSourceId, normalizedProfileId, normalizedPlanId);
   return row ? mapDiscoveryCandidate(row) : null;
 }
 
@@ -1036,6 +1041,11 @@ function isoText(value) {
 
 function shortText(value, maxLength) {
   return String(value || "").trim().slice(0, maxLength);
+}
+
+function discoveryPlatform(value) {
+  if (value === "boss" || value === "zhaopin") return value;
+  throw progressError("PROGRESS_PLATFORM_INVALID", "message discovery platform is invalid");
 }
 
 function nullableText(value, maxLength) {

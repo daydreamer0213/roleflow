@@ -231,6 +231,15 @@ function freezeDraft(db, profileId, item) {
   if (Number(draft.revision) !== item.revision) {
     throw storageError("MESSAGE_REPLY_SEND_REVISION_CONFLICT", "message reply draft revision changed");
   }
+  const owner = db.prepare(`SELECT cards.source AS card_source, jobs.source AS job_source
+    FROM candidate_progress_cards cards
+    JOIN jobs ON jobs.id = cards.job_id
+    WHERE cards.id = ? AND cards.profile_id = ? AND cards.job_id = ?`).get(
+    draft.card_id, profileId, draft.job_id
+  );
+  if (!owner || owner.card_source !== "boss" || owner.job_source !== "boss") {
+    throw storageError("MESSAGE_REPLY_SEND_PLATFORM_UNSUPPORTED", "message reply send supports BOSS only");
+  }
   const context = db.prepare(`SELECT * FROM message_inbound_contexts
     WHERE profile_id = ? AND card_id = ? AND message_group_key = ?`).get(
     profileId, draft.card_id, draft.message_group_key

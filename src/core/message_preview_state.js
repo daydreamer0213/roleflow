@@ -23,12 +23,13 @@ const UNRESOLVED_REASON_CODES = new Set([
   "MESSAGE_DISCOVERY_JOB_DETAIL_INCOMPLETE",
   "MESSAGE_DISCOVERY_JOB_ANALYSIS_INCOMPLETE"
 ]);
-function listPreviewStates(db, { profileId } = {}) {
+function listPreviewStates(db, { profileId, platform = "boss" } = {}) {
   const id = positiveInteger(profileId, "profileId");
+  const source = previewPlatform(platform);
   return db.prepare(`SELECT * FROM message_preview_states
-    WHERE profile_id = ?
+    WHERE profile_id = ? AND (? IS NULL OR platform = ?)
     ORDER BY updated_at DESC, conversation_key ASC`)
-    .all(id)
+    .all(id, source, source)
     .map(mapPreviewState);
 }
 
@@ -55,12 +56,13 @@ function recordPreviewState(db, input = {}) {
   return mapPreviewState(row);
 }
 
-function listUnresolvedMessageDiscoveryItems(db, { profileId } = {}) {
+function listUnresolvedMessageDiscoveryItems(db, { profileId, platform = "boss" } = {}) {
   const id = positiveInteger(profileId, "profileId");
+  const source = previewPlatform(platform);
   return db.prepare(`SELECT * FROM message_discovery_unresolved_items
-    WHERE profile_id = ?
+    WHERE profile_id = ? AND (? IS NULL OR platform = ?)
     ORDER BY last_observed_at DESC, conversation_key ASC`)
-    .all(id)
+    .all(id, source, source)
     .map(mapUnresolvedItem);
 }
 
@@ -265,6 +267,11 @@ function previewKindValue(value) {
   const kind = String(value || "").trim();
   if (!PREVIEW_KINDS.has(kind)) throw previewError("PREVIEW_KIND_INVALID", "preview kind is invalid");
   return kind;
+}
+
+function previewPlatform(value) {
+  if (value === null || value === "boss" || value === "zhaopin") return value;
+  throw previewError("PREVIEW_PLATFORM_INVALID", "preview platform is invalid");
 }
 
 function digestKey(value, name) {

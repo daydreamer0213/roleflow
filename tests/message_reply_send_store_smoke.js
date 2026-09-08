@@ -113,6 +113,31 @@ try {
     text: "这是第二条确认文字。",
     updatedAt: "2026-08-29T01:02:00.000Z"
   });
+  const zhaopin = createZhaopinDraft(db, owner, "zhaopin", "智联草稿", now);
+  saveContext(zhaopin, "conversation-zhaopin", "encrypt-job-zhaopin", "378917037748754");
+  assert.throws(
+    () => store.createMessageReplySendBatch(db, {
+      profileId: owner.profileId,
+      items: [{ draftId: zhaopin.draft.id, revision: zhaopin.draft.revision }],
+      createdAt: "2026-08-29T01:02:20.000Z"
+    }),
+    (error) => error.code === "MESSAGE_REPLY_SEND_PLATFORM_UNSUPPORTED"
+  );
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM message_reply_send_batches").get().n, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM message_reply_send_items").get().n, 0);
+  assert.throws(
+    () => store.createMessageReplySendBatch(db, {
+      profileId: owner.profileId,
+      items: [
+        { draftId: firstEdited.id, revision: firstEdited.revision },
+        { draftId: zhaopin.draft.id, revision: zhaopin.draft.revision }
+      ],
+      createdAt: "2026-08-29T01:02:25.000Z"
+    }),
+    (error) => error.code === "MESSAGE_REPLY_SEND_PLATFORM_UNSUPPORTED"
+  );
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM message_reply_send_batches").get().n, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM message_reply_send_items").get().n, 0);
   assert.throws(
     () => store.createMessageReplySendBatch(db, {
       profileId: owner.profileId,
@@ -384,6 +409,26 @@ function createDraftAlternatives(database, owner, suffix, messages, now) {
     createdAt: now
   });
   return { jobId, card, groupKey, drafts };
+}
+
+function createZhaopinDraft(database, owner, suffix, text, now) {
+  const jobId = Number(database.prepare(`INSERT INTO jobs(
+    source, source_id, title, first_seen_at, last_seen_at
+  ) VALUES ('zhaopin', ?, ?, ?, ?)`).run(`zhaopin-job-${suffix}`, `Zhaopin ${suffix}`, now, now).lastInsertRowid);
+  const card = ensureProgressCard(database, { ...owner, jobId, source: "zhaopin", now });
+  const groupKey = digest(`group-${suffix}`);
+  const draft = storage.recordMessageReplyDrafts(database, {
+    profileId: owner.profileId,
+    cardId: card.id,
+    jobId,
+    messageGroupKey: groupKey,
+    questionSummary: `Question ${suffix}`,
+    messageIntent: "information_request",
+    messageCategory: "other",
+    messages: [text],
+    createdAt: now
+  })[0];
+  return { jobId, card, groupKey, draft };
 }
 
 function digest(value) {
