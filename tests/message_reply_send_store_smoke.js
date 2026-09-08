@@ -342,13 +342,15 @@ try {
   console.log("message_reply_send_store_smoke ok");
 
   function saveContext(entry, conversation, sourceJob, lastMessageId) {
+    const platform = entry.card.source;
     return store.saveMessageInboundContext(db, {
       profileId: owner.profileId,
+      platform,
       cardId: entry.card.id,
       messageGroupKey: entry.groupKey,
       conversationKey: digest(conversation),
-      sourceJobId: `boss:${sourceJob}`,
-      lastMessageId,
+      sourceJobId: platform === "zhaopin" ? "zhaopin:ZL123754" : `boss:${sourceJob}`,
+      lastMessageId: platform === "zhaopin" ? "900754" : lastMessageId,
       messageIntent: "information_request",
       messageCategory: "other",
       inboundMessages: [{ kind: "text", text: `HR context for ${conversation}` }],

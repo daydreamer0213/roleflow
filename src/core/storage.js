@@ -743,6 +743,9 @@ CREATE TABLE IF NOT EXISTS message_discovery_unresolved_items (
   salary TEXT NOT NULL DEFAULT '',
   city TEXT NOT NULL DEFAULT '',
   identity_digest TEXT NOT NULL DEFAULT '',
+  inbound_json TEXT NOT NULL DEFAULT '[]',
+  source_job_id TEXT NOT NULL DEFAULT '',
+  last_message_id TEXT NOT NULL DEFAULT '',
   PRIMARY KEY(profile_id, platform, conversation_key),
   FOREIGN KEY(profile_id) REFERENCES candidate_profiles(id)
 );
@@ -1394,6 +1397,21 @@ const MIGRATIONS = [
       migrateWorkflowRunPlatforms(db);
       migrateJobClientCompanies(db);
       db.exec(PLATFORM_SEARCH_CONTEXT_SCHEMA);
+    }
+  },
+  {
+    version: 30,
+    name: "message_discovery_unresolved_inbound_v1",
+    apply(db) {
+      db.exec(MESSAGE_DISCOVERY_UNRESOLVED_ITEMS_SCHEMA);
+      const columns = new Set(db.prepare("PRAGMA table_info(message_discovery_unresolved_items)").all().map((column) => column.name));
+      for (const [name, definition] of [
+        ["inbound_json", "TEXT NOT NULL DEFAULT '[]'"],
+        ["source_job_id", "TEXT NOT NULL DEFAULT ''"],
+        ["last_message_id", "TEXT NOT NULL DEFAULT ''"]
+      ]) {
+        if (!columns.has(name)) db.exec(`ALTER TABLE message_discovery_unresolved_items ADD COLUMN ${name} ${definition}`);
+      }
     }
   }
 ];

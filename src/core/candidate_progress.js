@@ -403,6 +403,15 @@ function recordDiscoveredMessageGroupClassification(db, input = {}) {
   const card = getProgressCard(db, cardId);
   if (!card) throw progressError("PROGRESS_CARD_NOT_FOUND", "progress card was not found");
   const platform = String(input.platform || "").trim().toLowerCase();
+  if (!["boss", "zhaopin"].includes(platform)) {
+    throw progressError("PROGRESS_PLATFORM_INVALID", "message platform is invalid");
+  }
+  const owner = db.prepare(`SELECT cards.source AS card_source, jobs.source AS job_source
+    FROM candidate_progress_cards cards JOIN jobs ON jobs.id = cards.job_id
+    WHERE cards.id = ?`).get(cardId);
+  if (!owner || owner.card_source !== platform || owner.job_source !== platform) {
+    throw progressError("PROGRESS_PLATFORM_MISMATCH", "message platform does not match progress card");
+  }
   const threadKey = safeDigestKey(input.threadKey, "threadKey");
   const legacyThreadKey = input.legacyThreadKey
     ? safeDigestKey(input.legacyThreadKey, "legacyThreadKey")
@@ -449,8 +458,7 @@ function recordDiscoveredMessageGroupClassification(db, input = {}) {
     return getProgressCard(db, cardId);
   }
   const occurredAt = isoText(input.occurredAt);
-  db.exec("BEGIN IMMEDIATE");
-  try {
+  return progressTransaction(db, () => {
     const binding = db.prepare(`UPDATE candidate_progress_cards
       SET thread_key = ?, updated_at = ?
       WHERE id = ? AND (thread_key = '' OR thread_key = ?)`)
@@ -520,12 +528,8 @@ function recordDiscoveredMessageGroupClassification(db, input = {}) {
         now: occurredAt
       });
     }
-    db.exec("COMMIT");
-  } catch (error) {
-    try { db.exec("ROLLBACK"); } catch {}
-    throw error;
-  }
-  return getProgressCard(db, cardId);
+    return getProgressCard(db, cardId);
+  });
 }
 
 function recordManualProgressAction(db, input = {}) {
@@ -1110,17 +1114,17 @@ function safeDiscoveredNextAction(stage) {
 }
 
 function messageIdempotencyKey(platform, messageKey) {
-  if (platform !== "boss") {
+  if (!["boss", "zhaopin"].includes(platform)) {
     throw progressError("PROGRESS_PLATFORM_INVALID", "message platform is invalid");
   }
-  return `message:boss:${safeDigestKey(messageKey, "messageKey").slice(7)}`;
+  return `message:${platform}:${safeDigestKey(messageKey, "messageKey").slice(7)}`;
 }
 
 function messageGroupIdempotencyKey(platform, messageGroupKey) {
-  if (platform !== "boss") {
+  if (!["boss", "zhaopin"].includes(platform)) {
     throw progressError("PROGRESS_PLATFORM_INVALID", "message platform is invalid");
   }
-  return `message-group:boss:${safeDigestKey(messageGroupKey, "messageGroupKey").slice(7)}`;
+  return `message-group:${platform}:${safeDigestKey(messageGroupKey, "messageGroupKey").slice(7)}`;
 }
 
 function normalizedMessageKeys(value) {

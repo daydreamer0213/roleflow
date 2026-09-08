@@ -22,6 +22,9 @@ const UNRESOLVED_REASON_CODES = new Set([
   "MESSAGE_DISCOVERY_JOB_CONTEXT_UNAVAILABLE",
   "MESSAGE_DISCOVERY_JOB_DETAIL_INCOMPLETE",
   "MESSAGE_DISCOVERY_JOB_ANALYSIS_INCOMPLETE"
+  ,"ZHAOPIN_MESSAGE_CONTENT_PENDING"
+  ,"ZHAOPIN_MESSAGE_CONTENT_UNSUPPORTED"
+  ,"ZHAOPIN_MESSAGE_STRUCTURE_CHANGED"
 ]);
 function listPreviewStates(db, { profileId, platform = "boss" } = {}) {
   const id = positiveInteger(profileId, "profileId");
@@ -75,11 +78,13 @@ function recordUnresolvedMessageDiscoveryItem(db, input = {}) {
   const reasonCode = safeReasonCode(input.reasonCode);
   const observedAt = isoText(input.observedAt);
   const identity = safeUnresolvedIdentity(input.identity);
+  const display = safeUnresolvedInbound(input, platform);
   if (!platform) throw previewError("PREVIEW_PLATFORM_REQUIRED", "preview platform is required");
   db.prepare(`INSERT INTO message_discovery_unresolved_items(
     profile_id, platform, conversation_key, preview_digest, preview_kind, reason_code,
-    first_observed_at, last_observed_at, position_title, company, salary, city, identity_digest
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    first_observed_at, last_observed_at, position_title, company, salary, city, identity_digest,
+    inbound_json, source_job_id, last_message_id
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   ON CONFLICT(profile_id, platform, conversation_key) DO UPDATE SET
     preview_digest = excluded.preview_digest,
     preview_kind = excluded.preview_kind,
@@ -89,6 +94,9 @@ function recordUnresolvedMessageDiscoveryItem(db, input = {}) {
     salary = excluded.salary,
     city = excluded.city,
     identity_digest = excluded.identity_digest,
+    inbound_json = CASE WHEN ? THEN excluded.inbound_json ELSE inbound_json END,
+    source_job_id = CASE WHEN ? THEN excluded.source_job_id ELSE source_job_id END,
+    last_message_id = CASE WHEN ? THEN excluded.last_message_id ELSE last_message_id END,
     last_observed_at = excluded.last_observed_at`)
     .run(
       profileId,
@@ -103,7 +111,13 @@ function recordUnresolvedMessageDiscoveryItem(db, input = {}) {
       identity.company,
       identity.salary,
       identity.city,
-      identity.identityDigest
+      identity.identityDigest,
+      JSON.stringify(display.inboundMessages),
+      display.sourceJobId,
+      display.lastMessageId,
+      display.present ? 1 : 0,
+      display.present ? 1 : 0,
+      display.present ? 1 : 0
     );
   return mapUnresolvedItem(db.prepare(`SELECT * FROM message_discovery_unresolved_items
     WHERE profile_id = ? AND platform = ? AND conversation_key = ?`)
@@ -258,6 +272,11 @@ function mapUnresolvedItem(row) {
     salary: row.salary || "",
     city: row.city || "",
     identityDigest: row.identity_digest || "",
+    ...((row.inbound_json && row.inbound_json !== "[]") ? {
+      inboundMessages: safeStoredInbound(row.inbound_json),
+      sourceJobId: row.source_job_id || "",
+      lastMessageId: row.last_message_id || ""
+    } : {}),
     firstObservedAt: row.first_observed_at,
     lastObservedAt: row.last_observed_at
   } : null;
@@ -330,6 +349,37 @@ function safeReasonCode(value) {
     throw previewError("PREVIEW_REASON_INVALID", "unresolved reason code is invalid");
   }
   return code;
+}
+
+function safeUnresolvedInbound(input, platform) {
+  const inboundMessages = Array.isArray(input.inboundMessages) ? input.inboundMessages.map((item) => {
+    const kind = String(item?.kind || "");
+    const text = String(item?.text || "").replace(/\r\n?/g, "\n").trim();
+    if ((kind === "text" && text && text.length <= 4000) || (kind === "resume_request" && text === "HR 邀请你发送简历")) return { kind, text };
+    throw previewError("PREVIEW_INBOUND_INVALID", "unresolved inbound display is invalid");
+  }) : [];
+  if (inboundMessages.length > 5) throw previewError("PREVIEW_INBOUND_INVALID", "unresolved inbound display is invalid");
+  if (!inboundMessages.length) return { present: false, inboundMessages: [], sourceJobId: "", lastMessageId: "" };
+  const sourceJobId = String(input.sourceJobId || "").trim();
+  const lastMessageId = String(input.lastMessageId || "").trim();
+  const valid = platform === "zhaopin"
+    ? /^zhaopin:[A-Za-z0-9]{1,160}$/.test(sourceJobId) && /^\d{1,32}$/.test(lastMessageId)
+    : /^boss:[A-Za-z0-9_-]{6,160}$/.test(sourceJobId) && /^\d{15}$/.test(lastMessageId);
+  if (!valid) throw previewError("PREVIEW_INBOUND_INVALID", "unresolved inbound identity is invalid");
+  return { present: true, inboundMessages, sourceJobId, lastMessageId };
+}
+
+function safeStoredInbound(value) {
+  try {
+    const values = JSON.parse(value || "[]");
+    if (!Array.isArray(values) || values.length > 5) return [];
+    return values.map((item) => {
+      const kind = String(item?.kind || "");
+      const text = String(item?.text || "").replace(/\r\n?/g, "\n").trim();
+      if ((kind === "text" && text && text.length <= 4000) || (kind === "resume_request" && text === "HR 邀请你发送简历")) return { kind, text };
+      throw new Error("invalid");
+    });
+  } catch { return []; }
 }
 
 function previewError(code, message) {

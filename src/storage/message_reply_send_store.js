@@ -16,15 +16,16 @@ function saveMessageInboundContext(db, input = {}) {
   const cardId = positiveInteger(input.cardId, "cardId");
   const messageGroupKey = digestKey(input.messageGroupKey, "messageGroupKey");
   const conversationKey = digestKey(input.conversationKey, "conversationKey");
-  const sourceJobId = sourceJobKey(input.sourceJobId);
-  const lastMessageId = messageId(input.lastMessageId);
+  const platform = messagePlatform(input.platform || "boss");
+  const sourceJobId = sourceJobKey(input.sourceJobId, platform);
+  const lastMessageId = messageId(input.lastMessageId, platform);
   const messageIntent = inlineText(input.messageIntent, 80);
   const messageCategory = inlineText(input.messageCategory, 80);
   const inboundMessages = normalizeInboundMessages(input.inboundMessages);
   const manualActions = normalizeManualActions(input.manualActions);
   const createdAt = isoText(input.createdAt || nowIso(), "createdAt");
   const updatedAt = isoText(input.updatedAt || createdAt, "updatedAt");
-  assertCardOwner(db, profileId, cardId);
+  assertCardOwner(db, profileId, cardId, platform);
   db.prepare(`INSERT INTO message_inbound_contexts(
     profile_id, card_id, message_group_key, conversation_key, source_job_id,
     last_message_id, message_intent, message_category, display_json,
@@ -328,8 +329,11 @@ function getOwnedItemRow(db, { profileId, batchId, itemId }) {
     .get(itemId, batchId, profileId);
 }
 
-function assertCardOwner(db, profileId, cardId) {
-  if (!db.prepare("SELECT id FROM candidate_progress_cards WHERE id = ? AND profile_id = ?").get(cardId, profileId)) {
+function assertCardOwner(db, profileId, cardId, platform) {
+  const owner = db.prepare(`SELECT cards.id, cards.source AS card_source, jobs.source AS job_source
+    FROM candidate_progress_cards cards JOIN jobs ON jobs.id = cards.job_id
+    WHERE cards.id = ? AND cards.profile_id = ?`).get(cardId, profileId);
+  if (!owner || owner.card_source !== platform || owner.job_source !== platform) {
     throw storageError("MESSAGE_INBOUND_CONTEXT_OWNER_INVALID", "message inbound context owner is invalid");
   }
 }
@@ -428,20 +432,31 @@ function digestKey(value, label) {
   return text;
 }
 
-function sourceJobKey(value) {
+function sourceJobKey(value, platform) {
   const text = String(value || "").trim();
-  if (!/^boss:[A-Za-z0-9_-]{6,160}$/.test(text)) {
+  const valid = platform === "zhaopin"
+    ? /^zhaopin:[A-Za-z0-9]{1,160}$/.test(text)
+    : /^boss:[A-Za-z0-9_-]{6,160}$/.test(text);
+  if (!valid) {
     throw storageError("MESSAGE_INBOUND_CONTEXT_INVALID", "sourceJobId is invalid");
   }
   return text;
 }
 
-function messageId(value) {
+function messageId(value, platform) {
   const text = String(value || "");
-  if (!/^\d{15}$/.test(text)) {
+  if (!(platform === "zhaopin" ? /^\d{1,32}$/ : /^\d{15}$/).test(text)) {
     throw storageError("MESSAGE_INBOUND_CONTEXT_INVALID", "lastMessageId is invalid");
   }
   return text;
+}
+
+function messagePlatform(value) {
+  const platform = String(value || "").trim().toLowerCase();
+  if (!["boss", "zhaopin"].includes(platform)) {
+    throw storageError("MESSAGE_INBOUND_CONTEXT_INVALID", "message platform is invalid");
+  }
+  return platform;
 }
 
 function batchStatus(value) {

@@ -7,7 +7,8 @@ const {
   listCandidateFacts,
   listCandidateAnswerMemories,
   recordMessageReplyDrafts,
-  saveMessageInboundContext
+  saveMessageInboundContext,
+  immediateTransaction
 } = require("./storage");
 const { safeDigest, messageKey } = require("../adapters/sites/boss_message_dom");
 const { canonicalBossJobSourceId, bossLocationConflicts } = require("./boss_job_identity");
@@ -62,6 +63,7 @@ async function runBossMessageDiscovery({
   reader,
   classifyMessageGroup,
   resolveJobContext = null,
+  platform = "boss",
   logger = null,
   signal = null,
   now = () => new Date().toISOString(),
@@ -69,40 +71,43 @@ async function runBossMessageDiscovery({
   randomFn = Math.random,
   onStatus = () => {}
 }) {
-  const candidates = listMessageDiscoveryCandidates(db, { profileId });
+  const source = discoveryPlatform(platform);
+  const candidates = listMessageDiscoveryCandidates(db, { profileId, platform: source });
   const storedProfile = getCandidateProfile(db, profileId);
   if (!storedProfile) {
     throw discoveryError("MESSAGE_DISCOVERY_PROFILE_NOT_FOUND", "candidate profile was not found");
   }
   const profile = messageReplyProfile(storedProfile.profile);
-  let retained = unresolvedSummary(db, profileId);
+  let retained = unresolvedSummary(db, profileId, source);
   let scan;
   try {
     throwIfAborted(signal);
-    scan = await reader.scanConversationRows();
+    scan = await reader.scanConversationRows(signal);
   } catch (error) {
     if (shouldInterrupt(error, signal)) throw error;
     return emitStopped(errorCode(error), 0, [], logger, onStatus, retained);
   }
   if (!scan || !Array.isArray(scan.rows)) {
-    return emitStopped("BOSS_MESSAGE_QUEUE_INVALID", 0, [], logger, onStatus, retained);
+    return emitStopped(source === "zhaopin" ? "ZHAOPIN_MESSAGE_STRUCTURE_CHANGED" : "BOSS_MESSAGE_QUEUE_INVALID", 0, [], logger, onStatus, retained);
   }
-  const observationCounts = recordFunnelRowObservations(db, {
-    profileId,
-    platform: "boss",
-    rows: scan.rows,
-    observedAt: now()
-  });
-  const counters = visibleCounters(scan.rows, observationCounts.unbound);
-  const baselines = new Map(listPreviewStates(db, { profileId })
+  const observationCounts = source === "boss"
+    ? recordFunnelRowObservations(db, {
+      profileId,
+      platform: source,
+      rows: scan.rows,
+      observedAt: now()
+    })
+    : { unbound: 0 };
+  const counters = visibleCounters(scan.rows, observationCounts.unbound, source);
+  const baselines = new Map(listPreviewStates(db, { profileId, platform: source })
     .map((state) => [state.conversationKey, state]));
-  const unresolvedByConversation = new Map(listUnresolvedMessageDiscoveryItems(db, { profileId })
+  const unresolvedByConversation = new Map(listUnresolvedMessageDiscoveryItems(db, { profileId, platform: source })
     .map((item) => [item.conversationKey, item]));
   const planned = planMessageDiscoveryQueue({ rows: scan.rows, baselines, unresolved: unresolvedByConversation });
   for (const baseline of planned.baselineWrites) {
     recordPreviewState(db, {
       profileId,
-      platform: "boss",
+      platform: source,
       conversationKey: baseline.conversationKey,
       previewDigest: baseline.previewDigest,
       previewKind: baseline.previewKind,
@@ -119,7 +124,7 @@ async function runBossMessageDiscovery({
     const target = queue[queueIndex];
     throwIfAborted(signal);
     if (target.previewKind === "unsupported") {
-      return emitStopped("BOSS_MESSAGE_CONTENT_UNSUPPORTED", queue.length, results, logger, onStatus, retained, processed, counters);
+      return emitStopped(source === "zhaopin" ? "ZHAOPIN_MESSAGE_CONTENT_UNSUPPORTED" : "BOSS_MESSAGE_CONTENT_UNSUPPORTED", queue.length, results, logger, onStatus, retained, processed, counters);
     }
     let selected;
     try {
@@ -141,21 +146,27 @@ async function runBossMessageDiscovery({
       continue;
     }
 
-    let resolved = resolveUniqueCandidate(candidates, selected, target.conversationKey, target.sourceJobId);
+    const selectedSnapshot = mutableSelectedSnapshot(selected);
+    const selectedTarget = source === "zhaopin"
+      ? { ...target, sourceJobId: String(selectedSnapshot?.sourceJobId || ""), lastMessageId: String(selectedSnapshot?.lastMessageId || "") }
+      : target;
+    let resolved = source === "boss"
+      ? resolveUniqueCandidate(candidates, selectedSnapshot, target.conversationKey, target.sourceJobId)
+      : { ok: false, reasonCode: "MESSAGE_DISCOVERY_JOB_CONTEXT_UNAVAILABLE" };
     let contextStopCode = "";
-    const canResolveContext = resolved.ok
+    const canResolveContext = source === "zhaopin" || resolved.ok
       || ["BOSS_MESSAGE_CARD_NOT_FOUND", "BOSS_MESSAGE_CARD_AMBIGUOUS"].includes(resolved.reasonCode);
     if (canResolveContext && typeof resolveJobContext === "function") {
       try {
         const candidate = resolved.ok ? resolved.candidate : null;
-        const context = await resolveJobContext({ target, selected, candidate, signal });
-        if (!validResolvedContext(context, target.conversationKey)) {
+        const context = await resolveJobContext({ target: selectedTarget, selected: selectedSnapshot, candidate, signal });
+        if (!validResolvedContext(context, target.conversationKey, source)) {
           throw discoveryError("MESSAGE_DISCOVERY_JOB_CONTEXT_UNAVAILABLE", "job context is unavailable");
         }
         resolved = { ...context, ok: true };
       } catch (error) {
         if (shouldInterrupt(error, signal)) {
-          clearSelectedSnapshot(selected);
+          clearSelectedSnapshot(selectedSnapshot);
           throw error;
         }
         contextStopCode = shouldStopAfterContextFailure(error) ? errorCode(error) : "";
@@ -166,23 +177,29 @@ async function runBossMessageDiscovery({
     }
     if (!resolved.ok) {
       const identity = {
-        positionTitle: selected?.positionName,
-        company: selected?.companyName,
-        salary: selected?.salary,
-        city: selected?.city
+        positionTitle: selectedSnapshot?.positionName,
+        company: selectedSnapshot?.companyName,
+        salary: selectedSnapshot?.salary,
+        city: selectedSnapshot?.city
       };
-      clearSelectedSnapshot(selected);
+      const inboundMessages = unresolvedInboundMessages(source, selectedSnapshot);
+      clearSelectedSnapshot(selectedSnapshot);
       recordUnresolvedMessageDiscoveryItem(db, {
         profileId,
-        platform: "boss",
+        platform: source,
         conversationKey: target.conversationKey,
         previewDigest: target.previewDigest,
         previewKind: target.previewKind,
         reasonCode: resolved.reasonCode,
         observedAt: now(),
-        identity
+        identity,
+        ...(inboundMessages.length && validInboundIdentity(source, selectedTarget) ? {
+          inboundMessages,
+          sourceJobId: selectedTarget.sourceJobId,
+          lastMessageId: selectedTarget.lastMessageId
+        } : {})
       });
-      retained = unresolvedSummary(db, profileId);
+      retained = unresolvedSummary(db, profileId, source);
       emitStatus(safeStatus("running", {
         queued: queue.length,
         processed,
@@ -205,28 +222,31 @@ async function runBossMessageDiscovery({
       continue;
     }
     let incoming;
+    const selectedInbound = unresolvedInboundMessages(source, selectedSnapshot);
     try {
       incoming = selectUnprocessedFriendMessageGroup(
         db,
         resolved.cardId,
-        selected,
-        resolved.threadKey
+        selectedSnapshot,
+        resolved.threadKey,
+        source
       );
     } catch (error) {
-      clearSelectedSnapshot(selected);
+      clearSelectedSnapshot(selectedSnapshot);
       throw error;
     }
-    clearSelectedIdentity(selected);
     if (!incoming.ok) {
-      clearSelectedSnapshot(selected);
+      const selectedIdentityValue = selectedIdentity(selectedSnapshot);
+      const unresolvedDisplay = selectedInbound;
+      clearSelectedSnapshot(selectedSnapshot);
       if (incoming.skipped) {
-        commitBaseline(db, profileId, target, now());
+        commitBaseline(db, profileId, target, source, now());
         clearUnresolvedMessageDiscoveryItem(db, {
           profileId,
-          platform: "boss",
+          platform: source,
           conversationKey: target.conversationKey
         });
-        retained = unresolvedSummary(db, profileId);
+        retained = unresolvedSummary(db, profileId, source);
         await paceBeforeNext({
           queueIndex,
           queueLength: queue.length,
@@ -237,9 +257,24 @@ async function runBossMessageDiscovery({
         });
         continue;
       }
+      if (source === "zhaopin") {
+        recordUnresolvedMessageDiscoveryItem(db, {
+          profileId, platform: source, conversationKey: target.conversationKey,
+          previewDigest: target.previewDigest, previewKind: target.previewKind,
+          reasonCode: incoming.reasonCode, observedAt: now(),
+          identity: selectedIdentityValue,
+          ...(unresolvedDisplay.length && validInboundIdentity(source, selectedTarget) ? {
+            inboundMessages: unresolvedDisplay,
+            sourceJobId: selectedTarget.sourceJobId, lastMessageId: selectedTarget.lastMessageId
+          } : {})
+        });
+        retained = unresolvedSummary(db, profileId, source);
+        continue;
+      }
       return emitStopped(incoming.reasonCode, queue.length, results, logger, onStatus, retained, processed, counters);
     }
 
+    clearSelectedIdentity(selectedSnapshot);
     const inboundMessages = inboundDisplayMessages(incoming);
     let classification;
     try {
@@ -298,7 +333,7 @@ async function runBossMessageDiscovery({
       };
     } finally {
       for (const item of incoming.messages) item.text = "";
-      clearSelectedSnapshot(selected);
+      clearSelectedSnapshot(selectedSnapshot);
     }
     if (incoming.manualActions.length) {
       classification = {
@@ -308,9 +343,10 @@ async function runBossMessageDiscovery({
       };
     }
     throwIfAborted(signal);
-    const card = recordDiscoveredMessageGroupClassification(db, {
+    const committed = immediateTransaction(db, () => {
+      const card = recordDiscoveredMessageGroupClassification(db, {
       cardId: resolved.cardId,
-      platform: "boss",
+      platform: source,
       threadKey: resolved.threadKey,
       legacyThreadKey: resolved.legacyThreadKey || "",
       messageKeys: incoming.newMessageKeys,
@@ -321,8 +357,8 @@ async function runBossMessageDiscovery({
       manualActions: classification.manualActions || [],
       progressUpdate: classification.progressUpdate,
       occurredAt: now()
-    });
-    const drafts = recordMessageReplyDrafts(db, {
+      });
+      const drafts = recordMessageReplyDrafts(db, {
       profileId,
       cardId: card.id,
       jobId: card.jobId,
@@ -332,16 +368,16 @@ async function runBossMessageDiscovery({
       messageCategory: classification.messageCategory,
       messages: safeDraftMessages(classification),
       createdAt: now()
-    });
-    if (drafts.some((draft) => !draft.closedAt) && target.identityVerified === true) {
+      });
+    if (target.identityVerified === true) {
       const contextAt = now();
       saveMessageInboundContext(db, {
-        profileId,
+        profileId, platform: source,
         cardId: card.id,
         messageGroupKey: incoming.messageGroupKey,
         conversationKey: target.conversationKey,
-        sourceJobId: target.sourceJobId,
-        lastMessageId: target.lastMessageId,
+        sourceJobId: selectedTarget.sourceJobId,
+        lastMessageId: selectedTarget.lastMessageId,
         messageIntent: classification.messageIntent,
         messageCategory: classification.messageCategory,
         inboundMessages,
@@ -350,13 +386,16 @@ async function runBossMessageDiscovery({
         updatedAt: contextAt
       });
     }
-    commitBaseline(db, profileId, target, now());
+    commitBaseline(db, profileId, target, source, now());
     clearUnresolvedMessageDiscoveryItem(db, {
       profileId,
-      platform: "boss",
+      platform: source,
       conversationKey: target.conversationKey
     });
-    retained = unresolvedSummary(db, profileId);
+      return { card, drafts };
+    });
+    const { card, drafts } = committed;
+    retained = unresolvedSummary(db, profileId, source);
     results = results.filter((item) => item.cardId !== card.id);
     processed += 1;
     counters.newReplies += 1;
@@ -366,7 +405,9 @@ async function runBossMessageDiscovery({
       resolved.job,
       resolved.contextSource || resolved.job.contextSource || "",
       drafts,
-      inboundMessages
+      inboundMessages,
+      source,
+      selectedTarget.sourceJobId
     ));
     emitStatus(
       safeStatus("running", { queued: queue.length, processed, results, unresolved: retained.count, reasonCode: retained.reasonCode, counters }),
@@ -382,7 +423,7 @@ async function runBossMessageDiscovery({
       signal
     });
   }
-  retained = unresolvedSummary(db, profileId);
+  retained = unresolvedSummary(db, profileId, source);
   const completed = safeStatus(retained.count ? "needs_user_action" : "completed", {
     queued: queue.length,
     processed,
@@ -492,12 +533,14 @@ function hasCompleteJobContext(job) {
     && job?.analysis?.semanticStatus === "complete";
 }
 
-function validResolvedContext(value, canonicalThreadKey) {
+function validResolvedContext(value, canonicalThreadKey, platform) {
   return value && typeof value === "object"
     && Number.isInteger(Number(value.cardId))
     && Number(value.cardId) > 0
     && Number(value.card?.id) === Number(value.cardId)
     && value.threadKey === canonicalThreadKey
+    && value.card?.source === platform
+    && value.job?.source === platform
     && hasCompleteJobContext(value.job);
 }
 
@@ -515,7 +558,7 @@ function shouldStopAfterContextFailure(error) {
   return CONTEXT_TERMINAL_CODES.has(errorCode(error));
 }
 
-function selectUnprocessedFriendMessageGroup(db, cardId, selected, threadKey) {
+function selectUnprocessedFriendMessageGroup(db, cardId, selected, threadKey, platform = "boss") {
   const messages = Array.isArray(selected?.messages) ? selected.messages : [];
   let lastMyself = -1;
   for (let index = 0; index < messages.length; index += 1) {
@@ -525,13 +568,17 @@ function selectUnprocessedFriendMessageGroup(db, cardId, selected, threadKey) {
   for (let index = lastMyself + 1; index < messages.length; index += 1) {
     const item = messages[index];
     if (!item || typeof item !== "object") continue;
-    if (String(item.direction || "") !== "friend") {
+    const direction = String(item.direction || "");
+    const contentKind = String(item.contentKind || "text");
+    if (direction === "platform" && contentKind === "platform_notice") continue;
+    if (direction !== "friend") {
+      if (platform === "zhaopin") return { ok: false, reasonCode: "ZHAOPIN_MESSAGE_CONTENT_PENDING" };
       item.messageId = "";
       item.text = "";
       continue;
     }
-    const contentKind = String(item.contentKind || "text");
     if (!["text", "resume_request", "platform_notice"].includes(contentKind)) {
+      if (platform === "zhaopin") return { ok: false, reasonCode: "ZHAOPIN_MESSAGE_CONTENT_UNSUPPORTED" };
       clearMessageSources(messages);
       return { ok: false, reasonCode: "BOSS_MESSAGE_CONTENT_UNSUPPORTED" };
     }
@@ -543,15 +590,13 @@ function selectUnprocessedFriendMessageGroup(db, cardId, selected, threadKey) {
     }
     let digest;
     try {
-      digest = messageKey({
-        platform: "boss",
-        threadKey,
-        messageId: item.messageId
-      });
+      digest = platform === "boss"
+        ? messageKey({ platform: "boss", threadKey, messageId: item.messageId })
+        : zhaopinMessageKey(threadKey, item.messageId);
     } finally {
       item.messageId = "";
     }
-    const idempotencyKey = `message:boss:${digest.slice(7)}`;
+    const idempotencyKey = `message:${platform}:${digest.slice(7)}`;
     const exists = db.prepare(`SELECT 1 AS found FROM candidate_progress_events
       WHERE card_id = ? AND idempotency_key = ?`).get(cardId, idempotencyKey);
     candidates.push({
@@ -570,10 +615,10 @@ function selectUnprocessedFriendMessageGroup(db, cardId, selected, threadKey) {
   const unprocessed = candidates.filter((item) => item.isNew);
   const grouped = [...processed, ...unprocessed];
   if (grouped.length > BOSS_MESSAGE_GROUP_LIMIT) {
-    return { ok: false, reasonCode: "BOSS_MESSAGE_GROUP_LIMIT" };
+    return { ok: false, reasonCode: platform === "zhaopin" ? "ZHAOPIN_MESSAGE_CONTENT_PENDING" : "BOSS_MESSAGE_GROUP_LIMIT" };
   }
   if (grouped.reduce((sum, item) => sum + (item.contentKind === "text" ? item.text.length : 0), 0) > BOSS_MESSAGE_GROUP_TEXT_LIMIT) {
-    return { ok: false, reasonCode: "BOSS_MESSAGE_GROUP_TEXT_LIMIT" };
+    return { ok: false, reasonCode: platform === "zhaopin" ? "ZHAOPIN_MESSAGE_CONTENT_PENDING" : "BOSS_MESSAGE_GROUP_TEXT_LIMIT" };
   }
   const newMessageKeys = unprocessed.map((item) => item.messageKey);
   if (newMessageKeys.length === 0) {
@@ -592,7 +637,9 @@ function selectUnprocessedFriendMessageGroup(db, cardId, selected, threadKey) {
       .filter((item) => item.contentKind === "text")
       .map(({ messageKey: itemKey, text }) => ({ messageKey: itemKey, text })),
     manualActions,
-    messageGroupKey: safeDigest(["message-group", threadKey, ...grouped.map((item) => item.messageKey)]),
+    messageGroupKey: safeDigest(platform === "boss"
+      ? ["message-group", threadKey, ...grouped.map((item) => item.messageKey)]
+      : ["message-group", platform, threadKey, ...grouped.map((item) => item.messageKey)]),
     newMessageKeys
   };
 }
@@ -608,11 +655,67 @@ function resumeRequestClassification() {
   };
 }
 
-function commitBaseline(db, profileId, target, occurredAt = new Date().toISOString()) {
+function zhaopinMessageKey(threadKey, messageId) {
+  const id = String(messageId || "").trim();
+  if (!/^\d{1,32}$/.test(id)) {
+    throw discoveryError("ZHAOPIN_MESSAGE_CONTENT_PENDING", "zhaopin message id is invalid");
+  }
+  return safeDigest(["zhaopin", threadKey, id]);
+}
+
+function mutableSelectedSnapshot(selected) {
+  if (!selected || typeof selected !== "object") return selected;
+  return {
+    ...selected,
+    messages: Array.isArray(selected.messages)
+      ? selected.messages.map((item) => item && typeof item === "object" ? { ...item } : item)
+      : []
+  };
+}
+
+function selectedIdentity(selected) {
+  return {
+    positionTitle: selected?.positionName,
+    company: selected?.companyName,
+    salary: selected?.salary,
+    city: selected?.city
+  };
+}
+
+function unresolvedInboundMessages(platform, selected) {
+  const values = [];
+  for (const item of Array.isArray(selected?.messages) ? selected.messages : []) {
+    if (String(item?.direction || "") !== "friend") continue;
+    const kind = String(item?.contentKind || "");
+    const text = String(item?.text || "").replace(/\r\n?/g, "\n").trim();
+    if (kind === "text" && text) values.push({ kind, text });
+    if (kind === "resume_request" && text === "HR 邀请你发送简历") values.push({ kind, text });
+    if (values.length >= BOSS_MESSAGE_GROUP_LIMIT) break;
+  }
+  return platform === "zhaopin" ? values : [];
+}
+
+function validInboundIdentity(platform, target) {
+  const sourceJobId = String(target?.sourceJobId || "").trim();
+  const lastMessageId = String(target?.lastMessageId || "").trim();
+  return platform === "zhaopin"
+    ? /^zhaopin:[A-Za-z0-9]{1,160}$/.test(sourceJobId) && /^\d{1,32}$/.test(lastMessageId)
+    : /^boss:[A-Za-z0-9_-]{6,160}$/.test(sourceJobId) && /^\d{15}$/.test(lastMessageId);
+}
+
+function discoveryPlatform(value) {
+  const platform = String(value || "").trim().toLowerCase();
+  if (!["boss", "zhaopin"].includes(platform)) {
+    throw discoveryError("MESSAGE_DISCOVERY_PLATFORM_INVALID", "message discovery platform is invalid");
+  }
+  return platform;
+}
+
+function commitBaseline(db, profileId, target, platform = "boss", occurredAt = new Date().toISOString()) {
   if (!target?.conversationKey || !target?.previewDigest) return;
   commitProcessedPreview(db, {
     profileId,
-    platform: "boss",
+    platform,
     conversationKey: target.conversationKey,
     previewDigest: target.previewDigest,
     previewKind: target.previewKind || "unknown",
@@ -628,7 +731,7 @@ function clearMessageSources(messages) {
   }
 }
 
-function safeResult(card, result, resolvedJob, contextSource, drafts = [], inboundMessages = []) {
+function safeResult(card, result, resolvedJob, contextSource, drafts = [], inboundMessages = [], platform = "boss", sourceJobId = "") {
   const missingFactKey = String(result.missingFact?.key || "").trim().slice(0, 80);
   const safeDrafts = Array.isArray(drafts) ? drafts.slice(0, 2).map((draft) => ({
     id: Number(draft.id),
@@ -639,6 +742,8 @@ function safeResult(card, result, resolvedJob, contextSource, drafts = [], inbou
   return {
     cardId: card.id,
     jobId: card.jobId,
+    platform,
+    sourceJobId: safeProjectionText(sourceJobId, 180),
     stage: card.stage,
     messageIntent: String(result.messageIntent || ""),
     messageCategory: String(result.messageCategory || ""),
@@ -872,13 +977,13 @@ function safeStatus(status, value = {}) {
   };
 }
 
-function visibleCounters(rows, unbound) {
+function visibleCounters(rows, unbound, platform = "boss") {
   const values = Array.isArray(rows) ? rows : [];
   return {
     visible: values.length,
     newReplies: 0,
-    currentRead: values.filter((row) => row?.previewKind === "self_read").length,
-    currentDelivered: values.filter((row) => row?.previewKind === "self_delivered").length,
+    currentRead: platform === "boss" ? values.filter((row) => row?.previewKind === "self_read").length : null,
+    currentDelivered: platform === "boss" ? values.filter((row) => row?.previewKind === "self_delivered").length : null,
     unbound: Math.max(0, Number(unbound) || 0)
   };
 }
@@ -898,14 +1003,14 @@ function safeCounters(value = {}) {
   return {
     visible: Math.max(0, Number(value.visible) || 0),
     newReplies: Math.max(0, Number(value.newReplies) || 0),
-    currentRead: Math.max(0, Number(value.currentRead) || 0),
-    currentDelivered: Math.max(0, Number(value.currentDelivered) || 0),
+    currentRead: value.currentRead === null ? null : Math.max(0, Number(value.currentRead) || 0),
+    currentDelivered: value.currentDelivered === null ? null : Math.max(0, Number(value.currentDelivered) || 0),
     unbound: Math.max(0, Number(value.unbound) || 0)
   };
 }
 
-function unresolvedSummary(db, profileId) {
-  const items = listUnresolvedMessageDiscoveryItems(db, { profileId });
+function unresolvedSummary(db, profileId, platform = "boss") {
+  const items = listUnresolvedMessageDiscoveryItems(db, { profileId, platform });
   return { count: items.length, reasonCode: items[0]?.reasonCode || "" };
 }
 
