@@ -173,7 +173,7 @@ Before discarding a ZL selected snapshot for missing context, extract validated 
 
 Display source comes from persisted jobs/cards (not browser/user-supplied capability flags), and result shaping retains it. Default combined list, source filter `{all,boss,zhaopin}` is a labelled native display control. It must save pending edits before hiding a row; failed save keeps current content visible. Switching source cannot start a scan, clear drafts, switch Today platform, or reload away unsaved text. The selected first visible message updates consistently; empty filtered results have clear text. Keep the existing desktop two-column message layout, existing tokens/typefaces, one primary “开始只读发现” button. Use compact textual source badges, not giant extra platform cards or new decorative panels. Show platform-specific connection/result notices compactly, and BOSS read/delivered counts labelled as BOSS-only; ZL unknown status omitted or labelled “暂不提供已读/送达统计”, never displayed as zero. During ZL reading use a plain-language loading/reading status and keep safe stop available; content-pending explains that messages have not loaded yet and remain retryable. Do not claim a diagnosed network cause, show raw internal codes as the primary explanation, or ask users to foreground the page.
 
-- [ ] **Step 1: Add failing local HTTP/SQLite/headless tests for user outcomes.**
+- [x] **Step 1: Add failing local HTTP/SQLite/headless tests for user outcomes.**
 
 ```js
 // A ZL-only fake browser with real controller/storage: no BOSS helper invocation.
@@ -188,7 +188,7 @@ Also verify both-platform deterministic serial operation, stop during second pla
 
 From a ZL Today/jobs/queue page, the existing sidebar must still expose the same unified “消息与回复” entry; keep BOSS-specific “发送记录” hidden there. Remove the old ZL-only hiding of the message link in queue shortcuts. Preserve the originating Today platform for navigation back using the existing `workSite` query convention; it must not limit discovery platforms or the display filter. This is source-independent access to the one inbox, not a new menu or an expansion of ZL communication controls. Confirm by rendered-link navigation (ZL Today → inbox → Today stays ZL), not source-text assertions.
 
-- [ ] **Step 2: Implement serial source routing in existing controller and concise unified display.**
+- [x] **Step 2: Implement serial source routing in existing controller and concise unified display.**
 
 ```js
 for (const platform of connectedPlatforms) {
@@ -197,10 +197,18 @@ for (const platform of connectedPlatforms) {
 }
 ```
 
-Use production tab inventory; reject ambiguity per source with an explicit platform status. Login/risk/page loss stops that platform; global abort/lease loss ends the entire run. Preserve earlier durable data if later work fails. ZL does not inherit BOSS cooldown or detail opening; it still uses randomized serial pacing and stop-on-risk. Do not relax BOSS fixed-tab or transient detail guards. Clear action remains explicit “清除本次结果” across the same run, independent of display filter, and cannot clear unprocessed messages; saved drafts are handled by the existing deliberate dismiss semantics. No hidden source-filter-specific destruction.
+Use production tab inventory; reject ambiguity per source with an explicit platform status. Login/risk/page loss stops that platform; global abort/lease loss ends the entire run. Preserve earlier durable data if later work fails. ZL does not inherit BOSS persisted site cooldown, detail budgets or detail opening; it still uses randomized serial pacing and stop-on-risk. The existing shared queue's short rest after ten opened conversations stays unchanged: its counter is local to each platform run and is not the BOSS persisted site cooldown. Do not relax BOSS fixed-tab or transient detail guards. Clear action remains explicit “清除本次结果” across the same run, independent of display filter, and cannot clear unprocessed messages; saved drafts are handled by the existing deliberate dismiss semantics. No hidden source-filter-specific destruction.
 
 Send batch selection/count includes BOSS drafts only; unknown source is non-sendable. When filtered to ZL, hide the BOSS batch-send action and do not include filtered-out BOSS targets in a send selection; changing the display filter itself still performs no external action or draft deletion. Profile/queue/api progress path must reject ZL sent regardless of UI. Copy/save stay shared. Source-aware manual text says 智联 and asks user to handle the original resume request themselves; no resume buttons execute from RoleFlow. Unknown job analysis stays visibly incomplete. Durable page restore includes inbound contexts with open drafts OR with no draft rows (manual-only/missing-fact results); all-closed draft groups must not reappear as active messages. Explicit dismiss removes the processed inbound contexts it dismisses via existing deleteMessageInboundContext, preserving unresolved pending items; no new archive/status system. Reuse current send-busy protections before clearing any associated draft/context. After confirmed BOSS send/clear, the completed context must not resurrect as a no-draft result.
 
-- [ ] **Step 3: Run local user journey and existing message UI gates, inspect desktop/mobile screenshots, diff-check and commit owned files.** Use installed headless Edge, 1440px and 390px, no horizontal overflow/console errors/external requests; verify labels and focus navigation. Main runs fresh complete `npm test` at final static code, final broad review and one fix wave if needed, updates NEXT_PHASE/PROJECT_HANDOFF and records exact SHA. Do not push, merge, package, publish or change version.
+- [x] **Step 3: Run local user journey and existing message UI gates, inspect desktop/mobile screenshots, diff-check and commit owned files.** Use installed headless Edge, 1440px and 390px, no horizontal overflow/console errors/external requests; verify labels and focus navigation. Main runs fresh complete `npm test` at final static code, final broad review and one fix wave if needed, updates NEXT_PHASE/PROJECT_HANDOFF and records exact SHA. Do not push, merge, package, publish or change version.
 
 Keep the existing optional browser-test runtime convention: Playwright is not in package.json and CI/release only runs npm ci. Fix the new reader smoke's unconditional require so absent Playwright is an explicit skip by default but remains a hard failure with ROLEFLOW_REQUIRE_PLAYWRIGHT=1; apply the same rule to a new browser journey. Verify both missing-runtime branches and the strict installed-runtime GREEN; do not add a dependency or silently skip strict local acceptance. While touching this fixture, close the two recorded Task 2 coverage gaps with actual resume/sender-control event counters asserted zero and an absent-optional-fields case asserted unknown; no production reader expansion is required.
+
+## Main final delivery gate
+
+Tasks 1–4 have completed their independent task reviews (Task 4 final fix `517d5d7`); this is not final delivery approval.
+
+- [ ] Whole-branch review from merge base, one final fix wave and scoped re-review if needed; include the observed list-loading-as-empty and normal-wait listener-retention gaps.
+- [ ] Fresh strict full offline gate on the final frozen code; record actual count, exit code and SHA.
+- [ ] Final report/handoff/checks, documentation commit, exact final SHA proportional verification; leave branch/worktree in place without push/merge/package/release.
