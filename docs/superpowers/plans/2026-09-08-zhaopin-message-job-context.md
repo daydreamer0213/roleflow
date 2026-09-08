@@ -29,7 +29,7 @@
 - Modify narrowly for availability label: `src/dashboard/message_discovery_view.js` (only after prior UI task completes)
 - Test: `tests/zhaopin_message_reader_smoke.js`, `tests/zhaopin_message_discovery_smoke.js`
 - Create Test: `tests/zhaopin_message_job_context_smoke.js`, `tests/zhaopin_message_detail_reader_smoke.js`
-- Register tests in `tests/run.js` (verify actual runner path from package.json before editing).
+- Register tests in `tests/run_all.js`.
 
 **Interfaces:**
 - `messageReader.readSelectedJobTarget(selected, signal)` -> `{jobId, navigationUrl, canonicalUrl, availability}` where jobId is unprefixed, availability is `offline` or `unknown` (absence of an offline badge does not prove active recruitment). It must re-read and verify the current bound tab, row/main/header session and job identity against the previously returned selected object, not trust an arbitrary caller-provided object. Add an internal selected-result identity reference/digest as needed within the existing reader; never expose peer IDs.
