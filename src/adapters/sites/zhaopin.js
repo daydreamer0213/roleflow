@@ -27,7 +27,7 @@ const ZHAOPIN_COMPONENT_ACCESSORS_SOURCE = String.raw`
 `;
 
 const ZHAOPIN_PAGE_HELPERS_EXPRESSION = String.raw`(() => {
-  if (window.__zhaopinReadSearchState?.__roleflowVersion === 4) return true;
+  if (window.__zhaopinReadSearchState?.__roleflowVersion === 5) return true;
   const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
   const validSourceId = (value) => /^[A-Za-z0-9]{1,160}$/.test(String(value || '')) ? String(value) : '';
   ${ZHAOPIN_COMPONENT_ACCESSORS_SOURCE}
@@ -75,8 +75,11 @@ const ZHAOPIN_PAGE_HELPERS_EXPRESSION = String.raw`(() => {
     const location = panel ? textLines[0] || '' : textLines.find((item) => item.includes('·')) || '';
     const experience = textLines.find((item) => /经验不限|\d+(?:-\d+)?年|年以上|以下/.test(item)) || '';
     const education = textLines.find((item) => /本科|大专|硕士|博士|高中|中专|MBA/.test(item)) || '';
-    const companyLine = textLines.find((item) => item !== location && item !== experience && item !== education) || '';
+    const companyLine = panel
+      ? clean(summary?.querySelector('.job-detail-summary__company-name')?.textContent)
+      : textLines.find((item) => item !== location && item !== experience && item !== education) || '';
     const clientMatch = companyLine.match(/^客户公司[：:]\s*(.+)$/);
+    const publisher = panel ? clean(pane.querySelector('.job-company-info__name')?.textContent) : '';
     const link = panel
       ? clean(pane.querySelector('.job-company-info__view-all[href*="/jobdetail/"]')?.href)
       : Array.from(pane.querySelectorAll('a[href*="/jobdetail/"]')).map((item) => item.href).find(Boolean) || '';
@@ -93,8 +96,8 @@ const ZHAOPIN_PAGE_HELPERS_EXPRESSION = String.raw`(() => {
     return {
       title: clean(pane.querySelector('.job-detail-summary__title-text')?.textContent),
       salary: clean(pane.querySelector('.job-detail-summary__salary')?.textContent),
-      company: panel ? clean(pane.querySelector('.job-detail-summary__company-name, .job-company-info__name')?.textContent) : clientMatch ? '' : companyLine,
-      clientCompany: panel ? '' : clientMatch ? clean(clientMatch[1]) : '',
+      company: panel ? (clientMatch ? publisher : companyLine || publisher) : clientMatch ? '' : companyLine,
+      clientCompany: clientMatch ? clean(clientMatch[1]) : '',
       location,
       experience,
       education,
@@ -132,7 +135,7 @@ const ZHAOPIN_PAGE_HELPERS_EXPRESSION = String.raw`(() => {
       isSearchPage: location.protocol === 'https:' && location.hostname === 'www.zhaopin.com' && pathname === '/jobs/' && new URL(location.href).searchParams.get('pageMode') === 'search'
     };
   };
-  window.__zhaopinReadSearchState.__roleflowVersion = 4;
+  window.__zhaopinReadSearchState.__roleflowVersion = 5;
   window.__zhaopinActivateCard = (expectedIndex, expectedSignature) => {
     const cards = Array.from(document.querySelectorAll('.job-list-panel .job-card'));
     const card = cards[Number(expectedIndex)];
@@ -452,7 +455,7 @@ function detailMatches(card, detail, detailSourceIdConfirmed = true, detailSourc
     && sameText(detail.title, card.title)
     && (!card.currentSourceIdSupplied || (Boolean(card.sourceId) && card.sourceId === detail.sourceId))
     && (!card.salary || sameText(detail.salary, card.salary))
-    && (!card.company || sameText(company, card.company) || Boolean(detail.clientCompany))
+    && (!card.company || sameText(company, card.company) || (Boolean(detail.clientCompany) && !detail.company))
     && (!card.location || sameLocation(detail.location, card.location, exactComponentIdentity));
 }
 

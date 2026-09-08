@@ -193,6 +193,7 @@ async function main() {
     assert.equal(currentState.cards[0].sourceId, "CCSYNTH001J00000000001");
     assert.equal(currentState.detail.title, "当前结构合成岗位");
     assert.equal(currentState.detail.company, "合成甲公司");
+    assert.equal(currentState.detail.clientCompany, "合成客户公司");
     assert.equal(currentState.detail.salary, "18K-25K");
     assert.equal(currentState.detail.location, "合成市·甲区");
     assert.equal(currentState.detail.experience, "3-5年");
@@ -200,7 +201,18 @@ async function main() {
     assert.equal(currentState.detail.description, "职位描述：当前结构合成职责，要求独立完成可靠交付。");
     assert.equal(currentState.detail.description.includes("诱饵"), false);
     assert.equal(currentState.detail.sourceId, "CCSYNTH001J00000000001");
-    assert.ok(await adapter.readVisiblePaneDetail("ZHAOPIN-SEARCH", currentState.cards[0]), "current selected card and summary IDs match the trusted link");
+    const currentDetail = await adapter.readVisiblePaneDetail("ZHAOPIN-SEARCH", currentState.cards[0]);
+    assert.ok(currentDetail, "current selected card and summary IDs match the trusted link");
+    assert.equal(currentDetail.company, "合成甲公司");
+    assert.equal(currentDetail.clientCompany, "合成客户公司");
+
+    await page.evaluate(() => { document.querySelector(".job-company-info__name").textContent = "合成丙公司"; });
+    const wrongPublisherState = await adapter.readSearchState("ZHAOPIN-SEARCH");
+    assert.equal(
+      await adapter.readVisiblePaneDetail("ZHAOPIN-SEARCH", wrongPublisherState.cards[0]),
+      null,
+      "an explicit client company must not bypass a publisher mismatch"
+    );
 
     const vue2FixtureHtml = fs.readFileSync(path.join(__dirname, "fixtures", "zhaopin", "search-vue2.html"), "utf8");
     await page.route("https://www.zhaopin.com/jobs-vue2/**", (route) => route.fulfill({
@@ -212,11 +224,11 @@ async function main() {
     await page.evaluate(() => history.replaceState({}, "", "/jobs/?pageMode=search&kw=%E5%90%88%E6%88%90%E5%85%B3%E9%94%AE%E8%AF%8D"));
     await page.evaluate(() => {
       window.__zhaopinReadSearchState = () => ({ legacyFixture: true });
-      window.__zhaopinReadSearchState.__roleflowVersion = 3;
+      window.__zhaopinReadSearchState.__roleflowVersion = 4;
     });
     const vue2State = await adapter.readSearchState("ZHAOPIN-SEARCH");
-    assert.equal(await page.evaluate(() => window.__zhaopinReadSearchState.__roleflowVersion), 4,
-      "the upgraded injection replaces a previously cached version 3 helper");
+    assert.equal(await page.evaluate(() => window.__zhaopinReadSearchState.__roleflowVersion), 5,
+      "the upgraded injection replaces a previously cached version 4 helper");
     assert.equal(vue2State.cards[0].sourceId, "CCSYNTHV2A1J00000000001", "Vue 2 JobCard exposes the trusted card ID");
     assert.ok(await adapter.readVisiblePaneDetail("ZHAOPIN-SEARCH", vue2State.cards[0]), "same-ID 北京 朝阳 建外 and 北京·朝阳区 are one location");
     const noExternalActionCount = bridge.calls.filter((call) => ["navigate", "bringToFront"].includes(call.type) || call === "bringToFront").length;
@@ -227,7 +239,8 @@ async function main() {
       ["card-id", () => { document.getElementById("vue2-card").__vue__.$props.job.number = "CCWRONGCARD2J00000000001"; }],
       ["detail-id", () => { document.getElementById("vue2-summary").__vue__.$props.jobDetail.detailedPosition.number = "CCWRONGDETAILJ00000000001"; }],
       ["computed-id", () => { document.getElementById("vue2-summary").__vue__.position.number = "CCWRONGCOMPUTJ00000000001"; }],
-      ["link-id", () => { document.querySelector(".job-company-info__view-all").href = "https://www.zhaopin.com/jobdetail/CCWRONGLINK2J00000000001.htm"; }]
+      ["link-id", () => { document.querySelector(".job-company-info__view-all").href = "https://www.zhaopin.com/jobdetail/CCWRONGLINK2J00000000001.htm"; }],
+      ["unmarked-company", () => { document.querySelector(".job-detail-summary__company-name").textContent = "合成冲突公司"; }]
     ]) {
       await page.goto("https://www.zhaopin.com/jobs-vue2/?pageMode=search&kw=%E5%90%88%E6%88%90%E5%85%B3%E9%94%AE%E8%AF%8D");
       await page.evaluate(() => history.replaceState({}, "", "/jobs/?pageMode=search&kw=%E5%90%88%E6%88%90%E5%85%B3%E9%94%AE%E8%AF%8D"));
