@@ -15,7 +15,7 @@
 | 统一消息布局 | 任务复核和本地浏览器回归完成；待阶段最终复核与真实验收 | `622e0ce`、`767c22b`、`e975a92`；整组草稿稳定保存后才切换。主控在 `17cc3d4` 新鲜严格旅程退出码 0 |
 | 消息岗位资料补全 | 实现、定向回归和独立任务复核完成；真实验收待完成 | `ab7a246` 后的两项重要问题由 `5664310` 修复；补充回归通过，复核确认两项关闭且无新增重要问题 |
 | 新版搜索结构与准备页等待 | 实施计划已明确，待实现 | 真实产品按钮曾在导航落地前报错；新版岗位摘要位于详情卡外，与旧读取假设不符 |
-| 智联普通初次沟通 | 来源批次/运行控制正在实现；浏览器适配与产品入口待实现 | 复用不可变独立清单；搜索页 `preChat` 与 `apply` 是不同路径，独立详情“立即沟通”是 APP 入口，不可替代网页打招呼 |
+| 智联普通初次沟通 | 来源批次/运行控制完成任务复核；浏览器适配与产品入口待实现 | `d67e4ec`、`8c13026`；来源/岗位/搜索条件冻结，未点击项可恢复，不混入 BOSS 漏斗；执行仍关闭 |
 | 当前代码完整门禁 | 未运行 | 完成各任务及复核后，从头运行一次严格完整门禁并记录精确 SHA |
 | 当前真实端到端 | 未运行 | 尚未发起本轮普通打招呼、回复、简历处理或投递 |
 
@@ -36,6 +36,10 @@
 独立复核随后复现两项缺陷：正确编号但标题/公司尚空的骨架页立即被误判为错岗位；详情层的 `ZHAOPIN_MESSAGE_RISK_CONTROL` 未被控制器识别，停止当轮却没有保存后续智联阻断。`5664310c1048badf2dc7f1c13e7701ec0d087168` 先补真实失败回归，再分别允许缺失字段等待、统一识别两种实际智联风险码。`zhaopin_message_detail_reader_smoke`、`zhaopin_message_discovery_smoke`、`dashboard_message_discovery_smoke` 和 `git diff --check` 均退出码 0。修复复核确认两项均已处理，没有新增 Critical/Important；普通加载超时不会进入风险冷却，BOSS 状态不变。
 
 ## 实际环境与资料保护
+
+普通沟通存储/控制任务在 `d67e4ec` 完成 6 项新鲜定向检查：`zhaopin_communication_storage_smoke`、`communication_batch_storage_smoke`、`communication_application_smoke`、`communication_runtime_smoke`、`communication_calibration_gate_smoke`、`communication_executor_smoke`，均退出码 0。独立复核发现“同计划、不同用户资料的观察记录”可过晚才被拒绝；`8c130267bbf877da192996b309e9fd0cfbcea8cb` 新增失败回归后，提前在创建事务核对观察记录的资料/计划/来源，拒绝时不产生批次。3 项覆盖回归、语法和差异检查通过，修复复核无新增重要问题。BOSS 行为不变，智联仍为 `dom_verified / e2e_pending / executionEnabled:false`。
+
+用户重新打开页面后，主控于 12:51 UTC 只读查看已加载 `job-apply` 客户端。调用模块引用环境模块 `36040` 与请求模块 `69508`，确认普通 prechat 为 GET `https://cgate.zhaopin.com/imapi/imV2/createAndUpdateContextV2`，application 为 POST `https://fe-api.zhaopin.com/c/pc/alan/jobs/application`；后者仅作为停止信号，绝不执行。资源 SHA256 为 `211af7a360cd141e27a6931f17e7dc639b9c89dcba42001af2853f8a3da6ce94`，浏览器拦截器不改写这些绝对 URL。证据在 `D:/DevData/RoleFlow-zhaopin-message-context-20260908/client-origin-evidence.md`。没有点击、导航、新标签或私有 API 请求，前后台标签身份保持不变；这是代码依据，不是发送成功证据。
 
 - 开发工作树：`D:/DevData/RoleFlow-worktrees/zhaopin-readonly`，分支 `codex/zhaopin-readonly`。
 - 隔离验收数据：`D:/DevData/RoleFlow-unified-message-acceptance-20260908`，不是用户当前安装版或空白新用户资料。
