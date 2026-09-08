@@ -9,10 +9,12 @@ catch (error) {
 }
 const {
   createZhaopinMessageReader,
-  ZHAOPIN_MESSAGE_SNAPSHOT_EXPRESSION
+  ZHAOPIN_MESSAGE_SNAPSHOT_EXPRESSION,
+  isZhaopinMessageUrl
 } = require("../src/adapters/sites/zhaopin_message_reader");
 
 const IM_URL = "https://i.zhaopin.com/im";
+const PARAMETERIZED_IM_URL = `${IM_URL}?refcode=4089&sessionId=${"a".repeat(32)}#conversation`;
 const IM_TAB_ID = 202;
 const WINDOW_ID = 7;
 const JOB_A = "CCL1234567890J00123456789";
@@ -65,18 +67,18 @@ function fixtureHtml() {
   </body></html>`;
 }
 
-function tabs() {
+function tabs(messageUrl = IM_URL) {
   return [
     { id: 1, windowId: WINDOW_ID, active: true, url: "http://127.0.0.1:3000/messages" },
-    { id: IM_TAB_ID, windowId: WINDOW_ID, active: false, url: IM_URL }
+    { id: IM_TAB_ID, windowId: WINDOW_ID, active: false, url: messageUrl }
   ];
 }
 
-function fakeBrowser(page) {
+function fakeBrowser(page, messageUrl = IM_URL) {
   const calls = [];
   return {
     calls,
-    async listTabs() { calls.push(["listTabs"]); return tabs(); },
+    async listTabs() { calls.push(["listTabs"]); return tabs(messageUrl); },
     async setPageLifecycleActive(tabId) { calls.push(["setPageLifecycleActive", tabId]); return { state: "active" }; },
     async evalValue(tabId, expression) { calls.push(["evalValue", tabId]); assert.equal(tabId, IM_TAB_ID); return page.evaluate(expression); },
     async bringToFront() { calls.push(["bringToFront"]); throw new Error("must not focus"); },
@@ -236,7 +238,7 @@ async function main() {
     assert.equal(await page.evaluate(() => window.fixture.clicks), clicksBeforeInvalidJob, "an invalid job identity must stop before row.click()");
     assert.deepEqual(await page.evaluate(() => [window.fixture.resumeClicks,window.fixture.senderClicks]), [0,0]);
     const failures = [];
-    for (const regression of [listLoadingSmoke, ambiguousFromMeSmoke, defaultWaitCleanupSmoke]) {
+    for (const regression of [parameterizedUrlSmoke, listLoadingSmoke, ambiguousFromMeSmoke, defaultWaitCleanupSmoke]) {
       try { await regression(page, first); } catch (error) { failures.push(`${regression.name}: ${error.stack}`); }
     }
     assert.deepEqual(failures, []);
@@ -245,6 +247,43 @@ async function main() {
     await browser.close();
   }
   console.log("zhaopin_message_reader_smoke ok");
+}
+
+async function parameterizedUrlSmoke(page, first) {
+  await page.evaluate((url) => history.replaceState(null, "", url), PARAMETERIZED_IM_URL);
+  try {
+    await setFixture(page, { sessions: [first], active: first, timeline: [message({ idServer: "601", body: "你好" })] });
+    const bridge = fakeBrowser(page, PARAMETERIZED_IM_URL);
+    const reader = readerFor(bridge);
+    const scanned = await reader.scanConversationRows();
+    const selected = await reader.openQueuedConversation({ ...scanned.rows[0], tabId: scanned.tabId });
+    assert.equal(selected.sourceJobId, "zhaopin:CCL1234567890J00123456789");
+    assert.equal(selected.messages[0].text, "你好", "the guarded selection expression accepts the same parameterized IM URL");
+    assert.equal((await page.evaluate(ZHAOPIN_MESSAGE_SNAPSHOT_EXPRESSION)).state, "ready", "the mounted snapshot accepts a real parameterized IM URL");
+    assert.deepEqual(await page.evaluate(() => [window.fixture.resumeClicks, window.fixture.senderClicks]), [0, 0]);
+    for (const forbidden of ["bringToFront", "navigate", "createTab", "inputText"]) assert.equal(bridge.calls.some(([name]) => name === forbidden), false);
+
+    assert.equal(isZhaopinMessageUrl(IM_URL), true, "the plain IM URL remains accepted");
+    assert.equal(isZhaopinMessageUrl(PARAMETERIZED_IM_URL), true, "query and fragment do not change IM-page identity");
+    for (const invalid of [
+      "http://i.zhaopin.com/im",
+      "https://example.com/im",
+      "https://i.zhaopin.com/other"
+    ]) assert.equal(isZhaopinMessageUrl(invalid), false);
+
+    for (const invalid of [
+      "http://i.zhaopin.com/im",
+      "https://example.com/im",
+      "https://i.zhaopin.com/other"
+    ]) {
+      await assert.rejects(() => readerFor(fakeBrowser(page, invalid)).scanConversationRows(), error => error.code === "ZHAOPIN_MESSAGE_TAB_MISSING");
+    }
+    const ambiguous = fakeBrowser(page, PARAMETERIZED_IM_URL);
+    ambiguous.listTabs = async () => [...tabs(PARAMETERIZED_IM_URL), { id: IM_TAB_ID + 1, windowId: WINDOW_ID, active: false, url: IM_URL }];
+    await assert.rejects(() => readerFor(ambiguous).scanConversationRows(), error => error.code === "ZHAOPIN_MESSAGE_TAB_AMBIGUOUS");
+  } finally {
+    await page.evaluate(() => history.replaceState(null, "", "/im"));
+  }
 }
 
 async function listLoadingSmoke(page, first) {

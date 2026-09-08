@@ -9,6 +9,7 @@ const { createMessageDiscoveryController } = require('../src/dashboard/message_d
 const { createDashboardServer } = require('../src/dashboard/server');
 const { recordUnresolvedMessageDiscoveryItem } = require('../src/core/message_preview_state');
 const NOW = '2026-09-08T01:00:00.000Z';
+const PARAMETERIZED_IM_URL = 'https://i.zhaopin.com/im?refcode=4089&sessionId=' + 'a'.repeat(32) + '#conversation';
 const digest = value => 'sha256:' + crypto.createHash('sha256').update(value).digest('hex');
 const logger = { info() {}, warn() {}, error() {}, requestId() { return 'unified'; }, listRecent() { return []; } };
 function seed(db, platform, profileId, planId, manual = false, suffix = manual ? '8' : '9') {
@@ -40,7 +41,7 @@ async function main() {
     const manual = seed(db,'zhaopin',profileId,planId,true);
     let nativeScans=0,nativeBossGuards=0,nativeActive=0,nativeMax=0,nativePlatforms=['zhaopin'];const nativeOrder=[], nativeStates=[];
     const nativeController=createMessageDiscoveryController({db,acquireLease:storage.acquireSiteScanLease,renewLease:storage.renewSiteScanLease,releaseLease:storage.releaseSiteScanLease,
-      createBrowser:()=>({listTabs:async()=>nativePlatforms.map((platform,index)=>({id:index+1,windowId:1,url:platform==='boss'?'https://www.zhipin.com/web/geek/chat':'https://i.zhaopin.com/im'}))}),
+      createBrowser:()=>({listTabs:async()=>nativePlatforms.map((platform,index)=>({id:index+1,windowId:1,url:platform==='boss'?'https://www.zhipin.com/web/geek/chat':PARAMETERIZED_IM_URL}))}),
       assertRuntimeAvailable:()=>{nativeBossGuards++;},createReader:({platform})=>({async scanConversationRows(){nativeStates.push(nativeController.status(profileId).platformRuns);assert(nativeController.status(profileId).platformRuns.every(entry=>['not_connected','running','completed','stopped','needs_user_action'].includes(entry.status)));nativeScans++;nativeOrder.push(platform);nativeActive++;nativeMax=Math.max(nativeMax,nativeActive);await new Promise(resolve=>setTimeout(resolve,1));nativeActive--;return {platform,rows:[]};}}),createAnalyzer:()=>async()=>({}),createDetailSafety:()=>({}),createDetailReader:()=>({}),createJobContextResolver:()=>async()=>({})});
     controllers.push(nativeController);nativeController.start(profileId);const nativeResult=await settle(nativeController,profileId);assert.equal(nativeScans,1,'shared production pipeline reaches the ZL reader');assert.equal(nativeBossGuards,0);
     assertUnknownZhaopinReceipts({ platformRuns: nativeStates[0] });
@@ -56,7 +57,7 @@ async function main() {
     let bossReadCalls=0,zhaopinReadCalls=0,operations=0,maxOperations=0,cleanup=0;
     let connected=['zhaopin']; const order=[];
     const deps={db,acquireLease:storage.acquireSiteScanLease,renewLease:storage.renewSiteScanLease,releaseLease:storage.releaseSiteScanLease,
-      createBrowser:()=>({listTabs:async()=>connected.map((p,i)=>({id:i+1,windowId:1,url:p==='boss'?'https://www.zhipin.com/web/geek/chat':'https://i.zhaopin.com/im'}))}),
+      createBrowser:()=>({listTabs:async()=>connected.map((p,i)=>({id:i+1,windowId:1,url:p==='boss'?'https://www.zhipin.com/web/geek/chat':PARAMETERIZED_IM_URL}))}),
       cleanupBrowser:async()=>{cleanup++;},assertRuntimeAvailable:()=>{bossReadCalls++;if(deps.blockBoss)throw Object.assign(Error('existing pause'),{code:'BOSS_RUNTIME_BLOCKED'});},
       createReader:({platform})=>({platform}),createDetailSafety:()=>({}),createDetailReader:()=>({}),createJobContextResolver:()=>async()=>({}),createAnalyzer:()=>async()=>({}),
       runDiscovery:async({platform,signal,onStatus})=>{operations++;maxOperations=Math.max(maxOperations,operations);order.push(platform);if(platform==='zhaopin')zhaopinReadCalls++;try{if(deps.waitSecond&&platform==='zhaopin'){onStatus({status:'running',phase:'reading_messages',results:[]});await new Promise(r=>signal.addEventListener('abort',r,{once:true}));return {status:'stopped',results:[]};}return {status:'completed',processed:1,counters:{visible:1,newReplies:1,currentRead:platform==='boss'?7:99},results:[{cardId:platform==='boss'?boss.cardId:zl.cardId,jobId:platform==='boss'?boss.jobId:zl.jobId}]};}finally{operations--;}}};
@@ -89,11 +90,12 @@ async function main() {
     db.prepare("UPDATE message_reply_send_items SET status='stopped' WHERE batch_id=?").run(frozen.batch.id);
     db.prepare("UPDATE message_reply_send_batches SET status='stopped' WHERE id=?").run(frozen.batch.id);
     await restored.close();
-    recordUnresolvedMessageDiscoveryItem(db,{profileId,platform:'zhaopin',conversationKey:digest('pending'),previewDigest:digest('pendingpreview'),previewKind:'possible_hr_reply',observedAt:NOW,sourceJobId:'zhaopin:CCL1234567890J00123456789',lastMessageId:'101',reasonCode:'ZHAOPIN_MESSAGE_CONTENT_PENDING',positionTitle:'待加载岗位',company:'合成公司',inboundMessages:[{kind:'text',text:'已读到的原始问题'}]});
-    let httpBrowserCalls=0,httpBossCalls=0,httpReaderCalls=0;
+    const historicalConversationKey=digest('historical-boss-pending');
+    recordUnresolvedMessageDiscoveryItem(db,{profileId,platform:'boss',conversationKey:historicalConversationKey,previewDigest:digest('historical-boss-preview'),previewKind:'possible_hr_reply',observedAt:'2026-09-07T01:00:00.000Z',sourceJobId:'boss:historical-pending',lastMessageId:'101',reasonCode:'BOSS_MESSAGE_CARD_NOT_FOUND',positionTitle:'历史待核对岗位',company:'历史合成公司'});
+    let httpBrowserCalls=0,httpBossCalls=0,httpReaderCalls=0,httpReaderShouldWait=false;
     server=createDashboardServer({db,dbPath,root,dataRoot:root,forceMock:true,logger,browserAuthority:{browserMode:'portable',cdpPort:9222,profilePath:path.join(root,'profile')},
-      browserFactory:()=>{httpBrowserCalls++;return {listTabs:async()=>[{id:2,windowId:1,url:'https://i.zhaopin.com/im'}]};},
-      messageDiscoveryDependencies:{assertRuntimeAvailable:()=>{httpBossCalls++;},createAnalyzer:()=>async()=>({}),createReader:()=>({async scanConversationRows(signal){httpReaderCalls++;await new Promise(resolve=>signal.addEventListener('abort',resolve,{once:true}));return {platform:'zhaopin',rows:[]};}})}});
+      browserFactory:()=>{httpBrowserCalls++;return {listTabs:async()=>[{id:2,windowId:1,url:PARAMETERIZED_IM_URL}]};},
+      messageDiscoveryDependencies:{assertRuntimeAvailable:()=>{httpBossCalls++;},createAnalyzer:()=>async()=>({}),createReader:()=>({async scanConversationRows(signal){httpReaderCalls++;if(httpReaderShouldWait)await new Promise(resolve=>signal.addEventListener('abort',resolve,{once:true}));return {platform:'zhaopin',rows:[]};}})}});
     await new Promise(r=>server.listen(0,'127.0.0.1',r));const base='http://127.0.0.1:'+server.address().port;
     const before=db.prepare('SELECT COUNT(*) n FROM candidate_progress_events').get().n;
     const sent=await fetch(base+'/api/progress',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({cardId:zl.cardId,draftId:zl.drafts[0].id,finalText:'篡改答案',action:'reply_confirmed_sent',idempotencyKey:'zl-forbidden'})});
@@ -110,7 +112,7 @@ async function main() {
     const manualCard=page.locator('[data-message-detail-panel][data-platform="zhaopin"]').filter({hasNot:page.locator('[data-draft-text]')});assert.match(await manualCard.textContent(),/HR 邀请你发送简历/);assert.match(await manualCard.textContent(),/智联原始会话/);assert.equal(await manualCard.locator('button,form').count(),0);
     assert.equal(await page.locator('[data-send-select]').count(),1,'only the BOSS draft enters the batch selection');
     assert.equal(await page.locator('.message-list-item[data-platform="boss"]').count(),1);assert.equal(await page.locator('.message-list-item[data-platform="zhaopin"]').count(),2);
-    const pending=page.locator('.message-unresolved[data-platform="zhaopin"]');assert.match(await pending.innerText(),/已读到的原始问题/);assert.equal(await pending.locator('form').count(),0);
+    const pending=page.locator('.message-unresolved[data-platform="boss"]');assert.equal(await pending.count(),1);
     const filter=page.getByLabel('消息来源');await filter.selectOption('zhaopin');await page.waitForFunction(()=>document.querySelector('[data-source-filter]').value==='zhaopin'&&document.querySelector('.message-list-item[data-platform="boss"]').hidden);
     const field=zlCard.locator('[data-draft-text]');await field.fill('可以的，我们继续沟通。');await filter.selectOption('boss');await page.waitForFunction(()=>document.querySelector('.message-list-item[data-platform="zhaopin"]').hidden);
     await page.reload();assert.equal(await filter.inputValue(),'boss');await filter.selectOption('zhaopin');await zlCard.waitFor({state:'visible'});assert.equal(await field.inputValue(),'可以的，我们继续沟通。');assert.equal(await page.locator('[data-send-batch-panel]').isVisible(),false);
@@ -125,11 +127,24 @@ async function main() {
     await today.click();await page.waitForURL('**/plan?**');assert.equal(new URL(page.url()).searchParams.get('site'),'zhaopin');
     const dismiss=await fetch(base+'/api/message-discovery',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:'dismiss',profileId})});assert.equal(dismiss.status,200);
     const cleared=createMessageDiscoveryController({db});assert.equal(cleared.pageState(profileId).results.length,0);assert.equal(storage.listMessageInboundContexts(db,{profileId}).length,0);assert.equal(cleared.pageState(profileId).unresolved,1,'dismiss preserves unprocessed pending messages');await cleared.close();
-    await page.getByRole('link',{name:'消息与回复',exact:true}).click();await page.getByLabel('消息来源').selectOption('boss');await page.locator('[data-source-empty]').waitFor({state:'visible'});assert.equal(await page.locator('[data-message-view]:checked').count(),0);
+    await page.getByRole('link',{name:'消息与回复',exact:true}).click();await page.getByLabel('消息来源').selectOption('zhaopin');await page.locator('[data-source-empty]').waitFor({state:'visible'});assert.equal(await page.locator('[data-message-view]:checked').count(),0);assert.equal(await pending.isVisible(),false);
+    await page.getByRole('button',{name:'开始只读发现',exact:true}).click();
+    let completedStatus;for(let attempt=0;attempt<100;attempt++){completedStatus=await (await fetch(base+'/api/message-discovery-status?profileId='+profileId)).json();if(completedStatus.status!=='running')break;await new Promise(resolve=>setTimeout(resolve,5));}
+    assert.equal(completedStatus.status,'completed');assert.equal(completedStatus.unresolved,0);assert.equal(completedStatus.reasonCode,'');assert(completedStatus.startedAt);
+    await page.waitForFunction(()=>document.querySelector('.message-state h2')?.textContent==='本次发现已完成',null,{timeout:5000});
+    const completedState=await page.locator('.message-state').innerText();assert.match(completedState,/未解决 0/);assert.match(completedState,/保留记录 1/);assert.doesNotMatch(completedState,/无法确认本地岗位与会话是否一致/);
+    assert.equal(db.prepare('SELECT COUNT(*) n FROM message_discovery_unresolved_items WHERE profile_id=? AND conversation_key=?').get(profileId,historicalConversationKey).n,1,'the successful current run must retain the old BOSS row');
+    await page.getByLabel('消息来源').selectOption('all');assert.equal(await pending.isVisible(),true);assert.match(await pending.innerText(),/BOSS/);assert.match(await pending.innerText(),/无法确认本地岗位与会话是否一致/);
+    await page.getByLabel('消息来源').selectOption('zhaopin');assert.equal(await pending.isVisible(),false);
+    await page.getByLabel('消息来源').selectOption('boss');assert.equal(await pending.isVisible(),true);
+    await page.reload();assert.equal(await page.getByLabel('消息来源').inputValue(),'boss');assert.equal(await pending.isVisible(),true);assert.equal(db.prepare('SELECT COUNT(*) n FROM message_discovery_unresolved_items WHERE profile_id=? AND conversation_key=?').get(profileId,historicalConversationKey).n,1);
+    httpReaderShouldWait=true;
     await page.getByRole('button',{name:'开始只读发现',exact:true}).click();await page.waitForFunction(()=>!document.querySelector('button[data-page-primary]')||document.querySelector('button[data-page-primary]').disabled);await page.getByRole('button',{name:'安全停止',exact:true}).waitFor({state:'visible'});
     await page.waitForFunction(()=>Array.from(document.querySelectorAll('form[data-discovery-form]')).find(form=>form.querySelector('[name=action]').value==='stop').querySelector('button').disabled===false);
-    assert.match(await page.locator('main').innerText(),/正在加载并读取消息/);assert.equal(httpBossCalls,0);assert.equal(httpReaderCalls,1);
-    await page.getByRole('button',{name:'安全停止',exact:true}).click();await page.waitForFunction(()=>Array.from(document.querySelectorAll('form[data-discovery-form]')).find(form=>form.querySelector('[name=action]').value==='start').querySelector('button').disabled===false);assert.equal(httpBrowserCalls,1);
+    assert.match(await page.locator('main').innerText(),/正在加载并读取消息/);assert.equal(httpBossCalls,0);assert.equal(httpReaderCalls,2);
+    await page.getByRole('button',{name:'安全停止',exact:true}).click();await page.waitForFunction(()=>document.querySelector('.message-state h2')?.textContent==='已安全停止');assert.equal(httpBrowserCalls,2);
+    const stoppedStatus=await (await fetch(base+'/api/message-discovery-status?profileId='+profileId)).json();assert.equal(stoppedStatus.status,'stopped');assert.equal(stoppedStatus.unresolved,0);assert.equal(stoppedStatus.reasonCode,'MESSAGE_DISCOVERY_STOPPED');
+    const stoppedState=await page.locator('.message-state').innerText();assert.match(stoppedState,/已按你的操作安全停止/);assert.doesNotMatch(stoppedState,/无法确认本地岗位与会话是否一致/);assert.match(await pending.innerText(),/无法确认本地岗位与会话是否一致/);
     assert.deepEqual(errors,[]);assert.deepEqual(external,[]);
     await activeBatchRemainsStoppableUnderZhaopinFilter(chromium);
     console.log('dashboard_unified_messages_journey ok: serial discovery, restore, source-safe HTTP/UI, autosave, navigation, 1440/390, active BOSS stop under ZL filter/reload');

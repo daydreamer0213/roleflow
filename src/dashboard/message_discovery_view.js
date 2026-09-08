@@ -28,7 +28,7 @@ function renderMessageDiscoveryPage({ db, searchParams, controller, replySendCon
   const initialReplySend = replySendController?.latest?.({ profileId }) || null;
   const pageState = controller.pageState(profileId);
   const durableUnresolved = listUnresolvedMessageDiscoveryItems(db, { profileId, platform: null });
-  const status = durableUnresolved.length
+  const status = durableUnresolved.length && !pageState.startedAt
     ? {
         ...pageState,
         status: pageState.status === "running" ? "running" : "needs_user_action",
@@ -145,6 +145,9 @@ function renderMessageDiscoveryPage({ db, searchParams, controller, replySendCon
   const unresolvedSections = durableUnresolved.map((item) =>
     renderUnresolvedItem(db, item, { profileId, escapeHtml, escapeAttr })
   ).join("");
+  const retainedRecords = durableUnresolved.length
+    ? `<p class="line">保留记录 ${durableUnresolved.length}</p>`
+    : "";
   const counters = status.counters || {};
   const platformNotices = `<p class="line">智联暂不提供已读/送达统计。</p>` + (status.platformRuns || []).map(entry => `<p class="line">${entry.platform === "zhaopin" ? "智联" : "BOSS"}：${escapeHtml(entry.reasonCode === "MESSAGE_DISCOVERY_WAITING_TURN" ? "等待前一平台读取完成" : ({ not_connected: "未连接消息页，本次未检查", running: "正在加载并读取消息，可随时安全停止", completed: "本次读取完成", stopped: "已安全停止", needs_user_action: "需要处理后重试" })[entry.status] || "等待读取")}${entry.reasonCode && entry.reasonCode !== "MESSAGE_DISCOVERY_WAITING_TURN" ? ` · ${escapeHtml(messageDiscoveryReasonText(entry.reasonCode))}` : ""}</p>`).join("");
   const scriptState = JSON.stringify({
@@ -161,7 +164,7 @@ function renderMessageDiscoveryPage({ db, searchParams, controller, replySendCon
     planId: plan?.id || "",
     stage: "消息",
     brandHref: todayPath,
-    content: `<main id="main-content" class="message-layout"><header class="page-heading"><p class="eyebrow">消息工作台</p><h1>消息发现与回复</h1><p class="lede">从已连接的 BOSS 和智联读取 HR 新消息并准备草稿。BOSS 回复经你确认后发送；智联回复可修改、复制，再到原始会话自行处理。</p></header>${controls}<p class="message-feedback" data-discovery-feedback role="status" aria-live="polite" aria-busy="false"></p><section class="panel message-state"><h2>${escapeHtml(statusLabel)}</h2><p class="line">可见 ${Math.max(0, Number(counters.visible) || 0)} · HR 新回复 ${Math.max(0, Number(counters.newReplies) || 0)} · BOSS 已读 ${Math.max(0, Number(counters.currentRead) || 0)} · 送达 ${Math.max(0, Number(counters.currentDelivered) || 0)}</p><p class="line">排队 ${status.queued} · 已处理 ${status.processed} · 未解决 ${Math.max(0, Number(status.unresolved) || 0)}</p>${phaseNotice ? `<p class="line">${escapeHtml(phaseNotice)}</p>` : ""}${reason ? `<p class="risk-text">${escapeHtml(reason)}</p>` : ""}</section>${platformNotices}<p class="message-source-filter"><label for="message-source-filter">消息来源</label> <select id="message-source-filter" data-source-filter><option value="all">全部平台</option><option value="boss">BOSS</option><option value="zhaopin">智联</option></select></p><p data-source-empty hidden role="status">这个来源暂时没有消息。</p>${unresolvedSections}${resultWorkspace || (!unresolvedSections ? '<section class="panel"><p class="line">当前没有岗位处理结果。</p></section>' : "")}${sendBatchPanel}<p class="button-row"><a class="button-link secondary" data-flush-drafts href="/communication-profile?profileId=${encodeURIComponent(profileId)}">管理我的沟通资料</a><a class="button-link secondary" data-flush-drafts href="${escapeAttr(manualPath)}">返回人工粘贴流程</a></p></main>`,
+    content: `<main id="main-content" class="message-layout"><header class="page-heading"><p class="eyebrow">消息工作台</p><h1>消息发现与回复</h1><p class="lede">从已连接的 BOSS 和智联读取 HR 新消息并准备草稿。BOSS 回复经你确认后发送；智联回复可修改、复制，再到原始会话自行处理。</p></header>${controls}<p class="message-feedback" data-discovery-feedback role="status" aria-live="polite" aria-busy="false"></p><section class="panel message-state"><h2>${escapeHtml(statusLabel)}</h2><p class="line">可见 ${Math.max(0, Number(counters.visible) || 0)} · HR 新回复 ${Math.max(0, Number(counters.newReplies) || 0)} · BOSS 已读 ${Math.max(0, Number(counters.currentRead) || 0)} · 送达 ${Math.max(0, Number(counters.currentDelivered) || 0)}</p><p class="line">排队 ${status.queued} · 已处理 ${status.processed} · 未解决 ${Math.max(0, Number(status.unresolved) || 0)}</p>${retainedRecords}${phaseNotice ? `<p class="line">${escapeHtml(phaseNotice)}</p>` : ""}${reason ? `<p class="risk-text">${escapeHtml(reason)}</p>` : ""}</section>${platformNotices}<p class="message-source-filter"><label for="message-source-filter">消息来源</label> <select id="message-source-filter" data-source-filter><option value="all">全部平台</option><option value="boss">BOSS</option><option value="zhaopin">智联</option></select></p><p data-source-empty hidden role="status">这个来源暂时没有消息。</p>${unresolvedSections}${resultWorkspace || (!unresolvedSections ? '<section class="panel"><p class="line">当前没有岗位处理结果。</p></section>' : "")}${sendBatchPanel}<p class="button-row"><a class="button-link secondary" data-flush-drafts href="/communication-profile?profileId=${encodeURIComponent(profileId)}">管理我的沟通资料</a><a class="button-link secondary" data-flush-drafts href="${escapeAttr(manualPath)}">返回人工粘贴流程</a></p></main>`,
     scripts: [messageDiscoveryClientScript(scriptState)]
   });
 }
@@ -284,7 +287,7 @@ function renderUnresolvedItem(db, item, { profileId, escapeHtml, escapeAttr }) {
   const create = `<form method="post" action="/api/message-discovery-unresolved">${hidden}<button name="action" value="create"${complete ? "" : " disabled"}>保存为 HR 主动机会</button></form>`;
   const ignore = `<form method="post" action="/api/message-discovery-unresolved">${hidden}<button class="secondary" name="action" value="ignore">不纳入 RoleFlow</button></form>`;
   const incomplete = complete ? "" : `<p class="risk-text">岗位身份仍不完整，请下次只读发现后再处理。</p>`;
-  return `<section class="panel message-unresolved" data-platform="boss"><h2>${escapeHtml(item.positionTitle || "岗位名称待确认")}</h2><p class="line">${escapeHtml(item.company || "公司待确认")} · ${escapeHtml(item.salary || "薪资待确认")} · ${escapeHtml(item.city || "地点待确认")}</p>${incomplete}<p class="line">以上仅为岗位身份字段；没有保存招聘方姓名或消息正文。</p><div class="message-controls">${link}${create}${ignore}</div></section>`;
+  return `<section class="panel message-unresolved" data-platform="boss"><h2>${escapeHtml(item.positionTitle || "岗位名称待确认")}</h2><p class="message-source">BOSS</p><p class="line">${escapeHtml(item.company || "公司待确认")} · ${escapeHtml(item.salary || "薪资待确认")} · ${escapeHtml(item.city || "地点待确认")}</p>${incomplete}<p class="risk-text">${escapeHtml(messageDiscoveryReasonText(item.reasonCode))}</p><p class="line">以上仅为岗位身份字段；没有保存招聘方姓名或消息正文。</p><div class="message-controls">${link}${create}${ignore}</div></section>`;
 }
 
 function exactIdentityCandidates(db, profileId, item) {

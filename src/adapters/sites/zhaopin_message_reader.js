@@ -1,13 +1,19 @@
 const { safeDigest } = require("./boss_message_dom");
 
-const IM_URL = "https://i.zhaopin.com/im";
+function isZhaopinMessageUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.origin === "https://i.zhaopin.com" && url.pathname === "/im";
+  } catch { return false; }
+}
 
 const ZHAOPIN_MESSAGE_SNAPSHOT_EXPRESSION = String.raw`(() => {
+  const isZhaopinMessageUrl = ${isZhaopinMessageUrl.toString()};
   const text = (value) => String(value == null ? "" : value).replace(/\s+/g, " ").trim();
   const numeric = (value) => /^\d+$/.test(String(value == null ? "" : value).trim());
   const failed = (state) => ({ state });
   try {
-    if (location.href !== "https://i.zhaopin.com/im") return failed("page_lost");
+    if (!isZhaopinMessageUrl(location.href)) return failed("page_lost");
     const bodyText = text(document.body?.innerText).slice(0, 3000);
     if (/安全验证|访问异常|行为验证|访问受限/.test(text(document.title)) || /安全验证|访问异常|行为验证|访问受限/.test(bodyText)) return failed("risk_control");
     if (Array.from(document.querySelectorAll(".login, .login-panel, [class*='login']")).some((node) => node.offsetParent !== null)) return failed("login_required");
@@ -144,7 +150,7 @@ function assertBrowser(browser) {
 }
 
 function resolveMessageTab(tabs) {
-  const matches = (tabs || []).filter((tab) => tab?.url === IM_URL);
+  const matches = (tabs || []).filter((tab) => isZhaopinMessageUrl(tab?.url));
   if (!matches.length) throw codedError("ZHAOPIN_MESSAGE_TAB_MISSING", "zhaopin message tab is missing");
   if (matches.length !== 1) throw codedError("ZHAOPIN_MESSAGE_TAB_AMBIGUOUS", "zhaopin message tab is ambiguous");
   const tab = matches[0];
@@ -209,9 +215,10 @@ function buildSelectionExpression(target) {
   const expected = JSON.stringify({ sessionId: target.sessionId, jobNumber: target.jobNumber, previewText: target.previewText });
   return String.raw`(() => {
     const expected = ${expected};
+    const isZhaopinMessageUrl = ${isZhaopinMessageUrl.toString()};
     const text = (value) => String(value == null ? "" : value).replace(/\s+/g, " ").trim();
     const fail = (reason) => ({ clicked: false, reason });
-    if (location.href !== "https://i.zhaopin.com/im") return fail("page_lost");
+    if (!isZhaopinMessageUrl(location.href)) return fail("page_lost");
     const bodyText = text(document.body?.innerText).slice(0, 3000);
     if (/安全验证|访问异常|行为验证|访问受限/.test(text(document.title)) || /安全验证|访问异常|行为验证|访问受限/.test(bodyText)) return fail("risk_control");
     if (Array.from(document.querySelectorAll(".login, .login-panel, [class*='login']")).some((node) => node.offsetParent !== null)) return fail("login_required");
@@ -411,4 +418,4 @@ function createZhaopinMessageReader({ browser, sleepFn = defaultSleep, nowFn = D
   };
 }
 
-module.exports = { createZhaopinMessageReader, ZHAOPIN_MESSAGE_SNAPSHOT_EXPRESSION };
+module.exports = { createZhaopinMessageReader, ZHAOPIN_MESSAGE_SNAPSHOT_EXPRESSION, isZhaopinMessageUrl };

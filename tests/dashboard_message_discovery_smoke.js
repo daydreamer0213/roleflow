@@ -774,7 +774,8 @@ async function main() {
   });
   assert.strictEqual(response.status, 200);
   durablePage = await request(base, `/messages?profileId=${retainedFixture.profileId}`);
-  assert(durablePage.body.includes("\u672a\u89e3\u51b3 1"), "a fresh GET must retain the durable unresolved count after dismiss");
+  assert(durablePage.body.includes("\u672a\u89e3\u51b3 0"), "a fresh GET must preserve the dismissed current run count");
+  assert(durablePage.body.includes("\u4fdd\u7559\u8bb0\u5f55 1"), "a fresh GET must show durable work as a retained record");
   assert(durablePage.body.includes("无法确认本地岗位与会话是否一致"), "a fresh GET must retain the first safe durable reason after dismiss");
   assertNoPrivateData(durablePage.body);
   scenarios.push(completedRun({ fixture: retainedFixture, drafts: ["durable-cleanup-draft"] }));

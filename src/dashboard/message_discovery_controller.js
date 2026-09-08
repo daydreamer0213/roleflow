@@ -1,6 +1,6 @@
 const { randomUUID } = require("node:crypto");
 const { createBossMessageReader } = require("../adapters/sites/boss_message_reader");
-const { createZhaopinMessageReader } = require("../adapters/sites/zhaopin_message_reader");
+const { createZhaopinMessageReader, isZhaopinMessageUrl } = require("../adapters/sites/zhaopin_message_reader");
 const { createZhaopinMessageJobContextResolver } = require("../application/message_discovery/zhaopin_job_context");
 const { findMessageDiscoveryJobContext } = require("../core/candidate_progress");
 const { createBossMessageDetailReader } = require("../adapters/sites/boss_message_detail_reader");
@@ -171,7 +171,7 @@ function createMessageDiscoveryController(deps = {}) {
             const url = new URL(tab.url);
             return platform === "boss"
               ? url.hostname === "www.zhipin.com" && url.pathname === "/web/geek/chat"
-              : url.href === "https://i.zhaopin.com/im";
+              : isZhaopinMessageUrl(tab.url);
           } catch { return false; }
         });
         return { platform, status: matches.length === 1 ? "pending" : matches.length ? "needs_user_action" : "not_connected",
