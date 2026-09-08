@@ -4,7 +4,10 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { openDb, createBatch, upsertJob, listOpenMessageReplyDrafts } = require("../src/core/storage");
+const {
+  openDb, createBatch, upsertJob, listOpenMessageReplyDrafts,
+  listMessageInboundContexts
+} = require("../src/core/storage");
 const { runBossMessageDiscovery } = require("../src/core/message_discovery");
 const { safeDigest } = require("../src/adapters/sites/boss_message_dom");
 const { createZhaopinMessageJobContextResolver } = require("../src/application/message_discovery/zhaopin_job_context");
@@ -97,6 +100,75 @@ async function run() {
   assert.equal(listPreviewStates(db, { profileId: fixture.profileId, platform: "zhaopin" })[0].previewDigest, baseline.previewDigest);
   assert.equal(listUnresolvedMessageDiscoveryItems(db, { profileId: fixture.profileId, platform: "zhaopin" }).length, 1);
   await unresolvedDisplaySmoke();
+  await inboundTransactionRollbackSmoke();
+  await manualOnlyReopenSmoke();
+}
+
+async function inboundTransactionRollbackSmoke() {
+  const fixture = createFixture({ id: "ZL777001", title: "Rollback Engineer" });
+  const conversationKey = safeDigest(["zhaopin", "rollback-session"]);
+  const reader = zhaopinReader({
+    conversationKey, sourceJobId: "zhaopin:ZL777001", title: fixture.title,
+    messages: [{ direction: "friend", messageId: "777001", text: "请介绍项目经验。", contentKind: "text" }]
+  });
+  db.exec(`CREATE TRIGGER fail_zhaopin_inbound_context
+    BEFORE INSERT ON message_inbound_contexts
+    BEGIN SELECT RAISE(ABORT, 'zhaopin inbound fixture failure'); END;`);
+  await assert.rejects(
+    () => runBossMessageDiscovery({
+      db, profileId: fixture.profileId, platform: "zhaopin", reader,
+      classifyMessageGroup: async () => classification(["我可以介绍项目经验。"]),
+      resolveJobContext: createZhaopinMessageJobContextResolver({ db, profileId: fixture.profileId, now: () => NOW }), now: () => NOW, sleepFn: async () => {}
+    }),
+    /zhaopin inbound fixture failure/
+  );
+  assert.equal(db.prepare("SELECT count(*) AS n FROM candidate_progress_events WHERE card_id IN (SELECT id FROM candidate_progress_cards WHERE profile_id = ?)").get(fixture.profileId).n, 0);
+  assert.equal(listOpenMessageReplyDrafts(db, { profileId: fixture.profileId }).length, 0);
+  assert.equal(listMessageInboundContexts(db, { profileId: fixture.profileId }).length, 0);
+  assert.equal(listPreviewStates(db, { profileId: fixture.profileId, platform: "zhaopin" }).length, 0);
+  db.exec("DROP TRIGGER fail_zhaopin_inbound_context");
+  const retried = await runBossMessageDiscovery({
+    db, profileId: fixture.profileId, platform: "zhaopin", reader,
+    classifyMessageGroup: async () => classification(["我可以介绍项目经验。"]),
+    resolveJobContext: createZhaopinMessageJobContextResolver({ db, profileId: fixture.profileId, now: () => NOW }), now: () => NOW, sleepFn: async () => {}
+  });
+  assert.equal(retried.processed, 1);
+  assert.equal(listOpenMessageReplyDrafts(db, { profileId: fixture.profileId }).length, 1);
+}
+
+async function manualOnlyReopenSmoke() {
+  const fixture = createFixture({ id: "ZL777002", title: "Manual Resume Engineer" });
+  const conversationKey = safeDigest(["zhaopin", "manual-session"]);
+  const reader = zhaopinReader({
+    conversationKey, sourceJobId: "zhaopin:ZL777002", title: fixture.title,
+    messages: [{ direction: "friend", messageId: "777002", text: "HR 邀请你发送简历", contentKind: "resume_request" }]
+  });
+  const summary = await runBossMessageDiscovery({
+    db, profileId: fixture.profileId, platform: "zhaopin", reader,
+    classifyMessageGroup: async () => { throw new Error("resume request must not call the model"); },
+    resolveJobContext: createZhaopinMessageJobContextResolver({ db, profileId: fixture.profileId, now: () => NOW }), now: () => NOW, sleepFn: async () => {}
+  });
+  assert.equal(summary.processed, 1);
+  assert.equal(listOpenMessageReplyDrafts(db, { profileId: fixture.profileId }).length, 0);
+  db.close();
+  db = openDb(path.join(root, "message-discovery.sqlite"));
+  const context = listMessageInboundContexts(db, { profileId: fixture.profileId })[0];
+  assert.equal(context.platform, "zhaopin");
+  assert.deepEqual(context.manualActions, [{ kind: "resume_request" }]);
+  assert.deepEqual(context.inboundMessages, [{ kind: "resume_request", text: "HR 邀请你发送简历" }]);
+}
+
+function zhaopinReader({ conversationKey, sourceJobId, title, messages }) {
+  return {
+    async scanConversationRows() { return { tabId: 12, rows: [{ rowIndex: 0, unread: true, conversationKey,
+      previewDigest: safeDigest(["zhaopin", "fixture", sourceJobId]), previewKind: "possible_hr_reply",
+      sourceJobId, lastMessageId: String(messages.at(-1).messageId), lastMessageDirection: "friend", identityVerified: true }] }; },
+    async openQueuedConversation() { return { sourceJobId, lastMessageId: String(messages.at(-1).messageId), positionName: title, companyName: "Zhaopin Fixture Co", salary: "20-30K", city: "Shanghai", messages }; }
+  };
+}
+
+function classification(messages) {
+  return { messageIntent: "information_request", messageCategory: "other", messageSummary: "项目经验确认", missingFact: null, progressUpdate: { stage: "reply_ready" }, messages };
 }
 
 async function unresolvedDisplaySmoke() {
@@ -169,7 +241,7 @@ async function unresolvedDisplaySmoke() {
   assert.equal(listUnresolvedMessageDiscoveryItems(db, { profileId, platform: "boss" }).length, 1);
 }
 
-function createFixture() {
+function createFixture({ id = "ZL123456", title = "Zhaopin Engineer" } = {}) {
   const profileId = Number(db.prepare(`INSERT INTO candidate_profiles(
     display_name, profile_json, source_hash, created_at, updated_at
   ) VALUES (?, '{}', NULL, ?, ?)`)
@@ -184,22 +256,22 @@ function createFixture() {
   });
   const jobId = upsertJob(db, {
     source: "zhaopin",
-    sourceId: "zhaopin:ZL123456",
+    sourceId: `zhaopin:${id}`,
     keyword: "zhaopin-message",
-    title: "Zhaopin Engineer",
+    title,
     company: "Zhaopin Fixture Co",
     location: "Shanghai",
     salary: "20-30K",
     experience: "3-5年",
     education: "本科",
     bossActiveText: "",
-    url: "https://www.zhaopin.com/job/ZL123456.html",
+    url: `https://www.zhaopin.com/job/${id}.html`,
     tags: [],
     description: "完整可信的智联职位描述。".repeat(20),
     qualityTags: [],
     analysis: { semanticStatus: "complete", recommendation: "primary" }
   }, batchId);
-  return { profileId, planId, jobId };
+  return { profileId, planId, jobId, title };
 }
 
 run().then(() => console.log("zhaopin message discovery smoke passed")).finally(() => {
