@@ -312,9 +312,11 @@ function assertSnapshotIdentity(raw, selected, target) {
   const title = normalizedText(raw?.title);
   const company = normalizedText(raw?.company);
   if (normalizedText(raw?.currentJobId) !== target.jobId
-    || (title && !sameText(title, selected?.positionName))
-    || (company && !compatibleCompany(company, selected?.companyName))) {
+    || (title && !sameText(title, selected?.positionName))) {
     throw detailError("ZHAOPIN_MESSAGE_DETAIL_TARGET_MISMATCH", "zhaopin detail identity did not match the selected conversation");
+  }
+  if (company && !compatibleCompany(company, selected?.companyName)) {
+    throw detailError("ZHAOPIN_MESSAGE_DETAIL_COMPANY_UNVERIFIED", "zhaopin company identity could not be verified");
   }
 }
 

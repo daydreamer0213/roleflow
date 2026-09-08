@@ -126,6 +126,7 @@ async function run() {
   await contextChangedDuringReplySmoke();
   await zhaopinDetailControllerSmoke();
   await zhaopinFatalDetailRetentionSmoke();
+  await zhaopinCompanyUnverifiedIsolationSmoke();
   const regressions = [emptyTextPendingSmoke, unsupportedSelfPendingSmoke, pendingPacingSmoke, confirmedSelfBoundarySmoke];
   const failures = [];
   for (const regression of regressions) {
@@ -192,6 +193,96 @@ async function zhaopinFatalDetailRetentionSmoke() {
   const retained = listUnresolvedMessageDiscoveryItems(db, { profileId: fixture.profileId, platform: "zhaopin" })[0];
   assert.deepEqual(retained.inboundMessages, [{ kind: "text", text: "请介绍你的项目。" }]);
   assert.equal(listOpenMessageReplyDrafts(db, { profileId: fixture.profileId }).length, 0);
+}
+
+async function zhaopinCompanyUnverifiedIsolationSmoke() {
+  const fixture = createFixture({ id: "ZLVERIFIED002", title: "Verified Queue Engineer" });
+  const firstConversation = safeDigest(["zhaopin", "company-unverified"]);
+  const secondConversation = safeDigest(["zhaopin", "company-verified"]);
+  const firstSourceJobId = "zhaopin:ZLUNVERIFIED001";
+  const secondSourceJobId = "zhaopin:ZLVERIFIED002";
+  const selectedByConversation = new Map([
+    [firstConversation, {
+      sourceJobId: firstSourceJobId, lastMessageId: "881001", positionName: "Unverified Queue Engineer",
+      companyName: "合成数字", salary: "20-30K", city: "北京",
+      messages: [{ direction: "friend", messageId: "881001", text: "请介绍第一段合成经历。", contentKind: "text" }]
+    }],
+    [secondConversation, {
+      sourceJobId: secondSourceJobId, lastMessageId: "881002", positionName: fixture.title,
+      companyName: "Zhaopin Fixture Co", salary: "20-30K", city: "Shanghai",
+      messages: [{ direction: "friend", messageId: "881002", text: "请介绍第二段合成经历。", contentKind: "text" }]
+    }]
+  ]);
+  const reader = {
+    async scanConversationRows() {
+      return { tabId: 12, rows: [
+        { rowIndex: 0, unread: true, conversationKey: firstConversation,
+          previewDigest: safeDigest(["zhaopin", "company-unverified-preview"]), previewKind: "possible_hr_reply",
+          sourceJobId: firstSourceJobId, lastMessageId: "881001", lastMessageDirection: "friend", identityVerified: true },
+        { rowIndex: 1, unread: true, conversationKey: secondConversation,
+          previewDigest: safeDigest(["zhaopin", "company-verified-preview"]), previewKind: "possible_hr_reply",
+          sourceJobId: secondSourceJobId, lastMessageId: "881002", lastMessageDirection: "friend", identityVerified: true }
+      ] };
+    },
+    async openQueuedConversation(target) { return selectedByConversation.get(target.conversationKey); }
+  };
+  const existingResolver = createZhaopinMessageJobContextResolver({ db, profileId: fixture.profileId, now: () => NOW });
+  const resolvedSources = [];
+  const classifiedMessages = [];
+  const summary = await runBossMessageDiscovery({
+    db, profileId: fixture.profileId, platform: "zhaopin", reader,
+    resolveJobContext: async (input) => {
+      resolvedSources.push(input.target.sourceJobId);
+      if (input.target.sourceJobId === firstSourceJobId) {
+        throw Object.assign(new Error("company could not be verified"), { code: "ZHAOPIN_MESSAGE_DETAIL_COMPANY_UNVERIFIED" });
+      }
+      return existingResolver(input);
+    },
+    classifyMessageGroup: async ({ messages }) => {
+      classifiedMessages.push(messages.map((message) => message.text));
+      return classification(["Synthetic draft for the second conversation."]);
+    },
+    now: () => NOW, sleepFn: async () => {}
+  });
+  assert.equal(summary.processed, 1, JSON.stringify(summary));
+  assert.deepEqual(resolvedSources, [firstSourceJobId, secondSourceJobId]);
+  assert.deepEqual(classifiedMessages, [["请介绍第二段合成经历。"]]);
+  const retained = listUnresolvedMessageDiscoveryItems(db, { profileId: fixture.profileId, platform: "zhaopin" });
+  assert.equal(retained.length, 1);
+  assert.equal(retained[0].reasonCode, "ZHAOPIN_MESSAGE_DETAIL_COMPANY_UNVERIFIED");
+  assert.equal(retained[0].sourceJobId, firstSourceJobId);
+  assert.deepEqual(retained[0].inboundMessages, [{ kind: "text", text: "请介绍第一段合成经历。" }]);
+  assert.equal(db.prepare("SELECT count(*) AS n FROM jobs WHERE source = 'zhaopin' AND source_id = 'ZLUNVERIFIED001'").get().n, 0);
+  assert.equal(listOpenMessageReplyDrafts(db, { profileId: fixture.profileId }).length, 1);
+
+  const terminalFixture = createFixture({ id: "ZLTERMINAL002", title: "Terminal Queue Engineer" });
+  const opened = [];
+  const terminalReader = {
+    async scanConversationRows() {
+      return { tabId: 12, rows: [
+        { rowIndex: 0, unread: true, conversationKey: safeDigest(["zhaopin", "terminal-first"]),
+          previewDigest: safeDigest(["zhaopin", "terminal-first-preview"]), previewKind: "possible_hr_reply",
+          sourceJobId: "zhaopin:ZLTERMINAL001", lastMessageId: "882001", lastMessageDirection: "friend", identityVerified: true },
+        { rowIndex: 1, unread: true, conversationKey: safeDigest(["zhaopin", "terminal-second"]),
+          previewDigest: safeDigest(["zhaopin", "terminal-second-preview"]), previewKind: "possible_hr_reply",
+          sourceJobId: "zhaopin:ZLTERMINAL002", lastMessageId: "882002", lastMessageDirection: "friend", identityVerified: true }
+      ] };
+    },
+    async openQueuedConversation(target) {
+      opened.push(target.sourceJobId);
+      return { sourceJobId: target.sourceJobId, lastMessageId: target.lastMessageId,
+        positionName: "Terminal Queue Engineer", companyName: "Terminal Co", salary: "", city: "",
+        messages: [{ direction: "friend", messageId: target.lastMessageId, text: "终止分支合成消息。", contentKind: "text" }] };
+    }
+  };
+  const terminal = await runBossMessageDiscovery({
+    db, profileId: terminalFixture.profileId, platform: "zhaopin", reader: terminalReader,
+    resolveJobContext: async () => { throw Object.assign(new Error("target mismatch"), { code: "ZHAOPIN_MESSAGE_DETAIL_TARGET_MISMATCH" }); },
+    classifyMessageGroup: async () => { throw new Error("target mismatch must stop before drafting"); },
+    now: () => NOW, sleepFn: async () => {}
+  });
+  assert.equal(terminal.reasonCode, "ZHAOPIN_MESSAGE_DETAIL_TARGET_MISMATCH");
+  assert.deepEqual(opened, ["zhaopin:ZLTERMINAL001"], "a target mismatch must stop before the second queued conversation");
 }
 
 async function zhaopinDetailControllerSmoke() {

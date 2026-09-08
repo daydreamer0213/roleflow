@@ -643,6 +643,18 @@ async function main() {
         "a genuine background-proof failure must say the pending conversation is preserved");
     }
   }
+  assert.equal(
+    messageDiscoveryReasonText("ZHAOPIN_MESSAGE_DETAIL_COMPANY_UNVERIFIED"),
+    "会话与岗位详情的公司名称暂时无法核对。消息已保留，未关联岗位或生成草稿；你可以到智联原始会话核对。"
+  );
+  assert.equal(
+    messageDiscoveryReasonText("ZHAOPIN_MESSAGE_DETAIL_TARGET_MISMATCH"),
+    "会话与岗位详情不一致，本次只读发现已停止。请核对智联当前会话后再重试。"
+  );
+  assert.equal(
+    messageDiscoveryReasonText("ZHAOPIN_MESSAGE_DETAIL_INCOMPLETE"),
+    "这份岗位详情还不完整，消息已保留，暂不生成草稿。可稍后重新只读发现。"
+  );
 
   const secondPending = controlledPendingRun({
     phase: "cooldown",

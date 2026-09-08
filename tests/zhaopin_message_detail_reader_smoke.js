@@ -83,13 +83,14 @@ function makeReader(browser, options = {}) {
   const hooks = [];
   const identitySignals = [];
   const waits = [];
+  const expectedSelected = options.selected || SELECTED;
   const reader = createZhaopinMessageDetailReader({
     browser,
     messageReader: {
       async readSelectedJobTarget(selected, signal) {
         identitySignals.push(Boolean(signal?.aborted));
         if (options.identityError) throw options.identityError;
-        assert.equal(selected, SELECTED);
+        assert.equal(selected, expectedSelected);
         return JOB_TARGET;
       }
     },
@@ -111,10 +112,11 @@ function makeReader(browser, options = {}) {
 const SELECTED = Object.freeze({ positionName: "合成软件工程师", companyName: "合成科技" });
 const JOB_TARGET = Object.freeze({ jobId: JOB_ID, navigationUrl: NAVIGATION_URL, canonicalUrl: CANONICAL_URL, availability: "unknown" });
 
-async function read(reader, signal = null) {
-  return reader.readSelectedJobDetail({ communicationTabId: IM_TAB_ID, selected: SELECTED, jobTarget: JOB_TARGET, signal });
+async function read(reader, signal = null, selected = SELECTED) {
+  return reader.readSelectedJobDetail({ communicationTabId: IM_TAB_ID, selected, jobTarget: JOB_TARGET, signal });
 }
 
+let companyUnverifiedSnapshot;
 (async () => {
   const edge = await chromium.launch({ channel: "msedge", headless: true });
   try {
@@ -140,6 +142,12 @@ async function read(reader, signal = null) {
     assert.deepStrictEqual(
       [observed.sourceId, observed.title, observed.company, observed.location, observed.experience, observed.education, observed.description],
       [JOB_ID, "合成软件工程师", "合成科技有限公司", "北京", "3-5年", "本科", DESCRIPTION]
+    );
+    await page.evaluate(() => { document.querySelector(".company-info__name").textContent = "合成数字技术有限公司"; });
+    companyUnverifiedSnapshot = await page.evaluate(ZHAOPIN_MESSAGE_DETAIL_SNAPSHOT_EXPRESSION);
+    assert.deepStrictEqual(
+      [companyUnverifiedSnapshot.currentJobId, companyUnverifiedSnapshot.title, companyUnverifiedSnapshot.company],
+      [JOB_ID, "合成软件工程师", "合成数字技术有限公司"]
     );
     await page.evaluate(() => {
       const panel = document.createElement("section");
@@ -221,13 +229,20 @@ async function read(reader, signal = null) {
 
   for (const bad of [
     snapshot({ currentJobId: "CCWRONG001J00000000001" }),
-    snapshot({ title: "另一个岗位" }),
-    snapshot({ company: "完全不同公司" })
+    snapshot({ title: "另一个岗位" })
   ]) {
     const badBrowser = fakeBrowser({ samples: [bad, bad] });
     await assert.rejects(() => read(makeReader(badBrowser).reader), (error) => error.code === "ZHAOPIN_MESSAGE_DETAIL_TARGET_MISMATCH");
     assert.deepStrictEqual(badBrowser.tabs, baselineTabs());
   }
+
+  const companySelected = Object.freeze({ positionName: "合成软件工程师", companyName: "合成数字" });
+  const companyUnverified = fakeBrowser({ samples: [companyUnverifiedSnapshot] });
+  await assert.rejects(
+    () => read(makeReader(companyUnverified, { selected: companySelected }).reader, null, companySelected),
+    (error) => error.code === "ZHAOPIN_MESSAGE_DETAIL_COMPANY_UNVERIFIED"
+  );
+  assert.deepStrictEqual(companyUnverified.tabs, baselineTabs(), "an unverified company must still close the temporary detail tab");
 
   const incomplete = fakeBrowser({ samples: [snapshot({ description: "" })] });
   await assert.rejects(() => read(makeReader(incomplete, { timeoutMs: 10 }).reader), (error) => error.code === "ZHAOPIN_MESSAGE_DETAIL_INCOMPLETE");
