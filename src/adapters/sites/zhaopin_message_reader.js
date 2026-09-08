@@ -51,7 +51,7 @@ const ZHAOPIN_MESSAGE_SNAPSHOT_EXPRESSION = String.raw`(() => {
         jobNumber: String(session.jobNumber == null ? "" : session.jobNumber),
         idServer: String(msg.idServer == null ? "" : msg.idServer),
         flow: String(msg.flow == null ? "" : msg.flow),
-        fromMe: msg.fromMe === true,
+        fromMe: typeof msg.fromMe === "boolean" ? msg.fromMe : null,
         from: numeric(msg.from) ? String(msg.from) : "",
         type: String(msg.type == null ? "" : msg.type),
         cardType: String(msg.cardType == null ? "" : msg.cardType),
@@ -124,11 +124,16 @@ function throwIfAborted(signal) {
 
 function defaultSleep(ms, signal) {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(resolve, ms);
-    signal?.addEventListener("abort", () => {
+    throwIfAborted(signal);
+    const cleanup = () => signal?.removeEventListener("abort", onAbort);
+    const timer = setTimeout(() => { cleanup(); resolve(); }, ms);
+    function onAbort() {
       clearTimeout(timer);
+      cleanup();
       reject(codedError("ZHAOPIN_MESSAGE_ABORTED", "zhaopin message read was cancelled"));
-    }, { once: true });
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
   });
 }
 
@@ -343,8 +348,17 @@ function createZhaopinMessageReader({ browser, sleepFn = defaultSleep, nowFn = D
         if (confirmed.tabId !== next.tabId || confirmed.windowId !== next.windowId) {
           throw codedError("ZHAOPIN_MESSAGE_TAB_BINDING_LOST", "zhaopin message tab binding changed");
         }
-        const snapshot = await readSnapshot(next.tabId, signal);
-        if (snapshot.listError) throw codedError("ZHAOPIN_MESSAGE_LIST_FAILED", "zhaopin conversation list failed");
+        binding = next;
+        const deadline = nowFn() + timeoutMs;
+        let snapshot;
+        while (true) {
+          await assertActiveBindings(signal);
+          snapshot = await readSnapshot(next.tabId, signal);
+          if (snapshot.listError) throw codedError("ZHAOPIN_MESSAGE_LIST_FAILED", "zhaopin conversation list failed");
+          if (!snapshot.listLoading) break;
+          if (nowFn() >= deadline) throw codedError("ZHAOPIN_MESSAGE_CONTENT_PENDING", "zhaopin conversation list is not ready");
+          await sleepFn(pollIntervalMs, signal);
+        }
         const internalRows = snapshot.rows.map((row) => rowFromSnapshot(snapshot, row));
         const rows = internalRows.map(publicRow);
         binding = next;

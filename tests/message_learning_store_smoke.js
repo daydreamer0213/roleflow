@@ -433,7 +433,7 @@ try {
   );
 
   const zhaopin = createFixture(db, "zhaopin-copy");
-  db.prepare("UPDATE jobs SET source = 'zhaopin', source_id = 'zhaopin:ZL900001' WHERE id = ?").run(zhaopin.jobId);
+  db.prepare("UPDATE jobs SET source = 'zhaopin', source_id = 'ZL900001' WHERE id = ?").run(zhaopin.jobId);
   db.prepare("UPDATE candidate_progress_cards SET source = 'zhaopin' WHERE id = ?").run(zhaopin.cardId);
   const zhaopinDraft = recordMessageReplyDrafts(db, {
     profileId: zhaopin.profileId, cardId: zhaopin.cardId, jobId: zhaopin.jobId,

@@ -175,7 +175,7 @@ function createMessageDiscoveryController(deps = {}) {
           } catch { return false; }
         });
         return { platform, status: matches.length === 1 ? "pending" : matches.length ? "needs_user_action" : "not_connected",
-          reasonCode: matches.length > 1 ? (platform === "boss" ? "BOSS_MESSAGE_TAB_AMBIGUOUS" : "ZHAOPIN_MESSAGE_TAB_AMBIGUOUS") : "", counters: emptyCounters() };
+          reasonCode: matches.length > 1 ? (platform === "boss" ? "BOSS_MESSAGE_TAB_AMBIGUOUS" : "ZHAOPIN_MESSAGE_TAB_AMBIGUOUS") : "", counters: safeCounters(null, platform) };
       });
       for (const entry of run.platformRuns) {
         if (abortController.signal.aborted) break;
@@ -185,7 +185,7 @@ function createMessageDiscoveryController(deps = {}) {
         const checkpoint = (summary = {}) => {
           entry.status = ALLOWED_RUN_STATUSES.has(summary.status) ? summary.status : "running";
           entry.reasonCode = safeCode(summary.reasonCode);
-          entry.counters = safeCounters(summary.counters);
+          entry.counters = safeCounters(summary.counters, entry.platform);
           const counters = { ...earlier.counters };
           for (const key of ["visible", "newReplies", "unbound"]) counters[key] += entry.counters[key];
           if (platform === "boss") {
@@ -576,11 +576,12 @@ function createMessageDiscoveryController(deps = {}) {
     return { visible: 0, newReplies: 0, currentRead: 0, currentDelivered: 0, unbound: 0 };
   }
 
-  function safeCounters(value) {
+  function safeCounters(value, platform = "boss") {
     const input = value && typeof value === "object" ? value : {};
     return Object.fromEntries(Object.keys(emptyCounters()).map((key) => [
       key,
-      Math.max(0, Number(input[key]) || 0)
+      platform === "zhaopin" && ["currentRead", "currentDelivered"].includes(key)
+        ? null : Math.max(0, Number(input[key]) || 0)
     ]));
   }
 

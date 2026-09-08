@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const { getEventListeners } = require("node:events");
 let chromium;
 try { ({ chromium } = require("playwright")); }
 catch (error) {
@@ -32,10 +33,10 @@ function fixtureHtml() {
     <script>
       window.fixture = {
         sessions: [], active: null, timeline: [], loading: false, timelineError: "", selectWrong: "", clicks: 0, resumeClicks: 0, senderClicks: 0,
-        set(data) { this.sessions = data.sessions; this.active = data.active || data.sessions[0] || null; this.timeline = data.timeline || []; this.loading = Boolean(data.loading); this.timelineError = data.timelineError || ""; this.selectWrong = data.selectWrong || ""; this.render(); },
+        set(data) { this.sessions = data.sessions; this.active = data.active || data.sessions[0] || null; this.timeline = data.timeline || []; this.loading = Boolean(data.loading); this.listLoading = data.listLoading === true; this.timelineError = data.timelineError || ""; this.selectWrong = data.selectWrong || ""; this.render(); },
         render() {
           const side = document.querySelector('.im-side-panel'); side.replaceChildren();
-          side.__vue__ = { $options: { name: 'SidePanelThreeColumns' }, listLoading: false, listError: '', sessions: this.sessions };
+          side.__vue__ = { $options: { name: 'SidePanelThreeColumns' }, listLoading: this.listLoading, listError: '', sessions: this.sessions };
           for (const current of this.sessions) {
             const row = document.createElement('button'); row.className = 'im-session-item' + ((this.selectWrong || this.active?.sessionId) === current.sessionId ? ' is-active' : '');
             row.__vue__ = { $options: { name: 'ImSessionItem' }, $props: { session: current } };
@@ -234,10 +235,99 @@ async function main() {
     await assert.rejects(() => invalidJobReader.openQueuedConversation({ ...invalidJobScan.rows[0], tabId: IM_TAB_ID }), error => error.code === "ZHAOPIN_MESSAGE_JOB_ID_INVALID");
     assert.equal(await page.evaluate(() => window.fixture.clicks), clicksBeforeInvalidJob, "an invalid job identity must stop before row.click()");
     assert.deepEqual(await page.evaluate(() => [window.fixture.resumeClicks,window.fixture.senderClicks]), [0,0]);
+    const failures = [];
+    for (const regression of [listLoadingSmoke, ambiguousFromMeSmoke, defaultWaitCleanupSmoke]) {
+      try { await regression(page, first); } catch (error) { failures.push(`${regression.name}: ${error.stack}`); }
+    }
+    assert.deepEqual(failures, []);
+    assert.deepEqual(await page.evaluate(() => [window.fixture.resumeClicks, window.fixture.senderClicks]), [0, 0]);
   } finally {
     await browser.close();
   }
   console.log("zhaopin_message_reader_smoke ok");
+}
+
+async function listLoadingSmoke(page, first) {
+  const loading = () => setFixture(page, { sessions: [], active: first, listLoading: true });
+  await loading();
+  const snapshot = await page.evaluate(ZHAOPIN_MESSAGE_SNAPSHOT_EXPRESSION);
+  assert.equal(snapshot.listLoading, true);
+  assert.deepEqual(snapshot.rows, []);
+  let waits = 0;
+  const reader = readerFor(fakeBrowser(page), { onSleep: async () => { waits++; await setFixture(page, { sessions: [first], active: first }); } });
+  const scan = await reader.scanConversationRows();
+  assert.equal(scan.rows.length, 1, "a loading empty snapshot must wait for the loaded rows");
+  assert.equal(waits, 1);
+  await loading();
+  await assert.rejects(() => readerFor(fakeBrowser(page), { timeoutMs: 10 }).scanConversationRows(), error => error.code === "ZHAOPIN_MESSAGE_CONTENT_PENDING");
+  await setFixture(page, { sessions: [], active: first });
+  assert.deepEqual((await readerFor(fakeBrowser(page)).scanConversationRows()).rows, [], "ready empty list is a successful distinct result");
+  const stop = new AbortController();
+  await loading();
+  await assert.rejects(() => readerFor(fakeBrowser(page), { onSleep: () => stop.abort() }).scanConversationRows(stop.signal), error => error.code === "ZHAOPIN_MESSAGE_ABORTED");
+  for (const [change, code] of [
+    [() => { document.title = "安全验证"; }, "ZHAOPIN_MESSAGE_RISK_CONTROL"],
+    [() => { history.replaceState(null, "", "/elsewhere"); }, "ZHAOPIN_MESSAGE_PAGE_LOST"]
+  ]) {
+    await loading();
+    await assert.rejects(() => readerFor(fakeBrowser(page), { onSleep: () => page.evaluate(change) }).scanConversationRows(), error => error.code === code);
+    await page.evaluate(() => { document.title = ""; history.replaceState(null, "", "/im"); });
+  }
+  for (const field of ["id", "windowId"]) {
+    await loading();
+    const bridge = fakeBrowser(page);
+    await assert.rejects(() => readerFor(bridge, { onSleep: () => { bridge.listTabs = async () => tabs().map(tab => tab.id === IM_TAB_ID ? { ...tab, [field]: tab[field] + 1 } : tab); } }).scanConversationRows(), error => error.code === "ZHAOPIN_MESSAGE_TAB_BINDING_LOST");
+  }
+}
+
+async function ambiguousFromMeSmoke(page, first) {
+  const timeline = [undefined, null, 0, "false", {}].map((value, index) => {
+    const item = message({ idServer: String(700 + index), body: "方向需要明确证据" });
+    if (value === undefined) delete item.fromMe; else item.fromMe = value;
+    return item;
+  });
+  await setFixture(page, { sessions: [first], active: first, timeline });
+  const reader = readerFor(fakeBrowser(page));
+  const scan = await reader.scanConversationRows();
+  const selected = await reader.openQueuedConversation({ ...scan.rows[0], tabId: scan.tabId });
+  assert.deepEqual(selected.messages.map(item => [item.direction, item.contentKind]), Array(5).fill(["unknown", "unsupported"]));
+  assert.equal(selected.lastMessageId, "", "ambiguous sender evidence cannot become an accepted final message ID");
+}
+
+async function defaultWaitCleanupSmoke(page, first) {
+  const timeline = [message({ idServer: "800", body: "完成加载" })];
+  await setFixture(page, { sessions: [first], active: first, timeline, loading: true });
+  const bridge = fakeBrowser(page);
+  const evaluate = bridge.evalValue;
+  let polls = 0;
+  bridge.evalValue = async (tabId, expression) => {
+    if (expression === ZHAOPIN_MESSAGE_SNAPSHOT_EXPRESSION && ++polls === 10) {
+      await setFixture(page, { sessions: [first], active: first, timeline });
+    }
+    return evaluate(tabId, expression);
+  };
+  const reader = createZhaopinMessageReader({ browser: bridge, pollIntervalMs: 1, timeoutMs: 2000 });
+  const signal = new AbortController().signal;
+  const scan = await reader.scanConversationRows(signal);
+  const selected = await reader.openQueuedConversation({ ...scan.rows[0], tabId: scan.tabId }, signal);
+  assert.equal(selected.messages[0].text, "完成加载");
+  assert.equal(polls, 10);
+  assert.equal(getEventListeners(signal, "abort").length, 0, "eight completed default waits must release all abort listeners");
+  await setFixture(page, { sessions: [first], active: first, timeline, loading: true });
+  const stop = new AbortController();
+  const add = stop.signal.addEventListener.bind(stop.signal);
+  stop.signal.addEventListener = (...args) => { add(...args); setTimeout(() => stop.abort(), 0); };
+  const cancelReader = createZhaopinMessageReader({ browser: fakeBrowser(page), pollIntervalMs: 50, timeoutMs: 2000 });
+  const cancelScan = await cancelReader.scanConversationRows(stop.signal);
+  await assert.rejects(() => cancelReader.openQueuedConversation({ ...cancelScan.rows[0], tabId: cancelScan.tabId }, stop.signal), error => error.code === "ZHAOPIN_MESSAGE_ABORTED");
+  assert.equal(getEventListeners(stop.signal, "abort").length, 0);
+  const race = new AbortController();
+  const raceAdd = race.signal.addEventListener.bind(race.signal);
+  race.signal.addEventListener = (...args) => { race.abort(); raceAdd(...args); };
+  const raceReader = createZhaopinMessageReader({ browser: fakeBrowser(page), pollIntervalMs: 50, timeoutMs: 2000 });
+  const raceScan = await raceReader.scanConversationRows(race.signal);
+  await assert.rejects(() => raceReader.openQueuedConversation({ ...raceScan.rows[0], tabId: raceScan.tabId }, race.signal), error => error.code === "ZHAOPIN_MESSAGE_ABORTED");
+  assert.equal(getEventListeners(race.signal, "abort").length, 0, "abort at registration must also clean up the listener");
 }
 
 main().catch((error) => { console.error(error.stack || error.message); process.exitCode = 1; });

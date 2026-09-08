@@ -9,7 +9,9 @@ const {
   listMessageInboundContexts
 } = require("../src/core/storage");
 const { runBossMessageDiscovery } = require("../src/core/message_discovery");
-const { ensureProgressCard } = require("../src/core/candidate_progress");
+const { ensureProgressCard, findMessageDiscoveryJobContext } = require("../src/core/candidate_progress");
+const { zhaopinJobIdentity } = require("../src/core/zhaopin_search_scope");
+const { createMessageDiscoveryController } = require("../src/dashboard/message_discovery_controller");
 const { safeDigest } = require("../src/adapters/sites/boss_message_dom");
 const { createZhaopinMessageJobContextResolver } = require("../src/application/message_discovery/zhaopin_job_context");
 const { listPreviewStates, listUnresolvedMessageDiscoveryItems, recordUnresolvedMessageDiscoveryItem } = require("../src/core/message_preview_state");
@@ -20,6 +22,8 @@ let db = openDb(path.join(root, "message-discovery.sqlite"));
 
 async function run() {
   const fixture = createFixture();
+  assert.equal(db.prepare("SELECT source_id FROM jobs WHERE id = ?").get(fixture.jobId).source_id, "ZL123456");
+  assert.equal(findMessageDiscoveryJobContext(db, { profileId: fixture.profileId, planId: fixture.planId, platform: "zhaopin", sourceId: "ZL123456" }).contextComplete, true);
   const conversationKey = safeDigest(["zhaopin", "session-1"]);
   const sourceJobId = "zhaopin:ZL123456";
   const summary = await runBossMessageDiscovery({
@@ -78,6 +82,14 @@ async function run() {
   });
 
   assert.equal(summary.processed, 1);
+  assert.equal(summary.results[0].contextComplete, true);
+  db.close();
+  db = openDb(path.join(root, "message-discovery.sqlite"));
+  const restored = createMessageDiscoveryController({ db });
+  const recovered = restored.pageState(fixture.profileId).results[0];
+  assert.equal(recovered.jobId, fixture.jobId);
+  assert.equal(recovered.contextComplete, true, "producer identity must retain trusted context after database/controller restart");
+  await restored.close();
   assert.equal(listOpenMessageReplyDrafts(db, { profileId: fixture.profileId }).length, 2);
   assert.deepEqual(summary.results[0].inboundMessages, [
     { kind: "text", text: "请介绍一下你的项目。" },
@@ -105,6 +117,91 @@ async function run() {
   await manualOnlyReopenSmoke();
   await crossPlatformIdempotencySmoke();
   await resolverIsolationSmoke();
+  const regressions = [emptyTextPendingSmoke, unsupportedSelfPendingSmoke, pendingPacingSmoke, confirmedSelfBoundarySmoke];
+  const failures = [];
+  for (const regression of regressions) {
+    try { await regression(); } catch (error) { failures.push(`${regression.name}: ${error.stack}`); }
+  }
+  assert.deepEqual(failures, []);
+}
+
+async function emptyTextPendingSmoke() {
+  await pendingContentSmoke("ZL880001", [{ direction: "friend", messageId: "880001", contentKind: "text", text: "  " }]);
+}
+
+async function unsupportedSelfPendingSmoke() {
+  await pendingContentSmoke("ZL880002", [
+    { direction: "friend", messageId: "880001", contentKind: "text", text: "原先保留的 HR 问题" },
+    { direction: "myself", messageId: "880002", contentKind: "unsupported", text: "" }
+  ]);
+}
+
+async function pendingContentSmoke(id, messages) {
+  const fixture = createFixture({ id });
+  const conversationKey = safeDigest(["pending-content", id]);
+  const sourceJobId = `zhaopin:${id}`;
+  const original = [{ kind: "text", text: "原先保留的 HR 问题" }];
+  recordUnresolvedMessageDiscoveryItem(db, { profileId: fixture.profileId, platform: "zhaopin", conversationKey,
+    previewDigest: safeDigest(["old", id]), previewKind: "possible_hr_reply", reasonCode: "ZHAOPIN_MESSAGE_CONTENT_PENDING",
+    observedAt: NOW, sourceJobId, lastMessageId: "880001", inboundMessages: original, identity: { positionTitle: fixture.title } });
+  let classified = 0;
+  const summary = await runBossMessageDiscovery({ db, profileId: fixture.profileId, platform: "zhaopin",
+    reader: zhaopinReaderFor({ conversationKey, sourceJobId, title: fixture.title, messages }),
+    classifyMessageGroup: async () => { classified++; return classification(["合成草稿"]); },
+    resolveJobContext: createZhaopinMessageJobContextResolver({ db, profileId: fixture.profileId, now: () => NOW }), now: () => NOW, sleepFn: async () => {} });
+  assert.equal(classified, 0);
+  assert.equal(summary.status, "needs_user_action");
+  assert.equal(summary.processed, 0);
+  assert.equal(listPreviewStates(db, { profileId: fixture.profileId, platform: "zhaopin" }).length, 0);
+  const pending = listUnresolvedMessageDiscoveryItems(db, { profileId: fixture.profileId, platform: "zhaopin" });
+  assert.equal(pending.length, 1);
+  assert.deepEqual(pending[0].inboundMessages, original);
+  assert.equal(pending[0].reasonCode, "ZHAOPIN_MESSAGE_CONTENT_PENDING");
+}
+
+async function pendingPacingSmoke() {
+  const fixture = createFixture({ id: "ZL880003" });
+  const rows = Array.from({ length: 11 }, (_, rowIndex) => ({ rowIndex, unread: true, identityVerified: true,
+    conversationKey: safeDigest(["pending-pace", rowIndex]), previewDigest: safeDigest(["pending-preview", rowIndex]),
+    previewKind: "possible_hr_reply", sourceJobId: `zhaopin:ZL8801${rowIndex}`, lastMessageId: "880003", lastMessageDirection: "friend" }));
+  for (const row of rows) seedCompleteContext({ profileId: fixture.profileId, planId: fixture.planId,
+    source: "zhaopin", sourceId: row.sourceJobId.slice(8), key: `pace-${row.rowIndex}` });
+  const opened = [], waits = [], events = [];
+  const reader = { async scanConversationRows() { return { tabId: 12, rows }; },
+    async openQueuedConversation(target) { opened.push(target.rowIndex); events.push("open"); return { sourceJobId: target.sourceJobId, lastMessageId: "880003",
+      messages: [{ direction: "friend", messageId: "880003", contentKind: "unsupported", text: "" }] }; } };
+  const options = { db, profileId: fixture.profileId, platform: "zhaopin", reader,
+    classifyMessageGroup: async () => { throw Error("unsupported must not classify"); },
+    resolveJobContext: createZhaopinMessageJobContextResolver({ db, profileId: fixture.profileId, now: () => NOW }), now: () => NOW,
+    randomFn: () => waits.length % 2 ? 0.9 : 0.1,
+    sleepFn: async (ms) => { waits.push(ms); events.push("wait"); } };
+  const result = await runBossMessageDiscovery(options);
+  assert.equal(result.unresolved, 11);
+  assert.equal(opened.length, 11);
+  assert.deepEqual(waits, [1600, 2400, 1600, 2400, 1600, 2400, 1600, 2400, 1600, 2400, 15000]);
+  assert.deepEqual(events.slice(0, 4), ["open", "wait", "open", "wait"]);
+  opened.length = 0;
+  const controller = new AbortController();
+  await assert.rejects(() => runBossMessageDiscovery({ ...options, signal: controller.signal,
+    sleepFn: async () => { controller.abort(); } }), error => error.name === "AbortError");
+  assert.equal(opened.length, 1, "stop during pacing must prevent the next conversation open");
+}
+
+async function confirmedSelfBoundarySmoke() {
+  const fixture = createFixture({ id: "ZL880004" });
+  const conversationKey = safeDigest(["confirmed-self"]);
+  const messages = [
+    { direction: "friend", messageId: "880004", contentKind: "text", text: "已回复的问题" },
+    { direction: "myself", messageId: "880005", contentKind: "text", text: "实际回复" },
+    { direction: "platform", messageId: "880006", contentKind: "platform_notice", text: "系统提示" }
+  ];
+  const summary = await runBossMessageDiscovery({ db, profileId: fixture.profileId, platform: "zhaopin",
+    reader: zhaopinReaderFor({ conversationKey, sourceJobId: "zhaopin:ZL880004", title: fixture.title, messages }),
+    classifyMessageGroup: async () => { throw Error("actual self reply must bound prior HR text"); },
+    resolveJobContext: createZhaopinMessageJobContextResolver({ db, profileId: fixture.profileId, now: () => NOW }), now: () => NOW, sleepFn: async () => {} });
+  assert.equal(summary.status, "completed");
+  assert.equal(summary.processed, 0);
+  assert.equal(listPreviewStates(db, { profileId: fixture.profileId, platform: "zhaopin" }).length, 1);
 }
 
 async function crossPlatformIdempotencySmoke() {
@@ -151,14 +248,14 @@ async function resolverIsolationSmoke() {
   const profileId = Number(db.prepare("INSERT INTO candidate_profiles(display_name, profile_json, source_hash, created_at, updated_at) VALUES ('Resolver isolation', '{}', NULL, ?, ?)").run(NOW, NOW).lastInsertRowid);
   const activePlanId = Number(db.prepare("INSERT INTO search_plans(profile_id, name, plan_json, profile_version_id, is_active, created_at, updated_at) VALUES (?, 'Active', '{}', NULL, 1, ?, ?)").run(profileId, NOW, NOW).lastInsertRowid);
   const inactivePlanId = Number(db.prepare("INSERT INTO search_plans(profile_id, name, plan_json, profile_version_id, is_active, created_at, updated_at) VALUES (?, 'Inactive', '{}', NULL, 0, ?, ?)").run(profileId, NOW, NOW).lastInsertRowid);
-  const sourceId = "zhaopin:ZL777004";
+  const sourceId = "ZL777004";
   seedCompleteContext({ profileId, planId: inactivePlanId, source: "zhaopin", sourceId, key: "inactive" });
   seedCompleteContext({ profileId, planId: activePlanId, source: "boss", sourceId, key: "foreign-source" });
   const otherProfileId = Number(db.prepare("INSERT INTO candidate_profiles(display_name, profile_json, source_hash, created_at, updated_at) VALUES ('Other profile', '{}', NULL, ?, ?)").run(NOW, NOW).lastInsertRowid);
   const otherPlanId = Number(db.prepare("INSERT INTO search_plans(profile_id, name, plan_json, profile_version_id, is_active, created_at, updated_at) VALUES (?, 'Other', '{}', NULL, 1, ?, ?)").run(otherProfileId, NOW, NOW).lastInsertRowid);
   seedCompleteContext({ profileId: otherProfileId, planId: otherPlanId, source: "zhaopin", sourceId, key: "foreign-profile" });
   const resolver = createZhaopinMessageJobContextResolver({ db, profileId, now: () => NOW });
-  const target = { sourceJobId: sourceId, conversationKey: safeDigest(["zhaopin", "resolver-isolation"]) };
+  const target = { sourceJobId: `zhaopin:${sourceId}`, conversationKey: safeDigest(["zhaopin", "resolver-isolation"]) };
   await assert.rejects(() => resolver({ target }), (error) => error.code === "MESSAGE_DISCOVERY_JOB_CONTEXT_UNAVAILABLE");
   assert.equal(db.prepare("SELECT count(*) AS n FROM candidate_progress_cards WHERE profile_id = ?").get(profileId).n, 0);
   assert.equal(listOpenMessageReplyDrafts(db, { profileId }).length, 0);
@@ -303,9 +400,9 @@ async function unresolvedDisplaySmoke() {
     reasonCode: "BOSS_MESSAGE_CARD_NOT_FOUND", observedAt: NOW, identity: { positionTitle: "BOSS unresolved" }
   });
   upsertJob(db, {
-    source: "zhaopin", sourceId: "zhaopin:ZL999999", keyword: "zhaopin-retry",
+    ...zhaopinJobIdentity("https://www.zhaopin.com/jobdetail/ZL999999.htm"), keyword: "zhaopin-retry",
     title: "No cached JD", company: "Unknown Co", location: "Shanghai", salary: "20-30K",
-    experience: "3-5年", education: "本科", bossActiveText: "", url: "https://www.zhaopin.com/job/ZL999999.html",
+    experience: "3-5年", education: "本科", bossActiveText: "",
     tags: [], description: "可信智联职位描述。".repeat(20), qualityTags: [],
     analysis: { semanticStatus: "complete", recommendation: "primary" }
   }, batchId);
@@ -336,8 +433,7 @@ function createFixture({ id = "ZL123456", title = "Zhaopin Engineer" } = {}) {
     searchPlanId: planId
   });
   const jobId = upsertJob(db, {
-    source: "zhaopin",
-    sourceId: `zhaopin:${id}`,
+    ...zhaopinJobIdentity(`https://www.zhaopin.com/jobdetail/${id}.htm`),
     keyword: "zhaopin-message",
     title,
     company: "Zhaopin Fixture Co",
@@ -346,7 +442,6 @@ function createFixture({ id = "ZL123456", title = "Zhaopin Engineer" } = {}) {
     experience: "3-5年",
     education: "本科",
     bossActiveText: "",
-    url: `https://www.zhaopin.com/job/${id}.html`,
     tags: [],
     description: "完整可信的智联职位描述。".repeat(20),
     qualityTags: [],

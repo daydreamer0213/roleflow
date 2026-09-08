@@ -40,7 +40,7 @@ function zhaopinSourceId(value) {
   if (!/^zhaopin:[A-Za-z0-9]{1,160}$/.test(sourceId)) {
     throw contextError("MESSAGE_DISCOVERY_JOB_CONTEXT_UNAVAILABLE", "zhaopin job identity is invalid");
   }
-  return sourceId;
+  return sourceId.slice("zhaopin:".length);
 }
 
 function contextJob(context) {

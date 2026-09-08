@@ -277,6 +277,7 @@ async function runBossMessageDiscovery({
           } : {})
         });
         retained = unresolvedSummary(db, profileId, source);
+        await paceBeforeNext({ queueIndex, queueLength: queue.length, openedCount, sleepFn, randomFn, signal });
         continue;
       }
       return emitStopped(incoming.reasonCode, queue.length, results, logger, onStatus, retained, processed, counters);
@@ -573,7 +574,9 @@ function selectUnprocessedFriendMessageGroup(db, cardId, selected, threadKey, pl
   }
   let lastMyself = -1;
   for (let index = 0; index < messages.length; index += 1) {
-    if (messages[index]?.direction === "myself") lastMyself = index;
+    const item = messages[index];
+    if (item?.direction === "myself" && (platform !== "zhaopin"
+      || (item.contentKind === "text" && String(item.text || "").trim()))) lastMyself = index;
   }
   const candidates = [];
   for (let index = lastMyself + 1; index < messages.length; index += 1) {
@@ -595,6 +598,7 @@ function selectUnprocessedFriendMessageGroup(db, cardId, selected, threadKey, pl
     }
     const text = String(item.text || "").replace(/\s+/g, " ").trim();
     if (contentKind === "text" && !text) {
+      if (platform === "zhaopin") return { ok: false, reasonCode: "ZHAOPIN_MESSAGE_CONTENT_PENDING" };
       item.messageId = "";
       item.text = "";
       continue;

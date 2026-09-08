@@ -4,6 +4,7 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const storage = require('../src/core/storage');
+const { zhaopinJobIdentity } = require('../src/core/zhaopin_search_scope');
 const { createMessageDiscoveryController } = require('../src/dashboard/message_discovery_controller');
 const { createDashboardServer } = require('../src/dashboard/server');
 const { recordUnresolvedMessageDiscoveryItem } = require('../src/core/message_preview_state');
@@ -12,7 +13,8 @@ const digest = value => 'sha256:' + crypto.createHash('sha256').update(value).di
 const logger = { info() {}, warn() {}, error() {}, requestId() { return 'unified'; }, listRecent() { return []; } };
 function seed(db, platform, profileId, planId, manual = false, suffix = manual ? '8' : '9') {
   const sourceId = platform + ':CCL1234567890J0012345678' + suffix;
-  const jobId = Number(db.prepare("INSERT INTO jobs(source,source_id,title,company,description,first_seen_at,last_seen_at) VALUES (?,?,'同名岗位','合成公司','只有一小段资料',?,?)").run(platform, sourceId, NOW, NOW).lastInsertRowid);
+  const storedId = platform === 'zhaopin' ? zhaopinJobIdentity('https://www.zhaopin.com/jobdetail/CCL1234567890J0012345678' + suffix + '.htm').sourceId : sourceId;
+  const jobId = Number(db.prepare("INSERT INTO jobs(source,source_id,title,company,description,first_seen_at,last_seen_at) VALUES (?,?,'同名岗位','合成公司','只有一小段资料',?,?)").run(platform, storedId, NOW, NOW).lastInsertRowid);
   const cardId = Number(db.prepare("INSERT INTO candidate_progress_cards(profile_id,plan_id,job_id,source,stage,next_action,last_event_at,created_at,updated_at) VALUES (?,?,?,?,'reply_ready','人工确认',?,?,?)").run(profileId, planId, jobId, platform, NOW, NOW, NOW).lastInsertRowid);
   const key = digest(sourceId);
   const drafts = manual ? [] : storage.recordMessageReplyDrafts(db, { profileId,cardId,jobId,messageGroupKey:key,messageIntent:'information_request',messageCategory:'other',questionSummary:'确认沟通',messages:['好的，可以沟通。'],createdAt:NOW });
@@ -20,6 +22,11 @@ function seed(db, platform, profileId, planId, manual = false, suffix = manual ?
   return {cardId,jobId,drafts,key};
 }
 async function settle(controller, profileId) { for(let i=0;i<100;i++){if(controller.status(profileId).status!=='running')return controller.pageState(profileId);await new Promise(r=>setTimeout(r,5));}throw Error('discovery did not settle'); }
+function assertUnknownZhaopinReceipts(result) {
+  const entry = result.platformRuns.find(item => item.platform === 'zhaopin');
+  assert.equal(entry.counters.currentRead, null, `${entry.status}/${entry.reasonCode}: ZL read receipts lack evidence`);
+  assert.equal(entry.counters.currentDelivered, null, `${entry.status}/${entry.reasonCode}: ZL delivery receipts lack evidence`);
+}
 async function main() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(),'roleflow-unified-'));
   const dbPath = path.join(root,'fixture.sqlite');
@@ -31,12 +38,21 @@ async function main() {
     const boss = seed(db,'boss',profileId,planId);
     const zl = seed(db,'zhaopin',profileId,planId);
     const manual = seed(db,'zhaopin',profileId,planId,true);
-    let nativeScans=0,nativeBossGuards=0,nativeActive=0,nativeMax=0,nativePlatforms=['zhaopin'];const nativeOrder=[];
+    let nativeScans=0,nativeBossGuards=0,nativeActive=0,nativeMax=0,nativePlatforms=['zhaopin'];const nativeOrder=[], nativeStates=[];
     const nativeController=createMessageDiscoveryController({db,acquireLease:storage.acquireSiteScanLease,renewLease:storage.renewSiteScanLease,releaseLease:storage.releaseSiteScanLease,
       createBrowser:()=>({listTabs:async()=>nativePlatforms.map((platform,index)=>({id:index+1,windowId:1,url:platform==='boss'?'https://www.zhipin.com/web/geek/chat':'https://i.zhaopin.com/im'}))}),
-      assertRuntimeAvailable:()=>{nativeBossGuards++;},createReader:({platform})=>({async scanConversationRows(){assert(nativeController.status(profileId).platformRuns.every(entry=>['not_connected','running','completed','stopped','needs_user_action'].includes(entry.status)));nativeScans++;nativeOrder.push(platform);nativeActive++;nativeMax=Math.max(nativeMax,nativeActive);await new Promise(resolve=>setTimeout(resolve,1));nativeActive--;return {platform,rows:[]};}}),createAnalyzer:()=>async()=>({}),createDetailSafety:()=>({}),createDetailReader:()=>({}),createJobContextResolver:()=>async()=>({})});
-    controllers.push(nativeController);nativeController.start(profileId);await settle(nativeController,profileId);assert.equal(nativeScans,1,'shared production pipeline reaches the ZL reader');assert.equal(nativeBossGuards,0);
-    nativePlatforms=['zhaopin','boss'];nativeController.start(profileId);await settle(nativeController,profileId);assert.deepEqual(nativeOrder,['zhaopin','boss','zhaopin']);assert.equal(nativeMax,1,'production pipelines must never overlap browser reads');await nativeController.close();
+      assertRuntimeAvailable:()=>{nativeBossGuards++;},createReader:({platform})=>({async scanConversationRows(){nativeStates.push(nativeController.status(profileId).platformRuns);assert(nativeController.status(profileId).platformRuns.every(entry=>['not_connected','running','completed','stopped','needs_user_action'].includes(entry.status)));nativeScans++;nativeOrder.push(platform);nativeActive++;nativeMax=Math.max(nativeMax,nativeActive);await new Promise(resolve=>setTimeout(resolve,1));nativeActive--;return {platform,rows:[]};}}),createAnalyzer:()=>async()=>({}),createDetailSafety:()=>({}),createDetailReader:()=>({}),createJobContextResolver:()=>async()=>({})});
+    controllers.push(nativeController);nativeController.start(profileId);const nativeResult=await settle(nativeController,profileId);assert.equal(nativeScans,1,'shared production pipeline reaches the ZL reader');assert.equal(nativeBossGuards,0);
+    assertUnknownZhaopinReceipts({ platformRuns: nativeStates[0] });
+    const nativeZl = nativeResult.platformRuns.find(entry => entry.platform === 'zhaopin');
+    assert.equal(nativeZl.counters.currentRead, null, 'public platformRuns must preserve unknown ZL read receipts');
+    assert.equal(nativeZl.counters.currentDelivered, null, 'public platformRuns must preserve unknown ZL delivery receipts');
+    assert.equal(nativeResult.counters.currentRead, 0, 'aggregate receipts remain BOSS-only numbers');
+    assert.equal(nativeResult.counters.currentDelivered, 0);
+    nativePlatforms=['zhaopin','boss'];nativeController.start(profileId);await settle(nativeController,profileId);assert.deepEqual(nativeOrder,['zhaopin','boss','zhaopin']);assert.equal(nativeMax,1,'production pipelines must never overlap browser reads');
+    assertUnknownZhaopinReceipts({ platformRuns: nativeStates[1] });
+    assert.equal(nativeStates[1].find(entry => entry.platform === 'zhaopin').reasonCode, 'MESSAGE_DISCOVERY_WAITING_TURN');
+    await nativeController.close();
     let bossReadCalls=0,zhaopinReadCalls=0,operations=0,maxOperations=0,cleanup=0;
     let connected=['zhaopin']; const order=[];
     const deps={db,acquireLease:storage.acquireSiteScanLease,renewLease:storage.renewSiteScanLease,releaseLease:storage.releaseSiteScanLease,
@@ -52,10 +68,13 @@ async function main() {
     assert.equal(result.platformRuns.find(r=>r.platform==='boss').status,'not_connected');
     connected=['zhaopin','boss'];order.length=0;controller.start(profileId);result=await settle(controller,profileId);
     assert.deepEqual(order,['boss','zhaopin']);assert.equal(result.results.length,2);assert.equal(result.counters.visible,2);assert.equal(result.counters.currentRead,7,'ZL cannot contribute invented BOSS read receipts');
+    assertUnknownZhaopinReceipts(result);
     deps.waitSecond=true;controller.start(profileId);while(order.length<4)await new Promise(r=>setTimeout(r,5));controller.stop(profileId);result=await settle(controller,profileId);
+    assertUnknownZhaopinReceipts(result);
     assert.equal(result.results[0].cardId,boss.cardId);assert(storage.getMessageReplyDraft(db,{profileId,draftId:boss.drafts[0].id}));
     deps.waitSecond=false;connected=['boss'];controller.start(profileId);result=await settle(controller,profileId);
     assert.equal(result.results[0].cardId,boss.cardId);assert.equal(result.platformRuns.find(r=>r.platform==='zhaopin').status,'not_connected');
+    assertUnknownZhaopinReceipts(result);
     connected=['boss','zhaopin','zhaopin'];controller.start(profileId);result=await settle(controller,profileId);
     assert.equal(result.results[0].cardId,boss.cardId);assert.equal(result.platformRuns.find(r=>r.platform==='zhaopin').reasonCode,'ZHAOPIN_MESSAGE_TAB_AMBIGUOUS');
     connected=['boss','zhaopin'];deps.blockBoss=true;controller.start(profileId);result=await settle(controller,profileId);assert.equal(result.results[0].cardId,zl.cardId);assert.equal(result.platformRuns.find(r=>r.platform==='boss').reasonCode,'BOSS_RUNTIME_BLOCKED');deps.blockBoss=false;
