@@ -434,7 +434,7 @@ async function main() {
   assert(completedPage.body.includes("这条草稿与近期消息的表达比较接近，你可以直接发送，也可以改得更具体。"));
   assert(completedPage.body.includes("HR 消息"));
   assert(completedPage.body.includes(OPEN_HR_TEXT));
-  assert(completedPage.body.includes("可见 52 · HR 新回复 1 · BOSS 已读 31 · 送达 20"));
+  assert(completedPage.body.includes("可见 52 · 已分析回复 1 · BOSS 已读 31 · 送达 20"));
   assert.match(completedPage.body, /class="[^"]*message-workspace/);
   assert.match(completedPage.body, /class="[^"]*message-list/);
   assert.match(completedPage.body, /class="[^"]*message-detail/);
