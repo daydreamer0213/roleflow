@@ -21,9 +21,9 @@
 
 生产范围：`src/application/workflow/index.js` 的开始查询，`src/dashboard/server.js` 对应注入，`src/adapters/sites/zhaopin_message_reader.js` 的共享登录判断。测试范围：`tests/workflow_application_smoke.js`、`tests/dashboard_zhaopin_smoke.js`、`tests/zhaopin_message_reader_smoke.js`；必要时仅补充现有消息合成 fixture 的页头。
 
-- [ ] 先失败回归：旧 BOSS interrupted + 当前 ZL start 不复用旧 run；同来源仍复用；不同来源不会启动旧沟通。真实 HTTP 注入也覆盖 site，而非仅 fake getter。
-- [ ] 先失败回归：已登录页头父节点和子节点不阻断正常消息读取/选择；真实可见登录挑战仍停止；原普通页头链接与风险检查保留。
-- [ ] 最小修复、覆盖检查、语法/差异检查、独立针对这两项改动的复核；不重复全分支综合复核。
+- [x] 先失败回归：旧 BOSS interrupted + 当前 ZL start 不复用旧 run；同来源仍复用；不同来源不会启动旧沟通。真实 HTTP 注入也覆盖 site，而非仅 fake getter。`09e131e` 先复现应用层参数遗漏和实际 HTTP 旅程返回旧轮次，再通过覆盖检查。
+- [x] 先失败回归：已登录页头父节点和子节点不阻断正常消息读取/选择；真实可见登录挑战仍停止；原普通页头链接与风险检查保留。`09e131e` 先复现正常账户页头 LOGIN_REQUIRED，再通过读取/选择及边界检查。
+- [x] 最小修复、覆盖检查、语法/差异检查、独立针对这两项改动的复核；不重复全分支综合复核。`09e131e5a431dc6af220f94c3b2d9168de500902` 的 workflow application、严格 ZL Dashboard 旅程、ZL message reader、ZL message discovery 四项检查及六文件语法/差异检查退出码 0。独立任务复核确认计划符合、质量通过，无新增重要问题；仅保留既有 SQLite/换行提示。
 - [ ] 主控冻结最终代码后重新完整验证，再仅重启自己管理的 8788 服务，保留隔离资料，从真实 UI 继续原验收。
 
 这是已有“按平台开始”和“只在真正需要登录时停止”合同的修正，没有新的架构取舍或用户决策。
