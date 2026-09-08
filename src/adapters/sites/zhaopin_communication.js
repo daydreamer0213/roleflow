@@ -136,7 +136,7 @@ class ZhaopinCommunicationAdapter extends ZhaopinSiteAdapter {
       throwIfAborted(signal);
       hasZhaopinOutgoingTextSnapshot(snapshot, {});
     } else {
-      await this.readSearchState(this.binding.searchTabId);
+      await this.readSearchState(this.binding.searchTabId, signal);
       throwIfAborted(signal);
     }
     await this.reserve("list_navigation", { source: "zhaopin", restore: true });

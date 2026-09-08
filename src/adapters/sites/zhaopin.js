@@ -266,7 +266,8 @@ class ZhaopinSiteAdapter {
     for (let attempt = 0; attempt < 30; attempt++) {
       throwIfAborted(signal);
       await assertBindings(assertTabBindings);
-      const state = await this.readSearchState(tabId);
+      throwIfAborted(signal);
+      const state = await this.readSearchState(tabId, signal);
       const selected = state.cards[state.selectedIndex];
       if (!state.loading && selected && detailMatches(selected, state.detail, state.detailSourceIdConfirmed)
         && searchStateMatches(state, searchTemplate, keyword, filterSummary)) return state;
@@ -275,12 +276,18 @@ class ZhaopinSiteAdapter {
     throw zhaopinError('ZHAOPIN_SEARCH_RESTORE_TIMEOUT', '智联未能恢复保存的关键词和筛选条件，请在智联搜索页重新设置并保存条件后再开始。');
   }
 
-  async readSearchState(tabId) {
+  async readSearchState(tabId, signal = null) {
     tabId = requiredTabId(tabId);
+    throwIfAborted(signal);
     await this.assertBoundTab(tabId);
+    throwIfAborted(signal);
     await this.browser.evalValue(tabId, ZHAOPIN_PAGE_HELPERS_EXPRESSION);
+    throwIfAborted(signal);
     await this.assertBoundTab(tabId);
-    const state = assertSafeSearchState(await this.browser.evalValue(tabId, "(() => window.__zhaopinReadSearchState())()"));
+    throwIfAborted(signal);
+    const rawState = await this.browser.evalValue(tabId, "(() => window.__zhaopinReadSearchState())()");
+    throwIfAborted(signal);
+    const state = assertSafeSearchState(rawState);
     const identity = safeIdentity(state.detail?.url);
     const observedSourceId = state.detail?.observedSourceId;
     state.detailSourceIdConfirmed = Boolean(identity)

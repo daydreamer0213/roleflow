@@ -204,6 +204,50 @@ async function prepareSession(adapter, browser) {
 }
 
 async function main() {
+  const readAbortController = new AbortController();
+  const readAbortReason = Object.assign(new Error("fixture lease lost during base reader binding check"), { code: "SCAN_LEASE_LOST" });
+  const readAfterAbort = [];
+  const readAbortBrowser = {
+    async listTabs() {
+      return [
+        { id: DASHBOARD_TAB, windowId: WINDOW_ID, active: true, url: "http://127.0.0.1:3000/communication" },
+        { id: SEARCH_TAB, windowId: WINDOW_ID, active: false, url: SEARCH_URL }
+      ];
+    },
+    async evalValue() {
+      readAfterAbort.push(readAbortController.signal.aborted);
+      throw new Error("page evaluation ran after lease loss");
+    }
+  };
+  const readAbortAdapter = new ZhaopinCommunicationAdapter({ browser: readAbortBrowser, sleepFn: async () => {}, randomFn: () => 0 });
+  readAbortAdapter.bindCommunicationTabs(binding({ url: SEARCH_URL, scrollTop: 0 }));
+  await readAbortAdapter.beginCommunicationSession();
+  readAbortAdapter.assertBoundTab = async () => { readAbortController.abort(readAbortReason); };
+  await assert.rejects(() => readAbortAdapter.restoreCommunicationSearchPage(readAbortController.signal), (error) => error.code === "ZHAOPIN_ABORTED");
+  assert.deepStrictEqual(readAfterAbort, [], "base search reader must not evaluate the page after its binding check loses the lease");
+
+  const readyAbortController = new AbortController();
+  const readyAbortReason = Object.assign(new Error("fixture lease lost during ready binding check"), { code: "SCAN_LEASE_LOST" });
+  const readyAfterAbort = [];
+  const readyAbortAdapter = new ZhaopinCommunicationAdapter({
+    browser: {
+      async evalValue() {
+        readyAfterAbort.push(readyAbortController.signal.aborted);
+        throw new Error("ready reader evaluated after lease loss");
+      }
+    },
+    sleepFn: async () => {},
+    randomFn: () => 0
+  });
+  readyAbortAdapter.assertBoundTab = async () => {};
+  await assert.rejects(() => readyAbortAdapter.waitForSearchReady(SEARCH_TAB, {
+    searchTemplate: { mode: "inherited", url: SEARCH_URL },
+    keyword: "AI Agent",
+    signal: readyAbortController.signal,
+    assertTabBindings: async () => { readyAbortController.abort(readyAbortReason); }
+  }), (error) => error.code === "ZHAOPIN_ABORTED");
+  assert.deepStrictEqual(readyAfterAbort, [], "search-ready polling must not read the page after its binding check loses the lease");
+
   const browserProcess = await chromium.launch({ channel: "msedge", headless: true });
   try {
     const page = await browserProcess.newPage();
