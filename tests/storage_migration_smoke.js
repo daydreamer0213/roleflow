@@ -12,7 +12,8 @@ const {
   createBatch,
   upsertJob,
   createWorkflowRun,
-  getResumeOptimization
+  getResumeOptimization,
+  recordMessageReplyDrafts
 } = require("../src/core/storage");
 const MATCHING_CARD_VERSION = 5;
 const DURABLE_WORKFLOW_VERSION = 6;
@@ -43,6 +44,7 @@ const MESSAGE_DISCOVERY_UNRESOLVED_INBOUND_VERSION = 30;
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-migration-"));
 let db;
+let unresolvedV29;
 
 try {
   const freshPath = path.join(root, "fresh.sqlite");
@@ -1672,6 +1674,54 @@ try {
   assert.deepStrictEqual(db.prepare("PRAGMA foreign_key_check").all(), [], "v29 migration must retain foreign keys");
   db.close();
 
+  const unresolvedV29Path = path.join(root, "unresolved-v29.sqlite");
+  unresolvedV29 = openDb(unresolvedV29Path);
+  const unresolvedNow = "2026-09-08T00:00:00.000Z";
+  const unresolvedProfileId = Number(unresolvedV29.prepare(`INSERT INTO candidate_profiles(display_name, profile_json, source_hash, created_at, updated_at)
+    VALUES ('v29 unresolved', '{}', NULL, ?, ?)`).run(unresolvedNow, unresolvedNow).lastInsertRowid);
+  const unresolvedPlanId = Number(unresolvedV29.prepare(`INSERT INTO search_plans(profile_id, name, plan_json, profile_version_id, is_active, created_at, updated_at)
+    VALUES (?, 'v29 plan', '{}', NULL, 1, ?, ?)`).run(unresolvedProfileId, unresolvedNow, unresolvedNow).lastInsertRowid);
+  const unresolvedJobId = Number(unresolvedV29.prepare(`INSERT INTO jobs(source, source_id, title, first_seen_at, last_seen_at)
+    VALUES ('boss', 'v29-job', 'v29 job', ?, ?)`).run(unresolvedNow, unresolvedNow).lastInsertRowid);
+  const unresolvedCardId = Number(unresolvedV29.prepare(`INSERT INTO candidate_progress_cards(profile_id, plan_id, job_id, source, stage, next_action, last_event_at, created_at, updated_at)
+    VALUES (?, ?, ?, 'boss', 'reply_ready', 'Review draft before manual send', ?, ?, ?)`).run(unresolvedProfileId, unresolvedPlanId, unresolvedJobId, unresolvedNow, unresolvedNow, unresolvedNow).lastInsertRowid);
+  recordMessageReplyDrafts(unresolvedV29, {
+    profileId: unresolvedProfileId, cardId: unresolvedCardId, jobId: unresolvedJobId,
+    messageGroupKey: 'sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+    questionSummary: 'v29 question', messageIntent: 'information_request', messageCategory: 'other',
+    messages: ['v29 draft'], createdAt: unresolvedNow
+  });
+  unresolvedV29.prepare(`INSERT INTO message_preview_states(profile_id, platform, conversation_key, preview_digest, preview_kind, observed_at, updated_at)
+    VALUES (?, 'boss', ?, ?, 'possible_hr_reply', ?, ?)`)
+    .run(unresolvedProfileId, 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', unresolvedNow, unresolvedNow);
+  unresolvedV29.prepare(`INSERT INTO message_discovery_unresolved_items(profile_id, platform, conversation_key, preview_digest, preview_kind, reason_code, first_observed_at, last_observed_at, position_title, company, salary, city, identity_digest)
+    VALUES (?, 'boss', ?, ?, 'possible_hr_reply', 'BOSS_MESSAGE_CARD_NOT_FOUND', ?, ?, 'v29 title', 'v29 company', '20K', 'Shanghai', 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc')`)
+    .run(unresolvedProfileId, 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd', 'sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', unresolvedNow, unresolvedNow);
+  unresolvedV29.exec(`ALTER TABLE message_discovery_unresolved_items RENAME TO unresolved_v29;
+    CREATE TABLE message_discovery_unresolved_items (
+      profile_id INTEGER NOT NULL, platform TEXT NOT NULL, conversation_key TEXT NOT NULL,
+      preview_digest TEXT NOT NULL, preview_kind TEXT NOT NULL, reason_code TEXT NOT NULL,
+      first_observed_at TEXT NOT NULL, last_observed_at TEXT NOT NULL,
+      position_title TEXT NOT NULL DEFAULT '', company TEXT NOT NULL DEFAULT '', salary TEXT NOT NULL DEFAULT '', city TEXT NOT NULL DEFAULT '', identity_digest TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY(profile_id, platform, conversation_key));
+    INSERT INTO message_discovery_unresolved_items SELECT profile_id, platform, conversation_key, preview_digest, preview_kind, reason_code, first_observed_at, last_observed_at, position_title, company, salary, city, identity_digest FROM unresolved_v29;
+    DROP TABLE unresolved_v29; DELETE FROM schema_migrations WHERE version = 30; PRAGMA user_version = 29;`);
+  unresolvedV29.close();
+  unresolvedV29 = openDb(unresolvedV29Path);
+  const migratedUnresolved = unresolvedV29.prepare("SELECT * FROM message_discovery_unresolved_items").get();
+  assert.strictEqual(migratedUnresolved.position_title, 'v29 title');
+  assert.strictEqual(migratedUnresolved.inbound_json, '[]');
+  assert.strictEqual(migratedUnresolved.source_job_id, '');
+  assert.strictEqual(migratedUnresolved.last_message_id, '');
+  assert.strictEqual(unresolvedV29.prepare("SELECT count(*) AS n FROM message_preview_states").get().n, 1);
+  assert.strictEqual(unresolvedV29.prepare("SELECT current_text FROM message_reply_drafts WHERE profile_id = ?").get(unresolvedProfileId).current_text, 'v29 draft');
+  unresolvedV29.close();
+  unresolvedV29 = openDb(unresolvedV29Path);
+  assert.strictEqual(unresolvedV29.prepare("SELECT count(*) AS n FROM message_discovery_unresolved_items").get().n, 1);
+  assert.strictEqual(unresolvedV29.prepare("SELECT count(*) AS n FROM message_preview_states").get().n, 1);
+  assert.strictEqual(unresolvedV29.prepare("SELECT count(*) AS n FROM message_reply_drafts").get().n, 1);
+  unresolvedV29.close();
+
   const futurePath = path.join(root, "future.sqlite");
   db = openDb(futurePath);
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION + 1}`);
@@ -1684,5 +1734,6 @@ try {
   console.log("storage_migration_smoke ok");
 } finally {
   try { db?.close(); } catch {}
+  try { unresolvedV29?.close(); } catch {}
   fs.rmSync(root, { recursive: true, force: true });
 }

@@ -432,6 +432,24 @@ try {
     "draft ownership must be enforced"
   );
 
+  const zhaopin = createFixture(db, "zhaopin-copy");
+  db.prepare("UPDATE jobs SET source = 'zhaopin', source_id = 'zhaopin:ZL900001' WHERE id = ?").run(zhaopin.jobId);
+  db.prepare("UPDATE candidate_progress_cards SET source = 'zhaopin' WHERE id = ?").run(zhaopin.cardId);
+  const zhaopinDraft = recordMessageReplyDrafts(db, {
+    profileId: zhaopin.profileId, cardId: zhaopin.cardId, jobId: zhaopin.jobId,
+    messageGroupKey: digest("zhaopin-copy-group"), questionSummary: "智联问题",
+    messageIntent: "information_request", messageCategory: "other", messages: ["模型原稿"], createdAt: "2026-08-28T02:00:00.000Z"
+  })[0];
+  const zhaopinEdited = saveMessageReplyDraftEdit(db, { profileId: zhaopin.profileId, draftId: zhaopinDraft.id, text: "用户修改后的智联回复。", updatedAt: "2026-08-28T02:01:00.000Z" });
+  const zhaopinMemory = completeMessageReplyDraft(db, {
+    profileId: zhaopin.profileId, draftId: zhaopinEdited.id, finalText: zhaopinEdited.currentText,
+    changedText: "用户修改后的智联回复", completionKind: "copied", scope: { kind: "global", key: "" }, extractedFacts: [], completedAt: "2026-08-28T02:02:00.000Z"
+  });
+  assert.strictEqual(zhaopinMemory.finalText, "用户修改后的智联回复。");
+  assert.strictEqual(db.prepare("SELECT count(*) AS n FROM candidate_progress_events WHERE card_id = ? AND type = 'reply_confirmed_sent'").get(zhaopin.cardId).n, 0);
+  assert.strictEqual(db.prepare("SELECT count(*) AS n FROM candidate_funnel_entries WHERE job_id = ?").get(zhaopin.jobId).n, 0);
+  assert.strictEqual(db.prepare("SELECT count(*) AS n FROM message_reply_send_batches WHERE profile_id = ?").get(zhaopin.profileId).n, 0);
+
   console.log("message_learning_store_smoke ok");
 } finally {
   db.close();
