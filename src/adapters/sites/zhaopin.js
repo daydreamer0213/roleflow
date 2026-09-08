@@ -103,7 +103,7 @@ const ZHAOPIN_PAGE_HELPERS_EXPRESSION = String.raw`(() => {
     const pathname = location.pathname;
     const visibleLoader = Array.from(document.querySelectorAll('.job-detail-panel [class*="loading"], .job-detail-panel [class*="skeleton"], .job-detail-card [class*="loading"], .job-detail-card [class*="skeleton"], .job-list-panel [class*="loading"], .job-list-panel [class*="skeleton"]')).some((item) => {
       const style = getComputedStyle(item);
-      return !item.hidden && item.getAttribute('aria-hidden') !== 'true' && style.display !== 'none' && style.visibility !== 'hidden';
+      return item.getClientRects().length > 0 && !item.hidden && item.getAttribute('aria-hidden') !== 'true' && style.display !== 'none' && style.visibility !== 'hidden';
     });
     return {
       url: location.href,

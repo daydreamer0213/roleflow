@@ -253,6 +253,109 @@ async function main() {
     response = await post('/api/platform-search/open', { planId: saved.planId, site: 'zhaopin' });
     assert.equal(response.status, 409, await response.text());
     assert.deepEqual(bridge.tabs.map(tab => tab.id), [12], 'failed create cleanup waits until the attributable tab is gone');
+
+    let prepareSleeps = 0;
+    bridge.prepareSearchClock = 0;
+    bridge.prepareSearchSleep = async ms => { prepareSleeps += 1; bridge.prepareSearchClock += ms; };
+    bridge.tabs.splice(0, bridge.tabs.length,
+      { id: 12, windowId: 4, active: true, url: `${base}/plan` },
+      { id: 20, windowId: 4, active: false, url: 'https://www.zhaopin.com/jobs/?pageMode=recommend' }
+    );
+    bridge.listTabs = async () => bridge.tabs.map(tab => ({ ...tab }));
+    bridge.navigate = async () => { bridge.tabs.splice(1, 1); };
+    response = await post('/api/platform-search/open', { planId: saved.planId, site: 'zhaopin' });
+    const disappearedBody = await response.text();
+    assert.equal(response.status, 409, disappearedBody);
+    assert.match(disappearedBody, /ZHAOPIN_BACKGROUND_OPEN_FAILED/, 'an existing target that disappears must fail immediately');
+    assert.equal(prepareSleeps, 0, 'a disappeared existing target must not wait to the deadline');
+
+    prepareSleeps = 0;
+    bridge.prepareSearchClock = 0;
+    bridge.tabs.splice(0, bridge.tabs.length, { id: 12, windowId: 4, active: true, url: `${base}/plan` });
+    bridge.listTabs = async () => bridge.tabs.map(tab => ({ ...tab }));
+    bridge.createTab = async () => { bridge.tabs[0].active = false; return '27'; };
+    response = await post('/api/platform-search/open', { planId: saved.planId, site: 'zhaopin' });
+    const changedActiveBody = await response.text();
+    assert.equal(response.status, 409, changedActiveBody);
+    assert.match(changedActiveBody, /ZHAOPIN_BACKGROUND_OPEN_FAILED/, 'active-baseline drift must fail before a delayed created target appears');
+    assert.equal(prepareSleeps, 0, 'active-baseline drift must not wait to the deadline');
+
+    prepareSleeps = 0;
+    bridge.prepareSearchClock = 0;
+    bridge.tabs.splice(0, bridge.tabs.length, { id: 12, windowId: 4, active: true, url: `${base}/plan` });
+    bridge.listTabs = async () => {
+      if (prepareSleeps > 0 && bridge.tabs.length > 1) bridge.tabs.splice(1, 1);
+      return bridge.tabs.map(tab => ({ ...tab }));
+    };
+    bridge.createTab = async () => { bridge.tabs.push({ id: 27, windowId: 4, active: false, url: 'about:blank' }); return '27'; };
+    response = await post('/api/platform-search/open', { planId: saved.planId, site: 'zhaopin' });
+    const vanishedCreatedBody = await response.text();
+    assert.equal(response.status, 409, vanishedCreatedBody);
+    assert.match(vanishedCreatedBody, /ZHAOPIN_BACKGROUND_OPEN_FAILED/, 'an observed created target that disappears must fail immediately');
+    assert.equal(prepareSleeps, 1, 'an observed created target disappearance must not wait to the deadline');
+
+    let mismatchedCloseCalls = 0;
+    bridge.prepareSearchClock = 0;
+    bridge.tabs.splice(0, bridge.tabs.length, { id: 12, windowId: 4, active: true, url: `${base}/plan` });
+    bridge.listTabs = async () => bridge.tabs.map(tab => ({ ...tab }));
+    bridge.createTab = async (_openerId, url) => { bridge.tabs.push({ id: 29, windowId: 4, active: false, url }); return '28'; };
+    bridge.closeTab = async () => { mismatchedCloseCalls += 1; };
+    response = await post('/api/platform-search/open', { planId: saved.planId, site: 'zhaopin' });
+    assert.equal(response.status, 409, await response.text());
+    assert.equal(mismatchedCloseCalls, 0, 'a same-URL fresh tab with a conflicting returned ID is not attributable');
+    assert.deepEqual(bridge.tabs.map(tab => tab.id), [12, 29]);
+
+    let cancelCloseCalls = 0;
+    let cancelClock = 0;
+    let finishCancelCleanup;
+    const cancelCleanup = new Promise(resolve => { finishCancelCleanup = resolve; });
+    const requestAbort = new AbortController();
+    bridge.tabs.splice(0, bridge.tabs.length, { id: 12, windowId: 4, active: true, url: `${base}/plan` });
+    bridge.prepareSearchNow = () => cancelClock;
+    bridge.prepareSearchSleep = async ms => { cancelClock += ms; requestAbort.abort(); await new Promise(resolve => setImmediate(resolve)); };
+    bridge.listTabs = async () => bridge.tabs.map(tab => ({ ...tab }));
+    bridge.createTab = async (_openerId, _url) => { bridge.tabs.push({ id: 30, windowId: 4, active: false, url: 'about:blank' }); return '30'; };
+    bridge.closeTab = async id => { cancelCloseCalls += 1; bridge.tabs.splice(bridge.tabs.findIndex(tab => tab.id === id), 1); finishCancelCleanup(); };
+    const cancelledOpen = fetch(base + '/api/platform-search/open', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ planId: saved.planId, site: 'zhaopin' }), signal: requestAbort.signal });
+    await assert.rejects(cancelledOpen, error => error.name === 'AbortError');
+    await cancelCleanup;
+    assert.equal(cancelCloseCalls, 1, 'request cancellation cleans the attributable created tab once');
+    assert(cancelClock < 120000, 'request cancellation stops the ready wait before its deadline');
+    assert.deepEqual(bridge.tabs.map(tab => tab.id), [12]);
+
+    let releaseFirstWait;
+    let markFirstWaitStarted;
+    const firstWaitStarted = new Promise(resolve => { markFirstWaitStarted = resolve; });
+    const firstWaitRelease = new Promise(resolve => { releaseFirstWait = resolve; });
+    let queueListCalls = 0;
+    let queuedUrl = '';
+    bridge.prepareSearchClock = 0;
+    bridge.prepareSearchNow = () => bridge.prepareSearchClock;
+    bridge.tabs.splice(0, bridge.tabs.length,
+      { id: 12, windowId: 4, active: true, url: `${base}/plan` },
+      { id: 20, windowId: 4, active: false, url: 'https://www.zhaopin.com/jobs/?pageMode=recommend' }
+    );
+    bridge.listTabs = async () => { queueListCalls += 1; return bridge.tabs.map(tab => ({ ...tab })); };
+    bridge.navigate = async (_id, url) => { queuedUrl = url; };
+    bridge.prepareSearchSleep = async ms => {
+      markFirstWaitStarted();
+      await firstWaitRelease;
+      bridge.prepareSearchClock += ms;
+      bridge.tabs[1].url = queuedUrl;
+    };
+    const firstQueuedOpen = post('/api/platform-search/open', { planId: saved.planId, site: 'zhaopin' });
+    await firstWaitStarted;
+    const queuedAbort = new AbortController();
+    const abortedQueuedOpen = fetch(base + '/api/platform-search/open', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ planId: saved.planId, site: 'zhaopin' }), signal: queuedAbort.signal });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    queuedAbort.abort();
+    await assert.rejects(abortedQueuedOpen, error => error.name === 'AbortError');
+    releaseFirstWait();
+    const firstQueuedResponse = await firstQueuedOpen;
+    assert.equal(firstQueuedResponse.status, 200, await firstQueuedResponse.text());
+    const listCallsAfterFirst = queueListCalls;
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(queueListCalls, listCallsAfterFirst, 'an open request cancelled while queued must not begin browser work');
     console.log('dashboard_zhaopin_smoke HTTP/storage/report ok');
   } finally {
     if (server) await new Promise(resolve => server.close(resolve));

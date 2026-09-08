@@ -1266,27 +1266,34 @@ function createDashboardServer({
         });
       }
       if (req.method === 'POST' && ['/api/platform-search/open', '/api/platform-search/save'].includes(url.pathname)) {
-        const params = parseBody(await readBody(req), req.headers['content-type'] || '');
-        const site = requestedSite(params.site);
-        const plan = getSearchPlan(db, Number(params.planId));
-        if (!plan) throw appError('SEARCH_PLAN_NOT_FOUND', '筛选方案不存在。', { statusCode: 404 });
-        if (site !== 'zhaopin') throw appError('PLATFORM_SEARCH_BOSS_EXISTING', '请使用现有 BOSS 工作区和筛选方案。', { statusCode: 409 });
+        const isOpen = url.pathname.endsWith('/open');
+        const cancellation = createZhaopinOpenRequestCancellation(req, res, isOpen);
         try {
-          const result = await runBrowserRead(async () => {
-            if (getSiteScanLease(db, 'boss') || getSiteScanLease(db, 'zhaopin')) throw appError('SCAN_ALREADY_RUNNING', '当前有浏览器任务，请暂停并等待它保存后再调整智联条件。', { statusCode: 409 });
-            assertBossRuntimeAvailable(db, { site });
-            await ensureManagedWorkspaceReady('zhaopin_search', site);
-            if (url.pathname.endsWith('/open')) return prepareZhaopinSearch({ db, plan, browser: browserFactory(frozenBrowserAuthority) });
-            const context = await resolveLiveZhaopinContext({ db, plan, logger, ...frozenBrowserAuthority, browserFactory, requireSaved: false });
-            if (context.site !== site || context.searchScope?.site !== site) throw appError('ZHAOPIN_SEARCH_SCOPE_CHANGED', '来源不一致，请重新打开智联搜索页。', { statusCode: 409 });
-            const template = canonicalizeZhaopinSearchTemplate(context.searchTemplate.url);
-            savePlatformSearchContext(db, { planId: plan.id, site, searchTemplate: template, filterSummary: context.platformPolicy.filterSummary || [] });
-            return { site, summary: (context.platformPolicy.filterSummary || []).join('；') || '当前页面未额外限制条件', message: '智联条件已保存，可开始本轮。' };
-          });
-          return sendJson(res, 200, result);
-        } catch (error) {
-          return sendJson(res, error.statusCode || 409, { error: `${error.message} 请在智联搜索页检查后重试。`, errorCode: error.code || 'ZHAOPIN_SEARCH_FAILED' });
-        }
+          const params = parseBody(await readBody(req), req.headers['content-type'] || '');
+          const site = requestedSite(params.site);
+          const plan = getSearchPlan(db, Number(params.planId));
+          if (!plan) throw appError('SEARCH_PLAN_NOT_FOUND', '筛选方案不存在。', { statusCode: 404 });
+          if (site !== 'zhaopin') throw appError('PLATFORM_SEARCH_BOSS_EXISTING', '请使用现有 BOSS 工作区和筛选方案。', { statusCode: 409 });
+          try {
+            const result = await runBrowserRead(async () => {
+              throwIfZhaopinOpenAborted(cancellation.signal);
+              if (getSiteScanLease(db, 'boss') || getSiteScanLease(db, 'zhaopin')) throw appError('SCAN_ALREADY_RUNNING', '当前有浏览器任务，请暂停并等待它保存后再调整智联条件。', { statusCode: 409 });
+              assertBossRuntimeAvailable(db, { site });
+              await ensureManagedWorkspaceReady('zhaopin_search', site);
+              throwIfZhaopinOpenAborted(cancellation.signal);
+              if (isOpen) return prepareZhaopinSearch({ db, plan, browser: browserFactory(frozenBrowserAuthority), signal: cancellation.signal });
+              const context = await resolveLiveZhaopinContext({ db, plan, logger, ...frozenBrowserAuthority, browserFactory, requireSaved: false });
+              if (context.site !== site || context.searchScope?.site !== site) throw appError('ZHAOPIN_SEARCH_SCOPE_CHANGED', '来源不一致，请重新打开智联搜索页。', { statusCode: 409 });
+              const template = canonicalizeZhaopinSearchTemplate(context.searchTemplate.url);
+              savePlatformSearchContext(db, { planId: plan.id, site, searchTemplate: template, filterSummary: context.platformPolicy.filterSummary || [] });
+              return { site, summary: (context.platformPolicy.filterSummary || []).join('；') || '当前页面未额外限制条件', message: '智联条件已保存，可开始本轮。' };
+            });
+            return sendJson(res, 200, result);
+          } catch (error) {
+            if (cancellation.signal?.aborted && (res.destroyed || res.writableEnded)) return;
+            return sendJson(res, error.statusCode || 409, { error: `${error.message} 请在智联搜索页检查后重试。`, errorCode: error.code || 'ZHAOPIN_SEARCH_FAILED' });
+          }
+        } finally { cancellation.dispose(); }
       }
       if (req.method === "GET" && url.pathname === "/api/onboarding-status") {
         recoverStaleOnboardingRuns(db);
@@ -2756,15 +2763,44 @@ function requestedSite(value) {
   return site;
 }
 
-async function prepareZhaopinSearch({ db, plan, browser }) {
+function createZhaopinOpenRequestCancellation(req, res, enabled) {
+  if (!enabled) return { signal: null, dispose() {} };
+  const controller = new AbortController();
+  const abort = () => {
+    if (!controller.signal.aborted) controller.abort(appError('ZHAOPIN_SEARCH_PREPARE_CANCELLED', '智联搜索页准备已取消。', { statusCode: 409 }));
+  };
+  const responseClosed = () => { if (!res.writableFinished) abort(); };
+  req.once('aborted', abort);
+  res.once('close', responseClosed);
+  if (req.aborted || res.destroyed) abort();
+  return {
+    signal: controller.signal,
+    dispose() {
+      req.removeListener('aborted', abort);
+      res.removeListener('close', responseClosed);
+    }
+  };
+}
+
+function throwIfZhaopinOpenAborted(signal) {
+  if (!signal?.aborted) return;
+  throw signal.reason instanceof Error
+    ? signal.reason
+    : appError('ZHAOPIN_SEARCH_PREPARE_CANCELLED', '智联搜索页准备已取消。', { statusCode: 409 });
+}
+
+async function prepareZhaopinSearch({ db, plan, browser, signal = null }) {
   const { isBrowserTabId, sameBrowserTabId, sortedBrowserTabIds } = require('../core/browser_tab_identity');
   const nowFn = typeof browser.prepareSearchNow === 'function' ? browser.prepareSearchNow : Date.now;
   const sleepFn = typeof browser.prepareSearchSleep === 'function'
     ? browser.prepareSearchSleep
     : ms => new Promise(resolve => setTimeout(resolve, ms));
   const deadlineMs = 120000;
+  const cleanupDeadlineMs = 4000;
   const pollIntervalMs = 500;
+  throwIfZhaopinOpenAborted(signal);
   const before = await browser.listTabs();
+  throwIfZhaopinOpenAborted(signal);
   const dashboards = before.filter(isZhaopinWorkspaceTab);
   const searches = before.filter(tab => {
     try { const url = new URL(tab.url); return url.origin === 'https://www.zhaopin.com' && url.pathname === '/jobs/'; } catch { return false; }
@@ -2779,14 +2815,18 @@ async function prepareZhaopinSearch({ db, plan, browser }) {
       const template = canonicalizeZhaopinSearchTemplate(currentUrl.toString());
       if (search.active) throw appError('ZHAOPIN_BACKGROUND_OPEN_FAILED', '请回到同窗 RoleFlow 页面后再准备智联搜索。', { statusCode: 409 });
       const targetUrl = buildZhaopinSearchUrl({ searchTemplate: template, keyword: planKeywords(plan.plan)[0] });
+      throwIfZhaopinOpenAborted(signal);
       await browser.navigate(search.id, targetUrl);
       await waitForPreparedTab({
         findTarget: tabs => tabs.find(tab => sameBrowserTabId(tab.id, search.id)),
         previousUrl: search.url,
         expectedUrl: targetUrl,
-        windowId: search.windowId
+        windowId: search.windowId,
+        allowInitialMissing: false
       });
+      throwIfZhaopinOpenAborted(signal);
     } else canonicalizeZhaopinSearchTemplate(search.url);
+    throwIfZhaopinOpenAborted(signal);
     return { site: 'zhaopin', message: '已找到智联搜索页。设置原生条件后，点击“保存智联条件”。' };
   }
   if (dashboards.length !== 1) throw appError('ZHAOPIN_OPENER_REQUIRED', '请在当前浏览器保留一个 RoleFlow 今日任务页，再准备智联搜索页。', { statusCode: 409 });
@@ -2796,17 +2836,22 @@ async function prepareZhaopinSearch({ db, plan, browser }) {
   const url = buildZhaopinSearchUrl({ searchTemplate: template, keyword: planKeywords(plan.plan)[0] });
   let reportedCreatedId = null;
   let target = null;
+  let createIssued = false;
   try {
+    throwIfZhaopinOpenAborted(signal);
+    createIssued = true;
     const created = await browser.createTab(opener.id, url);
     reportedCreatedId = created?.id ?? created?.tabId ?? created;
     target = await waitForPreparedTab({
       findTarget: tabs => resolveFreshCreatedTab(before, tabs, reportedCreatedId),
       previousUrl: 'about:blank',
       expectedUrl: url,
-      windowId: opener.windowId
+      windowId: opener.windowId,
+      allowInitialMissing: true
     });
+    throwIfZhaopinOpenAborted(signal);
   } catch (error) {
-    const current = await browser.listTabs();
+    const current = createIssued ? await browser.listTabs() : [];
     const attributable = target || attributableCreatedTab(before, current, reportedCreatedId, url);
     if (attributable && typeof browser.closeTab === 'function') {
       try { await closeAndVerify(attributable.id); }
@@ -2814,18 +2859,25 @@ async function prepareZhaopinSearch({ db, plan, browser }) {
         throw appError('ZHAOPIN_BACKGROUND_OPEN_FAILED', '智联后台标签页清理未能确认，已停止。请检查浏览器工作区后重试。', { statusCode: 409, cause: cleanupError });
       }
     }
-    if (error?.code === 'ZHAOPIN_SEARCH_NAVIGATION_TIMEOUT') throw error;
+    if (['ZHAOPIN_SEARCH_NAVIGATION_TIMEOUT', 'ZHAOPIN_SEARCH_PREPARE_CANCELLED'].includes(error?.code)) throw error;
     throw appError('ZHAOPIN_BACKGROUND_OPEN_FAILED', '未能确认后台同窗打开，已停止。请检查浏览器工作区后重试。', { statusCode: 409, cause: error });
   }
   return { site: 'zhaopin', message: '智联搜索页已在同窗后台准备。设置条件后，点击“保存智联条件”。' };
 
-  async function waitForPreparedTab({ findTarget, previousUrl, expectedUrl, windowId }) {
+  async function waitForPreparedTab({ findTarget, previousUrl, expectedUrl, windowId, allowInitialMissing }) {
     const deadline = nowFn() + deadlineMs;
+    let sawTarget = false;
     while (true) {
+      throwIfZhaopinOpenAborted(signal);
       const tabs = await browser.listTabs();
+      throwIfZhaopinOpenAborted(signal);
+      if (!sameActiveTabs(before, tabs)) {
+        throw appError('ZHAOPIN_BACKGROUND_OPEN_FAILED', '浏览器前台标签页已改变，已停止准备智联搜索页。', { statusCode: 409 });
+      }
       const target = findTarget(tabs);
       if (target) {
-        if (target.windowId !== windowId || target.active === true || !sameActiveTabs(before, tabs)) {
+        sawTarget = true;
+        if (target.windowId !== windowId || target.active === true) {
           throw appError('ZHAOPIN_BACKGROUND_OPEN_FAILED', '无法确认智联搜索页仍在同窗后台，已停止。', { statusCode: 409 });
         }
         const status = preparedUrlStatus(target.url, previousUrl, expectedUrl);
@@ -2833,11 +2885,14 @@ async function prepareZhaopinSearch({ db, plan, browser }) {
         if (status === 'wrong') {
           throw appError('ZHAOPIN_BACKGROUND_OPEN_FAILED', '智联搜索页进入了非预期地址，已停止。请检查浏览器工作区后重试。', { statusCode: 409 });
         }
+      } else if (!allowInitialMissing || sawTarget) {
+        throw appError('ZHAOPIN_BACKGROUND_OPEN_FAILED', '智联搜索页标签已丢失，已停止。请检查浏览器工作区后重试。', { statusCode: 409 });
       }
       if (nowFn() >= deadline) {
         throw appError('ZHAOPIN_SEARCH_NAVIGATION_TIMEOUT', '智联搜索页导航未在限定时间内就绪，已停止。请检查该后台标签页后重试。', { statusCode: 409 });
       }
-      await sleepFn(pollIntervalMs);
+      await waitWithCancellation(pollIntervalMs);
+      throwIfZhaopinOpenAborted(signal);
     }
   }
 
@@ -2871,7 +2926,7 @@ async function prepareZhaopinSearch({ db, plan, browser }) {
   function attributableCreatedTab(baseline, tabs, reportedId, expectedUrl) {
     const fresh = tabs.filter(tab => !baseline.some(item => sameBrowserTabId(item.id, tab.id)));
     if (fresh.length !== 1 || !isBrowserTabId(fresh[0]?.id)) return null;
-    if (sameCreatedTabId(reportedId, fresh[0].id)) return fresh[0];
+    if (isBrowserTabId(reportedId)) return sameCreatedTabId(reportedId, fresh[0].id) ? fresh[0] : null;
     return preparedUrlStatus(fresh[0].url, 'about:blank', expectedUrl) === 'ready' ? fresh[0] : null;
   }
 
@@ -2889,13 +2944,26 @@ async function prepareZhaopinSearch({ db, plan, browser }) {
 
   async function closeAndVerify(tabId) {
     await browser.closeTab(tabId);
-    const deadline = nowFn() + deadlineMs;
+    const deadline = nowFn() + cleanupDeadlineMs;
     while (true) {
       const tabs = await browser.listTabs();
       if (!tabs.some(tab => sameBrowserTabId(tab.id, tabId))) return;
       if (nowFn() >= deadline) throw new Error('created tab close was not observed');
-      await sleepFn(pollIntervalMs);
+      await sleepFn(pollIntervalMs, null);
     }
+  }
+
+  async function waitWithCancellation(ms) {
+    throwIfZhaopinOpenAborted(signal);
+    const pending = Promise.resolve().then(() => sleepFn(ms, signal));
+    if (!signal) return pending;
+    await new Promise((resolve, reject) => {
+      const aborted = () => { cleanup(); reject(signal.reason); };
+      const cleanup = () => signal.removeEventListener('abort', aborted);
+      signal.addEventListener('abort', aborted, { once: true });
+      if (signal.aborted) aborted();
+      pending.then(value => { cleanup(); resolve(value); }, error => { cleanup(); reject(error); });
+    });
   }
 }
 
