@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>智联合成沟通页</title>
+  <style>
+    .job-card,.job-detail-summary{display:block;width:600px;min-height:70px}.job-detail-summary__prechat,.job-detail-summary__apply{display:inline-block;width:100px;height:32px}
+    .fixture-modal[hidden],.login-panel[hidden]{display:none}
+  </style>
+</head>
+<body>
+  <input class="query-sug__input" value="合成关键词">
+  <div class="filter-select-box"><span class="filter-select-box__label">合成地区</span></div>
+  <section class="login-panel" hidden>请登录</section>
+  <main class="job-list-panel">
+    <article class="job-card"><span class="job-card__title-main"><span class="vue-clamp__text"></span></span><span class="job-card__salary"></span><a class="job-card__company-name"></a><span class="job-card__location"></span></article>
+    <article class="job-card"><span class="job-card__title-main"><span class="vue-clamp__text"></span></span><span class="job-card__salary"></span><a class="job-card__company-name"></a><span class="job-card__location"></span></article>
+  </main>
+  <section class="job-detail-panel">
+    <header class="job-detail-summary">
+      <h1 class="job-detail-summary__title-text"></h1><span class="job-detail-summary__salary"></span>
+      <a class="job-detail-summary__company-name"></a>
+      <ul class="job-detail-summary__tags"><li>深圳·南山区</li><li>3-5年</li><li>本科</li></ul>
+      <span class="job-detail-summary__status"></span>
+      <button class="job-detail-summary__prechat">先聊聊</button>
+      <button class="job-detail-summary__apply">立即投递</button>
+    </header>
+    <section class="job-detail-card"><h2 class="job-detail-card__title">职位描述</h2><div class="job-detail-card__body">合成岗位职责，要求可靠交付。</div></section>
+    <section class="job-company-info"><a class="job-company-info__name"></a><a class="job-company-info__view-all"></a></section>
+  </section>
+  <section class="fixture-modal" hidden><h2>已向对方发送打招呼语</h2></section>
+  <script>
+    const jobs = [
+      { number: 'CCSYNTH001J00000000001', name: '同名合成岗位', companyName: '合成甲有限公司', salary: '18K-25K' },
+      { number: 'CCSYNTH002J00000000002', name: '同名合成岗位', companyName: '合成乙公司', salary: '20K-28K' }
+    ];
+    window.fixture = {
+      jobs, selected: 0, prechatClicks: 0, applyClicks: 0,
+      render() {
+        const cards = [...document.querySelectorAll('.job-card')];
+        cards.forEach((card,index) => {
+          const job = jobs[index];
+          card.classList.toggle('job-card--active',index===this.selected);
+          card.querySelector('.vue-clamp__text').textContent=job.name;
+          card.querySelector('.job-card__salary').textContent=job.salary;
+          card.querySelector('.job-card__company-name').textContent=job.companyName;
+          card.querySelector('.job-card__location').textContent='深圳 南山区';
+          card.__vueParentComponent={type:{name:'JobCard'},proxy:{$props:{job}}};
+          card.onclick=()=>{this.selected=index;this.render()};
+        });
+        const job=jobs[this.selected]; const summary=document.querySelector('.job-detail-summary');
+        summary.querySelector('.job-detail-summary__title-text').textContent=job.name;
+        summary.querySelector('.job-detail-summary__salary').textContent=job.salary;
+        summary.querySelector('.job-detail-summary__company-name').textContent=job.companyName;
+        document.querySelector('.job-company-info__name').textContent=job.companyName;
+        document.querySelector('.job-company-info__view-all').href='https://www.zhaopin.com/jobdetail/'+job.number+'.htm';
+        summary.__vueParentComponent={type:{name:'JobDetailSummary'},proxy:{$props:{jobDetail:{detailedPosition:{number:job.number}}},position:{number:job.number}}};
+      },
+      select(index){this.selected=index;this.render()},
+      reset(){document.title='智联合成沟通页';document.querySelector('.login-panel').hidden=true;document.querySelector('.fixture-modal').hidden=true;document.querySelector('.job-detail-summary__status').textContent='';document.querySelector('.job-detail-summary__prechat').textContent='先聊聊';this.render()},
+      modal(){document.querySelector('.fixture-modal').hidden=false}
+    };
+    document.querySelector('.job-detail-summary__prechat').addEventListener('click',()=>window.fixture.prechatClicks++);
+    document.querySelector('.job-detail-summary__apply').addEventListener('click',()=>window.fixture.applyClicks++);
+    window.fixture.render();
+  </script>
+</body>
+</html>

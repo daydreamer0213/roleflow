@@ -1,4 +1,5 @@
 const { safeDigest } = require("./boss_message_dom");
+const { isBrowserTabId } = require("../../core/browser_tab_identity");
 
 function isZhaopinMessageUrl(value) {
   try {
@@ -164,7 +165,7 @@ function resolveMessageTab(tabs) {
   if (!matches.length) throw codedError("ZHAOPIN_MESSAGE_TAB_MISSING", "zhaopin message tab is missing");
   if (matches.length !== 1) throw codedError("ZHAOPIN_MESSAGE_TAB_AMBIGUOUS", "zhaopin message tab is ambiguous");
   const tab = matches[0];
-  if (!Number.isInteger(tab.id) || tab.id <= 0 || !Number.isInteger(tab.windowId) || tab.windowId <= 0) {
+  if (!isBrowserTabId(tab.id) || !Number.isInteger(tab.windowId) || tab.windowId <= 0) {
     throw codedError("ZHAOPIN_MESSAGE_TAB_INVALID", "zhaopin message tab binding is invalid");
   }
   return { tabId: tab.id, windowId: tab.windowId };
@@ -299,6 +300,33 @@ function parseMessages(messages, raw) {
     return { messageId, direction, contentKind, text: messageText };
   });
   return { messages: parsed, lastMessageId };
+}
+
+function hasZhaopinOutgoingTextSnapshot(snapshot, { sessionId, jobNumber } = {}) {
+  snapshot = normalizeSnapshot(snapshot);
+  sessionId = String(sessionId || "");
+  jobNumber = String(jobNumber || "");
+  if (!validSessionId(sessionId)
+    || !validJobNumber(jobNumber)
+    || snapshot.listLoading === true
+    || text(snapshot.listError)
+    || snapshot.timelineLoading === true
+    || text(snapshot.timelineError)
+    || !selectedIdentityMatches(snapshot, { sessionId, jobNumber })) return false;
+  const selectedRow = snapshot.rows.find((row) => row?.selected === true);
+  const normalizedRow = rowFromSnapshot(snapshot, selectedRow);
+  if (!normalizedRow.identityVerified
+    || normalizedRow._raw.sessionId !== sessionId
+    || normalizedRow._raw.jobNumber !== jobNumber) return false;
+  try {
+    return parseMessages(snapshot.messages, normalizedRow._raw).messages.some((message) => message.direction === "myself"
+      && message.contentKind === "text"
+      && validMessageId(message.messageId)
+      && Boolean(text(message.text)));
+  } catch (error) {
+    if (error?.code === "ZHAOPIN_MESSAGE_TARGET_MISMATCH") return false;
+    throw error;
+  }
 }
 
 function selectedResult(snapshot, target) {
@@ -471,4 +499,9 @@ function createZhaopinMessageReader({ browser, sleepFn = defaultSleep, nowFn = D
   };
 }
 
-module.exports = { createZhaopinMessageReader, ZHAOPIN_MESSAGE_SNAPSHOT_EXPRESSION, isZhaopinMessageUrl };
+module.exports = {
+  createZhaopinMessageReader,
+  ZHAOPIN_MESSAGE_SNAPSHOT_EXPRESSION,
+  hasZhaopinOutgoingTextSnapshot,
+  isZhaopinMessageUrl
+};

@@ -556,6 +556,71 @@ async function main() {
     assert(!JSON.stringify(observed).includes("friendId"));
     assert(!JSON.stringify(observed).includes("must-not-leak"));
 
+    websocket.responseBodies = {
+      "zhaopin-prechat": { body: JSON.stringify({ data: { sessionId: "a".repeat(32) } }), base64Encoded: false }
+    };
+    await cdp.startNetworkLog("cdp-tab", {
+      maxEntries: 6,
+      maxBodies: 2,
+      maxBodyBytes: 8192,
+      resourceTypes: ["XHR", "Fetch"],
+      bodyUrlIncludes: ["/imapi/imV2/createAndUpdateContextV2"],
+      urlIncludes: ["/imapi/imV2/createAndUpdateContextV2", "/c/pc/alan/jobs/application"],
+      captureBodies: true,
+      clear: true
+    });
+    const zhaopinSocket = latestSocket(websocket, "/devtools/page/cdp-tab");
+    emitNetworkRequest(zhaopinSocket, {
+      requestId: "wrong-zhaopin-origin",
+      url: "https://tracker.example/imapi/imV2/createAndUpdateContextV2?jobNumber=SECRET&positionChatBeforeDeliveryScene=2&positionChatBeforeDeliveryOperateType=2",
+      type: "Fetch",
+      method: "GET"
+    });
+    emitNetworkRequest(zhaopinSocket, {
+      requestId: "duplicate-zhaopin-target",
+      url: "https://cgate.zhaopin.com/imapi/imV2/createAndUpdateContextV2?jobNumber=ONE&jobNumber=TWO&positionChatBeforeDeliveryScene=2&positionChatBeforeDeliveryOperateType=2",
+      type: "Fetch",
+      method: "GET"
+    });
+    emitNetworkRequest(zhaopinSocket, {
+      requestId: "zhaopin-prechat",
+      url: "https://cgate.zhaopin.com/imapi/imV2/createAndUpdateContextV2?jobNumber=CCSYNTH001J00000000001&positionChatBeforeDeliveryScene=2&positionChatBeforeDeliveryOperateType=2&token=must-not-leak",
+      type: "Fetch",
+      method: "GET",
+      headers: { Cookie: "must-not-leak" }
+    });
+    emitNetworkResponse(zhaopinSocket, { requestId: "zhaopin-prechat", status: 200, type: "Fetch" });
+    emitNetworkFinished(zhaopinSocket, "zhaopin-prechat");
+    emitNetworkRequest(zhaopinSocket, {
+      requestId: "zhaopin-application",
+      url: "https://fe-api.zhaopin.com/c/pc/alan/jobs/application?token=must-not-leak",
+      type: "XHR",
+      method: "POST"
+    });
+    emitNetworkResponse(zhaopinSocket, { requestId: "zhaopin-application", status: 200, type: "XHR" });
+    emitNetworkFinished(zhaopinSocket, "zhaopin-application");
+    await flushAsyncEvents();
+    const zhaopinObserved = await cdp.readNetworkLog("cdp-tab", { sinceSequence: 0, includeBodies: true });
+    assert.deepStrictEqual(zhaopinObserved.entries.map((entry) => ({
+      url: entry.url,
+      method: entry.method,
+      requestTarget: entry.requestTarget
+    })), [
+      {
+        url: "https://cgate.zhaopin.com/imapi/imV2/createAndUpdateContextV2",
+        method: "GET",
+        requestTarget: { jobNumber: "CCSYNTH001J00000000001", scene: "2", operateType: "2" }
+      },
+      {
+        url: "https://fe-api.zhaopin.com/c/pc/alan/jobs/application",
+        method: "POST",
+        requestTarget: undefined
+      }
+    ]);
+    assert.match(zhaopinObserved.entries[0].content, /sessionId/);
+    assert(!JSON.stringify(zhaopinObserved).includes("token"));
+    assert(!JSON.stringify(zhaopinObserved).includes("must-not-leak"));
+
     const firstObserverSocket = observerSocket;
     websocket.responseBodies = {
       "bounded-1": { body: "1234567890abcdefghijklmnopqrstuvwxyz", base64Encoded: false },
@@ -587,7 +652,7 @@ async function main() {
     assert.strictEqual(bounded.entries.length, 2);
     assert.strictEqual(bounded.entries.filter((entry) => Object.hasOwn(entry, "content")).length, 1);
     assert(Buffer.byteLength(bounded.entries[0].content, "utf8") <= 16);
-    assert.strictEqual(countMethod(websocket.messages, "Network.getResponseBody"), 2,
+    assert.strictEqual(countMethod(websocket.messages, "Network.getResponseBody"), 3,
       "one allowlisted body from each observer may be read");
     await cdp.stopNetworkLog("cdp-tab");
     assert.strictEqual(boundedSocket.closed, true);
@@ -933,10 +998,10 @@ function networkLogOptions() {
   };
 }
 
-function emitNetworkRequest(socket, { requestId, url, type, headers = {}, postData = "" }) {
+function emitNetworkRequest(socket, { requestId, url, type, method = "POST", headers = {}, postData = "" }) {
   socket.emit("message", { data: JSON.stringify({
     method: "Network.requestWillBeSent",
-    params: { requestId, type, request: { url, method: "POST", headers, postData } }
+    params: { requestId, type, request: { url, method, headers, postData } }
   }) });
 }
 

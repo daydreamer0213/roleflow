@@ -10,6 +10,7 @@ catch (error) {
 const {
   createZhaopinMessageReader,
   ZHAOPIN_MESSAGE_SNAPSHOT_EXPRESSION,
+  hasZhaopinOutgoingTextSnapshot,
   isZhaopinMessageUrl
 } = require("../src/adapters/sites/zhaopin_message_reader");
 
@@ -70,20 +71,20 @@ function fixtureHtml() {
   </body></html>`;
 }
 
-function tabs(messageUrl = IM_URL) {
+function tabs(messageUrl = IM_URL, messageTabId = IM_TAB_ID) {
   return [
     { id: 1, windowId: WINDOW_ID, active: true, url: "http://127.0.0.1:3000/messages" },
-    { id: IM_TAB_ID, windowId: WINDOW_ID, active: false, url: messageUrl }
+    { id: messageTabId, windowId: WINDOW_ID, active: false, url: messageUrl }
   ];
 }
 
-function fakeBrowser(page, messageUrl = IM_URL) {
+function fakeBrowser(page, messageUrl = IM_URL, messageTabId = IM_TAB_ID) {
   const calls = [];
   return {
     calls,
-    async listTabs() { calls.push(["listTabs"]); return tabs(messageUrl); },
+    async listTabs() { calls.push(["listTabs"]); return tabs(messageUrl, messageTabId); },
     async setPageLifecycleActive(tabId) { calls.push(["setPageLifecycleActive", tabId]); return { state: "active" }; },
-    async evalValue(tabId, expression) { calls.push(["evalValue", tabId]); assert.equal(tabId, IM_TAB_ID); return page.evaluate(expression); },
+    async evalValue(tabId, expression) { calls.push(["evalValue", tabId]); assert.equal(tabId, messageTabId); return page.evaluate(expression); },
     async bringToFront() { calls.push(["bringToFront"]); throw new Error("must not focus"); },
     async navigate() { calls.push(["navigate"]); throw new Error("must not navigate"); },
     async createTab() { calls.push(["createTab"]); throw new Error("must not create tabs"); },
@@ -197,6 +198,46 @@ async function main() {
     const malformed = await malformedReader.openQueuedConversation({ ...malformedScan.rows[0], tabId: IM_TAB_ID });
     assert.deepStrictEqual(malformed.messages.map(item => item.contentKind), ["unsupported", "unsupported", "unsupported", "unsupported", "text"]);
     assert.equal(malformed.messages.at(-1).direction, "myself", "outbound identity must come from message data, not screen position");
+    const outgoingSnapshot = await page.evaluate(ZHAOPIN_MESSAGE_SNAPSHOT_EXPRESSION);
+    assert.equal(hasZhaopinOutgoingTextSnapshot(outgoingSnapshot, { sessionId: uncertain.sessionId, jobNumber: JOB_A }), true,
+      "a selected identity-consistent current outgoing text with server ID is positive proof");
+    assert.equal(hasZhaopinOutgoingTextSnapshot(outgoingSnapshot, { sessionId: first.sessionId, jobNumber: JOB_A }), false,
+      "a different session cannot reuse current outgoing proof");
+    assert.equal(hasZhaopinOutgoingTextSnapshot(outgoingSnapshot, { sessionId: uncertain.sessionId, jobNumber: JOB_B }), false,
+      "a different job cannot reuse current outgoing proof");
+    assert.equal(hasZhaopinOutgoingTextSnapshot({ ...outgoingSnapshot, timelineLoading: true }, { sessionId: uncertain.sessionId, jobNumber: JOB_A }), false,
+      "a loading timeline is not current outgoing proof");
+    assert.equal(hasZhaopinOutgoingTextSnapshot({ ...outgoingSnapshot, messages: outgoingSnapshot.messages.slice(0, -1) }, { sessionId: uncertain.sessionId, jobNumber: JOB_A }), false,
+      "inbound and unsupported messages alone are not outgoing proof");
+    assert.throws(
+      () => hasZhaopinOutgoingTextSnapshot({ state: "risk_control" }, { sessionId: uncertain.sessionId, jobNumber: JOB_A }),
+      (error) => error.code === "ZHAOPIN_MESSAGE_RISK_CONTROL"
+    );
+
+    await setFixture(page, { sessions: [first], active: first, timeline: [message({ idServer: "610", body: "合成消息" })], loading: false });
+    const portableBridge = fakeBrowser(page, IM_URL, "cdp-im-target");
+    const portableReader = readerFor(portableBridge);
+    const portableScan = await portableReader.scanConversationRows();
+    assert.equal(portableScan.tabId, "cdp-im-target", "portable CDP string target IDs are preserved");
+    const portableSelected = await portableReader.openQueuedConversation({ ...portableScan.rows[0], tabId: portableScan.tabId });
+    assert.equal(portableSelected.sourceJobId, `zhaopin:${JOB_A}`);
+    assert.equal((await portableReader.readSelectedJobTarget(portableSelected)).jobId, JOB_A);
+    const portableEvalCalls = portableBridge.calls.filter(([name]) => name === "evalValue").length;
+    portableBridge.listTabs = async () => tabs(IM_URL, "cdp-im-target-changed");
+    await assert.rejects(() => portableReader.readSelectedJobTarget(portableSelected), (error) => error.code === "ZHAOPIN_MESSAGE_TAB_BINDING_LOST");
+    assert.equal(portableBridge.calls.filter(([name]) => name === "evalValue").length, portableEvalCalls,
+      "a changed portable target stops before another DOM read");
+    for (const invalidId of ["", {}, -1]) {
+      const invalidBridge = fakeBrowser(page);
+      invalidBridge.listTabs = async () => tabs(IM_URL, invalidId);
+      await assert.rejects(() => readerFor(invalidBridge).scanConversationRows(), (error) => error.code === "ZHAOPIN_MESSAGE_TAB_INVALID");
+    }
+    const typedBridge = fakeBrowser(page, IM_URL, "202");
+    const typedReader = readerFor(typedBridge);
+    await typedReader.scanConversationRows();
+    typedBridge.listTabs = async () => tabs(IM_URL, 202);
+    await assert.rejects(() => typedReader.assertActiveBindings(), (error) => error.code === "ZHAOPIN_MESSAGE_TAB_BINDING_LOST",
+      "numeric and string tab IDs must not become equivalent");
 
     const wrongSession = session({ sessionId: "d".repeat(32), jobNumber: JOB_A });
     await setFixture(page, { sessions: [first], active: first, timeline: [message({ idServer: "109", body: "不属于当前会话", sessionOverride: wrongSession })], loading: false });

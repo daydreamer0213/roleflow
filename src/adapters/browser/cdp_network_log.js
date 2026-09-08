@@ -1,6 +1,8 @@
-const ALLOWED_BOSS_NETWORK_PATHS = new Set([
-  "/wapi/zpchat/config/get",
-  "/wapi/zpgeek/friend/add.json"
+const ALLOWED_NETWORK_ENDPOINTS = new Map([
+  ["/wapi/zpchat/config/get", { origin: "https://www.zhipin.com", method: "POST", kind: "boss" }],
+  ["/wapi/zpgeek/friend/add.json", { origin: "https://www.zhipin.com", method: "POST", kind: "boss" }],
+  ["/imapi/imV2/createAndUpdateContextV2", { origin: "https://cgate.zhaopin.com", method: "GET", kind: "zhaopin_prechat" }],
+  ["/c/pc/alan/jobs/application", { origin: "https://fe-api.zhaopin.com", method: "POST", kind: "zhaopin_application" }]
 ]);
 const DEFAULT_RESOURCE_TYPES = new Set(["XHR", "Fetch"]);
 
@@ -205,18 +207,21 @@ class CdpNetworkLog {
   onRequest(params) {
     if (this.entries.length >= this.maxEntries || this.byRequestId.has(params.requestId)) return;
     const resourceType = String(params.type || "");
-    const url = allowedEndpointUrl(params.request?.url, this.urlPaths);
-    if (!this.resourceTypes.has(resourceType) || !url) return;
+    const endpoint = allowedEndpoint(params.request?.url, params.request?.method, this.urlPaths);
+    if (!this.resourceTypes.has(resourceType) || !endpoint) return;
     const entry = {
       sequence: ++this.sequence,
-      url,
+      url: endpoint.url,
       resourceType,
       startedAt: new Date().toISOString(),
       completedAt: "",
       status: null,
       failed: false,
       content: "",
-      bodyRead: false
+      bodyRead: false,
+      endpointKind: endpoint.kind,
+      method: endpoint.method,
+      requestTarget: endpoint.requestTarget
     };
     this.entries.push(entry);
     this.byRequestId.set(String(params.requestId), entry);
@@ -314,7 +319,7 @@ function allowedPaths(values) {
   const paths = new Set();
   for (const value of Array.isArray(values) ? values : []) {
     const path = pathFromAllowlistValue(value);
-    if (ALLOWED_BOSS_NETWORK_PATHS.has(path)) paths.add(path);
+    if (ALLOWED_NETWORK_ENDPOINTS.has(path)) paths.add(path);
   }
   return paths;
 }
@@ -329,22 +334,46 @@ function pathFromAllowlistValue(value) {
   }
 }
 
-function allowedEndpointUrl(value, allowed) {
+function allowedEndpoint(value, method, allowed) {
   try {
     const parsed = new URL(String(value || ""));
-    if (parsed.protocol !== "https:"
-      || parsed.hostname !== "www.zhipin.com"
+    const endpoint = ALLOWED_NETWORK_ENDPOINTS.get(parsed.pathname);
+    method = String(method || "").toUpperCase();
+    if (!endpoint
+      || parsed.origin !== endpoint.origin
+      || method !== endpoint.method
       || parsed.username
       || parsed.password
-      || !allowed.has(parsed.pathname)) return "";
-    return `https://www.zhipin.com${parsed.pathname}`;
+      || !allowed.has(parsed.pathname)) return null;
+    if (endpoint.kind !== "zhaopin_prechat") {
+      return { url: `${endpoint.origin}${parsed.pathname}`, method, kind: endpoint.kind };
+    }
+    const target = zhaopinPrechatTarget(parsed.searchParams);
+    return target ? { url: `${endpoint.origin}${parsed.pathname}`, method, kind: endpoint.kind, requestTarget: target } : null;
   } catch {
-    return "";
+    return null;
   }
 }
 
+function zhaopinPrechatTarget(params) {
+  const fields = [
+    ["jobNumber", "jobNumber"],
+    ["positionChatBeforeDeliveryScene", "scene"],
+    ["positionChatBeforeDeliveryOperateType", "operateType"]
+  ];
+  const target = {};
+  for (const [queryName, publicName] of fields) {
+    const values = params.getAll(queryName);
+    if (values.length !== 1) return null;
+    const value = String(values[0] || "");
+    if (queryName === "jobNumber" ? !/^[A-Za-z0-9]{1,160}$/.test(value) : !/^\d{1,8}$/.test(value)) return null;
+    target[publicName] = value;
+  }
+  return target;
+}
+
 function publicEntry(entry, includeBody) {
-  return {
+  const value = {
     sequence: entry.sequence,
     url: entry.url,
     resourceType: entry.resourceType,
@@ -354,6 +383,11 @@ function publicEntry(entry, includeBody) {
     ...(entry.failed ? { failed: true } : {}),
     ...(includeBody && entry.bodyRead ? { content: entry.content } : {})
   };
+  if (entry.endpointKind === "zhaopin_prechat" || entry.endpointKind === "zhaopin_application") {
+    value.method = entry.method;
+    if (entry.endpointKind === "zhaopin_prechat") value.requestTarget = { ...entry.requestTarget };
+  }
+  return value;
 }
 
 function boundedResponseBody(result, maxBodyBytes) {
