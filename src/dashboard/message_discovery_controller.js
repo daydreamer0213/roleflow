@@ -226,13 +226,13 @@ function createMessageDiscoveryController(deps = {}) {
           const summary = await runDiscovery({ platform, db, profileId, reader, signal: abortController.signal, logger,
             classifyMessageGroup: createAnalyzer({ modelConfig, logger }), resolveJobContext, onStatus: checkpoint });
           checkpoint(summary);
-          if (summary?.reasonCode === `${platform === "zhaopin" ? "ZHAOPIN" : "BOSS"}_RISK_CONTROL`) {
+          if (isPlatformRiskControl(platform, summary?.reasonCode)) {
             recordRiskOnce(run, platform, summary.reasonCode, `${platform} requires security verification`);
           }
         } catch (error) {
           entry.reasonCode = messageDiscoveryErrorCode(error);
           entry.status = /RISK_CONTROL|RUNTIME_BLOCKED|LOGIN_REQUIRED|PAGE_LOST|TAB_|BINDING/.test(entry.reasonCode) ? "needs_user_action" : "stopped";
-          if (readingStarted && entry.reasonCode === `${platform === "zhaopin" ? "ZHAOPIN" : "BOSS"}_RISK_CONTROL`) {
+          if (readingStarted && isPlatformRiskControl(platform, entry.reasonCode)) {
             recordRiskOnce(run, platform, entry.reasonCode, error.message);
           }
         }
@@ -916,6 +916,12 @@ function safeCode(value) {
 
 function messageDiscoveryErrorCode(error) {
   return safeCode(error?.code) || "MESSAGE_DISCOVERY_FAILED";
+}
+
+function isPlatformRiskControl(platform, code) {
+  return platform === "zhaopin"
+    ? ["ZHAOPIN_RISK_CONTROL", "ZHAOPIN_MESSAGE_RISK_CONTROL"].includes(code)
+    : code === "BOSS_RISK_CONTROL";
 }
 
 function messageDiscoveryError(code, message, statusCode = 500) {

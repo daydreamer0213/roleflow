@@ -82,6 +82,7 @@ function makeReader(browser, options = {}) {
   let clock = 0;
   const hooks = [];
   const identitySignals = [];
+  const waits = [];
   const reader = createZhaopinMessageDetailReader({
     browser,
     messageReader: {
@@ -99,10 +100,12 @@ function makeReader(browser, options = {}) {
     pollIntervalMs: 1,
     sleepFn: async (_ms, signal) => {
       if (signal?.aborted) throw signal.reason;
+      waits.push(_ms);
       clock += 5;
+      options.afterSleep?.();
     }
   });
-  return { reader, hooks, identitySignals };
+  return { reader, hooks, identitySignals, waits };
 }
 
 const SELECTED = Object.freeze({ positionName: "合成软件工程师", companyName: "合成科技" });
@@ -164,6 +167,35 @@ async function read(reader, signal = null) {
 
   const loading = fakeBrowser({ samples: [snapshot({ documentReadyState: "loading" }), snapshot({ documentReadyState: "loading" })] });
   assert.equal((await read(makeReader(loading).reader)).sourceId, JOB_ID, "complete stable body must not wait for all resource loads");
+
+  const skeleton = fakeBrowser({ samples: [
+    snapshot({ title: "", company: "", description: "", loading: true }),
+    snapshot(),
+    snapshot()
+  ] });
+  const skeletonReader = makeReader(skeleton);
+  assert.equal((await read(skeletonReader.reader)).sourceId, JOB_ID, "an empty same-job skeleton must wait for complete stable content");
+  assert.equal(skeleton.calls.filter(([name]) => name === "evalValue").length, 3);
+  assert.equal(skeletonReader.waits.length, 2);
+
+  const missing = fakeBrowser({ samples: [snapshot({ title: "", company: "", description: "", loading: true })] });
+  const missingReader = makeReader(missing, { timeoutMs: 10 });
+  await assert.rejects(() => read(missingReader.reader), (error) => error.code === "ZHAOPIN_MESSAGE_DETAIL_INCOMPLETE");
+  assert(missing.calls.filter(([name]) => name === "evalValue").length > 1, "an empty same-job skeleton must poll until timeout");
+
+  const waitingController = new AbortController();
+  const waiting = fakeBrowser({ samples: [snapshot({ title: "", company: "", description: "", loading: true })] });
+  const waitingReader = makeReader(waiting, {
+    afterSleep() {
+      waitingController.abort(Object.assign(new Error("stopped while waiting"), { code: "MESSAGE_DISCOVERY_STOPPED" }));
+    }
+  });
+  await assert.rejects(
+    () => read(waitingReader.reader, waitingController.signal),
+    (error) => error.code === "MESSAGE_DISCOVERY_STOPPED"
+  );
+  assert.equal(waiting.calls.filter(([name]) => name === "evalValue").length, 1, "cancellation must stop the next skeleton sample");
+  assert.deepStrictEqual(waiting.tabs, baselineTabs());
 
   const offline = fakeBrowser({ samples: [snapshot({ availability: "offline" }), snapshot({ availability: "offline" })] });
   assert.equal((await read(makeReader(offline).reader)).availability, "offline");

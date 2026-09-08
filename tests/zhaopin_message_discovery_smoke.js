@@ -6,7 +6,8 @@ const os = require("node:os");
 const path = require("node:path");
 const {
   openDb, createBatch, upsertJob, listOpenMessageReplyDrafts,
-  listMessageInboundContexts, listSiteAccessEvents, getSitePacingState
+  listMessageInboundContexts, listSiteAccessEvents, getSitePacingState,
+  getSiteRuntimeState, clearSiteRuntimeState
 } = require("../src/core/storage");
 const { runBossMessageDiscovery, projectMessageDecisionCard } = require("../src/core/message_discovery");
 const { ensureProgressCard, findMessageDiscoveryJobContext } = require("../src/core/candidate_progress");
@@ -203,6 +204,89 @@ async function zhaopinDetailControllerSmoke() {
   }
   await controller.close();
   assert.deepEqual(created, [["safety", "zhaopin"], ["detail", "zhaopin", "zhaopin"], ["resolver", "zhaopin", true]]);
+
+  for (const scenario of [
+    { code: "ZHAOPIN_MESSAGE_RISK_CONTROL", throws: false },
+    { code: "ZHAOPIN_MESSAGE_RISK_CONTROL", throws: true },
+    { code: "ZHAOPIN_RISK_CONTROL", throws: false }
+  ]) {
+    await zhaopinRiskControllerSmoke(scenario);
+  }
+  await zhaopinNonRiskTimeoutControllerSmoke();
+}
+
+async function zhaopinRiskControllerSmoke({ code, throws }) {
+  clearSiteRuntimeState(db, "zhaopin");
+  const fixture = createFixture({ id: `ZLRISK${throws ? "THROW" : code === "ZHAOPIN_RISK_CONTROL" ? "LEGACY" : "SUMMARY"}` });
+  const bossBefore = getSiteRuntimeState(db, "boss");
+  let readerStarts = 0;
+  let discoveryStarts = 0;
+  const controller = riskController({
+    code,
+    throws,
+    onReaderStart: () => { readerStarts += 1; },
+    onDiscoveryStart: () => { discoveryStarts += 1; }
+  });
+  controller.start(fixture.profileId);
+  await waitForControllerStop(controller, fixture.profileId);
+  assert.equal(controller.status(fixture.profileId).reasonCode, code);
+  const blocked = getSiteRuntimeState(db, "zhaopin");
+  assert.equal(blocked?.status, "blocked", `${code} must persist a Zhaopin runtime block`);
+  assert.equal(blocked?.reasonCode, code);
+  assert.deepEqual(getSiteRuntimeState(db, "boss"), bossBefore, "Zhaopin risk must not change BOSS runtime state");
+
+  controller.start(fixture.profileId);
+  await waitForControllerStop(controller, fixture.profileId);
+  assert.equal(discoveryStarts, 1, "a persisted Zhaopin risk block must stop the next discovery before reading");
+  assert.equal(readerStarts, 1, "a persisted Zhaopin risk block must stop before creating the next reader");
+  await controller.close();
+  clearSiteRuntimeState(db, "zhaopin");
+}
+
+async function zhaopinNonRiskTimeoutControllerSmoke() {
+  clearSiteRuntimeState(db, "zhaopin");
+  const fixture = createFixture({ id: "ZLTIMEOUTNORISK" });
+  const controller = riskController({ code: "ZHAOPIN_MESSAGE_DETAIL_READ_TIMEOUT", throws: false });
+  controller.start(fixture.profileId);
+  await waitForControllerStop(controller, fixture.profileId);
+  assert.equal(getSiteRuntimeState(db, "zhaopin"), null, "a detail loading timeout must not create a risk cooldown");
+  await controller.close();
+}
+
+function riskController({ code, throws, onReaderStart = () => {}, onDiscoveryStart = () => {} }) {
+  return createMessageDiscoveryController({
+    db,
+    modelReady: () => true,
+    getModelConfig: () => ({ provider: "fixture" }),
+    acquireLease: () => {}, renewLease: () => {}, releaseLease: () => {},
+    createBrowser: async () => ({
+      async listTabs() { return [{ id: 202, windowId: 7, active: false, url: "https://i.zhaopin.com/im" }]; }
+    }),
+    cleanupBrowser: async () => {},
+    createReader: ({ platform }) => {
+      onReaderStart();
+      return { platform, async readSelectedJobTarget() { return {}; } };
+    },
+    createDetailSafety: () => ({ beforeOpen: async () => {}, afterIssuedAttempt: async () => {} }),
+    createDetailReader: () => ({ readSelectedJobDetail: async () => ({}) }),
+    createJobContextResolver: () => async () => ({}),
+    createAnalyzer: () => async () => ({}),
+    runDiscovery: async () => {
+      onDiscoveryStart();
+      if (throws) throw Object.assign(new Error("synthetic Zhaopin risk"), { code });
+      return { status: "needs_user_action", reasonCode: code, queued: 0, processed: 0, unresolved: 0, counters: {}, results: [] };
+    },
+    setInterval: () => 1,
+    clearInterval: () => {},
+    now: () => new Date(NOW)
+  });
+}
+
+async function waitForControllerStop(controller, profileId) {
+  for (let attempt = 0; attempt < 20 && controller.status(profileId).status === "running"; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.notEqual(controller.status(profileId).status, "running", "controller did not settle");
 }
 
 async function emptyTextPendingSmoke() {
