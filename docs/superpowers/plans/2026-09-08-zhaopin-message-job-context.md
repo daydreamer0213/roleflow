@@ -57,6 +57,8 @@ Cases: no cache -> one detail read, one existing analysis call, complete own-pla
 
 Use existing browser contract for background open, locate the returned new tab by current list and numeric identity, validate same window + unchanged active tabs, wake without focus, verify exact canonical id and selected title/company, read and always close. If create throws after opening, attribute only newly added exact-target same-window tab; stop if cleanup cannot be verified. Recheck selected message after cleanup even when cancelling, without passing an aborted signal to the cleanup verification. Preserve cancellation and original error while prioritizing cleanup errors that leave resources unverified.
 
+Tab ID compatibility clarification: Edge may return a numeric ID as a string on creation while listTabs has its numeric value; after matching use the actual typed ID from listTabs. Keep numeric IDs numeric, but existing CDP string target IDs remain valid. Reuse browser_tab_identity helpers rather than coercing all IDs to one type.
+
 Use existing `createBatch`, `upsertJob`, `retryOneJobAnalysis`, `findMessageDiscoveryJobContext`, `ensureProgressCard`, `bindProgressCardThread` pattern; new batch site is `zhaopin`, keyword/mode `message-discovery-detail`. Check cancellation before each DB mutation and after model await. Recheck the current active plan and selected conversation before binding/processing, so a concurrent plan change cannot use the old plan implicitly.
 
 ```js
