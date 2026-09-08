@@ -49,8 +49,11 @@ function saveMessageInboundContext(db, input = {}) {
 }
 
 function getMessageInboundContext(db, { profileId, cardId, messageGroupKey } = {}) {
-  const row = db.prepare(`SELECT * FROM message_inbound_contexts
-    WHERE profile_id = ? AND card_id = ? AND message_group_key = ?`).get(
+  const row = db.prepare(`SELECT contexts.*, cards.source AS card_source, jobs.source AS job_source
+    FROM message_inbound_contexts contexts
+    JOIN candidate_progress_cards cards ON cards.id = contexts.card_id AND cards.profile_id = contexts.profile_id
+    JOIN jobs ON jobs.id = cards.job_id
+    WHERE contexts.profile_id = ? AND contexts.card_id = ? AND contexts.message_group_key = ?`).get(
     positiveInteger(profileId, "profileId"),
     positiveInteger(cardId, "cardId"),
     digestKey(messageGroupKey, "messageGroupKey")
@@ -65,13 +68,19 @@ function listMessageInboundContexts(db, { profileId, cardId = null, limit = 100 
     : positiveInteger(cardId, "cardId");
   const bounded = boundedLimit(limit, 100, 500);
   const rows = card
-    ? db.prepare(`SELECT * FROM message_inbound_contexts
-        WHERE profile_id = ? AND card_id = ? ORDER BY updated_at DESC, id DESC LIMIT ?`)
+    ? db.prepare(`SELECT contexts.*, cards.source AS card_source, jobs.source AS job_source
+        FROM message_inbound_contexts contexts
+        JOIN candidate_progress_cards cards ON cards.id = contexts.card_id AND cards.profile_id = contexts.profile_id
+        JOIN jobs ON jobs.id = cards.job_id
+        WHERE contexts.profile_id = ? AND contexts.card_id = ? ORDER BY contexts.updated_at DESC, contexts.id DESC LIMIT ?`)
       .all(profile, card, bounded)
-    : db.prepare(`SELECT * FROM message_inbound_contexts
-        WHERE profile_id = ? ORDER BY updated_at DESC, id DESC LIMIT ?`)
+    : db.prepare(`SELECT contexts.*, cards.source AS card_source, jobs.source AS job_source
+        FROM message_inbound_contexts contexts
+        JOIN candidate_progress_cards cards ON cards.id = contexts.card_id AND cards.profile_id = contexts.profile_id
+        JOIN jobs ON jobs.id = cards.job_id
+        WHERE contexts.profile_id = ? ORDER BY contexts.updated_at DESC, contexts.id DESC LIMIT ?`)
       .all(profile, bounded);
-  return rows.map(mapInboundContext);
+  return rows.map(mapInboundContext).filter(Boolean);
 }
 
 function deleteMessageInboundContext(db, { profileId, cardId, messageGroupKey } = {}) {
@@ -339,10 +348,14 @@ function assertCardOwner(db, profileId, cardId, platform) {
 }
 
 function mapInboundContext(row) {
+  if (!row) return null;
+  const platform = String(row.card_source || "");
+  if (platform !== row.job_source || !["boss", "zhaopin"].includes(platform)) return null;
   return {
     id: Number(row.id),
     profileId: Number(row.profile_id),
     cardId: Number(row.card_id),
+    platform,
     messageGroupKey: row.message_group_key,
     conversationKey: row.conversation_key,
     sourceJobId: row.source_job_id,

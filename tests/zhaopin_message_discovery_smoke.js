@@ -1,6 +1,9 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const { openDb, createBatch, upsertJob, listOpenMessageReplyDrafts } = require("../src/core/storage");
 const { runBossMessageDiscovery } = require("../src/core/message_discovery");
 const { safeDigest } = require("../src/adapters/sites/boss_message_dom");
@@ -8,7 +11,8 @@ const { createZhaopinMessageJobContextResolver } = require("../src/application/m
 const { listUnresolvedMessageDiscoveryItems } = require("../src/core/message_preview_state");
 
 const NOW = "2026-09-08T08:00:00.000Z";
-const db = openDb(":memory:");
+const root = fs.mkdtempSync(path.join(os.tmpdir(), "roleflow-zhaopin-message-"));
+let db = openDb(path.join(root, "message-discovery.sqlite"));
 
 async function run() {
   const fixture = createFixture();
@@ -77,9 +81,9 @@ async function unresolvedDisplaySmoke() {
     display_name, profile_json, source_hash, created_at, updated_at
   ) VALUES (?, '{}', NULL, ?, ?)`)
     .run("Zhaopin unresolved fixture", NOW, NOW).lastInsertRowid);
-  db.prepare(`INSERT INTO search_plans(profile_id, name, plan_json, profile_version_id, is_active, created_at, updated_at)
+  const planId = Number(db.prepare(`INSERT INTO search_plans(profile_id, name, plan_json, profile_version_id, is_active, created_at, updated_at)
     VALUES (?, 'Zhaopin unresolved plan', '{}', NULL, 1, ?, ?)`)
-    .run(profileId, NOW, NOW);
+    .run(profileId, NOW, NOW).lastInsertRowid);
   const conversationKey = safeDigest(["zhaopin", "unresolved-session"]);
   const reader = {
     async scanConversationRows() {
@@ -96,13 +100,44 @@ async function unresolvedDisplaySmoke() {
   const first = listUnresolvedMessageDiscoveryItems(db, { profileId, platform: "zhaopin" })[0];
   assert.deepEqual(first.inboundMessages, [{ kind: "text", text: "请介绍项目经验。" }]);
   assert.equal(first.sourceJobId, "zhaopin:ZL999999");
-  reader.openQueuedConversation = async () => ({ sourceJobId: "zhaopin:ZL000000", lastMessageId: "901002", positionName: "No cached JD", companyName: "Unknown Co", messages: [] });
+  assert.equal(first.positionTitle, "No cached JD");
+  db.close();
+  db = openDb(path.join(root, "message-discovery.sqlite"));
+  const reopened = listUnresolvedMessageDiscoveryItems(db, { profileId, platform: "zhaopin" })[0];
+  assert.deepEqual(reopened.inboundMessages, first.inboundMessages);
+  assert.equal(reopened.sourceJobId, first.sourceJobId);
+  reader.openQueuedConversation = async () => ({ sourceJobId: "zhaopin:ZL000000", lastMessageId: "901002", positionName: "Changed title", companyName: "Changed Co", messages: [] });
   await runBossMessageDiscovery({ db, profileId, platform: "zhaopin", reader, classifyMessageGroup: async () => { throw new Error("must not classify without cached context"); }, now: () => NOW, sleepFn: async () => {} });
   const retained = listUnresolvedMessageDiscoveryItems(db, { profileId, platform: "zhaopin" })[0];
   assert.deepEqual(retained.inboundMessages, first.inboundMessages);
   assert.equal(retained.sourceJobId, first.sourceJobId);
+  assert.equal(retained.positionTitle, first.positionTitle);
   assert.equal(listOpenMessageReplyDrafts(db, { profileId }).length, 0);
   assert.equal(db.prepare("SELECT count(*) AS n FROM jobs WHERE source = 'zhaopin'").get().n, 1, "only the resolved fixture job may exist");
+  reader.openQueuedConversation = async () => { throw Object.assign(new Error("timeline pending"), { code: "ZHAOPIN_MESSAGE_CONTENT_PENDING" }); };
+  const stopped = await runBossMessageDiscovery({ db, profileId, platform: "zhaopin", reader, classifyMessageGroup: async () => { throw new Error("must not classify without cached context"); }, now: () => NOW, sleepFn: async () => {} });
+  assert.equal(stopped.reasonCode, "ZHAOPIN_MESSAGE_CONTENT_PENDING");
+  const afterFailure = listUnresolvedMessageDiscoveryItems(db, { profileId, platform: "zhaopin" })[0];
+  assert.deepEqual(afterFailure.inboundMessages, first.inboundMessages);
+  assert.equal(afterFailure.positionTitle, first.positionTitle);
+  const batchId = createBatch(db, "zhaopin", "zhaopin-retry", "zhaopin retry fixture", { profileId, searchPlanId: planId });
+  upsertJob(db, {
+    source: "zhaopin", sourceId: "zhaopin:ZL999999", keyword: "zhaopin-retry",
+    title: "No cached JD", company: "Unknown Co", location: "Shanghai", salary: "20-30K",
+    experience: "3-5年", education: "本科", bossActiveText: "", url: "https://www.zhaopin.com/job/ZL999999.html",
+    tags: [], description: "可信智联职位描述。".repeat(20), qualityTags: [],
+    analysis: { semanticStatus: "complete", recommendation: "primary" }
+  }, batchId);
+  reader.openQueuedConversation = async () => ({ sourceJobId: "zhaopin:ZL999999", lastMessageId: "901001", positionName: "No cached JD", companyName: "Unknown Co", salary: "20-30K", city: "Shanghai", messages: [
+    { direction: "friend", messageId: "901001", text: "请介绍项目经验。", contentKind: "text" }
+  ] });
+  const retried = await runBossMessageDiscovery({
+    db, profileId, platform: "zhaopin", reader,
+    classifyMessageGroup: async () => ({ messageIntent: "information_request", messageCategory: "other", messageSummary: "项目经验确认", missingFact: null, progressUpdate: { stage: "reply_ready" }, messages: ["我可以介绍相关项目经验。"] }),
+    resolveJobContext: createZhaopinMessageJobContextResolver({ db, profileId, now: () => NOW }), now: () => NOW, sleepFn: async () => {}
+  });
+  assert.equal(retried.processed, 1);
+  assert.equal(listUnresolvedMessageDiscoveryItems(db, { profileId, platform: "zhaopin" }).length, 0);
 }
 
 function createFixture() {
@@ -138,4 +173,7 @@ function createFixture() {
   return { profileId, planId, jobId };
 }
 
-run().then(() => console.log("zhaopin message discovery smoke passed")).finally(() => db.close());
+run().then(() => console.log("zhaopin message discovery smoke passed")).finally(() => {
+  try { db.close(); } catch {}
+  fs.rmSync(root, { recursive: true, force: true });
+});

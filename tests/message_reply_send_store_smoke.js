@@ -115,6 +115,11 @@ try {
   });
   const zhaopin = createZhaopinDraft(db, owner, "zhaopin", "智联草稿", now);
   saveContext(zhaopin, "conversation-zhaopin", "encrypt-job-zhaopin", "378917037748754");
+  assert.equal(store.getMessageInboundContext(db, {
+    profileId: owner.profileId,
+    cardId: zhaopin.card.id,
+    messageGroupKey: zhaopin.groupKey
+  }).platform, "zhaopin");
   assert.throws(
     () => store.createMessageReplySendBatch(db, {
       profileId: owner.profileId,

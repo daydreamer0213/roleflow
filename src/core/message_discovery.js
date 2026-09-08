@@ -132,6 +132,14 @@ async function runBossMessageDiscovery({
       selected = await reader.openQueuedConversation(target, signal);
     } catch (error) {
       if (shouldInterrupt(error, signal)) throw error;
+      if (source === "zhaopin" && zhaopinReadFailure(error)) {
+        recordUnresolvedMessageDiscoveryItem(db, {
+          profileId, platform: source, conversationKey: target.conversationKey,
+          previewDigest: target.previewDigest, previewKind: target.previewKind,
+          reasonCode: errorCode(error), observedAt: now(), identity: {}
+        });
+        retained = unresolvedSummary(db, profileId, source);
+      }
       return emitStopped(errorCode(error), queue.length, results, logger, onStatus, retained, processed, counters);
     }
     if (selected?.skipped) {
@@ -316,7 +324,7 @@ async function runBossMessageDiscovery({
           ? { ...quality.result, draftQualityWarnings: qualityWarningCodes(quality.assessment) }
           : rejectedQualityClassification(quality.result, quality.assessment);
       } else {
-        classification = resumeRequestClassification();
+        classification = resumeRequestClassification(source);
       }
     } catch (error) {
       const errorCode = String(error?.code || "");
@@ -560,6 +568,9 @@ function shouldStopAfterContextFailure(error) {
 
 function selectUnprocessedFriendMessageGroup(db, cardId, selected, threadKey, platform = "boss") {
   const messages = Array.isArray(selected?.messages) ? selected.messages : [];
+  if (platform === "zhaopin" && messages.length === 0) {
+    return { ok: false, reasonCode: "ZHAOPIN_MESSAGE_CONTENT_PENDING" };
+  }
   let lastMyself = -1;
   for (let index = 0; index < messages.length; index += 1) {
     if (messages[index]?.direction === "myself") lastMyself = index;
@@ -644,11 +655,11 @@ function selectUnprocessedFriendMessageGroup(db, cardId, selected, threadKey, pl
   };
 }
 
-function resumeRequestClassification() {
+function resumeRequestClassification(platform = "boss") {
   return {
     messageIntent: "manual_review",
     messageCategory: "other",
-    messageSummary: "招聘方请求附件简历，需要你在 BOSS 中确认。",
+    messageSummary: `招聘方请求附件简历，需要你在 ${platform === "zhaopin" ? "智联" : "BOSS"} 中确认。`,
     missingFact: null,
     messages: [],
     progressUpdate: { stage: "needs_user_action" }
@@ -701,6 +712,14 @@ function validInboundIdentity(platform, target) {
   return platform === "zhaopin"
     ? /^zhaopin:[A-Za-z0-9]{1,160}$/.test(sourceJobId) && /^\d{1,32}$/.test(lastMessageId)
     : /^boss:[A-Za-z0-9_-]{6,160}$/.test(sourceJobId) && /^\d{15}$/.test(lastMessageId);
+}
+
+function zhaopinReadFailure(error) {
+  return [
+    "ZHAOPIN_MESSAGE_CONTENT_PENDING",
+    "ZHAOPIN_MESSAGE_CONTENT_UNSUPPORTED",
+    "ZHAOPIN_MESSAGE_STRUCTURE_CHANGED"
+  ].includes(errorCode(error));
 }
 
 function discoveryPlatform(value) {

@@ -77,8 +77,17 @@ function recordUnresolvedMessageDiscoveryItem(db, input = {}) {
   const previewKind = previewKindValue(input.previewKind);
   const reasonCode = safeReasonCode(input.reasonCode);
   const observedAt = isoText(input.observedAt);
-  const identity = safeUnresolvedIdentity(input.identity);
   const display = safeUnresolvedInbound(input, platform);
+  const existing = db.prepare(`SELECT * FROM message_discovery_unresolved_items
+    WHERE profile_id = ? AND platform = ? AND conversation_key = ?`).get(profileId, platform, conversationKey);
+  const preserveIdentity = !display.present && existing?.inbound_json && existing.inbound_json !== "[]";
+  const identity = preserveIdentity ? {
+    positionTitle: existing.position_title,
+    company: existing.company,
+    salary: existing.salary,
+    city: existing.city,
+    identityDigest: existing.identity_digest
+  } : safeUnresolvedIdentity(input.identity);
   if (!platform) throw previewError("PREVIEW_PLATFORM_REQUIRED", "preview platform is required");
   db.prepare(`INSERT INTO message_discovery_unresolved_items(
     profile_id, platform, conversation_key, preview_digest, preview_kind, reason_code,
@@ -89,11 +98,11 @@ function recordUnresolvedMessageDiscoveryItem(db, input = {}) {
     preview_digest = excluded.preview_digest,
     preview_kind = excluded.preview_kind,
     reason_code = excluded.reason_code,
-    position_title = excluded.position_title,
-    company = excluded.company,
-    salary = excluded.salary,
-    city = excluded.city,
-    identity_digest = excluded.identity_digest,
+    position_title = CASE WHEN ? THEN excluded.position_title ELSE position_title END,
+    company = CASE WHEN ? THEN excluded.company ELSE company END,
+    salary = CASE WHEN ? THEN excluded.salary ELSE salary END,
+    city = CASE WHEN ? THEN excluded.city ELSE city END,
+    identity_digest = CASE WHEN ? THEN excluded.identity_digest ELSE identity_digest END,
     inbound_json = CASE WHEN ? THEN excluded.inbound_json ELSE inbound_json END,
     source_job_id = CASE WHEN ? THEN excluded.source_job_id ELSE source_job_id END,
     last_message_id = CASE WHEN ? THEN excluded.last_message_id ELSE last_message_id END,
@@ -115,6 +124,11 @@ function recordUnresolvedMessageDiscoveryItem(db, input = {}) {
       JSON.stringify(display.inboundMessages),
       display.sourceJobId,
       display.lastMessageId,
+      preserveIdentity ? 0 : 1,
+      preserveIdentity ? 0 : 1,
+      preserveIdentity ? 0 : 1,
+      preserveIdentity ? 0 : 1,
+      preserveIdentity ? 0 : 1,
       display.present ? 1 : 0,
       display.present ? 1 : 0,
       display.present ? 1 : 0
