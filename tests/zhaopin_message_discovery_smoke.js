@@ -9,6 +9,7 @@ const {
   listMessageInboundContexts
 } = require("../src/core/storage");
 const { runBossMessageDiscovery } = require("../src/core/message_discovery");
+const { ensureProgressCard } = require("../src/core/candidate_progress");
 const { safeDigest } = require("../src/adapters/sites/boss_message_dom");
 const { createZhaopinMessageJobContextResolver } = require("../src/application/message_discovery/zhaopin_job_context");
 const { listPreviewStates, listUnresolvedMessageDiscoveryItems, recordUnresolvedMessageDiscoveryItem } = require("../src/core/message_preview_state");
@@ -102,12 +103,81 @@ async function run() {
   await unresolvedDisplaySmoke();
   await inboundTransactionRollbackSmoke();
   await manualOnlyReopenSmoke();
+  await crossPlatformIdempotencySmoke();
+  await resolverIsolationSmoke();
+}
+
+async function crossPlatformIdempotencySmoke() {
+  const fixture = createFixture({ id: "ZL777003", title: "Shared Id Engineer" });
+  const conversationKey = safeDigest(["same-conversation", "777003"]);
+  const messageId = "123456789012345";
+  const zhaopinReader = zhaopinReaderFor({ conversationKey, sourceJobId: "zhaopin:ZL777003", title: fixture.title, messages: [
+    { direction: "friend", messageId, text: "智联问题。", contentKind: "text" }
+  ] });
+  const bossBatchId = createBatch(db, "boss", "boss-shared-id", "boss shared id fixture", { profileId: fixture.profileId, searchPlanId: fixture.planId });
+  const bossJobId = upsertJob(db, {
+    source: "boss", sourceId: "boss:shared777", keyword: "boss-shared-id", title: "Shared Id Engineer",
+    company: "Boss Fixture Co", location: "Shanghai", salary: "20-30K", experience: "3-5年", education: "本科",
+    bossActiveText: "", url: "https://www.zhipin.com/job_detail/shared777.html", tags: [],
+    description: "可信 BOSS 职位描述。".repeat(20), qualityTags: [], analysis: { semanticStatus: "complete", recommendation: "primary" }
+  }, bossBatchId);
+  ensureProgressCard(db, { profileId: fixture.profileId, planId: fixture.planId, jobId: bossJobId, source: "boss", now: NOW });
+  const bossReader = {
+    async scanConversationRows() { return { tabId: 13, rows: [{ rowIndex: 0, unread: true, conversationKey,
+      previewDigest: safeDigest(["boss", "shared-preview"]), previewKind: "possible_hr_reply", sourceJobId: "boss:shared777",
+      lastMessageId: messageId, lastMessageDirection: "friend", identityVerified: true }] }; },
+    async openQueuedConversation() { return { headerText: "Recruiter", positionName: "Shared Id Engineer", companyName: "Boss Fixture Co", salary: "20-30K", city: "Shanghai", messages: [{ direction: "friend", messageId, text: "BOSS 问题。", contentKind: "text" }] }; }
+  };
+  const runZl = () => runBossMessageDiscovery({ db, profileId: fixture.profileId, platform: "zhaopin", reader: zhaopinReader,
+    classifyMessageGroup: async () => classification(["智联草稿。"]), resolveJobContext: createZhaopinMessageJobContextResolver({ db, profileId: fixture.profileId, now: () => NOW }), now: () => NOW, sleepFn: async () => {} });
+  const runBoss = () => runBossMessageDiscovery({ db, profileId: fixture.profileId, reader: bossReader,
+    classifyMessageGroup: async () => classification(["BOSS 草稿。"]), now: () => NOW, sleepFn: async () => {} });
+  await runZl();
+  await runBoss();
+  const eventsBefore = db.prepare("SELECT count(*) AS n FROM candidate_progress_events WHERE card_id IN (SELECT id FROM candidate_progress_cards WHERE profile_id = ?)").get(fixture.profileId).n;
+  const idempotencyKeys = db.prepare("SELECT idempotency_key FROM candidate_progress_events WHERE card_id IN (SELECT id FROM candidate_progress_cards WHERE profile_id = ?)").all(fixture.profileId).map((row) => row.idempotency_key);
+  assert(idempotencyKeys.some((key) => key.startsWith("message:zhaopin:")));
+  assert(idempotencyKeys.some((key) => key.startsWith("message:boss:")));
+  assert.equal(listPreviewStates(db, { profileId: fixture.profileId, platform: "zhaopin" }).filter((item) => item.conversationKey === conversationKey).length, 1);
+  assert.equal(listPreviewStates(db, { profileId: fixture.profileId, platform: "boss" }).filter((item) => item.conversationKey === conversationKey).length, 1);
+  assert.equal(listOpenMessageReplyDrafts(db, { profileId: fixture.profileId }).length, 2);
+  await runZl();
+  await runBoss();
+  assert.equal(db.prepare("SELECT count(*) AS n FROM candidate_progress_events WHERE card_id IN (SELECT id FROM candidate_progress_cards WHERE profile_id = ?)").get(fixture.profileId).n, eventsBefore);
+  assert.equal(listOpenMessageReplyDrafts(db, { profileId: fixture.profileId }).length, 2);
+}
+
+async function resolverIsolationSmoke() {
+  const profileId = Number(db.prepare("INSERT INTO candidate_profiles(display_name, profile_json, source_hash, created_at, updated_at) VALUES ('Resolver isolation', '{}', NULL, ?, ?)").run(NOW, NOW).lastInsertRowid);
+  const activePlanId = Number(db.prepare("INSERT INTO search_plans(profile_id, name, plan_json, profile_version_id, is_active, created_at, updated_at) VALUES (?, 'Active', '{}', NULL, 1, ?, ?)").run(profileId, NOW, NOW).lastInsertRowid);
+  const inactivePlanId = Number(db.prepare("INSERT INTO search_plans(profile_id, name, plan_json, profile_version_id, is_active, created_at, updated_at) VALUES (?, 'Inactive', '{}', NULL, 0, ?, ?)").run(profileId, NOW, NOW).lastInsertRowid);
+  const sourceId = "zhaopin:ZL777004";
+  seedCompleteContext({ profileId, planId: inactivePlanId, source: "zhaopin", sourceId, key: "inactive" });
+  seedCompleteContext({ profileId, planId: activePlanId, source: "boss", sourceId, key: "foreign-source" });
+  const otherProfileId = Number(db.prepare("INSERT INTO candidate_profiles(display_name, profile_json, source_hash, created_at, updated_at) VALUES ('Other profile', '{}', NULL, ?, ?)").run(NOW, NOW).lastInsertRowid);
+  const otherPlanId = Number(db.prepare("INSERT INTO search_plans(profile_id, name, plan_json, profile_version_id, is_active, created_at, updated_at) VALUES (?, 'Other', '{}', NULL, 1, ?, ?)").run(otherProfileId, NOW, NOW).lastInsertRowid);
+  seedCompleteContext({ profileId: otherProfileId, planId: otherPlanId, source: "zhaopin", sourceId, key: "foreign-profile" });
+  const resolver = createZhaopinMessageJobContextResolver({ db, profileId, now: () => NOW });
+  const target = { sourceJobId: sourceId, conversationKey: safeDigest(["zhaopin", "resolver-isolation"]) };
+  await assert.rejects(() => resolver({ target }), (error) => error.code === "MESSAGE_DISCOVERY_JOB_CONTEXT_UNAVAILABLE");
+  assert.equal(db.prepare("SELECT count(*) AS n FROM candidate_progress_cards WHERE profile_id = ?").get(profileId).n, 0);
+  assert.equal(listOpenMessageReplyDrafts(db, { profileId }).length, 0);
+  seedCompleteContext({ profileId, planId: activePlanId, source: "zhaopin", sourceId, key: "correct" });
+  const resolved = await resolver({ target });
+  assert.equal(resolved.contextSource, "local_cache");
+  assert.equal(resolved.job.source, "zhaopin");
+  assert.equal(db.prepare("SELECT count(*) AS n FROM candidate_progress_cards WHERE profile_id = ?").get(profileId).n, 1);
+}
+
+function seedCompleteContext({ profileId, planId, source, sourceId, key }) {
+  const batchId = createBatch(db, source, `resolver-${key}`, `resolver ${key}`, { profileId, searchPlanId: planId });
+  return upsertJob(db, { source, sourceId, keyword: `resolver-${key}`, title: `Resolver ${key}`, company: "Resolver Co", location: "Shanghai", salary: "20-30K", experience: "3-5年", education: "本科", bossActiveText: "", url: `https://example.test/${key}`, tags: [], description: "可信职位描述。".repeat(20), qualityTags: [], analysis: { semanticStatus: "complete", recommendation: "primary" } }, batchId);
 }
 
 async function inboundTransactionRollbackSmoke() {
   const fixture = createFixture({ id: "ZL777001", title: "Rollback Engineer" });
   const conversationKey = safeDigest(["zhaopin", "rollback-session"]);
-  const reader = zhaopinReader({
+  const reader = zhaopinReaderFor({
     conversationKey, sourceJobId: "zhaopin:ZL777001", title: fixture.title,
     messages: [{ direction: "friend", messageId: "777001", text: "请介绍项目经验。", contentKind: "text" }]
   });
@@ -139,7 +209,7 @@ async function inboundTransactionRollbackSmoke() {
 async function manualOnlyReopenSmoke() {
   const fixture = createFixture({ id: "ZL777002", title: "Manual Resume Engineer" });
   const conversationKey = safeDigest(["zhaopin", "manual-session"]);
-  const reader = zhaopinReader({
+  const reader = zhaopinReaderFor({
     conversationKey, sourceJobId: "zhaopin:ZL777002", title: fixture.title,
     messages: [{ direction: "friend", messageId: "777002", text: "HR 邀请你发送简历", contentKind: "resume_request" }]
   });
@@ -158,7 +228,7 @@ async function manualOnlyReopenSmoke() {
   assert.deepEqual(context.inboundMessages, [{ kind: "resume_request", text: "HR 邀请你发送简历" }]);
 }
 
-function zhaopinReader({ conversationKey, sourceJobId, title, messages }) {
+function zhaopinReaderFor({ conversationKey, sourceJobId, title, messages }) {
   return {
     async scanConversationRows() { return { tabId: 12, rows: [{ rowIndex: 0, unread: true, conversationKey,
       previewDigest: safeDigest(["zhaopin", "fixture", sourceJobId]), previewKind: "possible_hr_reply",
