@@ -250,6 +250,7 @@ async function unresolvedDisplaySmoke() {
     VALUES (?, 'Zhaopin unresolved plan', '{}', NULL, 1, ?, ?)`)
     .run(profileId, NOW, NOW).lastInsertRowid);
   const conversationKey = safeDigest(["zhaopin", "unresolved-session"]);
+  let failTimeline = true;
   const reader = {
     async scanConversationRows() {
       return { tabId: 10, rows: [{ rowIndex: 0, unread: true, conversationKey,
@@ -257,10 +258,19 @@ async function unresolvedDisplaySmoke() {
         sourceJobId: "zhaopin:ZL999999", lastMessageId: "901001", lastMessageDirection: "friend", identityVerified: true }] };
     },
     async openQueuedConversation() {
+      if (failTimeline) throw Object.assign(new Error("timeline failed"), { code: "ZHAOPIN_MESSAGE_TIMELINE_FAILED" });
       return { sourceJobId: "zhaopin:ZL999999", lastMessageId: "901001", positionName: "No cached JD", companyName: "Unknown Co", salary: "", city: "",
         messages: [{ direction: "friend", messageId: "901001", text: "请介绍项目经验。", contentKind: "text" }] };
     }
   };
+  const timelineFailed = await runBossMessageDiscovery({ db, profileId, platform: "zhaopin", reader, classifyMessageGroup: async () => { throw new Error("must not classify without cached context"); }, now: () => NOW, sleepFn: async () => {} });
+  assert.equal(timelineFailed.reasonCode, "ZHAOPIN_MESSAGE_TIMELINE_FAILED");
+  const firstTimelinePending = listUnresolvedMessageDiscoveryItems(db, { profileId, platform: "zhaopin" })[0];
+  assert.equal(firstTimelinePending.reasonCode, "ZHAOPIN_MESSAGE_TIMELINE_FAILED");
+  assert.equal("inboundMessages" in firstTimelinePending, false);
+  assert.equal(listPreviewStates(db, { profileId, platform: "zhaopin" }).length, 0, "timeline failure must not advance the preview baseline");
+  assert.equal(db.prepare("SELECT count(*) AS n FROM candidate_progress_cards c JOIN jobs j ON j.id = c.job_id WHERE c.profile_id = ? AND j.source = 'zhaopin'").get(profileId).n, 0, "timeline failure must not create a fake job");
+  failTimeline = false;
   await runBossMessageDiscovery({ db, profileId, platform: "zhaopin", reader, classifyMessageGroup: async () => { throw new Error("must not classify without cached context"); }, now: () => NOW, sleepFn: async () => {} });
   const first = listUnresolvedMessageDiscoveryItems(db, { profileId, platform: "zhaopin" })[0];
   assert.deepEqual(first.inboundMessages, [{ kind: "text", text: "请介绍项目经验。" }]);
@@ -279,12 +289,13 @@ async function unresolvedDisplaySmoke() {
   assert.equal(retained.positionTitle, first.positionTitle);
   assert.equal(listOpenMessageReplyDrafts(db, { profileId }).length, 0);
   assert.equal(db.prepare("SELECT count(*) AS n FROM jobs WHERE source = 'zhaopin'").get().n, 1, "only the resolved fixture job may exist");
-  reader.openQueuedConversation = async () => { throw Object.assign(new Error("timeline pending"), { code: "ZHAOPIN_MESSAGE_CONTENT_PENDING" }); };
+  reader.openQueuedConversation = async () => { throw Object.assign(new Error("timeline failed again"), { code: "ZHAOPIN_MESSAGE_TIMELINE_FAILED" }); };
   const stopped = await runBossMessageDiscovery({ db, profileId, platform: "zhaopin", reader, classifyMessageGroup: async () => { throw new Error("must not classify without cached context"); }, now: () => NOW, sleepFn: async () => {} });
-  assert.equal(stopped.reasonCode, "ZHAOPIN_MESSAGE_CONTENT_PENDING");
+  assert.equal(stopped.reasonCode, "ZHAOPIN_MESSAGE_TIMELINE_FAILED");
   const afterFailure = listUnresolvedMessageDiscoveryItems(db, { profileId, platform: "zhaopin" })[0];
   assert.deepEqual(afterFailure.inboundMessages, first.inboundMessages);
   assert.equal(afterFailure.positionTitle, first.positionTitle);
+  assert.equal(afterFailure.sourceJobId, first.sourceJobId);
   const batchId = createBatch(db, "zhaopin", "zhaopin-retry", "zhaopin retry fixture", { profileId, searchPlanId: planId });
   recordUnresolvedMessageDiscoveryItem(db, {
     profileId, platform: "boss", conversationKey,

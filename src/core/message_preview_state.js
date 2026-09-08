@@ -25,6 +25,7 @@ const UNRESOLVED_REASON_CODES = new Set([
   ,"ZHAOPIN_MESSAGE_CONTENT_PENDING"
   ,"ZHAOPIN_MESSAGE_CONTENT_UNSUPPORTED"
   ,"ZHAOPIN_MESSAGE_STRUCTURE_CHANGED"
+  ,"ZHAOPIN_MESSAGE_TIMELINE_FAILED"
 ]);
 function listPreviewStates(db, { profileId, platform = "boss" } = {}) {
   const id = positiveInteger(profileId, "profileId");
