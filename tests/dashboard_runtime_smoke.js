@@ -550,7 +550,6 @@ async function browserDependentWorkspaceGateSmoke() {
   const responses = [
     { status: "ready", bossTabId: "private-search", communicationTabId: "private-chat" },
     { status: "ready", bossTabId: "private-search", communicationTabId: "private-chat" },
-    { status: "ready", bossTabId: "private-search", communicationTabId: "private-chat" },
     { status: "login_required", bossTabId: "private-login" }
   ];
   const server = createDashboardServer({
@@ -581,12 +580,18 @@ async function browserDependentWorkspaceGateSmoke() {
     await postRaw(base, "/api/workflow-run", {});
     assert.deepStrictEqual(calls.at(-1), { startupGuidance: false, reason: "workflow_start" });
 
-    await postRaw(base, "/api/message-discovery", { action: "start", profileId: 1 });
-    assert.deepStrictEqual(calls.at(-1), { startupGuidance: false, reason: "message_discovery_start" });
+    const discoveryStarted = await postRaw(base, "/api/message-discovery", { action: "start", profileId: 1 });
+    assert.strictEqual(discoveryStarted.status, 404);
+    assert.match(discoveryStarted.body, /MESSAGE_DISCOVERY_PROFILE_NOT_FOUND/);
+    assert.deepStrictEqual(calls, [
+      { startupGuidance: false, reason: "scan_start" },
+      { startupGuidance: false, reason: "workflow_start" }
+    ], "message discovery must not reconcile the BOSS-managed workspace");
 
     const loginBlocked = await postRaw(base, "/api/scan", {});
     assert.strictEqual(loginBlocked.status, 409);
     assert.match(loginBlocked.body, /BOSS_LOGIN_REQUIRED/);
+    assert.deepStrictEqual(calls.at(-1), { startupGuidance: false, reason: "scan_start" });
     assert.strictEqual(spawnCalls, 0);
   } finally {
     await close(server);
