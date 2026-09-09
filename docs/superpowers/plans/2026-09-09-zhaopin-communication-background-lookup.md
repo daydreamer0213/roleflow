@@ -8,6 +8,8 @@
 
 **Tech Stack:** CommonJS, existing Playwright fixtures and fake browser.
 
+**Completion (2026-09-09):** Task implementation `08e6be6`, bounded cleanup correction `cbf5d9d9b65ea1e172baed7ba5154ce1d769dd8c`; actual RED/GREEN and the sole incremental re-review passed. Final exact-source offline gate 157/157, exit0, start=endSHA and clean tree. Real full production lookup returned ready with exact identity, unchanged active tab and restored search. The subsequent single greeting was actually sent but automatic result recognition was ambiguous; read-only message evidence and normal local manual resolution confirmed it, without another click. That is a separate remaining defect, not a reason to reopen this lookup task. See `../reports/2026-09-09-zhaopin-real-acceptance-checkpoint.md`.
+
 ## Global Constraints
 
 - Work only in D:/DevData/RoleFlow-worktrees/zhaopin-readonly; read root AGENTS.md. No real browser, live DB, service, full gate, version, push, merge or release operations by worker.
@@ -17,8 +19,8 @@
 
 ## Task 1: Hold existing rendering support through target lookup
 
-- [ ] Read the matching design and production inspectCommunicationJob/currentSelectedInspection/inspectCard/openSearchRenderScope flow; use existing fakeBrowser and synthetic communication fixture.
-- [ ] Add one realistic background-list regression: after normal search navigation, next-page JobCard exists but its DOM title is blank until existing focus-emulation support is held; provide fake setPageLifecycleActive and cdp support only for these test cases. Call `inspectCommunicationJob(JOB_B)` and assert ready/exact sourceId, zero prechat/application clicks, unchanged active tab, rendering disabled after success. Old source must fail TARGET_NOT_FOUND, not setup/syntax.
+- [x] Read the matching design and production inspectCommunicationJob/currentSelectedInspection/inspectCard/openSearchRenderScope flow; use existing fakeBrowser and synthetic communication fixture.
+- [x] Add one realistic background-list regression: after normal search navigation, next-page JobCard exists but its DOM title is blank until existing focus-emulation support is held; provide fake setPageLifecycleActive and cdp support only for these test cases. Call `inspectCommunicationJob(JOB_B)` and assert ready/exact sourceId, zero prechat/application clicks, unchanged active tab, rendering disabled after success. Old source must fail TARGET_NOT_FOUND, not setup/syntax.
 
 ```js
 const inspection = await adapter.inspectCommunicationJob(JOB_B);
@@ -28,8 +30,8 @@ assert.equal(browser.calls.filter(call => call.kind === 'prechat').length, 0);
 assert.equal(browser.state.focusEnabled, false);
 ```
 
-- [ ] Run `D:/hermes/node/node.exe tests/zhaopin_communication_adapter_smoke.js` and record actual RED before source changes.
-- [ ] In inspectCommunicationJob hold one nullable release callback and original error. For an existing search page open scope before currentSelectedInspection; for verified IM-return open after normal navigation. Let nested waitForSearchReady reuse it. Finally release on every path and always call this.end('inspection'); preserve cleanup failure with original cause. Use existing patterns; no new generic wrapper/helper.
+- [x] Run `D:/hermes/node/node.exe tests/zhaopin_communication_adapter_smoke.js` and record actual RED before source changes.
+- [x] In inspectCommunicationJob hold one nullable release callback and original error. For an existing search page open scope before currentSelectedInspection; for verified IM-return open after normal navigation. Let nested waitForSearchReady reuse it. Finally release on every path and always call this.end('inspection'); preserve cleanup failure with original cause. Use existing patterns; no new generic wrapper/helper.
 
 ```js
 let releaseSearchRendering = null;
@@ -40,6 +42,6 @@ releaseSearchRendering = await this.openSearchRenderScope(this.binding.searchTab
 // catch: preserve operationError and rethrow; finally: release, attach cause if needed, always end.
 ```
 
-- [ ] Add bounded not-found and cancellation cases verifying rendering release and zero dispatch. A cleanup failure must still clear inspection busy state and must not authorize a click. Reuse the existing releaseSearchRenderScope AggregateError behavior to retain both failures even when cleanupError already has its own cause; test a combined lookup+cleanup failure.
-- [ ] GREEN: zhaopin_communication_adapter_smoke, zhaopin_readonly_adapter_smoke, dashboard_zhaopin_communication_smoke, zhaopin_communication_storage_smoke (verify exact test filename with rg first). Syntax and git diff --check. NODE_PATH=C:/Users/Administrator/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules; ROLEFLOW_REQUIRE_PLAYWRIGHT=1; TEMP/TMP=D:/DevData/RoleFlow-tests.
-- [ ] Self-review and commit only owned files. Report exact SHA, actual RED/GREEN, files, concerns. Main arranges one bounded spec+quality review, not re-reviewing the old110commits.
+- [x] Add bounded not-found and cancellation cases verifying rendering release and zero dispatch. A cleanup failure must still clear inspection busy state and must not authorize a click. Reuse the existing releaseSearchRenderScope AggregateError behavior to retain both failures even when cleanupError already has its own cause; test a combined lookup+cleanup failure.
+- [x] GREEN: zhaopin_communication_adapter_smoke, zhaopin_readonly_adapter_smoke, dashboard_zhaopin_communication_smoke, zhaopin_communication_storage_smoke (verify exact test filename with rg first). Syntax and git diff --check. NODE_PATH=C:/Users/Administrator/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules; ROLEFLOW_REQUIRE_PLAYWRIGHT=1; TEMP/TMP=D:/DevData/RoleFlow-tests.
+- [x] Self-review and commit only owned files. Report exact SHA, actual RED/GREEN, files, concerns. Main arranges one bounded spec+quality review, not re-reviewing the old110commits.
