@@ -40,7 +40,9 @@
 - All worker validation is offline with synthetic fixtures, fake browser and temporary databases on D:; main alone owns live browser, service and final strict full gate.
 - The user has approved the direction and delegated implementation details; continue without repeated user approval. Report genuine scope/authority problems to main.
 
-- [ ] **Step 1: Add focused behavior RED before product edits.**
+- [x] **Step 1: Add focused behavior regression and verify RED/GREEN (sequencing deviation below).**
+
+Original plan required behavioral RED before product edits. The first RED only failed the helper version assertion, so that sequencing requirement was not met. Review requested a post-implementation counterproof: identical recovery-success assertion against isolated BASE failed exit1, while current production code passed exit0. The report records both honestly; this does not retrospectively claim tests-first ordering.
 
 Use existing Vue2 fixture/card/summary. Attach explicit store state using trusted synthetic ID, false jobDetailLoading and null jobDetail; save and remove summary/body/link content, restore from native card-click listener only. Fake time, not real120seconds. Real adapter/helper must fail on old implementation (timeout/zeroactivation), not missingimports. Representative assertion:
 
@@ -62,13 +64,13 @@ Extend existing workflow fake only as needed. Tests exercise actual adapter:
 7. actual recovery reserves two physical visits, one logicaljob; pacing records both including finalfailedattempt.
 Keep existing slow-load, short-JD, identity and communication regressions. Record RED command/output in report.
 
-- [ ] **Step 2: Implement smallest state/loop integration.**
+- [x] **Step 2: Implement smallest state/loop integration.**
 
 Derive known state only from exact current reliable selected ID and strict boolean/null fields. No absent-store-as-false. empty also needs all three DOM detail identity/content fields empty and no visibleloader. Preserve existing loading contract for legacy/unknown fields and all risk/login checks.
 
 Add optional expected-empty guard to existing activation helper; re-evaluate exact signature/selectedcard/empty state inside same browser evaluation immediately before card.click. Late-ready/loading cancels click for re-read; target changes stop.
 
-One retry-used flag, existing120000ms deadline. At most once call beforeEmptyRetry, re-read card/signature/selection/state, reserve extra access, re-read and guard activation. After issued recovery wait one normal short sample before declaring still-empty failure. True loading keeps waiting; retry still stoppedempty uses existing ZHAOPIN_DETAIL_LOAD_TIMEOUT and user-facing message, not another retry. Keep original six-sample fast nonloading identity rejection.
+One retry-used flag, existing120000ms genuine-loading budget. Exclude measured elapsed time in beforeEmptyRetry from the wait deadline (the existing macro cooldown can be150seconds); do not restart a fresh120second budget or bypass cooldown. At most once call beforeEmptyRetry, re-read card/signature/selection/state, reserve extra access, re-read and guard activation. After issued recovery wait one normal short sample before declaring still-empty failure. True loading keeps waiting; retry still stoppedempty uses existing ZHAOPIN_DETAIL_LOAD_TIMEOUT and user-facing message, not another retry. Keep original six-sample fast nonloading identity rejection.
 
 Scan wiring reuses existing pacing:
 
@@ -88,7 +90,7 @@ Remove old success-only later waitAfterDetailAction to avoid double count. Prese
 
 allowPendingDetail only scan: restored filter/keyword + reliable selected card and known loading/empty may exit waitForSearchReady into guarded reader. Unknown/default call contract unchanged. Do not enable communication retries.
 
-- [ ] **Step 3: Focused GREEN, self-review, commit owned files.**
+- [x] **Step 3: Focused GREEN, self-review, commit owned files.**
 
 ```powershell
 $env:NODE_PATH='C:/Users/Administrator/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules'
@@ -107,7 +109,7 @@ Verify entrypoint paths. Record known SQLite experimental/CRLF notices without s
 
 ## Main after scoped review
 
-- [ ] Resolve single task spec/quality gate; previously closed tasks remain closed.
+- [x] Resolve single task spec/quality gate; previously closed tasks remain closed. `66e5467`: Spec compliant, quality Approved; no Critical/Important. Known SQLite experimental/CRLF notices recorded, not suppressed. Four focused GREEN, syntax/diff pass.
 - [ ] Verify and restart only owned isolated8788 process, freeze clean SHA and fresh strict full gate.
 - [ ] Read existing helper state in background, resume same real run from normal Dashboard UI without reduced targets/quality or direct API shortcuts.
 - [ ] Verify actual scan/currentbatch analysis; at most one ordinary initial greeting only with existing authority, current eligible exacttarget proof and full gate, then messages/drafts; stop before reply send.
