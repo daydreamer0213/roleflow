@@ -18,7 +18,7 @@ const { createSiteAccessController } = require('../src/core/site_access_budget')
 const fs = require('node:fs');
 const path = require('node:path');
 
-function fakeBrowser({ terminal = true, loadingOnSwitch = false, cardCount = 3, navigateError = null } = {}) {
+function fakeBrowser({ terminal = true, loadingOnSwitch = false, cardCount = 3, navigateError = null, detailFor = null } = {}) {
   let url = 'https://www.zhaopin.com/jobs/?pageMode=search&jl=548&kw=AI';
   let selectedIndex = 0;
   let windowId = 1;
@@ -36,8 +36,10 @@ function fakeBrowser({ terminal = true, loadingOnSwitch = false, cardCount = 3, 
       if (expression.includes('const clean =')) return true;
       if (expression.includes('__zhaopinActivateCard(')) { selectedIndex = Number(expression.match(/ActivateCard\((\d+)/)[1]); if (loadingOnSwitch) overrides.loading = true; return { ready: true }; }
       if (expression.includes('__zhaopinScrollResults')) return true;
-      return { url, keyword: new URL(url).searchParams.get('kw'), filterSummary: ['广东'], cards, selectedIndex, loading: false, risk: false, loginRequired: false, isSearchPage: true, confirmedEnd: terminal,
-        detail: { ...cards[selectedIndex], description: '完整岗位职责与任职要求。'.repeat(20), url: `https://www.zhaopin.com/jobdetail/SYNTH${selectedIndex}.htm` }, ...overrides };
+      const keyword = new URL(url).searchParams.get('kw');
+      const detail = detailFor?.({ keyword, selectedIndex, card: cards[selectedIndex] })
+        || { ...cards[selectedIndex], description: '完整岗位职责与任职要求。'.repeat(20), url: `https://www.zhaopin.com/jobdetail/SYNTH${selectedIndex}.htm` };
+      return { url, keyword, filterSummary: ['广东'], cards, selectedIndex, loading: false, risk: false, loginRequired: false, isSearchPage: true, confirmedEnd: terminal, detail, ...overrides };
     }
   };
 }
@@ -117,9 +119,69 @@ async function main() {
       await assert.rejects(() => new ZhaopinSiteAdapter({ browser: bridge, sleepFn: async () => {}, randomFn: () => 0 }).scan({ ...opts, maxDetailTotal: 3, onDetailCheckpoint: ({ job }) => { storage.upsertJob(db, job, batch); checked++; bridge.setState(changed); } }), error => error.code === errorCode);
       assert.equal(checked, 1, `${errorCode} stops before the next job`);
     }
-    const incomplete = fakeBrowser();
-    incomplete.setState({ detail: { title: '岗位0', company: '公司', salary: '10-20K', location: '广州', description: '短描述', url: 'https://www.zhaopin.com/jobdetail/SYNTH0.htm' } });
-    await assert.rejects(() => new ZhaopinSiteAdapter({ browser: incomplete, sleepFn: async () => {}, randomFn: () => 0 }).scan({ ...opts }), error => error.code === 'ZHAOPIN_DETAIL_INCOMPLETE');
+    const incompleteBatch = storage.createBatch(db, 'zhaopin', '短项目标,下一目标', 'short-detail-isolation');
+    const incompleteTargets = [], incompleteOutcomes = [], incompleteTerminal = [];
+    const incomplete = fakeBrowser({ cardCount: 2, detailFor: ({ keyword, selectedIndex, card }) => ({
+      ...card,
+      description: keyword === '短项目标' && selectedIndex === 0 ? '短描述' : '完整岗位职责与任职要求。'.repeat(20),
+      url: `https://www.zhaopin.com/jobdetail/${keyword === '短项目标' ? 'SHORT' : 'NEXT'}${selectedIndex}.htm`
+    }) });
+    const incompleteJobs = await new ZhaopinSiteAdapter({ browser: incomplete, sleepFn: async () => {}, randomFn: () => 0 }).scan({
+      ...opts,
+      keywordPlan: [{ word: '短项目标', priority: 'A', maxCards: 2 }, { word: '下一目标', priority: 'A', maxCards: 1 }],
+      maxCards: 2,
+      maxDetailTotal: 3,
+      browserPageBudget: 2,
+      onDetailCheckpoint: ({ job }) => storage.upsertJob(db, job, incompleteBatch),
+      onDetailResult: result => incompleteOutcomes.push(result),
+      onTargetComplete: result => incompleteTargets.push(result),
+      onScanComplete: result => incompleteTerminal.push(result)
+    });
+    const shortJob = incompleteJobs.find(job => job.sourceId === 'SHORT0');
+    assert.equal(shortJob.detailRead, false);
+    assert.equal(shortJob.detailErrorCode, 'ZHAOPIN_DETAIL_INCOMPLETE');
+    const incompleteResults = incompleteOutcomes.filter(result => result.errorCode === 'ZHAOPIN_DETAIL_INCOMPLETE');
+    assert.equal(incompleteResults.length, 1, 'a short item emits one failed detail result');
+    assert.equal(incompleteResults[0].outcome, 'failed');
+    assert.equal(incompleteOutcomes.some(result => result.outcome === 'succeeded' && result.job?.sourceId === 'SHORT0'), false);
+    assert(storage.listReportJobs(db, { batchId: incompleteBatch }).some(job => job.sourceId === 'SHORT0'), 'the short item is durable in the batch');
+    assert.equal(incompleteJobs.find(job => job.sourceId === 'SHORT1').detailRead, true, 'a later complete card in the same target is retained');
+    assert.equal(incompleteJobs.find(job => job.sourceId === 'NEXT0').detailRead, true, 'the next keyword is really visited');
+    assert.equal(incompleteTargets[0].status, 'partial');
+    assert.equal(incompleteTargets[0].jobCount, 2);
+    assert.equal(incompleteTargets[0].detailPosition, 2);
+    assert.equal(incompleteTargets[0].errorCode, 'ZHAOPIN_DETAIL_INCOMPLETE');
+    assert.equal(incompleteTargets[0].details.stopReason, 'ZHAOPIN_DETAIL_INCOMPLETE');
+    assert.equal(incompleteTargets.length, 2);
+    assert.deepEqual(incompleteTargets.map(target => target.keyword), ['短项目标', '下一目标'], 'a partial target is not automatically retried');
+    assert.equal(incompleteTerminal[0].status, 'partial');
+    assert.equal(Boolean(incompleteTerminal[0].fatalErrorCode), false);
+
+    const shortBudgetTargets = [], shortBudgetOutcomes = [];
+    const shortBudgetJobs = await new ZhaopinSiteAdapter({ browser: fakeBrowser({ detailFor: ({ selectedIndex, card }) => {
+      return { ...card, description: selectedIndex === 0 ? '短描述' : '完整岗位职责与任职要求。'.repeat(20), url: `https://www.zhaopin.com/jobdetail/BUDGET${selectedIndex}.htm` };
+    } }), sleepFn: async () => {}, randomFn: () => 0 }).scan({ ...opts, onDetailResult: result => shortBudgetOutcomes.push(result), onTargetComplete: result => shortBudgetTargets.push(result) });
+    assert.equal(shortBudgetJobs.length, 1, 'a short item consumes the one-detail budget');
+    assert.equal(shortBudgetOutcomes.length, 1, 'the next card is not read after the short item consumes the budget');
+    assert.equal(shortBudgetTargets[0].details.stopReason, 'detail_budget');
+
+    for (const failure of ['cancel', 'risk', 'storage']) {
+      const bridge = fakeBrowser({ detailFor: ({ selectedIndex, card }) => ({ ...card, description: selectedIndex === 0 ? '短描述' : '完整岗位职责与任职要求。'.repeat(20), url: `https://www.zhaopin.com/jobdetail/FAIL${selectedIndex}.htm` }) });
+      let detailReads = 0;
+      const controller = new AbortController();
+      const storageError = Object.assign(new Error('synthetic checkpoint failure'), { code: 'SCAN_CHECKPOINT_FAILED' });
+      await assert.rejects(() => new ZhaopinSiteAdapter({ browser: bridge, sleepFn: async () => {}, randomFn: () => 0, accessController: { reserve: async action => { if (action === 'pane_detail_read') detailReads++; } } }).scan({
+        ...opts,
+        maxDetailTotal: 3,
+        signal: controller.signal,
+        onDetailCheckpoint: () => {
+          if (failure === 'cancel') controller.abort();
+          if (failure === 'risk') bridge.setState({ risk: true });
+          if (failure === 'storage') throw storageError;
+        }
+      }), error => error.code === ({ cancel: 'ZHAOPIN_ABORTED', risk: 'ZHAOPIN_RISK_CONTROL', storage: 'SCAN_CHECKPOINT_FAILED' })[failure]);
+      assert.equal(detailReads, 1, `${failure} after a short checkpoint must prevent reading the next card`);
+    }
     const loadingBatch = storage.createBatch(db, 'zhaopin', 'AI', 'loading-timeout');
     const loadingTargets = [], loadingTerminal = [];
     const loadingBridge = fakeBrowser({ loadingOnSwitch: true });

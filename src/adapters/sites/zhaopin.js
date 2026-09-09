@@ -231,14 +231,12 @@ class ZhaopinSiteAdapter {
             const detail = await this.readVisiblePaneDetail(tabId, card, options.signal, scoped);
             if (!detail) throw zhaopinError('ZHAOPIN_DETAIL_IDENTITY_UNCONFIRMED', '智联岗位身份或完整详情尚未确认，已保留进度，请恢复后继续。');
             const job = { ...detail, keyword: target.keyword, tags: [], detailRequired: true, detailRead: true, detailSource: 'trusted_pane' };
-            if (!hasCompleteJobDescription(job)) {
+            const complete = hasCompleteJobDescription(job);
+            if (!complete) {
               job.detailRead = false;
               job.detailErrorCode = 'ZHAOPIN_DETAIL_INCOMPLETE';
-              await options.onDetailCheckpoint?.({ job, targetKey: target.targetKey });
-              await options.onDetailResult?.({ outcome: 'failed', errorCode: job.detailErrorCode, accessMode: 'visible_pane' });
-              throw zhaopinError(job.detailErrorCode, '智联完整 JD 尚未就绪，已保存待补详情并停止本次读取。');
             }
-            const cached = await options.getReusableDetail?.(job);
+            const cached = complete ? await options.getReusableDetail?.(job) : null;
             // Reuse is decided only after this visit verified the actual pane ID
             // and complete content. Every visit still reserves physical access.
             const reused = cached?.source === 'zhaopin' && cached.sourceId === job.sourceId
@@ -249,7 +247,8 @@ class ZhaopinSiteAdapter {
             jobs.set(job.sourceId, job);
             await options.onDetailCheckpoint?.({ job, targetKey: target.targetKey });
             await options.onProgressCheckpoint?.({ jobs: [], targetKey: target.targetKey, activity: 'reading_detail', ...scanProgressCounters(target, targets, state, targetJobs) });
-            await options.onDetailResult?.({ outcome: 'succeeded', reused, accessMode: 'visible_pane', job });
+            if (complete) await options.onDetailResult?.({ outcome: 'succeeded', reused, accessMode: 'visible_pane', job });
+            else await options.onDetailResult?.({ outcome: 'failed', errorCode: job.detailErrorCode, accessMode: 'visible_pane' });
             seen.add(card.signature);
             await scoped();
             await pacing.waitAfterDetailAction({ signal: options.signal, assertTabBindings: scoped, onPacingCheckpoint: options.onPacingCheckpoint });
@@ -265,11 +264,14 @@ class ZhaopinSiteAdapter {
           await pace('list', scoped);
           await options.onProgressCheckpoint?.({ jobs: [], targetKey: target.targetKey, activity: 'searching', ...scanProgressCounters(target, targets, state, targetJobs) });
         }
-        const status = ['card_limit_reached', 'confirmed_end'].includes(stopReason) ? 'completed' : 'partial';
-        await options.onTargetComplete?.({ ...target, status, jobs: targetJobs, jobCount: targetJobs.length, ...scanProgressCounters(target, targets, state, targetJobs), details: { cardLimit: target.cardLimit, stopReason }, startedAt, finishedAt: new Date().toISOString() });
+        const coverageReached = ['card_limit_reached', 'confirmed_end'].includes(stopReason);
+        const hasPendingDetails = targetJobs.some(job => !job.detailRead);
+        const status = coverageReached && !hasPendingDetails ? 'completed' : 'partial';
+        const targetStopReason = coverageReached && hasPendingDetails ? 'ZHAOPIN_DETAIL_INCOMPLETE' : stopReason;
+        await options.onTargetComplete?.({ ...target, status, jobs: targetJobs, jobCount: targetJobs.length, ...scanProgressCounters(target, targets, state, targetJobs), details: { cardLimit: target.cardLimit, stopReason: targetStopReason }, ...(targetStopReason === 'ZHAOPIN_DETAIL_INCOMPLETE' ? { errorCode: targetStopReason } : {}), startedAt, finishedAt: new Date().toISOString() });
         await active();
         if (status === 'completed') completed++;
-        else break;
+        if (!coverageReached) break;
         await pace('target', scoped);
       } catch (error) {
         operationError = error;
