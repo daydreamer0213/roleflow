@@ -97,7 +97,7 @@ $env:TEMP='D:/DevData/RoleFlow-tests'
 $env:TMP='D:/DevData/RoleFlow-tests'
 & 'D:/hermes/node/node.exe' tests/zhaopin_readonly_smoke.js
 & 'D:/hermes/node/node.exe' tests/zhaopin_workflow_smoke.js
-& 'D:/hermes/node/node.exe' tests/zhaopin_communication_smoke.js
+& 'D:/hermes/node/node.exe' tests/zhaopin_communication_adapter_smoke.js
 & 'D:/hermes/node/node.exe' tests/workflow_scan_analysis_smoke.js
 & 'D:/hermes/node/node.exe' --check src/adapters/sites/zhaopin.js
 git diff --check
@@ -112,4 +112,3 @@ Verify entrypoint paths. Record known SQLite experimental/CRLF notices without s
 - [ ] Read existing helper state in background, resume same real run from normal Dashboard UI without reduced targets/quality or direct API shortcuts.
 - [ ] Verify actual scan/currentbatch analysis; at most one ordinary initial greeting only with existing authority, current eligible exacttarget proof and full gate, then messages/drafts; stop before reply send.
 - [ ] Record exact SHA/test results/real coverage/externalactions/remaining limits; no push/merge/build/release.
-
