@@ -8,6 +8,15 @@
 
 **Tech Stack:** 现有Node/CommonJS、假浏览器和合成DOM、可注入时钟。
 
+## 执行结果（2026-09-09 04:16 UTC）
+
+- [x] 5秒慢加载实际行为RED；最小deadline实现；4项指定GREEN、3语法和diff检查。
+- [x] c6399c4限定复审PASS/APPROVED，无Critical/Important/Minor；主控已核对未改动的身份/质量/覆盖/预算边界。
+- [x] 正常UI“继续本轮”只点击一次，真实同一run恢复scanning，6标签/原活动页不变。
+- [ ] 验证真实详情恢复、后续扫描/分析及最终冻结SHA完整npm test；不以当前恢复动作代替完整通过。
+
+以下为已执行的原任务步骤；状态以上列结果为准。
+
 ## Global Constraints
 
 - Worktree `D:/DevData/RoleFlow-worktrees/zhaopin-readonly`，分支 `codex/zhaopin-readonly`；保护他人改动。主控唯一拥有真实浏览器/服务/验收数据库/最终全测/文档；实施者不访问真实账号、简历或站点。不推送、合并、打包、发布、改版本。
