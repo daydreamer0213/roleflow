@@ -231,15 +231,54 @@ async function main() {
     await page.goto("https://www.zhaopin.com/jobs-vue2/?pageMode=search&kw=%E5%90%88%E6%88%90%E5%85%B3%E9%94%AE%E8%AF%8D");
     await page.evaluate(() => history.replaceState({}, "", "/jobs/?pageMode=search&kw=%E5%90%88%E6%88%90%E5%85%B3%E9%94%AE%E8%AF%8D"));
     await page.evaluate(() => {
+      const fullTitle = "合成智能应用工程师（Python与视觉方向）";
+      const title = document.querySelector("#vue2-card .job-card__title-main");
+      title.querySelector(".vue-clamp__text").textContent = "合成智能应用工程师（Python…";
+      title.setAttribute("aria-label", fullTitle);
+      document.getElementById("vue2-card").__vue__.$props.job.name = fullTitle;
+      document.querySelector("#vue2-summary .job-detail-summary__title-text").textContent = fullTitle;
+    });
+    await page.evaluate(() => {
       window.__zhaopinReadSearchState = () => ({ legacyFixture: true });
       window.__zhaopinReadSearchState.__roleflowVersion = 5;
     });
     assert.equal(await page.evaluate(ZHAOPIN_PAGE_HELPERS_EXPRESSION), true, "the upgraded DOM helper must run in an already-open page");
-    assert.equal(await page.evaluate(() => window.__zhaopinReadSearchState.__roleflowVersion), 6,
+    assert.equal(await page.evaluate(() => window.__zhaopinReadSearchState.__roleflowVersion), 7,
       "the upgraded injection replaces a previously cached version 5 helper");
     const vue2State = await adapter.readSearchState("ZHAOPIN-SEARCH");
     assert.equal(vue2State.cards[0].sourceId, "CCSYNTHV2A1J00000000001", "Vue 2 JobCard exposes the trusted card ID");
+    assert.equal(vue2State.cards[0].title, "合成智能应用工程师（Python与视觉方向）");
     assert.ok(await adapter.readVisiblePaneDetail("ZHAOPIN-SEARCH", vue2State.cards[0]), "same-ID 北京 朝阳 建外 and 北京·朝阳区 are one location");
+    const stableVue2Card = vue2State.cards[0];
+    const activationCountBeforeTitleChecks = () => bridge.calls.filter((call) => call.type === "evalValue" && call.expression.includes("__zhaopinActivateCard(")).length;
+    await page.evaluate(() => {
+      const title = document.querySelector("#vue2-card .job-card__title-main");
+      title.setAttribute("aria-label", "合成智能应用工程师（Java方向）");
+    });
+    const mismatchedAriaState = await adapter.readSearchState("ZHAOPIN-SEARCH");
+    assert.equal(mismatchedAriaState.cards[0].title, "合成智能应用工程师（Java方向）");
+    const beforeMismatchedAriaClick = activationCountBeforeTitleChecks();
+    assert.equal(await adapter.readVisiblePaneDetail("ZHAOPIN-SEARCH", stableVue2Card), null,
+      "an aria-label title mismatch must reject the stale card snapshot");
+    assert.equal(activationCountBeforeTitleChecks(), beforeMismatchedAriaClick,
+      "an aria-label mismatch must be rejected before clicking");
+    await page.evaluate(() => {
+      const title = document.querySelector("#vue2-card .job-card__title-main");
+      title.textContent = "";
+      title.setAttribute("aria-label", "合成智能应用工程师（Python与视觉方向）");
+    });
+    const emptyVisibleTitleState = await adapter.readSearchState("ZHAOPIN-SEARCH");
+    assert.equal(emptyVisibleTitleState.cards[0].title, "");
+    const beforeEmptyTitleClick = activationCountBeforeTitleChecks();
+    assert.equal(await adapter.readVisiblePaneDetail("ZHAOPIN-SEARCH", emptyVisibleTitleState.cards[0]), null,
+      "an empty visible title must not fall back to a residual aria-label");
+    assert.equal(activationCountBeforeTitleChecks(), beforeEmptyTitleClick,
+      "an empty visible title must be rejected before clicking");
+    await page.evaluate(() => {
+      const title = document.querySelector("#vue2-card .job-card__title-main");
+      title.textContent = "合成智能应用工程师（Python…";
+      title.setAttribute("aria-label", "合成智能应用工程师（Python与视觉方向）");
+    });
     await page.evaluate(() => {
       document.querySelector("#vue2-card .job-card__location").textContent = "合成市 甲 商圈";
       document.querySelector("#vue2-summary .job-detail-summary__tags li").textContent = "合成市·甲新区";
@@ -247,7 +286,7 @@ async function main() {
     const newDistrictState = await adapter.readSearchState("ZHAOPIN-SEARCH");
     const newDistrictDetail = await adapter.readVisiblePaneDetail("ZHAOPIN-SEARCH", newDistrictState.cards[0]);
     assert.ok(newDistrictDetail, "same-ID card business district and detail new district are one location");
-    assert.equal(newDistrictDetail.title, "合成智能应用工程师");
+    assert.equal(newDistrictDetail.title, "合成智能应用工程师（Python与视觉方向）");
     assert.equal(newDistrictDetail.company, "合成研发中心");
     assert.equal(newDistrictDetail.salary, "15-30K");
     assert.equal(newDistrictDetail.location, "合成市·甲新区");
