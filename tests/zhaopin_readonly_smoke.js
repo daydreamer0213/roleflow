@@ -245,12 +245,39 @@ async function main() {
       window.__zhaopinReadSearchState.__roleflowVersion = 5;
     });
     assert.equal(await page.evaluate(ZHAOPIN_PAGE_HELPERS_EXPRESSION), true, "the upgraded DOM helper must run in an already-open page");
-    assert.equal(await page.evaluate(() => window.__zhaopinReadSearchState.__roleflowVersion), 8,
+    assert.equal(await page.evaluate(() => window.__zhaopinReadSearchState.__roleflowVersion), 9,
       "the upgraded injection replaces a previously cached version 5 helper");
     const vue2State = await adapter.readSearchState("ZHAOPIN-SEARCH");
     assert.equal(vue2State.cards[0].sourceId, "CCSYNTHV2A1J00000000001", "Vue 2 JobCard exposes the trusted card ID");
     assert.equal(vue2State.cards[0].title, "合成智能应用工程师（Python与视觉方向）");
     assert.ok(await adapter.readVisiblePaneDetail("ZHAOPIN-SEARCH", vue2State.cards[0]), "same-ID 北京 朝阳 建外 and 北京·朝阳区 are one location");
+    await page.evaluate(() => {
+      const card = document.getElementById("vue2-card");
+      const summary = document.getElementById("vue2-summary");
+      const body = document.querySelector(".job-detail-card__body");
+      const link = document.querySelector(".job-company-info__view-all");
+      const saved = { summary: summary.innerHTML, body: body.innerHTML, href: link.href };
+      const storeState = { selectedJobId: "CCSYNTHV2A1J00000000001", jobDetailLoading: false, jobDetail: null };
+      card.__vue__.$store = { state: storeState };
+      window.emptyDetailActivations = 0;
+      card.addEventListener("click", () => {
+        window.emptyDetailActivations++;
+        summary.innerHTML = saved.summary;
+        body.innerHTML = saved.body;
+        link.href = saved.href;
+        storeState.jobDetail = { detailedPosition: { number: storeState.selectedJobId } };
+      }, { once: true });
+      summary.innerHTML = "";
+      body.innerHTML = "";
+      link.removeAttribute("href");
+    });
+    const emptySelectedState = await adapter.readSearchState("ZHAOPIN-SEARCH");
+    assert.equal(emptySelectedState.detailRequestState, "empty");
+    let retryWaits = 0;
+    const recovered = await adapter.readVisiblePaneDetail("ZHAOPIN-SEARCH", emptySelectedState.cards[0], null, null, async () => { retryWaits++; });
+    assert.equal(recovered.sourceId, "CCSYNTHV2A1J00000000001");
+    assert.equal(retryWaits, 1);
+    assert.equal(await page.evaluate(() => window.emptyDetailActivations), 1);
     const stableVue2Card = vue2State.cards[0];
     const activationCountBeforeTitleChecks = () => bridge.calls.filter((call) => call.type === "evalValue" && call.expression.includes("__zhaopinActivateCard(")).length;
     await page.evaluate(() => {

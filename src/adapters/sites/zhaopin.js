@@ -27,7 +27,7 @@ const ZHAOPIN_COMPONENT_ACCESSORS_SOURCE = String.raw`
 `;
 
 const ZHAOPIN_PAGE_HELPERS_EXPRESSION = String.raw`(() => {
-  if (window.__zhaopinReadSearchState?.__roleflowVersion === 8) return true;
+  if (window.__zhaopinReadSearchState?.__roleflowVersion === 9) return true;
   const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
   const validSourceId = (value) => /^[A-Za-z0-9]{1,160}$/.test(String(value || '')) ? String(value) : '';
   const cardTitle = (card) => {
@@ -68,6 +68,19 @@ const ZHAOPIN_PAGE_HELPERS_EXPRESSION = String.raw`(() => {
       experience: tags.find((item) => /经验不限|\d+(?:-\d+)?年|年以上|以下/.test(item)) || '',
       education: tags.find((item) => /本科|大专|硕士|博士|高中|中专|MBA/.test(item)) || ''
     };
+  };
+  const requestState = (card, detail, visibleLoader) => {
+    if (!card?.sourceId) return 'unknown';
+    const instance = component(document.querySelectorAll('.job-list-panel .job-card')[card.index], 'JobCard');
+    const store = (instance?.proxy || instance)?.$store?.state;
+    if (!store || !Object.prototype.hasOwnProperty.call(store, 'selectedJobId')
+      || !Object.prototype.hasOwnProperty.call(store, 'jobDetailLoading')
+      || !Object.prototype.hasOwnProperty.call(store, 'jobDetail')) return 'unknown';
+    if (validSourceId(store.selectedJobId) !== card.sourceId || typeof store.jobDetailLoading !== 'boolean') return 'unknown';
+    if (store.jobDetailLoading) return 'loading';
+    if (store.jobDetail === null && !visibleLoader && !detail.title && !detail.description && !detail.url) return 'empty';
+    if (store.jobDetail && typeof store.jobDetail === 'object') return 'ready';
+    return 'unknown';
   };
   const detailState = () => {
     const panel = document.querySelector('.job-detail-panel');
@@ -127,6 +140,9 @@ const ZHAOPIN_PAGE_HELPERS_EXPRESSION = String.raw`(() => {
       const style = getComputedStyle(item);
       return item.getClientRects().length > 0 && !item.hidden && item.getAttribute('aria-hidden') !== 'true' && style.display !== 'none' && style.visibility !== 'hidden';
     });
+    const selected = cards[selectedIndex];
+    const detailRequestState = requestState(selected, detail, visibleLoader);
+    const legacyLoading = cards.length === 0 ? !confirmedEnd : selectedIndex < 0 || !detail.title || !detail.description || !detail.url;
     return {
       url: location.href,
       keyword: clean(document.querySelector('.query-sug__input, .search-keyword-input, input[aria-label*="搜索"]')?.value),
@@ -134,18 +150,23 @@ const ZHAOPIN_PAGE_HELPERS_EXPRESSION = String.raw`(() => {
       cards,
       selectedIndex,
       detail,
-      loading: visibleLoader || (cards.length === 0 ? !confirmedEnd : selectedIndex < 0 || !detail.title || !detail.description || !detail.url),
+      detailRequestState,
+      loading: visibleLoader || detailRequestState === 'loading' || (detailRequestState === 'unknown' && legacyLoading),
       confirmedEnd,
       risk: /安全验证|访问异常|行为验证|访问受限/.test(document.title || '') || /账户存在异常行为|暂时无法访问/.test(bodyText),
       loginRequired: /登录后|请登录/.test(bodyText),
       isSearchPage: location.protocol === 'https:' && location.hostname === 'www.zhaopin.com' && pathname === '/jobs/' && new URL(location.href).searchParams.get('pageMode') === 'search'
     };
   };
-  window.__zhaopinReadSearchState.__roleflowVersion = 8;
-  window.__zhaopinActivateCard = (expectedIndex, expectedSignature) => {
+  window.__zhaopinReadSearchState.__roleflowVersion = 9;
+  window.__zhaopinActivateCard = (expectedIndex, expectedSignature, expectedEmpty = false) => {
     const cards = Array.from(document.querySelectorAll('.job-list-panel .job-card'));
     const card = cards[Number(expectedIndex)];
     if (!card || signature(card, Number(expectedIndex)) !== String(expectedSignature || '')) return { ready: false, reason: 'card_changed' };
+    if (expectedEmpty) {
+      const state = window.__zhaopinReadSearchState();
+      if (state.selectedIndex !== Number(expectedIndex) || state.detailRequestState !== 'empty') return { ready: false, reason: 'detail_changed' };
+    }
     card.click();
     return { ready: true };
   };
@@ -221,7 +242,7 @@ class ZhaopinSiteAdapter {
         await this.browser.navigate(tabId, url);
         pages++;
         releaseSearchRendering = await this.openSearchRenderScope(tabId);
-        state = await this.waitForSearchReady(tabId, { searchTemplate, keyword: target.keyword, filterSummary: options.filterSummary, signal: options.signal, assertTabBindings: options.assertTabBindings });
+        state = await this.waitForSearchReady(tabId, { searchTemplate, keyword: target.keyword, filterSummary: options.filterSummary, signal: options.signal, assertTabBindings: options.assertTabBindings, allowPendingDetail: true });
         const seen = new Set();
         let scrolls = 0;
         while (true) {
@@ -234,7 +255,22 @@ class ZhaopinSiteAdapter {
             await pace('pane_detail_read', scoped);
             await pacing.waitForPendingDetailCooldown({ signal: options.signal, assertTabBindings: scoped, onPacingCheckpoint: options.onPacingCheckpoint });
             await scoped();
-            const detail = await this.readVisiblePaneDetail(tabId, card, options.signal, scoped);
+            const detailPacingOptions = { signal: options.signal, assertTabBindings: scoped, onPacingCheckpoint: options.onPacingCheckpoint };
+            const beforeEmptyRetry = async () => {
+              await pacing.waitAfterDetailAction(detailPacingOptions);
+              await pace('pane_detail_read', scoped);
+              await pacing.waitForPendingDetailCooldown(detailPacingOptions);
+            };
+            let detail;
+            let detailError = null;
+            try {
+              detail = await this.readVisiblePaneDetail(tabId, card, options.signal, scoped, beforeEmptyRetry);
+            } catch (error) {
+              detailError = error;
+              throw error;
+            } finally {
+              await finishDetailPacing(() => pacing.waitAfterDetailAction(detailPacingOptions), detailError);
+            }
             if (!detail) throw zhaopinError('ZHAOPIN_DETAIL_IDENTITY_UNCONFIRMED', '智联岗位身份或完整详情尚未确认，已保留进度，请恢复后继续。');
             const job = { ...detail, keyword: target.keyword, tags: [], detailRequired: true, detailRead: true, detailSource: 'trusted_pane' };
             const complete = hasCompleteJobDescription(job);
@@ -257,7 +293,6 @@ class ZhaopinSiteAdapter {
             else await options.onDetailResult?.({ outcome: 'failed', errorCode: job.detailErrorCode, accessMode: 'visible_pane' });
             seen.add(card.signature);
             await scoped();
-            await pacing.waitAfterDetailAction({ signal: options.signal, assertTabBindings: scoped, onPacingCheckpoint: options.onPacingCheckpoint });
             continue;
           }
           if (state.confirmedEnd) { stopReason = 'confirmed_end'; break; }
@@ -295,7 +330,7 @@ class ZhaopinSiteAdapter {
     return [...jobs.values()];
   }
 
-  async waitForSearchReady(tabId, { searchTemplate, keyword, filterSummary, signal, assertTabBindings } = {}) {
+  async waitForSearchReady(tabId, { searchTemplate, keyword, filterSummary, signal, assertTabBindings, allowPendingDetail = false } = {}) {
     const releaseSearchRendering = await this.openSearchRenderScope(tabId);
     let operationError = null;
     try {
@@ -307,7 +342,9 @@ class ZhaopinSiteAdapter {
         const selected = state.cards[state.selectedIndex];
         const readyResult = state.cards.length === 0 ? state.confirmedEnd === true
           : selected && detailMatches(selected, state.detail, state.detailSourceIdConfirmed, state.detailSourceIdFullyConfirmed);
-        if (!state.loading && readyResult
+        const pendingDetailReady = allowPendingDetail && selected?.sourceId
+          && ['loading', 'empty'].includes(state.detailRequestState);
+        if ((!state.loading && readyResult || pendingDetailReady)
           && searchStateMatches(state, searchTemplate, keyword, filterSummary)) return state;
         await this.waitWithChecks(signal, assertTabBindings);
       }
@@ -385,7 +422,7 @@ class ZhaopinSiteAdapter {
     return state;
   }
 
-  async readVisiblePaneDetail(tabId, card, signal = null, assertTabBindings = null) {
+  async readVisiblePaneDetail(tabId, card, signal = null, assertTabBindings = null, beforeEmptyRetry = null) {
     throwIfAborted(signal);
     await assertBindings(assertTabBindings);
     const before = await this.readSearchState(tabId);
@@ -407,8 +444,10 @@ class ZhaopinSiteAdapter {
       const activation = await this.browser.evalValue(tabId, `(() => window.__zhaopinActivateCard(${JSON.stringify(refreshedCard.index)}, ${JSON.stringify(refreshedCard.signature)}))()`);
       if (activation?.ready !== true) return null;
     }
-    const deadline = this.detailNow() + 120000;
+    let deadline = this.detailNow() + 120000;
     let unconfirmedSamples = 0;
+    let retryUsed = false;
+    let postRetryEmptySamples = 0;
     while (true) {
       throwIfAborted(signal);
       await assertBindings(assertTabBindings);
@@ -419,6 +458,32 @@ class ZhaopinSiteAdapter {
         if (!identity) return null;
         const { publisherCompany: _publisherCompany, ...detail } = state.detail;
         return { ...detail, company: detail.company || refreshedCard.company || '', ...identity };
+      }
+      const stoppedEmpty = state.selectedIndex === refreshedCard.index
+        && state.detailRequestState === 'empty' && state.cards[refreshedCard.index]?.signature === refreshedCard.signature;
+      if (stoppedEmpty && typeof beforeEmptyRetry === 'function' && !retryUsed) {
+        retryUsed = true;
+        const pacingStarted = this.detailNow();
+        await beforeEmptyRetry();
+        deadline += Math.max(0, this.detailNow() - pacingStarted);
+        throwIfAborted(signal);
+        await assertBindings(assertTabBindings);
+        const retryState = await this.readSearchState(tabId);
+        const retryCard = retryState.cards[refreshedCard.index];
+        if (!retryCard || retryCard.signature !== refreshedCard.signature || retryState.selectedIndex !== refreshedCard.index) return null;
+        if (retryState.detailRequestState !== 'empty') continue;
+        await this.reserveAccess(refreshedCard);
+        throwIfAborted(signal);
+        await assertBindings(assertTabBindings);
+        await this.assertBoundTab(tabId);
+        const activation = await this.browser.evalValue(tabId, `(() => window.__zhaopinActivateCard(${JSON.stringify(refreshedCard.index)}, ${JSON.stringify(refreshedCard.signature)}, true))()`);
+        if (activation?.ready !== true) continue;
+        unconfirmedSamples = 0;
+        continue;
+      }
+      if (stoppedEmpty && retryUsed) {
+        if (postRetryEmptySamples++ >= 1) throw zhaopinError('ZHAOPIN_DETAIL_LOAD_TIMEOUT',
+          '智联岗位详情未加载完成，本轮进度已保留。请稍后确认智联详情能正常显示，再点击“继续本轮”。');
       }
       if (state.loading) unconfirmedSamples = 0;
       else if (++unconfirmedSamples >= 6) return null;
@@ -544,6 +609,19 @@ async function releaseSearchRenderScope(release, operationError = null) {
     const combined = new AggregateError([cleanupError, operationError], cleanupError.message, { cause: operationError });
     for (const property of ['code', 'statusCode', 'details']) {
       if (cleanupError[property] !== undefined) combined[property] = cleanupError[property];
+    }
+    throw combined;
+  }
+}
+
+async function finishDetailPacing(finish, operationError = null) {
+  try {
+    await finish();
+  } catch (pacingError) {
+    if (!operationError) throw pacingError;
+    const combined = new AggregateError([pacingError, operationError], pacingError.message, { cause: operationError });
+    for (const property of ['code', 'statusCode', 'details']) {
+      if (pacingError[property] !== undefined) combined[property] = pacingError[property];
     }
     throw combined;
   }

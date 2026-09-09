@@ -18,7 +18,7 @@ const { createSiteAccessController } = require('../src/core/site_access_budget')
 const fs = require('node:fs');
 const path = require('node:path');
 
-function fakeBrowser({ terminal = true, loadingOnSwitch = false, cardCount = 3, navigateError = null, detailFor = null, renderScope = false, cardSourceIds = false } = {}) {
+function fakeBrowser({ terminal = true, loadingOnSwitch = false, cardCount = 3, navigateError = null, detailFor = null, renderScope = false, cardSourceIds = false, onActivate = null } = {}) {
   let url = 'https://www.zhaopin.com/jobs/?pageMode=search&jl=548&kw=AI';
   let selectedIndex = 0;
   let windowId = 1;
@@ -48,7 +48,15 @@ function fakeBrowser({ terminal = true, loadingOnSwitch = false, cardCount = 3, 
       calls.push({ type: 'evalValue', id, expression });
       assert.equal(id, 'cdp-zl');
       if (expression.includes('const clean =')) return true;
-      if (expression.includes('__zhaopinActivateCard(')) { selectedIndex = Number(expression.match(/ActivateCard\((\d+)/)[1]); if (loadingOnSwitch) overrides.loading = true; return { ready: true }; }
+      if (expression.includes('__zhaopinActivateCard(')) {
+        const nextIndex = Number(expression.match(/ActivateCard\((\d+)/)[1]);
+        const expectedEmpty = expression.includes(', true)');
+        if (expectedEmpty && (overrides.detailRequestState !== 'empty' || selectedIndex !== nextIndex)) return { ready: false, reason: 'detail_changed' };
+        selectedIndex = nextIndex;
+        if (loadingOnSwitch) overrides.loading = true;
+        onActivate?.({ selectedIndex, expectedEmpty, overrides });
+        return { ready: true };
+      }
       if (expression.includes('__zhaopinScrollResults')) return true;
       const keyword = new URL(url).searchParams.get('kw');
       const detail = detailFor?.({ keyword, selectedIndex, card: cards[selectedIndex] })
@@ -87,6 +95,90 @@ async function main() {
   restoring.setState({ filterSummary: ['默认占位'] });
   const readyAdapter = new ZhaopinSiteAdapter({ browser: restoring, sleepFn: async () => restoring.setState({ filterSummary: ['广东'] }) });
   assert.equal((await readyAdapter.waitForSearchReady('cdp-zl', { searchTemplate: canonicalizeZhaopinSearchTemplate('https://www.zhaopin.com/jobs/?pageMode=search&jl=548'), keyword: 'AI', filterSummary: ['广东'] })).filterSummary[0], '广东', 'restoration must wait out transient placeholder filters');
+  const fullDetail = (index = 0) => ({ index, signature: `card-${index}`, title: `岗位${index}`, company: '公司', salary: '10-20K', location: '广州', description: '完整岗位职责与任职要求。'.repeat(20), url: `https://www.zhaopin.com/jobdetail/SYNTH${index}.htm` });
+  const selectedRecovery = fakeBrowser({ cardSourceIds: true, onActivate: ({ expectedEmpty, overrides }) => {
+    if (expectedEmpty) Object.assign(overrides, { detailRequestState: 'ready', loading: false, detail: fullDetail(0) });
+  } });
+  selectedRecovery.setState({ detailRequestState: 'empty', loading: false, detail: {} });
+  let selectedRetryWaits = 0;
+  let selectedCharges = 0;
+  const selectedRecoveryAdapter = new ZhaopinSiteAdapter({ browser: selectedRecovery, sleepFn: async () => {}, accessController: { reserve: async () => { selectedCharges++; } } });
+  const selectedEmpty = await selectedRecoveryAdapter.readSearchState('cdp-zl');
+  assert.equal((await selectedRecoveryAdapter.readVisiblePaneDetail('cdp-zl', selectedEmpty.cards[0], null, null, async () => { selectedRetryWaits++; })).sourceId, 'SYNTH0');
+  assert.equal(selectedRetryWaits, 1, 'a selected stopped-empty detail receives one paced recovery opportunity');
+  assert.equal(zhaopinActivations(selectedRecovery), 1, 'selected stopped-empty recovery reactivates the same card once');
+  assert.equal(selectedCharges, 2, 'the initial and recovery physical visits are both reserved');
+
+  let switchActivations = 0;
+  const unselectedRecovery = fakeBrowser({ cardSourceIds: true, onActivate: ({ expectedEmpty, selectedIndex, overrides }) => {
+    switchActivations++;
+    if (!expectedEmpty) Object.assign(overrides, { detailRequestState: 'empty', loading: false, detail: {} });
+    else Object.assign(overrides, { detailRequestState: 'ready', detail: fullDetail(selectedIndex) });
+  } });
+  const unselectedAdapter = new ZhaopinSiteAdapter({ browser: unselectedRecovery, sleepFn: async () => {} });
+  const unselectedState = await unselectedAdapter.readSearchState('cdp-zl');
+  assert.equal((await unselectedAdapter.readVisiblePaneDetail('cdp-zl', unselectedState.cards[1], null, null, async () => {})).sourceId, 'SYNTH1');
+  assert.equal(switchActivations, 2, 'an unselected card may receive its initial activation plus one empty recovery');
+
+  const boundedEmpty = fakeBrowser({ cardSourceIds: true });
+  boundedEmpty.setState({ detailRequestState: 'empty', loading: false, detail: {} });
+  let boundedClock = 0;
+  const boundedAdapter = new ZhaopinSiteAdapter({ browser: boundedEmpty, nowFn: () => boundedClock, sleepFn: async (ms = 120) => { boundedClock += ms; } });
+  const boundedState = await boundedAdapter.readSearchState('cdp-zl');
+  await assert.rejects(() => boundedAdapter.readVisiblePaneDetail('cdp-zl', boundedState.cards[0], null, null, async () => {}), error => error.code === 'ZHAOPIN_DETAIL_LOAD_TIMEOUT');
+  assert.equal(zhaopinActivations(boundedEmpty), 1, 'a still-empty recovery is bounded to one reactivation');
+
+  for (const detailRequestState of ['unknown', 'ready']) {
+    const unsafeRetry = fakeBrowser({ cardSourceIds: true });
+    unsafeRetry.setState({ detailRequestState, loading: false, detail: {} });
+    let unsafeWaits = 0;
+    const unsafeAdapter = new ZhaopinSiteAdapter({ browser: unsafeRetry, sleepFn: async () => {} });
+    const unsafeState = await unsafeAdapter.readSearchState('cdp-zl');
+    assert.equal(await unsafeAdapter.readVisiblePaneDetail('cdp-zl', unsafeState.cards[0], null, null, async () => { unsafeWaits++; }), null);
+    assert.equal(unsafeWaits, 0, `${detailRequestState} partial state cannot authorize a retry`);
+    assert.equal(zhaopinActivations(unsafeRetry), 0);
+  }
+
+  const lateReady = fakeBrowser({ cardSourceIds: true });
+  lateReady.setState({ detailRequestState: 'empty', loading: false, detail: {} });
+  const lateAdapter = new ZhaopinSiteAdapter({ browser: lateReady, sleepFn: async () => {} });
+  const lateState = await lateAdapter.readSearchState('cdp-zl');
+  const lateDetail = await lateAdapter.readVisiblePaneDetail('cdp-zl', lateState.cards[0], null, null, async () => lateReady.setState({ detailRequestState: 'ready', detail: fullDetail(0) }));
+  assert.equal(lateDetail.sourceId, 'SYNTH0');
+  assert.equal(zhaopinActivations(lateReady), 0, 'detail becoming valid during pacing cancels the needless click');
+
+  for (const [label, arrange, expectedCode] of [
+    ['pause', ({ mark }) => { mark.paused = true; }, 'WORKFLOW_PAUSE_REQUESTED'],
+    ['changed target', ({ bridge }) => bridge.setState({ selectedIndex: 1 }), null]
+  ]) {
+    const bridge = fakeBrowser({ cardSourceIds: true });
+    bridge.setState({ detailRequestState: 'empty', loading: false, detail: {} });
+    const mark = { paused: false };
+    const scoped = () => { if (mark.paused) throw Object.assign(new Error('pause'), { code: 'WORKFLOW_PAUSE_REQUESTED' }); };
+    const guardedAdapter = new ZhaopinSiteAdapter({ browser: bridge, sleepFn: async () => {} });
+    const guardedState = await guardedAdapter.readSearchState('cdp-zl');
+    const operation = guardedAdapter.readVisiblePaneDetail('cdp-zl', guardedState.cards[0], null, scoped, async () => arrange({ bridge, mark }));
+    if (expectedCode) await assert.rejects(() => operation, error => error.code === expectedCode);
+    else assert.equal(await operation, null);
+    assert.equal(zhaopinActivations(bridge), 0, `${label} during retry pacing prevents the recovery click`);
+  }
+  const deniedRecovery = fakeBrowser({ cardSourceIds: true });
+  deniedRecovery.setState({ detailRequestState: 'empty', loading: false, detail: {} });
+  let deniedReservations = 0;
+  const deniedRecoveryAdapter = new ZhaopinSiteAdapter({ browser: deniedRecovery, sleepFn: async () => {}, accessController: { reserve: async () => {
+    deniedReservations++;
+    if (deniedReservations === 2) throw Object.assign(new Error('denied'), { code: 'ZHAOPIN_ACCESS_DENIED' });
+  } } });
+  const deniedRecoveryState = await deniedRecoveryAdapter.readSearchState('cdp-zl');
+  await assert.rejects(() => deniedRecoveryAdapter.readVisiblePaneDetail('cdp-zl', deniedRecoveryState.cards[0], null, null, async () => {}), error => error.code === 'ZHAOPIN_ACCESS_DENIED');
+  assert.equal(zhaopinActivations(deniedRecovery), 0, 'a denied recovery reservation prevents the click');
+
+  const pendingReady = fakeBrowser({ cardSourceIds: true });
+  pendingReady.setState({ detailRequestState: 'empty', loading: false, detail: {} });
+  const pendingAdapter = new ZhaopinSiteAdapter({ browser: pendingReady, sleepFn: async () => {} });
+  const pendingOptions = { searchTemplate: canonicalizeZhaopinSearchTemplate('https://www.zhaopin.com/jobs/?pageMode=search&jl=548'), keyword: 'AI', filterSummary: ['广东'] };
+  assert.equal((await pendingAdapter.waitForSearchReady('cdp-zl', { ...pendingOptions, allowPendingDetail: true })).detailRequestState, 'empty', 'scan readiness may hand a reliable selected empty detail to the guarded reader');
+  await assert.rejects(() => pendingAdapter.waitForSearchReady('cdp-zl', pendingOptions), error => error.code === 'ZHAOPIN_SEARCH_RESTORE_TIMEOUT');
   for (const windowId of [2, undefined, null, '']) {
     const wrongWindow = fakeBrowser();
     wrongWindow.moveToWindow(windowId);
@@ -103,6 +195,36 @@ async function main() {
     assert.equal(typeof adapter.scan, 'function', 'readonly adapter must support the shared scan/checkpoint contract');
     const opts = { tabId: 'cdp-zl', keywords: ['AI'], keywordPlan: [{ word: 'AI', priority: 'A' }], searchTemplate: canonicalizeZhaopinSearchTemplate('https://www.zhaopin.com/jobs/?pageMode=search&jl=548'), filterSummary: ['广东'], maxCards: 3, maxDetailTotal: 1, browserPageBudget: 1,
       onDetailCheckpoint: ({ job }) => storage.upsertJob(db, job, batch), onTargetComplete: result => targets.push(result) };
+    const scanRecoveryBridge = fakeBrowser({ cardCount: 1, cardSourceIds: true, onActivate: ({ expectedEmpty, overrides }) => {
+      if (expectedEmpty) Object.assign(overrides, { detailRequestState: 'ready', detail: fullDetail(0) });
+    } });
+    scanRecoveryBridge.setState({ detailRequestState: 'empty', loading: false, detail: {} });
+    let scanRecoveryCharges = 0;
+    const scanRecoveryPacing = [];
+    const scanRecovered = await new ZhaopinSiteAdapter({ browser: scanRecoveryBridge, sleepFn: async () => {}, randomFn: () => 0, accessController: { reserve: async action => { if (action === 'pane_detail_read') scanRecoveryCharges++; } } }).scan({
+      ...opts, maxCards: 1, maxDetailTotal: 1,
+      onPacingCheckpoint: state => scanRecoveryPacing.push(state),
+      onDetailCheckpoint: () => {}, onTargetComplete: () => {}
+    });
+    assert.equal(scanRecovered.length, 1, 'scan readiness hands the first selected empty card to recovery without reducing logical coverage');
+    assert.equal(scanRecoveryCharges, 2, 'one recovered logical job records two physical visits');
+    assert.equal(scanRecoveryPacing.at(-1).detailActions, 2, 'pacing closes and records both recovered detail attempts');
+
+    const failedRecoveryBatch = storage.createBatch(db, 'zhaopin', 'AI', 'failed-empty-recovery');
+    const failedRecoveryBridge = fakeBrowser({ cardCount: 2, cardSourceIds: true, onActivate: ({ selectedIndex, overrides }) => {
+      if (selectedIndex === 1) Object.assign(overrides, { detailRequestState: 'empty', loading: false, detail: {} });
+    } });
+    let failedRecoveryCharges = 0;
+    const failedRecoveryPacing = [];
+    await assert.rejects(() => new ZhaopinSiteAdapter({ browser: failedRecoveryBridge, sleepFn: async () => {}, randomFn: () => 0, accessController: { reserve: async action => { if (action === 'pane_detail_read') failedRecoveryCharges++; } } }).scan({
+      ...opts, maxCards: 2, maxDetailTotal: 2,
+      onPacingCheckpoint: state => failedRecoveryPacing.push(state),
+      onDetailCheckpoint: ({ job }) => storage.upsertJob(db, job, failedRecoveryBatch), onTargetComplete: () => {}
+    }), error => error.code === 'ZHAOPIN_DETAIL_LOAD_TIMEOUT');
+    assert.deepEqual(storage.listReportJobs(db, { batchId: failedRecoveryBatch }).map(job => job.sourceId), ['SYNTH0'], 'a bounded empty failure preserves the prior durable checkpoint and does not advance cards');
+    assert.equal(failedRecoveryCharges, 3, 'successful first detail plus both failed-card physical attempts are reserved');
+    assert.equal(failedRecoveryPacing.at(-1).detailActions, 3, 'final failed recovery attempt is closed in pacing accounting');
+    assert.equal(zhaopinActivations(failedRecoveryBridge), 2, 'the failed second card receives one initial activation and one bounded reactivation');
     const routeBridge = fakeBrowser();
     const routeBatch = storage.createBatch(db, 'zhaopin', 'AI', 'same-window-pages');
     const routeTargets = [], dashboardPages = ['/jobs', '/settings', '/onboarding'];
