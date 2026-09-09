@@ -5,7 +5,7 @@
   <title>智联合成沟通页</title>
   <style>
     .job-card,.job-detail-summary{display:block;width:600px;min-height:70px}.job-detail-summary__prechat,.job-detail-summary__apply{display:inline-block;width:100px;height:32px}
-    .fixture-modal[hidden],.login-panel[hidden]{display:none}
+    .deliver-greeting-modal[hidden],.login-panel[hidden]{display:none}
   </style>
 </head>
 <body>
@@ -28,7 +28,16 @@
     <section class="job-detail-card"><h2 class="job-detail-card__title">职位描述</h2><div class="job-detail-card__body">合成岗位职责，要求可靠交付。</div></section>
     <section class="job-company-info"><a class="job-company-info__name"></a><a class="job-company-info__view-all"></a></section>
   </section>
-  <section class="fixture-modal" hidden><h2>已向对方发送打招呼语</h2></section>
+  <!-- Observed DeliverGreetingModal structure; all content below is synthetic. -->
+  <div class="deliver-greeting-modal" hidden>
+    <div class="deliver-greeting-modal__mask"></div>
+    <div class="deliver-greeting-modal__wrapper"><div class="deliver-greeting-modal__box">
+      <button class="deliver-greeting-modal__close" type="button" aria-label="关闭">×</button>
+      <div class="deliver-greeting-modal__header"><h3 class="deliver-greeting-modal__title">已向对方发送打招呼语</h3></div>
+      <div class="deliver-greeting-modal__content"><p class="deliver-greeting-modal__content-text">合成招呼正文，希望进一步了解岗位。</p></div>
+      <div class="deliver-greeting-modal__footer"><button type="button">留在此页</button><button type="button">继续沟通</button></div>
+    </div></div>
+  </div>
   <script>
     const jobs = [
       { number: 'CCSYNTH001J00000000001', name: '同名合成岗位', companyName: '合成甲有限公司', salary: '18K-25K' },
@@ -62,8 +71,8 @@
       },
       select(index){this.selected=index;this.render()},
       useVue2(){this.vueVersion=2;this.render()},
-      reset(){this.vueVersion=3;document.title='智联合成沟通页';document.querySelector('.login-panel').hidden=true;document.querySelector('.fixture-modal').hidden=true;document.querySelector('.job-detail-summary__status').textContent='';document.querySelector('.job-detail-summary__prechat').textContent='先聊聊';this.render()},
-      modal(){document.querySelector('.fixture-modal').hidden=false}
+      reset(){this.vueVersion=3;document.title='智联合成沟通页';document.querySelector('.login-panel').hidden=true;document.querySelector('.deliver-greeting-modal').hidden=true;document.querySelector('.job-detail-summary__status').textContent='';document.querySelector('.job-detail-summary__prechat').textContent='先聊聊';this.render()},
+      modal(){document.querySelector('.deliver-greeting-modal').hidden=false}
     };
     document.querySelector('.job-detail-summary__prechat').addEventListener('click',()=>window.fixture.prechatClicks++);
     document.querySelector('.job-detail-summary__apply').addEventListener('click',()=>window.fixture.applyClicks++);

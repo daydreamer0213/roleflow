@@ -678,6 +678,20 @@ async function main() {
     }
 
     const outcomes = [
+      ...["hidden", "application_title", "missing_title", "duplicate"].map((modalCase) => [
+        `dedicated_modal_${modalCase}`,
+        async ({ page, state }) => {
+          state.entries.push(safeEntry(JOB_A, state.clock, { sequence: ++state.sequence }));
+          await page.evaluate((variant) => {
+            window.fixture.modal();
+            const modal = document.querySelector('.deliver-greeting-modal');
+            if (variant === "hidden") modal.style.display = "none";
+            if (variant === "application_title") modal.querySelector('.deliver-greeting-modal__title').textContent = "已向对方发送简历和打招呼语";
+            if (variant === "missing_title") modal.querySelector('.deliver-greeting-modal__title').remove();
+            if (variant === "duplicate") document.body.append(modal.cloneNode(true));
+          }, modalCase);
+        }
+      ]),
       ["accepted_without_pending_metadata", async ({ page, state }) => {
         state.pendingRequests = undefined;
         state.entries.push(safeEntry(JOB_A, state.clock, { sequence: ++state.sequence }));
@@ -727,6 +741,7 @@ async function main() {
       assert.notEqual(result.state, "succeeded", `${name} must remain non-success`);
       assert.equal(outcomeBrowser.calls.filter((call) => call.kind === "prechat").length, 1, `${name} must never retry`);
       assert.equal(outcomeBrowser.state.networkStarted, false, `${name} cleanup stops the network log`);
+      assert.equal(await page.evaluate(() => window.fixture.applyClicks), 0, `${name} must not apply`);
     }
 
     await page.goto(SEARCH_URL);

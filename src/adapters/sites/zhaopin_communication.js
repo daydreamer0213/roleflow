@@ -36,8 +36,10 @@ const ZHAOPIN_COMMUNICATION_SNAPSHOT_EXPRESSION = String.raw`(() => {
   const summary = document.querySelector('.job-detail-panel .job-detail-summary');
   const prechat = [...(summary?.querySelectorAll('.job-detail-summary__prechat') || [])].filter(visible);
   const apply = [...(summary?.querySelectorAll('.job-detail-summary__apply') || [])].filter(visible);
-  const greetingModals = [...document.querySelectorAll('[role="dialog"],.fixture-modal,.modal,.dialog')]
-    .filter(visible).filter(node => clean(node.textContent) === '已向对方发送打招呼语');
+  const greetingModals = [...document.querySelectorAll('.deliver-greeting-modal,[role="dialog"],.fixture-modal,.modal,.dialog')]
+    .filter(visible).filter(node => clean(node.matches('.deliver-greeting-modal')
+      ? node.querySelector('.deliver-greeting-modal__title')?.textContent
+      : node.textContent) === '已向对方发送打招呼语');
   return {
     risk: /安全验证|访问异常|行为验证|访问受限/.test(document.title || '') || /账户存在异常行为|暂时无法访问/.test(bodyText),
     loginRequired: [...document.querySelectorAll('.login,.login-panel,[class*="login"]')].some(isVisibleZhaopinLoginChallenge),
