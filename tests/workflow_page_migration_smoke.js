@@ -37,7 +37,7 @@ const stylesheet = path.join(root, "src", "dashboard", "assets", "roleflow.css")
   assert.match(generatedHtml, /经验：1-3年/);
   assert.match(generatedHtml, /方案指纹：1234567890/);
   assert.match(generatedHtml, /方案后续修改不会影响本轮/);
-  assert.strictEqual(vm.overview.acquisitionProgress, "搜索目标 4 / 5 · 已获取 12 个岗位");
+  assert.strictEqual(vm.overview.acquisitionProgress, "搜索目标 2 / 5 · 已获取 12 个岗位");
   assert.strictEqual(vm.overview.jdProgress, "已读取 5 / 12 · 待补 7");
   assertRendererContracts(vm);
   assertEvaluatorStrictGate();
@@ -88,7 +88,7 @@ function fixture(overrides = {}) {
       details: { collected: 12, required: 12, read: 5, pending: 7, notRequired: 0, growing: true },
       communication: { total: 0, pending: 0, ambiguous: 0, succeeded: 0, stopped: 0, terminal: 0 },
       tracks: {
-        scan: { value: 4, max: 5, indeterminate: false },
+        scan: { value: 2, max: 5, indeterminate: false },
         jd: { value: 5, max: 12, indeterminate: false, growing: true },
         analysis: { value: 4, max: 12, indeterminate: false },
         communication: { value: 0, max: 0, indeterminate: false }
@@ -150,7 +150,7 @@ function assertRendererContracts(vm) {
   assert.match(html, /本轮实际关键词：AI应用开发、RAG、Agent开发/);
   assert.match(html, /方案候选词：14 个/);
   assert.doesNotMatch(html, /候选词1、候选词2/);
-  assert.match(html, /data-overview-acquisition[^>]*>搜索目标 4 \/ 5 · 已获取 12 个岗位/);
+  assert.match(html, /data-overview-acquisition[^>]*>搜索目标 2 \/ 5 · 已获取 12 个岗位/);
   assert.match(html, /data-overview-jd[^>]*>已读取 5 \/ 12 · 待补 7/);
 
   const paused = renderWorkflowPage(buildWorkflowViewModel(fixture({ workflow: { status: "paused", errorCode: "SAFE_PAUSE" }, progressSnapshot: { workflow: { id: "workflow-migration-fixture", status: "paused", controlState: "", progressRevision: 5, lastActivityAt: new Date().toISOString() }, controls: { canPause: false, canResume: true, canStop: true, stopConsumesRunSlot: true } } })));
@@ -285,7 +285,7 @@ async function assertClientContracts(vm) {
     console.log("workflow_page_migration_smoke browser checks skipped: Playwright unavailable in NODE_PATH");
     return;
   }
-  let responses = [validSnapshot("scanning", 5), { malformed: true }];
+  let responses = [liveScanSnapshot(2, "partial"), liveScanSnapshot(3, "completed"), { malformed: true }];
   let requests = 0;
   let inFlight = 0;
   let maxInFlight = 0;
@@ -320,6 +320,10 @@ async function assertClientContracts(vm) {
     await assertNoViewportPrimary(page);
     assert.strictEqual(await page.locator('[data-action="pause"]').isVisible(), true, "pause must remain available while scanning");
     assert.match(await page.locator('[data-action="pause"]').getAttribute("class"), /\bsecondary\b/, "pause must use the secondary treatment");
+    await page.waitForFunction(() => document.querySelector('[data-overview-acquisition]')?.textContent === "搜索目标 2 / 3 · 已获取 12 个岗位", null, { timeout: 4000 });
+    assert.strictEqual(await page.locator('[data-overview-acquisition]').textContent(), "搜索目标 2 / 3 · 已获取 12 个岗位", "live overview must use completed targets while a partial target remains");
+    await page.waitForFunction(() => document.querySelector('[data-overview-acquisition]')?.textContent === "搜索目标 3 / 3 · 已获取 12 个岗位", null, { timeout: 4000 });
+    assert.strictEqual(await page.locator('[data-overview-acquisition]').textContent(), "搜索目标 3 / 3 · 已获取 12 个岗位", "live overview must clear the target remainder when the newest result completes it");
     const state = async () => page.evaluate(() => {
       const preview = document.querySelector('[data-action="stop-preview"]'); const confirm = document.querySelector('[data-stop-confirmation]');
       const ancestors = []; for (let node = confirm; node; node = node.parentElement) ancestors.push({ tag: node.tagName, hidden: node.hidden, display: getComputedStyle(node).display });
@@ -487,6 +491,22 @@ function validSnapshot(status) {
     controls: { canPause: status === "scanning", canResume: status === "paused", canStop: status !== "interrupted", stopConsumesRunSlot: true },
     recentActivity: []
   };
+}
+
+function liveScanSnapshot(completed, newestStatus) {
+  const snapshot = validSnapshot("scanning");
+  snapshot.workflow.progressRevision = completed;
+  snapshot.progress.scanTargets = {
+    total: 3,
+    processed: 3,
+    completed,
+    pending: 3 - completed,
+    partial: newestStatus === "partial" ? 1 : 0,
+    failed: 0
+  };
+  snapshot.progress.tracks.scan = { value: completed, max: 3, indeterminate: false };
+  snapshot.progress.remainingWorkLabel = `还需完成 ${3 - completed} 个搜索目标；7 个岗位详情待读取`;
+  return snapshot;
 }
 
 function serve(res, type, body) { res.writeHead(200, { "content-type": `${type}; charset=utf-8` }); res.end(body); }

@@ -37,6 +37,7 @@ try {
   testAggregateCountsMatchSqlAndInvariant();
   testCollectedDetailCountsComeFromObservations();
   testStageSpecificProgressBreakdown();
+  testPausedZhaopinScanCompletionRemainder();
   testTruthfulFourTrackReadModel();
   testFailedTaskResolutionUsesLatestPlanObservation();
   testCommunicationProgressSeparatesAmbiguity();
@@ -288,7 +289,7 @@ function testStageSpecificProgressBreakdown() {
     completed: 2,
     partial: 1,
     failed: 1,
-    pending: 1
+    pending: 3
   });
   assert.deepStrictEqual(snapshot.progress.details, {
     collected: 12,
@@ -298,8 +299,50 @@ function testStageSpecificProgressBreakdown() {
     notRequired: 7,
     growing: true
   });
-  assert.match(snapshot.progress.remainingWorkLabel, /1 个搜索目标/);
+  assert.strictEqual(snapshot.progress.tracks.scan.value, 2);
+  assert.match(snapshot.progress.remainingWorkLabel, /3 个搜索目标/);
   assert.match(snapshot.progress.remainingWorkLabel, /0 个岗位详情待读取/);
+}
+
+function testPausedZhaopinScanCompletionRemainder() {
+  const scenario = seedWorkflow(db, {
+    analyses: [{}],
+    localDay: "2026-08-17",
+    modelConfigRevision: "mrev-zhaopin-paused-scan",
+    keepCreated: true
+  });
+  const targets = ["target-1", "target-2", "target-3"].map((targetKey) => ({ targetKey }));
+  db.prepare("UPDATE batches SET filter_snapshot_json = ? WHERE id = ?")
+    .run(JSON.stringify({ execution: { targets } }), scenario.batchId);
+  for (const [targetKey, status] of [["target-1", "completed"], ["target-2", "completed"], ["target-3", "partial"]]) {
+    recordScanTargetResult(db, {
+      batchId: scenario.batchId,
+      targetKey,
+      status,
+      finishedAt: "2026-08-17T00:00:00.000Z"
+    });
+  }
+  db.prepare("UPDATE workflow_runs SET site = 'zhaopin', status = 'paused', resume_phase = 'scanning', scan_batch_id = ?, scan_run_id = ? WHERE id = ?")
+    .run(scenario.batchId, scenario.scanRunId, scenario.workflowId);
+
+  const partial = getWorkflowProgressSnapshot(db, { workflowRunId: scenario.workflowId });
+  assert.strictEqual(partial.progress.scanTargets.processed, 3);
+  assert.strictEqual(partial.progress.scanTargets.completed, 2);
+  assert.strictEqual(partial.progress.scanTargets.pending, 1);
+  assert.strictEqual(partial.progress.tracks.scan.value, 2);
+  assert.match(partial.progress.remainingWorkLabel, /1 个搜索目标/);
+
+  recordScanTargetResult(db, {
+    batchId: scenario.batchId,
+    targetKey: "target-3",
+    status: "completed",
+    finishedAt: "2026-08-17T00:01:00.000Z"
+  });
+  const completed = getWorkflowProgressSnapshot(db, { workflowRunId: scenario.workflowId });
+  assert.strictEqual(completed.progress.scanTargets.completed, 3);
+  assert.strictEqual(completed.progress.scanTargets.pending, 0);
+  assert.strictEqual(completed.progress.tracks.scan.value, 3);
+  assert.match(completed.progress.remainingWorkLabel, /0 个搜索目标/);
 }
 
 function testTruthfulFourTrackReadModel() {
@@ -370,7 +413,7 @@ function testTruthfulFourTrackReadModel() {
     completed: 0,
     partial: 1,
     failed: 1,
-    pending: 1
+    pending: 3
   });
   assert.deepStrictEqual(scanning.progress.details, {
     collected: 3,
@@ -391,7 +434,7 @@ function testTruthfulFourTrackReadModel() {
     detailTotal: 7
   });
   assert.deepStrictEqual(scanning.progress.tracks, {
-    scan: { value: 2, max: 3, indeterminate: false },
+    scan: { value: 0, max: 3, indeterminate: false },
     jd: { value: 1, max: 2, indeterminate: false, growing: true },
     analysis: { value: 0, max: 0, indeterminate: false },
     communication: { value: 0, max: 0, indeterminate: false }

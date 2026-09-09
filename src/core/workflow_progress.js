@@ -104,7 +104,7 @@ function getWorkflowProgressSnapshot(db, {
   const stageIndex = stageIndexFor(workflow);
   const tracks = {
     scan: {
-      value: scanTargets.processed,
+      value: scanTargets.completed,
       max: scanTargets.total,
       indeterminate: phaseKey === "acquisition" && scanTargets.total === 0
     },
@@ -513,7 +513,7 @@ function countScanTargets(db, scanBatchId, filterSnapshot) {
     else if (status === "failed") counts.failed += 1;
     if (["completed", "partial", "failed"].includes(status)) counts.processed += 1;
   }
-  counts.pending = Math.max(0, counts.total - counts.processed);
+  counts.pending = Math.max(0, counts.total - counts.completed);
   return counts;
 }
 

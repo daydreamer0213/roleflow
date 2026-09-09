@@ -127,7 +127,7 @@ function progressView(snapshot, progressJobs = []) {
       succeeded: number(communication.succeeded), stopped: number(communication.stopped)
     },
     tracks: {
-      scan: progressTrack(tracks.scan, "扫描岗位", `已处理 ${number(scanTargets.processed)} 个目标；成功 ${number(scanTargets.completed)}、部分 ${number(scanTargets.partial)}、失败 ${number(scanTargets.failed)}`),
+      scan: progressTrack(tracks.scan, "扫描岗位", `已完成 ${number(scanTargets.completed)} 个目标；已处理 ${number(scanTargets.processed)}，部分 ${number(scanTargets.partial)}、失败 ${number(scanTargets.failed)}`),
       jd: progressTrack(tracks.jd, "完整 JD", `已读取 ${number(details.read)} 个需要完整 JD 的岗位；待补 ${number(details.pending)}；无需详情 ${number(details.notRequired)}${details.growing ? "；数量仍随扫描增长" : ""}`),
       analysis: progressTrack(tracks.analysis, "分析岗位", `已完成 ${number(analysis.terminal)} 个；本轮直接完成 ${directSucceeded}、失败后已解决 ${resolvedAfterFailure}、当前未解决 ${unresolvedFailed}、本地规则处理 ${Math.max(0, skipped - detailRequired)}、停止 ${number(analysis.stopped)}；历史失败 ${historicalFailed}`),
       communication: progressTrack(tracks.communication, "沟通岗位", `已到达终态 ${number(communication.terminal)} 个；成功 ${number(communication.succeeded)}、待人工确认 ${number(communication.ambiguous)}、停止 ${number(communication.stopped)}`)
@@ -195,7 +195,7 @@ function overviewView({ workflow, progress, phase, controls, runtimeBlock }) {
       ? `第 ${number(progress.stageIndex)} / ${number(progress.stageCount)} 阶段`
       : target ? `${successful} / ${target}` : "等待状态更新",
     usableRecommendations: phase.kind === "review" ? number(phase.review.defaultCount) : number(workflow.inventoryCount),
-    acquisitionProgress: `搜索目标 ${number(scan.processed)} / ${number(scan.total)} · 已获取 ${number(details.collected)} 个岗位`,
+    acquisitionProgress: `搜索目标 ${number(scan.completed)} / ${number(scan.total)} · 已获取 ${number(details.collected)} 个岗位`,
     jdProgress: `已读取 ${number(details.read)} / ${number(details.required)} · 待补 ${number(details.pending)}`,
     remainingWork: phase.communication
       ? `还有 ${Math.max(0, phase.communication.summary.total - phase.communication.summary.terminal)} 个沟通条目待处理`

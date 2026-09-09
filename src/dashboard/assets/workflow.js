@@ -72,7 +72,7 @@
     setText("[data-overview-analysis]", "已分析 " + (number(snapshot.progress.analysis?.succeeded) + number(snapshot.progress.analysis?.resolvedAfterFailure)) + " 个岗位");
     const scanTargets = snapshot.progress.scanTargets || {};
     const details = snapshot.progress.details || {};
-    setText("[data-overview-acquisition]", "搜索目标 " + number(scanTargets.processed) + " / " + number(scanTargets.total) + " · 已获取 " + number(details.collected) + " 个岗位");
+    setText("[data-overview-acquisition]", "搜索目标 " + number(scanTargets.completed) + " / " + number(scanTargets.total) + " · 已获取 " + number(details.collected) + " 个岗位");
     setText("[data-overview-jd]", "已读取 " + number(details.read) + " / " + number(details.required) + " · 待补 " + number(details.pending));
     setText("[data-overview-remaining]", snapshot.progress.remainingWorkLabel || "本轮状态正在更新");
     setText("[data-overview-eta]", Number.isFinite(retryAt) && retryAt > Date.now() ? "安全冷却至 " + new Date(retryAt).toLocaleString("zh-CN", { hour12: false }) : etaText(snapshot.progress.eta));
