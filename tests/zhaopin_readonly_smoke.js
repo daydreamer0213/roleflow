@@ -321,6 +321,26 @@ async function main() {
 
     await page.evaluate(() => {
       document.querySelector("#vue2-card .job-card__location").textContent = "合成市 甲 商圈";
+      document.querySelector("#vue2-summary .job-detail-summary__tags li").textContent = "合成市·甲市";
+    });
+    const countyState = await adapter.readSearchState("ZHAOPIN-SEARCH");
+    const countyDetail = await adapter.readVisiblePaneDetail("ZHAOPIN-SEARCH", countyState.cards[0]);
+    assert.ok(countyDetail, "same confirmed job accepts county-level city suffix");
+    assert.equal(countyDetail.sourceId, countyState.cards[0].sourceId);
+    assert.equal(countyDetail.location, "合成市·甲市");
+
+    await page.evaluate(() => {
+      document.querySelector("#vue2-card .job-card__location").textContent = "合成市 乙 商圈";
+    });
+    const countyConflictState = await adapter.readSearchState("ZHAOPIN-SEARCH");
+    assert.equal(
+      await adapter.readVisiblePaneDetail("ZHAOPIN-SEARCH", countyConflictState.cards[0]),
+      null,
+      "different county-level city must reject the detail"
+    );
+
+    await page.evaluate(() => {
+      document.querySelector("#vue2-card .job-card__location").textContent = "合成市 甲 商圈";
       document.querySelector("#vue2-summary .job-detail-summary__tags li").textContent = "合成市";
     });
     const cityOnlyDetailState = await adapter.readSearchState("ZHAOPIN-SEARCH");
