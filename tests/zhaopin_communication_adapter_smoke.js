@@ -67,7 +67,7 @@ function rawEntry(job = JOB_A, clock = 1000, overrides = {}) {
   };
 }
 
-function fakeBrowser(page, { transport = "direct", onClick = null, startError = null, startResult = null, clickError = null, focusDisableError = null, stopNetworkError = null } = {}) {
+function fakeBrowser(page, { transport = "direct", onClick = null, startError = null, startResult = null, clickError = null, focusDisableError = null, stopNetworkError = null, hideNextPageJobBTitleUntilRendered = false, onRenderingEnabled = null } = {}) {
   const state = {
     activeTabId: DASHBOARD_TAB,
     windowId: WINDOW_ID,
@@ -77,10 +77,12 @@ function fakeBrowser(page, { transport = "direct", onClick = null, startError = 
     networkStarted: false,
     clock: 1000,
     imSnapshot: null,
-    urlOverride: ""
+    urlOverride: "",
+    focusEnabled: false,
+    renderLifecycleActive: false
   };
   const calls = [];
-  return {
+  const browser = {
     state,
     calls,
     async listTabs() {
@@ -104,6 +106,11 @@ function fakeBrowser(page, { transport = "direct", onClick = null, startError = 
         document.querySelector('.query-sug__input').value = new URL(next).searchParams.get('kw') || '';
         window.fixture.select(0);
       }, url);
+      if (hideNextPageJobBTitleUntilRendered && !state.focusEnabled) {
+        await page.evaluate(() => {
+          document.querySelectorAll('.job-card')[1].querySelector('.vue-clamp__text').textContent = '';
+        });
+      }
       state.urlOverride = "";
     },
     async cdp(tabId, method, params) {
@@ -112,7 +119,18 @@ function fakeBrowser(page, { transport = "direct", onClick = null, startError = 
         const failure = typeof focusDisableError === "function" ? focusDisableError() : focusDisableError;
         if (failure) throw failure;
       }
-      if (method === "Emulation.setFocusEmulationEnabled") state.focusEnabled = params?.enabled === true;
+      if (method === "Emulation.setFocusEmulationEnabled") {
+        state.focusEnabled = params?.enabled === true;
+        if (state.focusEnabled && hideNextPageJobBTitleUntilRendered && state.renderLifecycleActive) {
+          await page.evaluate(() => window.fixture.render());
+          await onRenderingEnabled?.({ page, state });
+        }
+        if (!state.focusEnabled && hideNextPageJobBTitleUntilRendered) {
+          await page.evaluate(() => {
+            document.querySelectorAll('.job-card')[1].querySelector('.vue-clamp__text').textContent = '';
+          });
+        }
+      }
       return {};
     },
     async clickAt(tabId, point) {
@@ -169,6 +187,14 @@ function fakeBrowser(page, { transport = "direct", onClick = null, startError = 
     async bringToFront() { throw new Error("must not activate a tab"); },
     async createTab() { throw new Error("must not create a tab"); }
   };
+  if (hideNextPageJobBTitleUntilRendered) {
+    browser.setPageLifecycleActive = async (tabId) => {
+      calls.push({ kind: "lifecycle", tabId });
+      assert.equal(tabId, SEARCH_TAB);
+      state.renderLifecycleActive = true;
+    };
+  }
+  return browser;
 }
 
 function adapterFor(browser, extra = {}) {
@@ -334,6 +360,61 @@ async function main() {
     await directAdapter.restoreCommunicationSearchPage();
     await directAdapter.restoreCommunicationSearchPage();
     assert.equal(directBrowser.calls.filter((call) => call.kind === "navigate").length, navigationBeforeRestore + 1, "restore runs once");
+
+    await page.goto(SEARCH_URL);
+    await page.evaluate(() => { window.fixture.reset(); window.fixture.select(0); });
+    const backgroundBrowser = fakeBrowser(page, { hideNextPageJobBTitleUntilRendered: true });
+    const backgroundAdapter = adapterFor(backgroundBrowser);
+    const backgroundActiveBefore = backgroundBrowser.state.activeTabId;
+    await prepareSession(backgroundAdapter, backgroundBrowser);
+    const backgroundInspection = await backgroundAdapter.inspectCommunicationJob(JOB_B);
+    assert.equal(backgroundInspection.state, "ready", "background rendering remains held through exact JobCard lookup");
+    assert.equal(backgroundInspection.sourceId, JOB_B.sourceId);
+    assert.equal(backgroundBrowser.calls.filter((call) => call.kind === "prechat").length, 0);
+    assert.equal(await page.evaluate(() => window.fixture.applyClicks), 0, "background lookup never clicks 立即投递");
+    assert.equal(backgroundBrowser.state.activeTabId, backgroundActiveBefore);
+    assert.equal(backgroundBrowser.state.focusEnabled, false, "background rendering is released after inspection");
+
+    await page.goto(SEARCH_URL);
+    await page.evaluate(() => { window.fixture.reset(); window.fixture.select(0); });
+    const backgroundMissingBrowser = fakeBrowser(page, { hideNextPageJobBTitleUntilRendered: true });
+    const backgroundMissingAdapter = adapterFor(backgroundMissingBrowser);
+    await prepareSession(backgroundMissingAdapter, backgroundMissingBrowser);
+    const backgroundMissing = { ...JOB_B, sourceId: "CCMISSING002J00000000002", url: "https://www.zhaopin.com/jobdetail/CCMISSING002J00000000002.htm" };
+    await assert.rejects(() => backgroundMissingAdapter.inspectCommunicationJob(backgroundMissing),
+      (error) => error.code === "ZHAOPIN_COMMUNICATION_TARGET_NOT_FOUND");
+    assert.equal(backgroundMissingBrowser.state.focusEnabled, false, "not-found lookup releases background rendering");
+    assert.equal(backgroundMissingBrowser.calls.filter((call) => call.kind === "prechat").length, 0);
+
+    await page.goto(SEARCH_URL);
+    await page.evaluate(() => { window.fixture.reset(); window.fixture.select(0); });
+    const backgroundAbortController = new AbortController();
+    const backgroundAbortBrowser = fakeBrowser(page, {
+      hideNextPageJobBTitleUntilRendered: true,
+      onRenderingEnabled: async () => backgroundAbortController.abort()
+    });
+    const backgroundAbortAdapter = adapterFor(backgroundAbortBrowser);
+    await prepareSession(backgroundAbortAdapter, backgroundAbortBrowser);
+    await assert.rejects(() => backgroundAbortAdapter.inspectCommunicationJob(JOB_B, backgroundAbortController.signal),
+      (error) => error.name === "AbortError" || error.code === "ZHAOPIN_COMMUNICATION_ABORTED");
+    assert.equal(backgroundAbortBrowser.state.focusEnabled, false, "cancelled lookup releases background rendering");
+    assert.equal(backgroundAbortBrowser.calls.filter((call) => call.kind === "prechat").length, 0);
+
+    await page.goto(SEARCH_URL);
+    await page.evaluate(() => { window.fixture.reset(); window.fixture.select(0); });
+    const backgroundCleanupError = Object.assign(new Error("background rendering cleanup failed"), { code: "BROWSER_COMMAND_FAILED" });
+    let backgroundCleanupFailures = 0;
+    const backgroundCleanupBrowser = fakeBrowser(page, {
+      hideNextPageJobBTitleUntilRendered: true,
+      focusDisableError: () => backgroundCleanupFailures++ === 0 ? backgroundCleanupError : null
+    });
+    const backgroundCleanupAdapter = adapterFor(backgroundCleanupBrowser);
+    await prepareSession(backgroundCleanupAdapter, backgroundCleanupBrowser);
+    await assert.rejects(() => backgroundCleanupAdapter.inspectCommunicationJob(JOB_B), (error) => error === backgroundCleanupError);
+    assert.equal(backgroundCleanupBrowser.calls.filter((call) => call.kind === "prechat").length, 0, "cleanup failure cannot authorize dispatch");
+    await page.evaluate(() => { window.fixture.reset(); window.fixture.select(0); });
+    assert.equal((await backgroundCleanupAdapter.inspectCommunicationJob(JOB_B)).state, "ready", "cleanup failure clears inspection busy state");
+    assert.equal(backgroundCleanupBrowser.state.focusEnabled, false);
 
     await page.goto(SEARCH_URL);
     await page.evaluate(() => window.fixture.useVue2());

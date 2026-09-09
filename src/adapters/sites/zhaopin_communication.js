@@ -172,6 +172,8 @@ class ZhaopinCommunicationAdapter extends ZhaopinSiteAdapter {
 
   async inspectCommunicationJob(job, signal = null) {
     this.begin("inspection");
+    let releaseSearchRendering = null;
+    let operationError = null;
     try {
       const expected = normalizeJob(job);
       throwIfAborted(signal);
@@ -185,6 +187,7 @@ class ZhaopinCommunicationAdapter extends ZhaopinSiteAdapter {
         }
       } else {
         this.verifiedImResult = null;
+        releaseSearchRendering = await this.openSearchRenderScope(this.binding.searchTabId);
         const current = await this.currentSelectedInspection(expected, signal);
         if (current) return current;
       }
@@ -196,6 +199,7 @@ class ZhaopinCommunicationAdapter extends ZhaopinSiteAdapter {
       await this.assertBoundTabs(returningFromIm ? { allowIm: true } : { requireSearch: true });
       await this.browser.navigate(this.binding.searchTabId, expected.searchUrl);
       this.verifiedImResult = null;
+      if (!releaseSearchRendering) releaseSearchRendering = await this.openSearchRenderScope(this.binding.searchTabId);
       const template = canonicalizeZhaopinSearchTemplate(expected.searchUrl);
       const keyword = new URL(expected.searchUrl).searchParams.get("kw") || "";
       await this.waitForSearchReady(this.binding.searchTabId, {
@@ -209,7 +213,7 @@ class ZhaopinCommunicationAdapter extends ZhaopinSiteAdapter {
         await this.assertBoundTabs({ requireSearch: true });
         const state = await this.readSearchState(this.binding.searchTabId);
         const card = state.cards.find((item) => item.sourceId === expected.sourceId);
-        if (card) return this.inspectCard(expected, card, signal);
+        if (card) return await this.inspectCard(expected, card, signal);
         if (state.confirmedEnd || scrolls === 20) break;
         await this.pace("scroll", signal);
         await this.reserve("list_scroll", { source: "zhaopin", sourceId: expected.sourceId });
@@ -217,8 +221,18 @@ class ZhaopinCommunicationAdapter extends ZhaopinSiteAdapter {
         await this.browser.evalValue(this.binding.searchTabId, "(() => window.__zhaopinScrollResults())()");
       }
       throw communicationError("ZHAOPIN_COMMUNICATION_TARGET_NOT_FOUND", "保存的智联岗位未在当前结果中找到，已保留剩余项目。");
+    } catch (error) {
+      operationError = error;
+      throw error;
     } finally {
-      this.end("inspection");
+      try {
+        await releaseSearchRendering?.();
+      } catch (cleanupError) {
+        if (operationError && cleanupError.cause === undefined) cleanupError.cause = operationError;
+        throw cleanupError;
+      } finally {
+        this.end("inspection");
+      }
     }
   }
 
