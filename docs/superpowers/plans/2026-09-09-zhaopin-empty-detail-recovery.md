@@ -110,7 +110,7 @@ Verify entrypoint paths. Record known SQLite experimental/CRLF notices without s
 ## Main after scoped review
 
 - [x] Resolve single task spec/quality gate; previously closed tasks remain closed. `66e5467`: Spec compliant, quality Approved; no Critical/Important. Known SQLite experimental/CRLF notices recorded, not suppressed. Four focused GREEN, syntax/diff pass.
-- [ ] Verify and restart only owned isolated8788 process, freeze clean SHA and fresh strict full gate.
-- [ ] Read existing helper state in background, resume same real run from normal Dashboard UI without reduced targets/quality or direct API shortcuts.
+- [x] Verify and restart only owned isolated8788 process, freeze clean SHA and fresh strict full gate. Owned PID10204/session6024 verified exact data-root/command. Frozen `da6e1c91537a72299235151b36944aa427193490`: **157/157**, exit0, start=end SHA, clean end; log `D:/DevData/RoleFlow-zhaopin-message-context-20260908/full-gate-da6e1c9-20260909-071441.log`.
+- [x] Read existing helper state in background, resume same real run from normal Dashboard UI without reduced targets/quality or direct API shortcuts. One Continue input; actual same workflow/batch46 resumed. 07:35UTC91jobs/90full/1oldshortpending, scanning42/50. This is continued real progress, not complete scan/analysis or proof that the empty-recovery branch fired on this live run.
 - [ ] Verify actual scan/currentbatch analysis; at most one ordinary initial greeting only with existing authority, current eligible exacttarget proof and full gate, then messages/drafts; stop before reply send.
 - [ ] Record exact SHA/test results/real coverage/externalactions/remaining limits; no push/merge/build/release.
