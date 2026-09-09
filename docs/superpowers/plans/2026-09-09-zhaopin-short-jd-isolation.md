@@ -27,7 +27,7 @@
 
 **Interfaces:** 输入既有 `scan(options)` 回调/预算/targetKeys；输出仍是全部已访问岗位数组及原格式检查点。`onDetailResult` 短项只发一次failed（不发succeeded），完整项保留原success/reuse逻辑。`onTargetComplete` 保留原数字计数；短项目标errorCode/stopReason使用既有 `ZHAOPIN_DETAIL_INCOMPLETE` 表示待补，`onScanComplete` partial不得带fatalErrorCode。
 
-- [ ] RED：替换既有短JD必须throw的测试，使用现有假浏览器构造首个短正文、后续完整正文，并增加下一关键词。运行真实adapter+内存存储，断言短项保留detailRead=false/error，后续完整项和下一目标均checkpoint；短项不产生success结果，受影响目标partial/扫描partial、未带fatal。旧代码应在首个短项throw而失败。
+- [x] RED：替换既有短JD必须throw的测试，使用现有假浏览器构造首个短正文、后续完整正文，并增加下一关键词。运行真实adapter+内存存储，断言短项保留detailRead=false/error，后续完整项和下一目标均checkpoint；短项不产生success结果，受影响目标partial/扫描partial、未带fatal。旧代码实际在首个短项throw而失败。
 
 ```js
 assert.equal(shortJob.detailRead, false);
@@ -39,7 +39,7 @@ assert.equal(terminal.status, 'partial');
 assert.equal(Boolean(terminal.fatalErrorCode), false);
 ```
 
-- [ ] 最小实现：去除该单条短项分支整轮throw，统一走现有岗位入集合、检查点、进度、seen、scoped和after-action节奏。短项不走cache复用判定、计入details；完整项cache/contenthash规则不变。正常收齐目标后检查是否存在 `!job.detailRead`：目标partial且原因INCOMPLETE；继续其他目标。预算/scroll_limit导致的partial仍break。任何回调/身份/加载/控制异常不得被新分支吞掉。
+- [x] 最小实现：去除该单条短项分支整轮throw，统一走现有岗位入集合、检查点、进度、seen、scoped和after-action节奏。短项不走cache复用判定、计入details；完整项cache/contenthash规则不变。正常收齐目标后检查是否存在 `!job.detailRead`：目标partial且原因INCOMPLETE；继续其他目标。预算/scroll_limit导致的partial仍break。任何回调/身份/加载/控制异常不得被新分支吞掉。
 
 ```js
 const complete = hasCompleteJobDescription(job);
@@ -51,6 +51,7 @@ const status = coverageReached && !hasPendingDetails ? 'completed' : 'partial';
 // completed++ only for completed; break only when !coverageReached
 ```
 
-- [ ] 保留最小负向检查：短项也消耗maxDetailTotal=1因而不读下一条；短项checkpoint后若收到取消/风控/存储失败，原错误继续传播且不读后项。原加载中/身份冲突/跨窗测试继续通过。复用现有工作流分析测试，用一短一完整的真实本批次任务证明短项仍 `DETAIL_REQUIRED` 且不调用模型、有效项仍分析，partial目标没有自动重跑；若既有覆盖充分可以复用并指出测试位置，不复制大套件。
-- [ ] GREEN：`node tests/zhaopin_workflow_smoke.js`、`node tests/zhaopin_readonly_smoke.js`、`node tests/zhaopin_communication_adapter_smoke.js`、`node tests/workflow_analysis_executor_smoke.js`，两个拥有JS语法和diff检查。只提交拥有的两文件。报告写同任务 `task-1-report.md`：实际RED、最终GREEN命令/输出/SHA、自审及疑点。
-- [ ] 主控独立审查该增量，复核后重启仅拥有的隔离8788，原UI继续同一run并核对原短项保留、后续推进；完整分析稳定后冻结最终全测，再执行既有至多一条普通招呼验收，停止于回复发送前。
+- [x] 保留最小负向检查：短项也消耗maxDetailTotal=1因而不读下一条；短项checkpoint后若收到取消/风控/存储失败，原错误继续传播且不读后项。原加载中/身份冲突/跨窗测试继续通过。主控复用并实际通过 `workflow_scan_analysis_smoke`，一短一完整的本批次任务证明短项仍 `DETAIL_REQUIRED` 且不调用模型、有效项仍分析；CLI正常partial结束不自动重跑由独立代码追踪核对。
+- [x] GREEN：`node tests/zhaopin_workflow_smoke.js`、`node tests/zhaopin_readonly_smoke.js`、`node tests/zhaopin_communication_adapter_smoke.js`、`node tests/workflow_analysis_executor_smoke.js`，两个拥有JS语法和diff检查。两文件提交 `fdc7d21368ffb7a42f731e99cda7e5ffa7ebf896`；完整报告含RED/GREEN与重复检查事实，原SQLite警告保留。
+- [x] 主控独立增量审查 Approved，质量门槛/CLI消费者待核对项已由独立追踪及当前分析测试解除。仅拥有的隔离8788已核验，原UI一次继续同一run；02:38UTC推进42岗位/41完整JD/1待补，短项不再阻断后续卡片。
+- [ ] 主控完成后续关键词和有效JD真实分析，冻结当前树后并行最终完整离线检查；任何普通招呼前必须拿到最终SHA全测通过及精确当前目标截图/DOM证明。至多一条普通招呼，停止于回复发送前。当前截图缺口未解决，不得以旧图替代或抢前台。
