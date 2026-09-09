@@ -4,9 +4,20 @@
 
 **Goal:** 长岗位名被卡片省略显示时，读取同一标题节点已经提供的完整无障碍名称，正常核对完整岗位身份。
 
-**Architecture:** 在既有页面helper内增加一个小型 `cardTitle`，供卡片字段与签名共同使用；有可见标题时优先同节点 `aria-label`，无完整名称则保留可见文字，无可见文字仍为空。不借用详情标题或组件payload补写标题，不做前缀/模糊匹配。原组件编号绑定与详情严格比较不变，注入版本升级。
+**Architecture:** 在既有页面helper内增加一个小型 `cardTitle`，供卡片字段与签名共同使用；先单独查询 `.vue-clamp__text`，不存在才回退 `.job-card__title-main`，不能使用逗号选择器让外层容器抢先。有可见标题时优先同节点 `aria-label`，无完整名称则保留可见文字，无可见文字仍为空。不借用详情标题或组件payload补写标题，不做前缀/模糊匹配。原组件编号绑定与详情严格比较不变，注入版本升级。
 
 **Tech Stack:** 现有 Node/CommonJS、Playwright合成页面和假浏览器，无依赖变化。
+
+## 执行结果（2026-09-09 03:36 UTC）
+
+- [x] 真实嵌套fixture先得完整标题/sourceId行为RED；初次版本号RED和提交后退化验证分别记录，不篡改证据。
+- [x] 内层span优先、外层fallback，helper8，标题与签名共用；空可见标题/不一致/旧快照反例覆盖。
+- [x] 2b345f0三项定向GREEN、两个语法及diff检查；唯一限定复审两finding关闭，无新问题。
+- [x] 主控03:35在已经选中的原失败页面使用同一adapter只读验证通过，精确编号和完整标题一致，921字符JD；6标签/原活动页不变。
+- [ ] 正常UI恢复同一run并完成后续采集/分析。
+- [ ] 冻结最终SHA后新鲜完整npm test。普通招呼另需当前目标图与即时身份验证；截图缺口未解决，不执行。
+
+以下保留原任务步骤和示例，执行状态以上列结果为准。
 
 ## Global Constraints
 
@@ -39,16 +50,17 @@ assert.equal(state.cards[0].sourceId, 'CCSYNTHV2A1J00000000001');
 assert.ok(await adapter.readVisiblePaneDetail('ZHAOPIN-SEARCH', state.cards[0]));
 ```
 
-- [ ] 最小实现：两个原title读取点复用下列helper，注入缓存版本6→7（定义及stamp），对应旧helper升级回归改为6→7。原签名的其他字段保留。
+- [ ] 最小实现：两个原title读取点复用下列helper。初次实现1c46a71使用逗号选择器且版本7；实际原页复验因外层容器优先仍失败。修正单独查询次序，并将注入缓存版本7→8（定义及stamp），对应旧helper升级回归改为7→8。原签名的其他字段保留。
 
 ```js
 const cardTitle = (card) => {
-  const node = card.querySelector('.vue-clamp__text, .job-card__title-main');
+  const node = card.querySelector('.vue-clamp__text') || card.querySelector('.job-card__title-main');
   const displayed = clean(node?.textContent);
   return displayed ? clean(node?.getAttribute('aria-label')) || displayed : '';
 };
 ```
 
 - [ ] 最小反例：无aria-label的普通完整文字仍沿用现有通过样例；空可见标题但残留完整aria-label必须拒绝；aria-label完整标题与组件/详情不符仍拒绝；保持显示短字不变、只改完整aria-label会使签名改变，旧card快照不能继续操作。用现有调用记录确认拒绝发生在点击前。原编号/公司/地点冲突与加载回归保留，不扩展大矩阵。
+- [ ] 现场层级回归：合成DOM必须按实际结构将 `.vue-clamp__text[aria-label]` 放在 `.job-card__title-main` 内。先只增加这一嵌套结构、仍保持版本7断言，运行readonly，确认RED在完整标题/sourceId而非版本号；再改选择次序与版本8及对应升级断言，运行GREEN。最初“6 !== 7”的失败只是版本验证，提交后退化检查另有记录，不改写为早期行为TDD。
 - [ ] GREEN：一次最终 `zhaopin_readonly_smoke`、`zhaopin_workflow_smoke`、`zhaopin_communication_adapter_smoke`，两个JS语法和 `git diff --check`。仅提交拥有文件。完整报告写task-1-report.md，包含实际RED/GREEN命令/关键输出、最终SHA、文件、自审/疑点。勿重复提交后同一套检查或跑全套。
 - [ ] 主控增量规格/质量复核后，在当前原失败页面只读验证同一adapter读出正确完整标题/精确编号，再用正常UI继续同一run。最终SHA重新验证后才考虑已授权至多一条普通招呼；本计划不授权回复、简历或投递。
