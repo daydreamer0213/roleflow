@@ -18,14 +18,14 @@ const { createSiteAccessController } = require('../src/core/site_access_budget')
 const fs = require('node:fs');
 const path = require('node:path');
 
-function fakeBrowser({ terminal = true, loadingOnSwitch = false, cardCount = 3, navigateError = null, detailFor = null, renderScope = false, cardSourceIds = false, onActivate = null } = {}) {
+function fakeBrowser({ terminal = true, loadingOnSwitch = false, cardCount = 3, cardFixtures = null, cardsFor = null, navigateError = null, detailFor = null, renderScope = false, cardSourceIds = false, onActivate = null } = {}) {
   let url = 'https://www.zhaopin.com/jobs/?pageMode=search&jl=548&kw=AI';
   let selectedIndex = 0;
   let windowId = 1;
   let dashboardPath = '/workflow';
   const overrides = {};
   const calls = [];
-  const cards = Array.from({ length: cardCount }, (_, index) => ({
+  const defaultCards = Array.from({ length: cardCount }, (_, index) => ({
     index,
     signature: `card-${index}`,
     title: `岗位${index}`,
@@ -34,6 +34,7 @@ function fakeBrowser({ terminal = true, loadingOnSwitch = false, cardCount = 3, 
     location: '广州',
     ...(cardSourceIds ? { sourceId: `SYNTH${index}`, currentSourceIdSupplied: true } : {})
   }));
+  const currentCards = keyword => cardsFor?.(keyword) || cardFixtures || defaultCards;
   const bridge = {
     calls,
     setState(value) { Object.assign(overrides, value); },
@@ -59,8 +60,9 @@ function fakeBrowser({ terminal = true, loadingOnSwitch = false, cardCount = 3, 
       }
       if (expression.includes('__zhaopinScrollResults')) return true;
       const keyword = new URL(url).searchParams.get('kw');
+      const cards = currentCards(keyword);
       const detail = detailFor?.({ keyword, selectedIndex, card: cards[selectedIndex] })
-        || { ...cards[selectedIndex], description: '完整岗位职责与任职要求。'.repeat(20), url: `https://www.zhaopin.com/jobdetail/SYNTH${selectedIndex}.htm` };
+        || { ...cards[selectedIndex], description: '完整岗位职责与任职要求。'.repeat(20), url: `https://www.zhaopin.com/jobdetail/${cards[selectedIndex]?.sourceId || `SYNTH${selectedIndex}`}.htm` };
       return { url, keyword, filterSummary: ['广东'], cards, selectedIndex, loading: false, risk: false, loginRequired: false, isSearchPage: true, confirmedEnd: terminal, detail, ...overrides };
     }
   };
@@ -209,6 +211,87 @@ async function main() {
     assert.equal(scanRecovered.length, 1, 'scan readiness hands the first selected empty card to recovery without reducing logical coverage');
     assert.equal(scanRecoveryCharges, 2, 'one recovered logical job records two physical visits');
     assert.equal(scanRecoveryPacing.at(-1).detailActions, 2, 'pacing closes and records both recovered detail attempts');
+
+    const verifiedCard = (index, sourceId, { title = `岗位${sourceId}`, fullText = `卡片全文${sourceId}` } = {}) => ({
+      index,
+      sourceId,
+      currentSourceIdSupplied: true,
+      signature: [index, sourceId, title, '20-30K', '验证公司', '广州', fullText].join('|'),
+      title,
+      company: '验证公司',
+      salary: '20-30K',
+      location: '广州'
+    });
+    const duplicateCards = [
+      verifiedCard(0, 'DUPLICATE'),
+      verifiedCard(1, 'UNIQUE1'),
+      verifiedCard(2, 'DUPLICATE'),
+      verifiedCard(3, 'UNIQUE2')
+    ];
+    const verifiedDetailFor = ({ selectedIndex, card }) => ({
+      ...card,
+      description: '完整岗位职责与任职要求。'.repeat(20),
+      url: `https://www.zhaopin.com/jobdetail/${card.sourceId || `SYNTH${selectedIndex}`}.htm?position=${selectedIndex}`
+    });
+    const duplicateBridge = fakeBrowser({ cardFixtures: duplicateCards, detailFor: verifiedDetailFor });
+    let duplicateReads = 0;
+    let duplicateCheckpoints = 0;
+    const duplicateJobs = await new ZhaopinSiteAdapter({
+      browser: duplicateBridge,
+      sleepFn: async () => {},
+      randomFn: () => 0,
+      accessController: { reserve: async action => { if (action === 'pane_detail_read') duplicateReads++; } }
+    }).scan({
+      ...opts,
+      maxCards: 3,
+      maxDetailTotal: 3,
+      onDetailCheckpoint: () => { duplicateCheckpoints++; },
+      onTargetComplete: () => {}
+    });
+    assert.deepEqual(duplicateJobs.map(job => job.sourceId), ['DUPLICATE', 'UNIQUE1', 'UNIQUE2'], 'a verified duplicate does not consume the unique-job target');
+    assert.equal(duplicateReads, 3, 'the duplicate card does not consume a physical detail access');
+    assert.equal(duplicateCheckpoints, 3, 'only three unique successful reads are checkpointed');
+    assert.equal(zhaopinActivations(duplicateBridge), 2, 'the duplicate position is never activated while the later unique card is');
+
+    const changedCards = [
+      verifiedCard(0, 'SAME', { title: '同名岗位', fullText: '原卡片' }),
+      verifiedCard(1, 'OTHER', { title: '同名岗位', fullText: '原卡片' }),
+      verifiedCard(2, 'SAME', { title: '同名岗位', fullText: '变更后卡片' })
+    ];
+    let changedReads = 0;
+    const changedJobs = await new ZhaopinSiteAdapter({ browser: fakeBrowser({ cardFixtures: changedCards, detailFor: verifiedDetailFor }), sleepFn: async () => {}, randomFn: () => 0,
+      accessController: { reserve: async action => { if (action === 'pane_detail_read') changedReads++; } } }).scan({
+      ...opts, maxCards: 3, maxDetailTotal: 3, onDetailCheckpoint: () => {}, onTargetComplete: () => {}
+    });
+    assert.equal(changedReads, 3, 'different IDs and changed same-ID card content are each physically revalidated');
+    assert.deepEqual(changedJobs.map(job => job.sourceId).sort(), ['OTHER', 'SAME'], 'same-ID changed content is read but remains one logical job');
+
+    const fallbackCards = [
+      { ...verifiedCard(0, 'IGNORED0'), sourceId: undefined, currentSourceIdSupplied: false },
+      { ...verifiedCard(1, 'IGNORED1'), sourceId: undefined, currentSourceIdSupplied: false },
+      { ...verifiedCard(2, 'MALFORMED'), signature: 'unexpected-signature-a' },
+      { ...verifiedCard(3, 'MALFORMED'), signature: 'unexpected-signature-b' }
+    ];
+    let fallbackReads = 0;
+    await new ZhaopinSiteAdapter({ browser: fakeBrowser({ cardFixtures: fallbackCards, detailFor: verifiedDetailFor }), sleepFn: async () => {}, randomFn: () => 0,
+      accessController: { reserve: async action => { if (action === 'pane_detail_read') fallbackReads++; } } }).scan({
+      ...opts, maxCards: 4, maxDetailTotal: 4, onDetailCheckpoint: () => {}, onTargetComplete: () => {}
+    });
+    assert.equal(fallbackReads, 4, 'unknown IDs and unexpected signature shapes retain exact-signature visit behavior');
+
+    const perKeywordBridge = fakeBrowser({ cardsFor: () => [verifiedCard(0, 'SHARED', { fullText: '共享卡片' })] });
+    let perKeywordReads = 0;
+    await new ZhaopinSiteAdapter({ browser: perKeywordBridge, sleepFn: async () => {}, randomFn: () => 0,
+      accessController: { reserve: async action => { if (action === 'pane_detail_read') perKeywordReads++; } } }).scan({
+      ...opts,
+      keywordPlan: [{ word: '目标一', priority: 'A', maxCards: 1 }, { word: '目标二', priority: 'A', maxCards: 1 }],
+      maxCards: 1,
+      maxDetailTotal: 2,
+      browserPageBudget: 2,
+      onDetailCheckpoint: () => {},
+      onTargetComplete: () => {}
+    });
+    assert.equal(perKeywordReads, 2, 'the next keyword revalidates the same source ID in its own target-local seen scope');
 
     const failedRecoveryBatch = storage.createBatch(db, 'zhaopin', 'AI', 'failed-empty-recovery');
     const failedRecoveryBridge = fakeBrowser({ cardCount: 2, cardSourceIds: true, onActivate: ({ selectedIndex, overrides }) => {

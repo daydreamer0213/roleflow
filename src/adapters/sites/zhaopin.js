@@ -248,7 +248,7 @@ class ZhaopinSiteAdapter {
         while (true) {
           await scoped();
           state = await this.readSearchState(tabId);
-          const card = state.cards.find(item => !seen.has(item.signature));
+          const card = state.cards.find(item => !seen.has(scanVisitKey(item)));
           if (targetJobs.length >= target.cardLimit) { stopReason = 'card_limit_reached'; break; }
           if (card) {
             if (details >= Number(options.maxDetailTotal)) { stopReason = 'detail_budget'; break; }
@@ -291,7 +291,7 @@ class ZhaopinSiteAdapter {
             await options.onProgressCheckpoint?.({ jobs: [], targetKey: target.targetKey, activity: 'reading_detail', ...scanProgressCounters(target, targets, state, targetJobs) });
             if (complete) await options.onDetailResult?.({ outcome: 'succeeded', reused, accessMode: 'visible_pane', job });
             else await options.onDetailResult?.({ outcome: 'failed', errorCode: job.detailErrorCode, accessMode: 'visible_pane' });
-            seen.add(card.signature);
+            seen.add(scanVisitKey(card));
             await scoped();
             continue;
           }
@@ -625,6 +625,14 @@ async function finishDetailPacing(finish, operationError = null) {
     }
     throw combined;
   }
+}
+
+function scanVisitKey(card) {
+  const signature = String(card?.signature || '');
+  const indexPrefix = `${card?.index}|`;
+  return card?.sourceId && signature.startsWith(indexPrefix)
+    ? signature.slice(indexPrefix.length)
+    : signature;
 }
 
 function scanProgressCounters(target, targets, state, targetJobs) {
