@@ -318,13 +318,43 @@ async function main() {
     assert.equal(newDistrictDetail.company, "合成研发中心");
     assert.equal(newDistrictDetail.salary, "15-30K");
     assert.equal(newDistrictDetail.location, "合成市·甲新区");
+
+    await page.evaluate(() => {
+      document.querySelector("#vue2-card .job-card__location").textContent = "合成市 甲 商圈";
+      document.querySelector("#vue2-summary .job-detail-summary__tags li").textContent = "合成市";
+    });
+    const cityOnlyDetailState = await adapter.readSearchState("ZHAOPIN-SEARCH");
+    const cityOnlyDetail = await adapter.readVisiblePaneDetail("ZHAOPIN-SEARCH", cityOnlyDetailState.cards[0]);
+    assert.ok(cityOnlyDetail, "same confirmed job accepts city-only detail location");
+    assert.equal(cityOnlyDetail.sourceId, "CCSYNTHV2A1J00000000001");
+    assert.equal(cityOnlyDetail.location, "合成市", "city-only detail location remains unexpanded");
+
+    await page.evaluate(() => {
+      document.querySelector("#vue2-card .job-card__location").textContent = "合成";
+      document.querySelector("#vue2-summary .job-detail-summary__tags li").textContent = "合成市·甲新区";
+    });
+    const cityOnlyCardState = await adapter.readSearchState("ZHAOPIN-SEARCH");
+    const cityOnlyCardDetail = await adapter.readVisiblePaneDetail("ZHAOPIN-SEARCH", cityOnlyCardState.cards[0]);
+    assert.ok(cityOnlyCardDetail, "same confirmed job accepts city-only card location symmetrically with terminal 市 normalization");
+    assert.equal(cityOnlyCardDetail.sourceId, "CCSYNTHV2A1J00000000001");
+    assert.equal(cityOnlyCardDetail.location, "合成市·甲新区", "finer detail location remains unchanged");
     const noExternalActionCount = bridge.calls.filter((call) => ["navigate", "bringToFront"].includes(call.type) || call === "bringToFront").length;
 
     for (const [label, mutate] of [
-      ["cross-city", () => { document.querySelector("#vue2-card .job-card__location").textContent = "上海 朝阳 建外"; }],
+      ["cross-city", () => {
+        document.querySelector("#vue2-card .job-card__location").textContent = "另一市 甲 商圈";
+        document.querySelector("#vue2-summary .job-detail-summary__tags li").textContent = "合成市";
+      }],
       ["different-district", () => { document.querySelector("#vue2-card .job-card__location").textContent = "北京 海淀 中关村"; }],
-      ["card-id", () => { document.getElementById("vue2-card").__vue__.$props.job.number = "CCWRONGCARD2J00000000001"; }],
-      ["detail-id", () => { document.getElementById("vue2-summary").__vue__.$props.jobDetail.detailedPosition.number = "CCWRONGDETAILJ00000000001"; }],
+      ["empty-detail-location", () => { document.querySelector("#vue2-summary .job-detail-summary__tags li").textContent = ""; }],
+      ["card-id", () => {
+        document.querySelector("#vue2-summary .job-detail-summary__tags li").textContent = "北京";
+        document.getElementById("vue2-card").__vue__.$props.job.number = "CCWRONGCARD2J00000000001";
+      }],
+      ["detail-id", () => {
+        document.querySelector("#vue2-summary .job-detail-summary__tags li").textContent = "北京";
+        document.getElementById("vue2-summary").__vue__.$props.jobDetail.detailedPosition.number = "CCWRONGDETAILJ00000000001";
+      }],
       ["computed-id", () => { document.getElementById("vue2-summary").__vue__.position.number = "CCWRONGCOMPUTJ00000000001"; }],
       ["link-id", () => { document.querySelector(".job-company-info__view-all").href = "https://www.zhaopin.com/jobdetail/CCWRONGLINK2J00000000001.htm"; }],
       ["unmarked-company", () => { document.querySelector(".job-detail-summary__company-name").textContent = "合成冲突公司"; }]
@@ -341,6 +371,7 @@ async function main() {
     await page.goto("https://www.zhaopin.com/jobs-vue2/?pageMode=search&kw=%E5%90%88%E6%88%90%E5%85%B3%E9%94%AE%E8%AF%8D");
     await page.evaluate(() => {
       history.replaceState({}, "", "/jobs/?pageMode=search&kw=%E5%90%88%E6%88%90%E5%85%B3%E9%94%AE%E8%AF%8D");
+      document.querySelector("#vue2-summary .job-detail-summary__tags li").textContent = "北京";
       delete document.getElementById("vue2-card").__vue__;
       delete document.getElementById("vue2-summary").__vue__;
     });

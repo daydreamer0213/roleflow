@@ -556,10 +556,12 @@ function sameLocation(left, right, allowBusinessDistrict = false) {
   const parts = value => String(value || "").split(/[·•・\s]+/).map(item => item.trim()).filter(Boolean);
   const leftParts = parts(left);
   const rightParts = parts(right);
-  if (leftParts.length < 2 || rightParts.length < 2) return false;
+  if (!leftParts.length || !rightParts.length) return false;
   const city = value => value.replace(/市$/, "");
+  if (city(leftParts[0]) !== city(rightParts[0])) return false;
+  if (leftParts.length === 1 || rightParts.length === 1) return true;
   const district = value => value.replace(/(?:新区|区|县)$/, "");
-  return city(leftParts[0]) === city(rightParts[0]) && district(leftParts[1]) === district(rightParts[1]);
+  return district(leftParts[1]) === district(rightParts[1]);
 }
 
 function safeIdentity(url) {
