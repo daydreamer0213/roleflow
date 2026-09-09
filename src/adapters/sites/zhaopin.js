@@ -693,4 +693,4 @@ function assertZhaopinWorkspaceWindow(tabs, search) {
   }
 }
 
-module.exports = { ZhaopinSiteAdapter, ZHAOPIN_PAGE_HELPERS_EXPRESSION, ZHAOPIN_COMPONENT_ACCESSORS_SOURCE, resolveZhaopinSearchTab, isZhaopinWorkspaceTab, assertZhaopinWorkspaceWindow };
+module.exports = { ZhaopinSiteAdapter, ZHAOPIN_PAGE_HELPERS_EXPRESSION, ZHAOPIN_COMPONENT_ACCESSORS_SOURCE, resolveZhaopinSearchTab, isZhaopinWorkspaceTab, assertZhaopinWorkspaceWindow, releaseSearchRenderScope };

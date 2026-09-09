@@ -417,6 +417,30 @@ async function main() {
     assert.equal(backgroundCleanupBrowser.state.focusEnabled, false);
 
     await page.goto(SEARCH_URL);
+    await page.evaluate(() => { window.fixture.reset(); window.fixture.select(0); });
+    const priorCleanupCause = new Error("prior cleanup cause");
+    const combinedCleanupError = Object.assign(new Error("background rendering cleanup failed with prior cause"), {
+      code: "BROWSER_COMMAND_FAILED",
+      cause: priorCleanupCause
+    });
+    const combinedFailureBrowser = fakeBrowser(page, {
+      hideNextPageJobBTitleUntilRendered: true,
+      focusDisableError: combinedCleanupError
+    });
+    const combinedFailureAdapter = adapterFor(combinedFailureBrowser);
+    await prepareSession(combinedFailureAdapter, combinedFailureBrowser);
+    await assert.rejects(() => combinedFailureAdapter.inspectCommunicationJob(backgroundMissing), (error) => {
+      assert(error instanceof AggregateError, "cleanup failure and original lookup failure must both be retained");
+      assert.equal(error.code, "BROWSER_COMMAND_FAILED");
+      assert.equal(error.cause?.code, "ZHAOPIN_COMMUNICATION_TARGET_NOT_FOUND");
+      assert.equal(error.errors?.[0], combinedCleanupError);
+      assert.equal(error.errors?.[0]?.cause, priorCleanupCause);
+      assert.equal(error.errors?.[1]?.code, "ZHAOPIN_COMMUNICATION_TARGET_NOT_FOUND");
+      return true;
+    });
+    assert.equal(combinedFailureBrowser.calls.filter((call) => call.kind === "prechat").length, 0, "combined cleanup failure cannot authorize dispatch");
+
+    await page.goto(SEARCH_URL);
     await page.evaluate(() => window.fixture.useVue2());
     const vue2Browser = fakeBrowser(page);
     const vue2Adapter = adapterFor(vue2Browser);

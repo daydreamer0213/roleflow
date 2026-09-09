@@ -3,7 +3,8 @@ const {
   ZhaopinSiteAdapter,
   ZHAOPIN_COMPONENT_ACCESSORS_SOURCE,
   resolveZhaopinSearchTab,
-  isZhaopinWorkspaceTab
+  isZhaopinWorkspaceTab,
+  releaseSearchRenderScope
 } = require("./zhaopin");
 const {
   canonicalizeZhaopinSearchTemplate,
@@ -226,10 +227,7 @@ class ZhaopinCommunicationAdapter extends ZhaopinSiteAdapter {
       throw error;
     } finally {
       try {
-        await releaseSearchRendering?.();
-      } catch (cleanupError) {
-        if (operationError && cleanupError.cause === undefined) cleanupError.cause = operationError;
-        throw cleanupError;
+        await releaseSearchRenderScope(releaseSearchRendering, operationError);
       } finally {
         this.end("inspection");
       }
