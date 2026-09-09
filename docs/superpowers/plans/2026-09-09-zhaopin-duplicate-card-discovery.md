@@ -32,15 +32,15 @@
 
 **Observed contract:** helper returns first selectedIndex; native ZL may mark multiple same-ID cards active. Existing signature is `[index, rawSourceId, title, salary, company, location, fullText].join('|')`. sourceId is exposed only after component number/name/company agrees with public fields. Existing seen is reset within each target; seen.add occurs after saved detail/progress/results callbacks. Keep these points.
 
-- [ ] Step 1: Behavioral RED before product edits. Use actual scan with fake browser representing duplicate same-ID/index0 and laterindex2, same remainder signature, both active -> selectedIndex0. Include another unique job after duplicate and a target requiring that unique job. Old scan should throw identity error or fail the final unique-job outcome, not merely a version/source assertion. Record actual command, failing assertion/code and exit. Synthetic fixtures only.
-- [ ] Step 2: Minimal implementation. A visit key may remove exactly the `${card.index}|` prefix when a reliable sourceId exists and the signature really starts with it; retain all remaining content. Otherwise use the untouched signature. Use the same key in find and seen.add; retain after-checkpoint timing/per-target scope. Do not edit activeIndex matching or detailMatches. Identical duplicates skip with no new detail access/click; unique target count unchanged.
-- [ ] Step 3: Focused GREEN. Cover duplicate skip + next unique job + physical access/checkpoint counts; different IDs/same title and same ID/changed content are not skipped; unknown ID/format falls back; next keyword still revalidates. Do not add speculative tests or change production behavior to satisfy fake shape. Run zhaopin_workflow_smoke, zhaopin_readonly_smoke, zhaopin_communication_adapter_smoke, workflow_scan_analysis_smoke; node --check src/adapters/sites/zhaopin.js; git diff --check. Do not run npm test (main owns it).
-- [ ] Step 4: Self-review and commit only owned files. Write full report with actual RED/GREEN, limits, unchanged contracts and concerns; return brief status/SHA/tests/report path.
+- [x] Step 1: Behavioral RED before product edits. Actual scan failed the expected three-unique-job outcome (only two returned after consuming detail budget on a duplicate), exit1, not a version/source assertion. Synthetic fixtures only; full command/output in task report.
+- [x] Step 2: Minimal implementation. A visit key removes exactly the `${card.index}|` prefix when a reliable sourceId exists and the signature really starts with it; all remaining content stays. Otherwise untouched signature. Same key in find/add, after-checkpoint timing and per-target scope retained. ActiveIndex/detailMatches unchanged. Duplicate has no new detail access/click; unique target count unchanged.
+- [x] Step 3: Focused GREEN. Duplicate skip/next unique/physical and checkpoint counts, changed/different/unknown ID and signature, and next-keyword revalidation covered. zhaopin_workflow_smoke, zhaopin_readonly_smoke, zhaopin_communication_adapter_smoke, workflow_scan_analysis_smoke, syntax and diff all exit0. No worker full suite.
+- [x] Step 4: Self-review and commit only owned files. `153272bd41e0a3b455daaa934b42ff51e4e40e68`; full RED/GREEN report retained in this plan's SDD workspace.
 
 Environment: NODE_PATH=C:/Users/Administrator/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules; ROLEFLOW_REQUIRE_PLAYWRIGHT=1; TEMP=TMP=D:/DevData/RoleFlow-tests; Node=D:/hermes/node/node.exe. Do not install dependencies.
 
 ## Main continuation
 
-- [ ] Scoped review only this task; resolve findings without reopening previous reviews.
+- [x] Scoped review only this task; `153272b` Spec compliant/Approved, no Critical/Important/Minor. Previous reviews remain closed; live/service/new full gate remain main-owned.
 - [ ] Freeze clean SHA and new strict full gate; restart only owned8788 isolated service; normal UI resume same original run/batch without reducing targets.
 - [ ] Continue real scan/analysis and existing bounded initial-greeting/messages/drafts acceptance; no reply send. Record current evidence and remaining limitations; no push/merge/release.
