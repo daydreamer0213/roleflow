@@ -15,12 +15,16 @@ function isVisibleZhaopinLoginChallenge(node) {
   const ordinaryHeaderLink = node.matches?.("a.home-header__b-login, a.home-header__c-no-login")
     && node.parentElement?.matches?.(".home-header__right");
   const ordinaryAccountHeader = node.closest?.(".home-header__c-login");
+  const ordinaryHomeAccountNode = ordinaryAccountHeader?.parentElement?.matches?.(".home-header__right") && (
+    node === ordinaryAccountHeader
+    || node.matches?.(".home-header__c-login, .c-login__top, .c-login__name, .c-login__photo, .c-login__img, .c-login__top__name, .c-login__top__photo, .c-login__top__img, .c-login__ul")
+  );
   const detailHeader = node.closest?.(".header-nav__login");
   const ordinaryDetailHeaderNode = detailHeader?.parentElement?.matches?.(".header-nav__main") && (
     node === detailHeader
     || node.matches?.("a.header-nav__b-login, .header-nav__c-login, .c-login__top, .c-login__name, .c-login__photo, .c-login__img, .c-login__top__name, .c-login__top__photo, .c-login__top__img")
   );
-  return !(ordinaryHeaderLink || ordinaryAccountHeader?.parentElement?.matches?.(".home-header__right") || ordinaryDetailHeaderNode);
+  return !(ordinaryHeaderLink || ordinaryHomeAccountNode || ordinaryDetailHeaderNode);
 }
 
 const ZHAOPIN_MESSAGE_SNAPSHOT_EXPRESSION = String.raw`(() => {

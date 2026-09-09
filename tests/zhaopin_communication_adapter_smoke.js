@@ -262,6 +262,50 @@ async function main() {
     assert(createSiteAdapter("zhaopin", { operation: "communication", browser: fakeBrowser(page) }) instanceof ZhaopinCommunicationAdapter);
     assert.equal(createSiteAdapter("zhaopin", { browser: fakeBrowser(page) }).constructor.name, "ZhaopinSiteAdapter", "search factory behavior stays unchanged");
 
+    await page.evaluate(() => {
+      const header = document.createElement("nav");
+      header.className = "home-header__right fixture-authenticated-header";
+      header.innerHTML = '<a class="home-header__b-login">合成入口</a><div class="home-header__c-login"><div class="c-login__top"><span class="c-login__top__name">合成账户</span><span class="c-login__top__photo"><img class="c-login__top__img" alt="合成头像"></span></div></div>';
+      document.body.prepend(header);
+    });
+    const authenticatedHeaderBrowser = fakeBrowser(page);
+    const authenticatedHeaderAdapter = adapterFor(authenticatedHeaderBrowser);
+    await prepareSession(authenticatedHeaderAdapter, authenticatedHeaderBrowser);
+    assert.equal((await authenticatedHeaderAdapter.inspectCommunicationJob(JOB_A)).state, "ready",
+      "the observed authenticated home header is not a login challenge");
+    assert.equal(authenticatedHeaderBrowser.calls.filter((call) => call.kind === "prechat").length, 0);
+    assert.equal(await page.evaluate(() => window.fixture.applyClicks), 0);
+
+    const nestedLoginBrowser = fakeBrowser(page);
+    const nestedLoginAdapter = adapterFor(nestedLoginBrowser);
+    await prepareSession(nestedLoginAdapter, nestedLoginBrowser);
+    await page.evaluate(() => {
+      const panel = document.createElement("section");
+      panel.className = "login-panel fixture-nested-login";
+      panel.textContent = "请登录";
+      panel.style.cssText = "position:fixed;left:20px;top:20px;width:320px;height:200px;background:white";
+      document.querySelector(".home-header__c-login").append(panel);
+    });
+    await assert.rejects(() => nestedLoginAdapter.inspectCommunicationJob(JOB_A), (error) => error.code === "ZHAOPIN_LOGIN_REQUIRED");
+    assert.equal(nestedLoginBrowser.calls.filter((call) => call.kind === "prechat").length, 0);
+    assert.equal(await page.evaluate(() => window.fixture.applyClicks), 0);
+
+    const misplacedAccountBrowser = fakeBrowser(page);
+    const misplacedAccountAdapter = adapterFor(misplacedAccountBrowser);
+    await page.evaluate(() => document.querySelector(".fixture-nested-login").remove());
+    await prepareSession(misplacedAccountAdapter, misplacedAccountBrowser);
+    await page.evaluate(() => {
+      document.querySelector(".fixture-authenticated-header").remove();
+      const misplaced = document.createElement("div");
+      misplaced.className = "home-header__c-login fixture-misplaced-account";
+      misplaced.innerHTML = '<div class="c-login__top"><span class="c-login__top__name">错误父级下的合成账户</span></div>';
+      document.body.prepend(misplaced);
+    });
+    await assert.rejects(() => misplacedAccountAdapter.inspectCommunicationJob(JOB_A), (error) => error.code === "ZHAOPIN_LOGIN_REQUIRED");
+    assert.equal(misplacedAccountBrowser.calls.filter((call) => call.kind === "prechat").length, 0);
+    assert.equal(await page.evaluate(() => window.fixture.applyClicks), 0);
+    await page.evaluate(() => document.querySelector(".fixture-misplaced-account").remove());
+
     const directBrowser = fakeBrowser(page);
     const directAdapter = adapterFor(directBrowser);
     const activeBefore = directBrowser.state.activeTabId;

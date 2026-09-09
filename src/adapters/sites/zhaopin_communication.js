@@ -13,6 +13,7 @@ const { isBrowserTabId, sameBrowserTabId } = require("../../core/browser_tab_ide
 const {
   ZHAOPIN_MESSAGE_SNAPSHOT_EXPRESSION,
   hasZhaopinOutgoingTextSnapshot,
+  isVisibleZhaopinLoginChallenge,
   isZhaopinMessageUrl
 } = require("./zhaopin_message_reader");
 
@@ -23,6 +24,7 @@ const REJECTED_STATUS_CODES = new Set(["2024", "2025", "2005", "2006", "2007"]);
 const REJECTED_ACTION_CODES = new Set(["3000", "3001"]);
 
 const ZHAOPIN_COMMUNICATION_SNAPSHOT_EXPRESSION = String.raw`(() => {
+  const isVisibleZhaopinLoginChallenge = ${isVisibleZhaopinLoginChallenge.toString()};
   const clean = value => String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
   const visible = node => {
     if (!node || node.hidden || node.getAttribute('aria-hidden') === 'true') return false;
@@ -37,7 +39,7 @@ const ZHAOPIN_COMMUNICATION_SNAPSHOT_EXPRESSION = String.raw`(() => {
     .filter(visible).filter(node => clean(node.textContent) === '已向对方发送打招呼语');
   return {
     risk: /安全验证|访问异常|行为验证|访问受限/.test(document.title || '') || /账户存在异常行为|暂时无法访问/.test(bodyText),
-    loginRequired: [...document.querySelectorAll('.login,.login-panel,[class*="login"]')].some(visible),
+    loginRequired: [...document.querySelectorAll('.login,.login-panel,[class*="login"]')].some(isVisibleZhaopinLoginChallenge),
     prechatCount: prechat.length,
     prechatLabel: prechat.length === 1 ? clean(prechat[0].textContent) : '',
     applyCount: apply.length,
