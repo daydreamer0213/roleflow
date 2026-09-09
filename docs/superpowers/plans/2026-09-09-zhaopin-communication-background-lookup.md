@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Work only in D:/DevData/RoleFlow-worktrees/zhaopin-readonly; read root AGENTS.md. No real browser, live DB, service, full gate, version, push, merge or release operations by worker.
-- Own only src/adapters/sites/zhaopin_communication.js and tests/zhaopin_communication_adapter_smoke.js. Do not revert others' edits. No new module or dependency.
+- Own src/adapters/sites/zhaopin_communication.js and tests/zhaopin_communication_adapter_smoke.js; src/adapters/sites/zhaopin.js only to export the existing releaseSearchRenderScope helper for reuse. Do not revert others' edits. No new module or dependency.
 - Preserve exact identity checks, existing20scroll cap, pacing, access reservations, login/risk stops and zero retry of communication dispatch. No foreground or viewport changes.
 - Main owns services, genuine acceptance, documentation and full gate. Old1eb48e2 gate157/157 is historical after source changes.
 
@@ -40,6 +40,6 @@ releaseSearchRendering = await this.openSearchRenderScope(this.binding.searchTab
 // catch: preserve operationError and rethrow; finally: release, attach cause if needed, always end.
 ```
 
-- [ ] Add bounded not-found and cancellation cases verifying rendering release and zero dispatch. A cleanup failure must still clear inspection busy state and must not authorize a click.
+- [ ] Add bounded not-found and cancellation cases verifying rendering release and zero dispatch. A cleanup failure must still clear inspection busy state and must not authorize a click. Reuse the existing releaseSearchRenderScope AggregateError behavior to retain both failures even when cleanupError already has its own cause; test a combined lookup+cleanup failure.
 - [ ] GREEN: zhaopin_communication_adapter_smoke, zhaopin_readonly_adapter_smoke, dashboard_zhaopin_communication_smoke, zhaopin_communication_storage_smoke (verify exact test filename with rg first). Syntax and git diff --check. NODE_PATH=C:/Users/Administrator/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules; ROLEFLOW_REQUIRE_PLAYWRIGHT=1; TEMP/TMP=D:/DevData/RoleFlow-tests.
 - [ ] Self-review and commit only owned files. Report exact SHA, actual RED/GREEN, files, concerns. Main arranges one bounded spec+quality review, not re-reviewing the old110commits.
