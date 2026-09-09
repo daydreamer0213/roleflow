@@ -160,12 +160,13 @@ const ZHAOPIN_PAGE_HELPERS_EXPRESSION = String.raw`(() => {
 })()`;
 
 class ZhaopinSiteAdapter {
-  constructor({ browser = null, logger = null, sleepFn = sleep, randomFn = Math.random, accessController = null } = {}) {
+  constructor({ browser = null, logger = null, sleepFn = sleep, randomFn = Math.random, accessController = null, nowFn = Date.now } = {}) {
     this.browser = browser;
     this.logger = logger;
     this.sleep = sleepFn;
     this.random = randomFn;
     this.accessController = accessController;
+    this.detailNow = nowFn;
     this.searchRenderScopes = new Map();
   }
 
@@ -406,7 +407,9 @@ class ZhaopinSiteAdapter {
       const activation = await this.browser.evalValue(tabId, `(() => window.__zhaopinActivateCard(${JSON.stringify(refreshedCard.index)}, ${JSON.stringify(refreshedCard.signature)}))()`);
       if (activation?.ready !== true) return null;
     }
-    for (let attempt = 0; attempt < 6; attempt += 1) {
+    const deadline = this.detailNow() + 120000;
+    let unconfirmedSamples = 0;
+    while (true) {
       throwIfAborted(signal);
       await assertBindings(assertTabBindings);
       const state = await this.readSearchState(tabId);
@@ -417,9 +420,16 @@ class ZhaopinSiteAdapter {
         const { publisherCompany: _publisherCompany, ...detail } = state.detail;
         return { ...detail, company: detail.company || refreshedCard.company || '', ...identity };
       }
-      if (attempt < 5) await this.waitWithChecks(signal, assertTabBindings);
+      if (state.loading) unconfirmedSamples = 0;
+      else if (++unconfirmedSamples >= 6) return null;
+      const remaining = deadline - this.detailNow();
+      if (remaining <= 0) {
+        if (state.loading) throw zhaopinError('ZHAOPIN_DETAIL_LOAD_TIMEOUT',
+          '智联岗位详情未加载完成，本轮进度已保留。请稍后确认智联详情能正常显示，再点击“继续本轮”。');
+        return null;
+      }
+      await this.waitWithChecks(signal, assertTabBindings, Math.min(state.loading ? 500 : 120, remaining));
     }
-    return null;
   }
 
   async assertBoundTab(tabId) {
@@ -440,10 +450,10 @@ class ZhaopinSiteAdapter {
     }
   }
 
-  async waitWithChecks(signal, assertTabBindings) {
+  async waitWithChecks(signal, assertTabBindings, delayMs = 120) {
     throwIfAborted(signal);
     await assertBindings(assertTabBindings);
-    await abortableSleep(this.sleep(120), signal);
+    await abortableSleep(this.sleep(delayMs), signal);
     throwIfAborted(signal);
     await assertBindings(assertTabBindings);
   }

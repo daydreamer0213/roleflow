@@ -18,20 +18,34 @@ const { createSiteAccessController } = require('../src/core/site_access_budget')
 const fs = require('node:fs');
 const path = require('node:path');
 
-function fakeBrowser({ terminal = true, loadingOnSwitch = false, cardCount = 3, navigateError = null, detailFor = null } = {}) {
+function fakeBrowser({ terminal = true, loadingOnSwitch = false, cardCount = 3, navigateError = null, detailFor = null, renderScope = false, cardSourceIds = false } = {}) {
   let url = 'https://www.zhaopin.com/jobs/?pageMode=search&jl=548&kw=AI';
   let selectedIndex = 0;
   let windowId = 1;
   let dashboardPath = '/workflow';
   const overrides = {};
-  const cards = Array.from({ length: cardCount }, (_, index) => ({ index, signature: `card-${index}`, title: `岗位${index}`, company: '公司', salary: '10-20K', location: '广州' }));
-  return {
+  const calls = [];
+  const cards = Array.from({ length: cardCount }, (_, index) => ({
+    index,
+    signature: `card-${index}`,
+    title: `岗位${index}`,
+    company: '公司',
+    salary: '10-20K',
+    location: '广州',
+    ...(cardSourceIds ? { sourceId: `SYNTH${index}`, currentSourceIdSupplied: true } : {})
+  }));
+  const bridge = {
+    calls,
     setState(value) { Object.assign(overrides, value); },
     moveToWindow(value) { windowId = value; },
     changeDashboardPage(value) { dashboardPath = value; },
-    async listTabs() { return [{ id: 'dashboard', windowId: 1, url: `http://127.0.0.1${dashboardPath}`, active: true }, { id: 'cdp-zl', windowId, url, active: false }]; },
-    async navigate(id, target) { assert.equal(id, 'cdp-zl'); if (navigateError) throw navigateError; url = target; selectedIndex = 0; },
+    async listTabs() {
+      calls.push({ type: 'listTabs' });
+      return [{ id: 'dashboard', windowId: 1, url: `http://127.0.0.1${dashboardPath}`, active: true }, { id: 'cdp-zl', windowId, url, active: false }];
+    },
+    async navigate(id, target) { calls.push({ type: 'navigate', id, target }); assert.equal(id, 'cdp-zl'); if (navigateError) throw navigateError; url = target; selectedIndex = 0; },
     async evalValue(id, expression) {
+      calls.push({ type: 'evalValue', id, expression });
       assert.equal(id, 'cdp-zl');
       if (expression.includes('const clean =')) return true;
       if (expression.includes('__zhaopinActivateCard(')) { selectedIndex = Number(expression.match(/ActivateCard\((\d+)/)[1]); if (loadingOnSwitch) overrides.loading = true; return { ready: true }; }
@@ -42,6 +56,22 @@ function fakeBrowser({ terminal = true, loadingOnSwitch = false, cardCount = 3, 
       return { url, keyword, filterSummary: ['广东'], cards, selectedIndex, loading: false, risk: false, loginRequired: false, isSearchPage: true, confirmedEnd: terminal, detail, ...overrides };
     }
   };
+  if (renderScope) {
+    bridge.setPageLifecycleActive = async (id) => {
+      calls.push({ type: 'lifecycle', id });
+      assert.equal(id, 'cdp-zl');
+    };
+    bridge.cdp = async (id, method, params) => {
+      calls.push({ type: 'cdp', id, method, params });
+      assert.equal(id, 'cdp-zl');
+      assert.equal(method, 'Emulation.setFocusEmulationEnabled');
+    };
+  }
+  return bridge;
+}
+
+function zhaopinActivations(bridge) {
+  return bridge.calls.filter(call => call.type === 'evalValue' && call.expression.includes('__zhaopinActivateCard(')).length;
 }
 
 async function main() {
@@ -182,17 +212,89 @@ async function main() {
       }), error => error.code === ({ cancel: 'ZHAOPIN_ABORTED', risk: 'ZHAOPIN_RISK_CONTROL', storage: 'SCAN_CHECKPOINT_FAILED' })[failure]);
       assert.equal(detailReads, 1, `${failure} after a short checkpoint must prevent reading the next card`);
     }
+    const slowReadyBatch = storage.createBatch(db, 'zhaopin', 'AI', 'slow-detail-ready');
+    const slowReadyBridge = fakeBrowser({ loadingOnSwitch: true, cardCount: 2 });
+    let slowReadyClock = 0;
+    let slowReadyDetailClock = 0;
+    let slowReadyCharges = 0;
+    await new ZhaopinSiteAdapter({
+      browser: slowReadyBridge,
+      nowFn: () => slowReadyClock,
+      sleepFn: async (ms = 120) => {
+        slowReadyClock += ms;
+        if (zhaopinActivations(slowReadyBridge) > 0) slowReadyDetailClock += ms;
+        if (slowReadyDetailClock >= 5000) slowReadyBridge.setState({ loading: false });
+      },
+      randomFn: () => 0,
+      accessController: { reserve: async action => { if (action === 'pane_detail_read') slowReadyCharges++; } }
+    }).scan({
+      ...opts,
+      maxCards: 2,
+      maxDetailTotal: 2,
+      onDetailCheckpoint: ({ job }) => storage.upsertJob(db, job, slowReadyBatch)
+    });
+    assert.deepEqual(storage.listReportJobs(db, { batchId: slowReadyBatch }).map(job => job.sourceId).sort(), ['SYNTH0', 'SYNTH1'], 'the first checkpoint is preserved while the second card waits for full detail');
+    assert.equal(zhaopinActivations(slowReadyBridge), 1, 'the slow second card is activated once');
+    assert.equal(slowReadyCharges, 2, 'the first card and slow second card each consume one pane-detail reservation');
+    assert(slowReadyDetailClock >= 5000, 'fake time proves readiness happened after the old six-sample window');
+
+    const identityConflictBridge = fakeBrowser({ cardSourceIds: true, detailFor: ({ selectedIndex, card }) => ({
+      ...card,
+      description: '完整岗位职责与任职要求。'.repeat(20),
+      url: `https://www.zhaopin.com/jobdetail/${selectedIndex === 1 ? 'WRONG' : 'SYNTH'}${selectedIndex}.htm`
+    }) });
+    let identityConflictClock = 0;
+    const identityConflictAdapter = new ZhaopinSiteAdapter({ browser: identityConflictBridge, nowFn: () => identityConflictClock, sleepFn: async (ms = 120) => { identityConflictClock += ms; }, randomFn: () => 0 });
+    const identityConflictState = await identityConflictAdapter.readSearchState('cdp-zl');
+    assert.equal(await identityConflictAdapter.readVisiblePaneDetail('cdp-zl', identityConflictState.cards[1]), null, 'loaded but mismatched detail identity is rejected without the long loading deadline');
+    assert.equal(identityConflictClock, 600, 'non-loading identity failures keep the original six 120ms samples');
+
     const loadingBatch = storage.createBatch(db, 'zhaopin', 'AI', 'loading-timeout');
     const loadingTargets = [], loadingTerminal = [];
     const loadingBridge = fakeBrowser({ loadingOnSwitch: true });
+    let loadingClock = 0;
     let waits = 0;
-    await assert.rejects(() => new ZhaopinSiteAdapter({ browser: loadingBridge, sleepFn: async () => { waits++; }, randomFn: () => 0 }).scan({ ...opts, maxDetailTotal: 3,
+    await assert.rejects(() => new ZhaopinSiteAdapter({ browser: loadingBridge, nowFn: () => loadingClock, sleepFn: async (ms = 120) => { waits++; loadingClock += ms; }, randomFn: () => 0 }).scan({ ...opts, maxDetailTotal: 3,
       onDetailCheckpoint: ({ job }) => storage.upsertJob(db, job, loadingBatch), onTargetComplete: target => loadingTargets.push(target), onScanComplete: result => loadingTerminal.push(result)
-    }), error => error.code === 'ZHAOPIN_DETAIL_IDENTITY_UNCONFIRMED');
+    }), error => error.code === 'ZHAOPIN_DETAIL_LOAD_TIMEOUT' && /岗位详情未加载完成/.test(error.message));
     assert.deepEqual(storage.listReportJobs(db, { batchId: loadingBatch }).map(job => job.sourceId), ['SYNTH0'], 'new ID must not adopt a still-loading old complete body');
     assert.equal(loadingTargets[0].status, 'partial');
     assert.equal(loadingTerminal[0].status, 'partial');
-    assert(waits < 100, 'detail readiness wait is bounded');
+    assert(waits < 260, 'detail readiness uses fake time instead of a real 120 second sleep');
+    assert.equal(zhaopinActivations(loadingBridge), 1, 'a long-loading detail is not re-clicked');
+
+    for (const [failure, configure] of [
+      ['pause', ({ mark }) => ({ assertTabBindings: () => { if (mark.triggered) throw Object.assign(new Error('pause'), { code: 'WORKFLOW_PAUSE_REQUESTED' }); }, trigger: () => { mark.triggered = true; }, code: 'WORKFLOW_PAUSE_REQUESTED' })],
+      ['risk', ({ bridge }) => ({ trigger: () => bridge.setState({ risk: true }), code: 'ZHAOPIN_RISK_CONTROL' })],
+      ['binding', ({ bridge }) => ({ trigger: () => bridge.moveToWindow(2), code: 'ZHAOPIN_WINDOW_MISMATCH' })]
+    ]) {
+      const bridge = fakeBrowser({ loadingOnSwitch: true, renderScope: true });
+      const batchId = storage.createBatch(db, 'zhaopin', 'AI', `loading-${failure}`);
+      const mark = { triggered: false };
+      const control = configure({ bridge, mark });
+      let clock = 0;
+      let detailReads = 0;
+      await assert.rejects(() => new ZhaopinSiteAdapter({
+        browser: bridge,
+        nowFn: () => clock,
+        sleepFn: async (ms = 120) => {
+          clock += ms;
+          if (zhaopinActivations(bridge) > 0) control.trigger();
+        },
+        randomFn: () => 0,
+        accessController: { reserve: async action => { if (action === 'pane_detail_read') detailReads++; } }
+      }).scan({
+        ...opts,
+        maxDetailTotal: 3,
+        assertTabBindings: control.assertTabBindings,
+        onDetailCheckpoint: ({ job }) => storage.upsertJob(db, job, batchId)
+      }), error => error.code === control.code);
+      assert.deepEqual(storage.listReportJobs(db, { batchId }).map(job => job.sourceId), ['SYNTH0'], `${failure} during loading preserves the first checkpoint only`);
+      assert.equal(zhaopinActivations(bridge), 1, `${failure} during loading does not re-click the second card`);
+      assert.equal(detailReads, 2, `${failure} during loading does not reserve the interrupted detail twice`);
+      assert.deepEqual(bridge.calls.filter(call => call.type === 'cdp').map(call => call.params.enabled), [true, false], `${failure} during loading releases the render scope`);
+    }
+
     const loadingStop = new AbortController();
     const stopBridge = fakeBrowser({ loadingOnSwitch: true });
     const stopAdapter = new ZhaopinSiteAdapter({ browser: stopBridge, sleepFn: async () => loadingStop.abort() });
