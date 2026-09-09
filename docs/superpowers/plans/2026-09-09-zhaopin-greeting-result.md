@@ -40,4 +40,4 @@ const label = node.matches('.deliver-greeting-modal')
 - [x] Run syntax, adapter, readonly, dashboard communication and communication storage smokes with existing NODE_PATH; TEMP/TMP stay onD. Record GREEN and commit implementation.
 - [x] Arrange one bounded independent read-only review of this diff, resolve important findings; do not audit the earlier branch again.
 - [x] Frozen c63d469 source passed the fresh full157 gate with exit0, unchanged SHA and clean tree. Update authority docs; do not repeat real sending.
-- [ ] Push the same branch and verify exact remote SHA; no merge/release. Preserve external push receipt.
+- [x] Pushed the same branch and verified remote74d9f2c matched the local handoff; main remained15dc548. This documentation-only completion follows on the same branch; exact final tip is recorded in the external push receipt. No merge/release.
