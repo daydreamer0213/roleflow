@@ -26,7 +26,7 @@
 
 **Context:** sameLocation currently strips /(?:新区|区|县)$/ from the SECOND location part only; the FIRST city normalization already strips 市. The caller permits this path only with complete matching component IDs. Existing readonly test around newDistrictDetail/cityDetail contains true adapter checks, fixture reset and ID/conflict rejection.
 
-- [ ] Step 1: Before product edits, add a synthetic same-ID positive case to existing Vue2 flow: card location “合成市 甲 商圈”, detail first location tag “合成市·甲市”. Assert returned correct sourceId and unchanged detail.location. Add direct rejection for card “合成市 乙 商圈” against that same county-city detail, and ensure existing no-ID and city/district-conflict tests remain meaningful. No real city hardcoding.
+- [x] Step 1: Before product edits, add a synthetic same-ID positive case to existing Vue2 flow: card location “合成市 甲 商圈”, detail first location tag “合成市·甲市”. Assert returned correct sourceId and unchanged detail.location. Add direct rejection for card “合成市 乙 商圈” against that same county-city detail, and ensure existing no-ID and city/district-conflict tests remain meaningful. No real city hardcoding.
 
 Example (after setting the two DOM locations in the existing fixture):
 ```js
@@ -37,17 +37,20 @@ assert.equal(countyDetail.sourceId, countyState.cards[0].sourceId);
 assert.equal(countyDetail.location, "合成市·甲市");
 ```
 
-- [ ] Step 2: Run node tests/zhaopin_readonly_smoke.js; actual null/assertion RED must precede source edit. Record command and failure.
-- [ ] Step 3: Only product change:
+- [x] Step 2: Run node tests/zhaopin_readonly_smoke.js; actual null/assertion RED must precede source edit. Record command and failure.
+- [x] Step 3: Only product change:
 ```js
 const district = value => value.replace(/(?:新区|区|县|市)$/, "");
 ```
 Keep every other branch/caller unchanged.
-- [ ] Step 4: GREEN node tests/zhaopin_readonly_smoke.js and node tests/zhaopin_communication_adapter_smoke.js; node --check changed source/test; git diff --check. Record warnings honestly; no full suite or unrelated warning cleanup.
-- [ ] Step 5: Self-review, commit only owned two files; full task report with RED/GREEN command/output to this plan's task-1-report.md. Return short status/SHA/concerns.
+- [x] Step 4: GREEN node tests/zhaopin_readonly_smoke.js and node tests/zhaopin_communication_adapter_smoke.js; node --check changed source/test; git diff --check. Record warnings honestly; no full suite or unrelated warning cleanup.
+- [x] Step 5: Self-review, commit only owned two files; full task report with RED/GREEN command/output to this plan's task-1-report.md. Return short status/SHA/concerns.
 
 ## Main continuation
 
-- [ ] Scoped review with both verdicts; current real selected-job verification; clean frozen SHA full gate.
-- [ ] Recheck owned service/bridge processes (oldPID7092 absent on latest check; do not kill unrelated processes); restart only needed owned helpers, then localUI original-run resume.
+- [x] Scoped review: Spec compliant/Approved, no findings. Actual original selected-job read passed09:34:46, correctID790chars/rawlocation/zeroactions/tabsunchanged.
+- [ ] Final stable clean SHA strict full gate before overall completion or external greeting; prior79c2f04 full157 does not certify this new suffix delta.
+- [x] Rechecked oldservice/bridge absent; restarted only ownedhelpers, exactdata-rootverified. Normal localUI Continue once showed scanning on the original run; no newbatch or target reduction.
 - [ ] Continue whole scan/analysis and bounded ordinary greeting/messages/drafts; stop before reply send. No push/merge/release.
+
+Source `edcd6be0d47b0f42fcce96ab4f34198c34c2628d`; task report/review retained in this plan's SDD workspace. ActualRED null assertion before one-line suffix edit,2focusedGREEN/syntax/diff passed. No new dependency, platformwrite, focus or JD quality/coverage change. Main continues genuine whole acceptance, not a task-level completion claim.
