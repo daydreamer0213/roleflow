@@ -233,8 +233,10 @@ async function main() {
     await page.evaluate(() => {
       const fullTitle = "合成智能应用工程师（Python与视觉方向）";
       const title = document.querySelector("#vue2-card .job-card__title-main");
-      title.querySelector(".vue-clamp__text").textContent = "合成智能应用工程师（Python…";
-      title.setAttribute("aria-label", fullTitle);
+      const text = title.querySelector(".vue-clamp__text");
+      text.textContent = "合成智能应用工程师（Python…";
+      text.setAttribute("aria-label", fullTitle);
+      title.removeAttribute("aria-label");
       document.getElementById("vue2-card").__vue__.$props.job.name = fullTitle;
       document.querySelector("#vue2-summary .job-detail-summary__title-text").textContent = fullTitle;
     });
@@ -243,7 +245,7 @@ async function main() {
       window.__zhaopinReadSearchState.__roleflowVersion = 5;
     });
     assert.equal(await page.evaluate(ZHAOPIN_PAGE_HELPERS_EXPRESSION), true, "the upgraded DOM helper must run in an already-open page");
-    assert.equal(await page.evaluate(() => window.__zhaopinReadSearchState.__roleflowVersion), 7,
+    assert.equal(await page.evaluate(() => window.__zhaopinReadSearchState.__roleflowVersion), 8,
       "the upgraded injection replaces a previously cached version 5 helper");
     const vue2State = await adapter.readSearchState("ZHAOPIN-SEARCH");
     assert.equal(vue2State.cards[0].sourceId, "CCSYNTHV2A1J00000000001", "Vue 2 JobCard exposes the trusted card ID");
@@ -252,8 +254,7 @@ async function main() {
     const stableVue2Card = vue2State.cards[0];
     const activationCountBeforeTitleChecks = () => bridge.calls.filter((call) => call.type === "evalValue" && call.expression.includes("__zhaopinActivateCard(")).length;
     await page.evaluate(() => {
-      const title = document.querySelector("#vue2-card .job-card__title-main");
-      title.setAttribute("aria-label", "合成智能应用工程师（Java方向）");
+      document.querySelector("#vue2-card .vue-clamp__text").setAttribute("aria-label", "合成智能应用工程师（Java方向）");
     });
     const mismatchedAriaState = await adapter.readSearchState("ZHAOPIN-SEARCH");
     assert.equal(mismatchedAriaState.cards[0].title, "合成智能应用工程师（Java方向）");
@@ -263,9 +264,9 @@ async function main() {
     assert.equal(activationCountBeforeTitleChecks(), beforeMismatchedAriaClick,
       "an aria-label mismatch must be rejected before clicking");
     await page.evaluate(() => {
-      const title = document.querySelector("#vue2-card .job-card__title-main");
-      title.textContent = "";
-      title.setAttribute("aria-label", "合成智能应用工程师（Python与视觉方向）");
+      const text = document.querySelector("#vue2-card .vue-clamp__text");
+      text.textContent = "";
+      text.setAttribute("aria-label", "合成智能应用工程师（Python与视觉方向）");
     });
     const emptyVisibleTitleState = await adapter.readSearchState("ZHAOPIN-SEARCH");
     assert.equal(emptyVisibleTitleState.cards[0].title, "");
@@ -275,9 +276,9 @@ async function main() {
     assert.equal(activationCountBeforeTitleChecks(), beforeEmptyTitleClick,
       "an empty visible title must be rejected before clicking");
     await page.evaluate(() => {
-      const title = document.querySelector("#vue2-card .job-card__title-main");
-      title.textContent = "合成智能应用工程师（Python…";
-      title.setAttribute("aria-label", "合成智能应用工程师（Python与视觉方向）");
+      const text = document.querySelector("#vue2-card .vue-clamp__text");
+      text.textContent = "合成智能应用工程师（Python…";
+      text.setAttribute("aria-label", "合成智能应用工程师（Python与视觉方向）");
     });
     await page.evaluate(() => {
       document.querySelector("#vue2-card .job-card__location").textContent = "合成市 甲 商圈";
