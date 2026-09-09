@@ -42,5 +42,5 @@ Environment: NODE_PATH=C:/Users/Administrator/.cache/codex-runtimes/codex-primar
 ## Main continuation
 
 - [x] Scoped review only this task; `153272b` Spec compliant/Approved, no Critical/Important/Minor. Previous reviews remain closed; live/service/new full gate remain main-owned.
-- [ ] Freeze clean SHA and new strict full gate; restart only owned8788 isolated service; normal UI resume same original run/batch without reducing targets.
+- [x] Frozen clean `1f6a8dd4c9ff43e48cdbe8f80c1fb70a17976df4` strict157/157 passed, exit0/start=end/clean; restarted only owned8788 and resumed the same original run/batch through ordinary UI. Advanced92 to94 jobs before a separate city-only location mismatch; duplicate task remains closed, new task `2026-09-09-zhaopin-city-only-location`.
 - [ ] Continue real scan/analysis and existing bounded initial-greeting/messages/drafts acceptance; no reply send. Record current evidence and remaining limitations; no push/merge/release.
