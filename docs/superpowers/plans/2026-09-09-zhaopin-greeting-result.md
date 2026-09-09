@@ -17,7 +17,7 @@
 
 Files: `src/adapters/sites/zhaopin_communication.js`, `tests/fixtures/zhaopin/communication.html`, `tests/zhaopin_communication_adapter_smoke.js`.
 
-- [ ] Replace the synthetic title-only modal with the observed root/title/content/footer structure, retaining synthetic content and hidden state. Keep `fixture.modal()` and `reset()` behavior.
+- [x] Replace the synthetic title-only modal with the observed root/title/content/footer structure, retaining synthetic content and hidden state. Keep `fixture.modal()` and `reset()` behavior.
 
 ```html
 <div class="deliver-greeting-modal" hidden>
@@ -27,8 +27,8 @@ Files: `src/adapters/sites/zhaopin_communication.js`, `tests/fixtures/zhaopin/co
 </div>
 ```
 
-- [ ] Run existing `zhaopin_communication_adapter_smoke.js`; record actual RED at the real adapter's expected succeeded result (not setup failure).
-- [ ] Add `.deliver-greeting-modal` to the existing snapshot candidates. For that specific root compare the dedicated title; other candidates retain the existing entire-text behavior.
+- [x] Run existing `zhaopin_communication_adapter_smoke.js`; record actual RED at the real adapter's expected succeeded result (not setup failure).
+- [x] Add `.deliver-greeting-modal` to the existing snapshot candidates. For that specific root compare the dedicated title; other candidates retain the existing entire-text behavior.
 
 ```js
 const label = node.matches('.deliver-greeting-modal')
@@ -36,7 +36,8 @@ const label = node.matches('.deliver-greeting-modal')
   : node.textContent;
 ```
 
-- [ ] Add table-driven accepted-network negative cases for hidden modal, wrong title, missing title and duplicate visible success roots; expect ambiguous and exactly one simulated dispatch, no application. Existing stale-modal and network/identity cases remain.
-- [ ] Run syntax, adapter, readonly, dashboard communication and communication storage smokes with existing NODE_PATH; TEMP/TMP stay onD. Record GREEN and commit implementation.
-- [ ] Arrange one bounded independent read-only review of this diff, resolve important findings; do not audit the earlier branch again.
-- [ ] Freeze final source, run fresh complete offline gate, update authority docs and push the same branch. Verify remote SHA equals local; do not merge/release. State that post-fix real sending was not repeated.
+- [x] Add table-driven accepted-network negative cases for hidden modal, wrong title, missing title and duplicate visible success roots; expect ambiguous and exactly one simulated dispatch, no application. Existing stale-modal and network/identity cases remain.
+- [x] Run syntax, adapter, readonly, dashboard communication and communication storage smokes with existing NODE_PATH; TEMP/TMP stay onD. Record GREEN and commit implementation.
+- [x] Arrange one bounded independent read-only review of this diff, resolve important findings; do not audit the earlier branch again.
+- [x] Frozen c63d469 source passed the fresh full157 gate with exit0, unchanged SHA and clean tree. Update authority docs; do not repeat real sending.
+- [ ] Push the same branch and verify exact remote SHA; no merge/release. Preserve external push receipt.
