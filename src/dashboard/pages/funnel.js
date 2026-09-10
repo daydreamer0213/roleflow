@@ -77,7 +77,7 @@ function renderComparison(platforms) {
   return `<section class="feedback-comparison" aria-label="调整前后"><h2>调整前后</h2>${ready.map(item => {
     const { before, after } = item.roundComparison;
     return `<p><strong>${escapeHtml(SITE_LABELS[item.site])}</strong> · 可比较记录的回复比例：${percent(before.replied.numerator, before.replied.denominator)} → ${percent(after.replied.numerator, after.replied.denominator)}</p>`;
-  }).join('')}<p class="feedback-footnote">只比较已等待充分时间的岗位；变化不一定由这次调整造成。</p></section>`;
+  }).join('')}<p class="feedback-footnote">只比较已等待充分时间且回复状态明确的岗位；变化不一定由这次调整造成。</p></section>`;
 }
 
 function renderOtherMessages(counts = {}, planId) {

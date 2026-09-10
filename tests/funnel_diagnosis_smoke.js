@@ -120,6 +120,17 @@ try {
   assert(!/证明|导致|准确率/.test(formalDashboard.headline));
   assert(!/证明|导致|准确率/.test(formalDashboard.priorityCheck));
 
+  const missingBefore = createOwner(db, 'missing-before-feedback');
+  seedEntries(db, missingBefore, 50, () => []);
+  const missingBeforeRound = service.startStrategyRound({ ...missingBefore, fromRoundId: missingBefore.roundId,
+    sourceKey: 'after-missing-feedback', changeKinds: ['greeting'] });
+  missingBefore.roundId = missingBeforeRound.id;
+  seedEntries(db, missingBefore, 50, index => [readEvent(index), replyEvent(index)], () => ({}), 100);
+  const missingComparison = service.getDashboard(missingBefore);
+  assert.equal(missingComparison.previousRound.unknown, 50);
+  assert.equal(missingComparison.roundComparison.status, 'insufficient',
+    'unobserved old feedback cannot become a 0% baseline for apparent improvement');
+
   service.savePolicy({
     profileId: formal.profileId,
     preliminarySampleTarget: 40,

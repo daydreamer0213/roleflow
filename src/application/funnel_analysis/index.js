@@ -158,7 +158,10 @@ function compareRounds({ current, currentSnapshot, previous, previousSnapshot })
   if (!previous || !previousSnapshot) {
     return { status: "none", note: "暂无可比较的上一策略轮次", ...empty };
   }
-  const feedback = snapshot => ({ numerator: snapshot.immediatePositive.replied - snapshot.earlyPositive.replied, denominator: snapshot.mature });
+  const feedback = snapshot => {
+    const known = snapshot.entries.filter(entry => entry.mature && entry.replied.value !== null && !entry.replyWindowWaiting);
+    return { numerator: known.filter(entry => entry.replied.value === true).length, denominator: known.length };
+  };
   const before = { roundId: previous.id, mature: previousSnapshot.mature, stages: previousSnapshot.stages, replied: feedback(previousSnapshot) };
   const after = { roundId: current.id, mature: currentSnapshot.mature, stages: currentSnapshot.stages, replied: feedback(currentSnapshot) };
   if (current.legacyUncertain || previous.legacyUncertain
@@ -173,7 +176,9 @@ function compareRounds({ current, currentSnapshot, previous, previousSnapshot })
     };
   }
   if (previousSnapshot.mature < previous.thresholds.comparable
-    || currentSnapshot.mature < current.thresholds.comparable) {
+    || currentSnapshot.mature < current.thresholds.comparable
+    || before.replied.denominator < previous.thresholds.comparable
+    || after.replied.denominator < current.thresholds.comparable) {
     return { status: "insufficient", note: "前后轮次都达到可比较样本量后再展示变化", before, after };
   }
   if (current.changeKinds.length > 1) {
