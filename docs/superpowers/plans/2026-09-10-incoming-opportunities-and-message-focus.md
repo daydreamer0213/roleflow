@@ -45,7 +45,7 @@
 ### Task 2: 消息页以处理当前联系为中心
 
 **Ownership / files:**
-- Modify `src/dashboard/message_discovery_view.js`、`src/dashboard/assets/roleflow.css`；仅必要时改 `src/dashboard/message_discovery_controller.js` 的本地结果投影。
+- Modify `src/dashboard/message_discovery_view.js`、`src/dashboard/assets/roleflow.css`；仅必要时改 `src/dashboard/message_discovery_controller.js` 的本地结果投影。Task 1 关闭后可微调 `src/dashboard/pages/funnel.js` 的文案/明细展开呈现，不改统计逻辑。
 - Tests `tests/dashboard_message_discovery_smoke.js`、`tests/dashboard_communication_profile_smoke.js`、相关已有消息浏览器测试；可新增 `tests/dashboard_message_focus_browser_smoke.js` 并登记 `tests/run_all.js`。
 - 消费 Task 1 的只读 `listIncomingContacts`；不得修改统计所有者文件、平台执行器或用户 DB。
 
@@ -55,6 +55,7 @@
 - 指定联系已经不存在、与所选用户/平台不符时，显示清楚的未找到状态，不悄悄把另一条草稿当作目标；用户重新选择列表后才能转到其他联系。
 - 待处理定义基于真实开放草稿、明确人工事项、未关联项；`processed` 是系统分析完成，不能用它断言用户已处理。已有已发送状态不能反向显示待回复。历史原文已清理时明确告知，只展示可靠事实。
 - 首屏紧凑页头、一个“读取新消息”主动作、来源/任务筛选及列表。空态引导读取；运行时停止和简洁进度可见。内部计数/平台详细原因归到折叠“读取详情”；单条岗位关联失败不做整页错误标题，但真正平台级停止原因要显示并可理解。
+- 体检第二表下不要常驻六行重复计数的明细摘要；数字点击后才展示相应明细，其他明细收起。范围文案说用户看得懂的“包含 HR 新招呼和对投递的回复，同一会话只计一次”，不解释页面实现或本地数据存储机制。历史原文缺失时说“已记录这次联系，原文暂不可查看”。
 - HR 原话 → 简短岗位判断 → 当前草稿；一版主草稿，其他版本折叠/切换。保留每份草稿和自动保存语义、手动已发送绑定及学习。
 - BOSS 当前项可确认发送，智联当前项仅复制和原会话处理；没有可信 deep link 时不编造链接，使用已有平台消息入口/说明。
 - 主动进入批量，零默认选择；退出清空选择，切换来源避免隐藏项被发。活动批次进度和停止入口始终可见；单条发送仍不要求先进入批量。一个会话最多一版，发送前冻结用户实际所见文字。
