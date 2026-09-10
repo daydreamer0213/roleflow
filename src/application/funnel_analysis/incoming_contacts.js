@@ -193,7 +193,8 @@ function hasResumeRequestCard(messages) {
 }
 
 function explicitResumeRequest(messages) {
-  return messages.some(item => item.kind === 'text' && EXPLICIT_RESUME_REQUEST.test(compactText(item.text)));
+  return messages.some(item => item.kind === 'text'
+    && resumeRequestClauses(item.text).some(clause => EXPLICIT_RESUME_REQUEST.test(clause)));
 }
 
 function safeArray(value) {
@@ -245,6 +246,10 @@ function safeMessageText(value) {
 
 function compactText(value) {
   return String(value || '').replace(/\s+/g, '');
+}
+
+function resumeRequestClauses(value) {
+  return compactText(value).split(/[，,。！？?!；;]+/).filter(Boolean);
 }
 
 function messageOrder(message) {

@@ -61,11 +61,19 @@ try {
   const textRequestConversation = digest('text-request-conversation');
   const textRequestCard = createCard(owner, 'boss', textRequestConversation, 'Text request role', 'Text request Co');
   saveContext(owner, textRequestCard, 'boss', textRequestConversation, 'text-request',
-    [{ kind: 'text', text: '请发一份完整简历给我。' }], [], 'information_request', NOW);
+    [{ kind: 'text', text: '08-04 14:53 您好，我们是一家软件企业，公司已上市，方便发份详细的简历过来吗？' }], [], 'information_request', NOW);
   const noSendConversation = digest('no-send-conversation');
   const noSendCard = createCard(owner, 'boss', noSendConversation, 'No send role', 'No send Co');
   saveContext(owner, noSendCard, 'boss', noSendConversation, 'no-send',
-    [{ kind: 'text', text: '已经收到简历，不用再发了。' }], [], 'information_request', NOW);
+    [{ kind: 'text', text: '不用发简历，谢谢。' }], [], 'information_request', NOW);
+  const optionalNoSendConversation = digest('optional-no-send-conversation');
+  const optionalNoSendCard = createCard(owner, 'boss', optionalNoSendConversation, 'Optional no send role', 'Optional no send Co');
+  saveContext(owner, optionalNoSendCard, 'boss', optionalNoSendConversation, 'optional-no-send',
+    [{ kind: 'text', text: '如果方便，也不用再发简历。' }], [], 'information_request', NOW);
+  const receivedNoSendConversation = digest('received-no-send-conversation');
+  const receivedNoSendCard = createCard(owner, 'boss', receivedNoSendConversation, 'Received no send role', 'Received no send Co');
+  saveContext(owner, receivedNoSendCard, 'boss', receivedNoSendConversation, 'received-no-send',
+    [{ kind: 'text', text: '已收到简历，后面不用发。' }], [], 'information_request', NOW);
   const praiseConversation = digest('praise-conversation');
   const praiseCard = createCard(owner, 'boss', praiseConversation, 'Praise role', 'Praise Co');
   saveContext(owner, praiseCard, 'boss', praiseConversation, 'praise',
@@ -76,8 +84,8 @@ try {
     [{ kind: 'text', text: '简历' }], [], 'information_request', NOW);
 
   const items = listIncomingContacts(db, { profileId: owner.profileId });
-  assert.equal(items.length, 8, 'linked, history, unresolved, and same-key other-platform conversations are counted once each');
-  assert.deepEqual(items.map(item => item.platform).sort(), ['boss', 'boss', 'boss', 'boss', 'boss', 'zhaopin', 'zhaopin', 'zhaopin']);
+  assert.equal(items.length, 10, 'linked, history, unresolved, and same-key other-platform conversations are counted once each');
+  assert.deepEqual(items.map(item => item.platform).sort(), ['boss', 'boss', 'boss', 'boss', 'boss', 'boss', 'boss', 'zhaopin', 'zhaopin', 'zhaopin']);
 
   const linked = find(items, 'boss', linkedConversation);
   assert.equal(linked.cardId, bossCard);
@@ -108,8 +116,10 @@ try {
 
   assert.equal(items.some(item => item.conversationKey === blankConversation), false, 'blank loading-only unresolved items are excluded');
   assert.equal(items.some(item => item.cardId === orphanCard), false, 'a historical card event without its own thread key does not invent a conversation');
-  assert.equal(find(items, 'boss', textRequestConversation).resumeRequested, true, 'an explicit narrow text request counts as a resume request');
+  assert.equal(find(items, 'boss', textRequestConversation).resumeRequested, true, 'an explicit request in a full safe message body counts as a resume request');
   assert.equal(find(items, 'boss', noSendConversation).resumeRequested, false, 'a message saying not to send a resume does not count');
+  assert.equal(find(items, 'boss', optionalNoSendConversation).resumeRequested, false, 'an optional no-send sentence does not count');
+  assert.equal(find(items, 'boss', receivedNoSendConversation).resumeRequested, false, 'an already-received no-send sentence does not count');
   assert.equal(find(items, 'boss', praiseConversation).resumeRequested, false, 'praise mentioning a resume does not count');
   assert.equal(find(items, 'boss', mentionConversation).resumeRequested, false, 'a bare resume mention does not count');
   assert.equal(listIncomingContacts(db, { profileId: other.profileId }).length, 1, 'profiles are isolated');
