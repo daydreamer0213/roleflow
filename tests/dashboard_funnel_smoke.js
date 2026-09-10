@@ -31,7 +31,7 @@ let serial = 0;
     const current = await (await fetch(base + pathname)).text();
     assert.match(current, /<table[^>]*aria-label="当前方案投递反馈"/, 'HTTP page identifies reporting scope');
     assert.match(current, /收到的联系/);
-    assert.match(current, /已读取并保存在本地的会话/);
+    assert.match(current, /包含 HR 新招呼和对投递的回复，同一会话只计一次/);
     assert.match(incomingPlatformRow(current, 'boss'), /1[\s\S]*1[\s\S]*0/);
     assert.match(incomingPlatformRow(current, 'boss'), /#incoming-boss-all-details[\s\S]*#incoming-boss-resume-details[\s\S]*#incoming-boss-interview-details/);
     assert.match(current, /<details id="incoming-boss-resume-details"/);
