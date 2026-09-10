@@ -41,6 +41,7 @@ const {
   createMessageDiscoveryDetailSafety
 } = require("../src/dashboard/message_discovery_controller");
 const {
+  renderMessageDiscoveryPage,
   messageDiscoveryReasonText,
   messageIntentLabel
 } = require("../src/dashboard/message_discovery_view");
@@ -786,6 +787,20 @@ async function main() {
   assertNoPrivateData(durableStatus);
   let durablePage = await request(base, `/messages?profileId=${retainedFixture.profileId}`);
   assert(!durablePage.body.includes('class="panel message-state"'), "one unresolved contact belongs in its own list item, not a page-wide error panel");
+  for (const reasonCode of ["BOSS_LOGIN_REQUIRED", "BOSS_RISK_CONTROL", "ZHAOPIN_MESSAGE_LOGIN_REQUIRED", "ZHAOPIN_MESSAGE_RISK_CONTROL", "BOSS_MESSAGE_DETAIL_NOT_BACKGROUND"]) {
+    for (const platformOnly of [false, true]) {
+    const html = renderMessageDiscoveryPage({
+      db, searchParams: new URLSearchParams({ profileId: retainedFixture.profileId }),
+      controller: { pageState: () => ({ status: "needs_user_action", unresolved: 1,
+        reasonCode: platformOnly ? "BOSS_MESSAGE_CARD_NOT_FOUND" : reasonCode, results: [],
+        platformRuns: platformOnly ? [{platform: "boss", status: "needs_user_action", reasonCode}] : [] }) },
+      helpers: { getCandidateProfile: () => ({}), renderFramedPage: ({ content }) => content,
+        escapeHtml: String, escapeAttr: String, newProgressRequestKey: () => "warning-fixture" }
+    });
+    assert(html.includes('class="panel message-state"'), `${reasonCode} remains a page-level warning when unresolved items also exist`);
+    assert(html.includes(messageDiscoveryReasonText(reasonCode)), `${reasonCode} must not be overwritten by an item-level association failure`);
+    }
+  }
   const unresolvedViewKey = durablePage.body.match(/data-message-view="(unresolved-[a-f0-9]{64})"/)?.[1];
   assert(unresolvedViewKey, "pending-only pages must expose a selectable stable unresolved key");
   assert(durablePage.body.includes(`data-message-detail-panel="${unresolvedViewKey}"`), "the pending list row and detail must share one selection key");

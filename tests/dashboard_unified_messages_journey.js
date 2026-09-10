@@ -116,18 +116,22 @@ async function main() {
     const manualCard=page.locator('[data-message-detail-panel].message-result[data-platform="zhaopin"]').filter({hasNot:page.locator('[data-draft-text]')});assert.match(await manualCard.textContent(),/HR 邀请你发送简历/);assert.match(await manualCard.textContent(),/智联原始会话/);assert.equal(await manualCard.locator('button:not([data-message-back]),form').count(),0);
     assert.equal(await page.locator('[data-send-select]').count(),1,'only the BOSS draft enters the batch selection');
     assert.equal(await page.locator('[data-send-select]:checked').count(),0,'batch starts with no implicit selection');
+    assert.equal(await page.locator('.message-send-choice:visible').count(),0,'send selection is available only after explicitly entering batch mode');
     assert.equal(await page.locator('details.message-draft-alternatives:not([open]) [data-draft-text]').count(),1,'only the primary reply is expanded before the user asks for another version');
     await page.getByRole('button',{name:'进入批量发送',exact:true}).click();
     assert.equal(await page.locator('[data-send-batch]').isDisabled(),true,'an empty explicit batch cannot start');
     await page.getByRole('button',{name:'退出批量',exact:true}).click();
     assert.equal(await page.locator('[data-send-select]:checked').count(),0,'leaving batch clears selections');
     await page.setViewportSize({width:584,height:694});await page.waitForFunction(()=>document.querySelector('.message-workspace')?.dataset.mobileList==='true');
-    assert((await page.locator('.message-list-item').first().boundingBox()).y < 694,'the first contact is usable above the fold on the 584px side panel');
+    assert((await page.locator('.message-list-item').first().boundingBox()).y + 100 <= 694,'the first contact and its HR preview fit above the fold on the 584px side panel');
     assert.equal(await page.locator('.message-list').isVisible(),true,'narrow view starts with the list');
     assert.equal(await page.locator('.message-detail').isVisible(),false,'narrow view does not cover the list with a preset detail');
-    await page.locator('.message-list-item').nth(1).click();
+    const narrowRow=page.locator('.message-list-item').first();const narrowKey=await narrowRow.locator('[data-message-view]').getAttribute('data-message-view');
+    await narrowRow.click();
+    await page.locator('[data-message-detail-panel="'+narrowKey+'"]').waitFor({state:'visible'});
     assert.equal(await page.locator('.message-detail').isVisible(),true,'selecting a contact opens its detail on narrow screens');
-    await page.locator('.message-detail [data-message-back]:visible').click();
+    assert.equal(await page.locator('[data-message-detail-panel="'+narrowKey+'"] [data-draft-text], [data-message-detail-panel="'+narrowKey+'"] [data-message-back]').first().evaluate(node=>node===document.activeElement),true,'opening the prechecked first row transfers focus into its detail');
+    await page.locator('[data-message-detail-panel="'+narrowKey+'"] [data-message-back]').click();
     await page.waitForFunction(()=>document.querySelector('.message-workspace')?.dataset.mobileList==='true');
     assert.equal(await page.locator('.message-list').isVisible(),true,'the narrow-screen return control restores the list');
     await page.setViewportSize({width:1440,height:1000});
@@ -141,11 +145,18 @@ async function main() {
     const deepLink=await context.newPage();
     await deepLink.goto(base+'/messages?profileId='+profileId+'&source=zhaopin&task=all&contact='+encodeURIComponent(unresolvedContact.key));
     await deepLink.locator('[data-message-detail-panel].message-unresolved[data-platform="zhaopin"]',{hasText:'合成待处理原文'}).waitFor({state:'visible'});
+    await deepLink.getByLabel('消息来源').selectOption('all');
+    await deepLink.locator('.message-list-item[data-platform="boss"]').first().waitFor({state:'visible'});
     await deepLink.close();
     const missingContact=await context.newPage();
     await missingContact.goto(base+'/messages?profileId='+profileId+'&source=boss&task=all&contact='+encodeURIComponent('sha256:'+ '0'.repeat(64)));
     await missingContact.locator('.message-not-found').waitFor({state:'visible'});
     assert.equal(await missingContact.locator('[data-message-detail-panel]:visible').count(),0,'a missing or cross-platform contact never borrows another editor');
+    await missingContact.getByLabel('消息来源').selectOption('all');
+    assert.equal(await missingContact.locator('[data-message-detail-panel]:visible').count(),0,'changing filters must not clear a missing-contact selection lock');
+    await missingContact.locator('.message-list-item:visible').first().click();
+    await missingContact.locator('[data-message-detail-panel]:visible').waitFor();
+    assert.equal(await missingContact.locator('.message-not-found').isVisible(),false,'deliberately choosing another contact dismisses the missing-target state');
     await missingContact.close();
     assert.equal(await page.locator('.message-list-item[data-platform="boss"]').count(),2);assert.equal(await page.locator('.message-list-item[data-platform="zhaopin"]').count(),3);
     const pending=page.locator('.message-unresolved[data-platform="boss"]');assert.equal(await pending.count(),1);
@@ -193,9 +204,66 @@ async function main() {
     const stoppedStatus=await (await fetch(base+'/api/message-discovery-status?profileId='+profileId)).json();assert.equal(stoppedStatus.status,'stopped');assert.equal(stoppedStatus.unresolved,0);assert.equal(stoppedStatus.reasonCode,'MESSAGE_DISCOVERY_STOPPED');
     const stoppedState=await page.locator('.message-state').innerText();assert.match(stoppedState,/已按你的操作安全停止/);assert.doesNotMatch(stoppedState,/无法确认本地岗位与会话是否一致/);assert.match(await pending.innerText(),/无法确认本地岗位与会话是否一致/);
     assert.deepEqual(errors,[]);assert.deepEqual(external,[]);
+    await contactFiltersAndHistory(context, base, db);
     await activeBatchRemainsStoppableUnderZhaopinFilter(chromium);
     console.log('dashboard_unified_messages_journey ok: serial discovery, restore, source-safe HTTP/UI, autosave, navigation, 1440/390, active BOSS stop under ZL filter/reload');
   }finally{if(browser)await browser.close();if(server)await new Promise(r=>server.close(r));for(const controller of controllers)await controller.close();db.close();fs.rmSync(root,{recursive:true,force:true});}
+}
+async function contactFiltersAndHistory(context, base, db) {
+  const profileId = Number(db.prepare("INSERT INTO candidate_profiles(display_name,profile_json,created_at,updated_at) VALUES ('筛选合成候选人','{}',?,?)").run(NOW,NOW).lastInsertRowid);
+  const planId = Number(db.prepare("INSERT INTO search_plans(profile_id,name,plan_json,is_active,created_at,updated_at) VALUES (?,'合成计划','{}',1,?,?)").run(profileId,NOW,NOW).lastInsertRowid);
+  const boss = seed(db, 'boss', profileId, planId, false, '6');
+  const manual = seed(db, 'zhaopin', profileId, planId, true, '7');
+  const bossKey = listIncomingContacts(db,{profileId}).find(item => item.cardId === boss.cardId).conversationKey;
+  recordUnresolvedMessageDiscoveryItem(db,{profileId,platform:'boss',conversationKey:bossKey,previewDigest:digest('duplicate-result-preview'),previewKind:'possible_hr_reply',observedAt:NOW,reasonCode:'BOSS_MESSAGE_CARD_NOT_FOUND',identity:{positionTitle:'同名岗位',company:'合成公司'}});
+  const manualKey = listIncomingContacts(db,{profileId}).find(item => item.cardId === manual.cardId).conversationKey;
+  db.prepare('UPDATE candidate_progress_cards SET thread_key=? WHERE id=?').run(manualKey, manual.cardId);
+  const event = (cardId, type, platform, threadKey) => db.prepare("INSERT INTO candidate_progress_events(card_id,idempotency_key,type,actor,summary,metadata_json,occurred_at,created_at) VALUES (?,?,?,'system','',?,?,?)").run(cardId,'filter-'+cardId+'-'+type,type,JSON.stringify({platform,threadKey}),NOW,NOW);
+  event(manual.cardId,'interview_invited','zhaopin',manualKey);
+  const historyKey = digest('history-filter-contact');
+  const historyJob = Number(db.prepare("INSERT INTO jobs(source,source_id,title,company,first_seen_at,last_seen_at) VALUES ('boss','boss:history-filter','历史机会','合成公司',?,?)").run(NOW,NOW).lastInsertRowid);
+  const historyCard = Number(db.prepare("INSERT INTO candidate_progress_cards(profile_id,plan_id,job_id,source,thread_key,stage,next_action,last_event_at,created_at,updated_at) VALUES (?,?,?,'boss',?,'replied','',?,?,?)").run(profileId,planId,historyJob,historyKey,NOW,NOW,NOW).lastInsertRowid);
+  event(historyCard,'resume_requested','boss',historyKey);
+  event(historyCard,'interview_invited','boss',historyKey);
+  const contacts = listIncomingContacts(db,{profileId});
+  const history = contacts.find(item=>item.conversationKey===historyKey);
+  const page = await context.newPage();
+  try {
+    await page.setViewportSize({width:390,height:694});
+    await page.goto(base+'/messages?profileId='+profileId+'&source=all&task=pending');
+    assert.equal(await page.locator('.message-list-item:visible').count(),2,'pending includes an open draft and a manual request, excluding completed history');
+    const firstRow = page.locator('.message-list-item:visible').first();
+    assert((await firstRow.boundingBox()).y+100<=694,'390px viewport exposes the first message and HR preview');
+    await firstRow.locator('[data-message-view]').focus();await page.keyboard.press('Space');
+    // A prechecked radio does not emit change; keyboard activation must still open it.
+    await page.locator('.message-detail').waitFor({state:'visible'});
+    assert.equal(await page.locator('[data-message-detail-panel]:visible [data-draft-text]').count(),1,'merged contact preserves its open draft');
+    await page.locator('[data-message-detail-panel]:visible .message-retained-work>summary').click();
+    assert.equal(await page.locator('[data-message-detail-panel]:visible form[action="/api/message-discovery-unresolved"]').count(),3,'merged contact retains every unresolved manual action');
+    await page.setViewportSize({width:420,height:694});
+    assert.equal(await page.locator('.message-detail').isVisible(),true,'same-breakpoint resize preserves detail');
+    await page.locator('[data-message-back]:visible').click();
+    await page.waitForFunction(()=>document.querySelector('.message-workspace').dataset.mobileList==='true');
+    assert.equal(await page.locator('[data-message-view]:checked').evaluate(node=>node===document.activeElement),true,'return restores keyboard focus to the selected row');
+    await page.setViewportSize({width:1440,height:1000});
+    const task = page.getByLabel('要处理什么');
+    await task.selectOption('resume');
+    await page.waitForFunction(()=>document.querySelector('[data-task-filter]').disabled===false);
+    assert.equal(await page.locator('.message-list-item:visible').count(),2,'resume filter shows live and historical requests');
+    await task.selectOption('interview');
+    await page.waitForFunction(()=>document.querySelector('[data-task-filter]').disabled===false);
+    assert.equal(await page.locator('.message-list-item:visible').count(),2,'the same contacts may also match interview without losing resume facts');
+    await page.goto(base+'/messages?profileId='+profileId+'&source=boss&task=all&contact='+encodeURIComponent(history.key));
+    assert.equal(await page.locator('.message-history:visible').count(),1);
+    assert.match(await page.locator('.message-history:visible').innerText(),/已记录这次联系，原文暂不可查看/);
+    assert.equal(await page.locator('.message-history [data-draft-text], .message-history [data-send-single]').count(),0,'history never reconstructs a draft or send action');
+    await page.getByLabel('消息来源').selectOption('zhaopin');
+    await page.locator('.message-list-item[data-platform="zhaopin"]').waitFor({state:'visible'});
+    await page.goto(base+'/messages?profileId='+profileId+'&source=zhaopin&task=all&contact='+encodeURIComponent(history.key));
+    assert.equal(await page.locator('[data-message-detail-panel]:visible').count(),0,'wrong-platform contact cannot select an unrelated editor');
+    await page.goto(base+'/messages?profileId=1&source=all&task=all&contact='+encodeURIComponent(history.key));
+    assert.equal(await page.locator('[data-message-detail-panel]:visible').count(),0,'a foreign-profile contact cannot select an unrelated editor');
+  } finally { await page.close(); }
 }
 async function activeBatchRemainsStoppableUnderZhaopinFilter(chromium) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'roleflow-unified-active-send-'));
@@ -246,6 +314,7 @@ async function activeBatchRemainsStoppableUnderZhaopinFilter(chromium) {
       return route.continue();
     });
     await page.goto(base + '/messages?profileId=' + profileId);
+    assert.equal(await page.locator('.message-send-choice:visible').count(),0,'BOSS send selection stays hidden until explicit batch entry');
     await page.locator('[data-send-batch-enter]').click();
     const bossRows=page.locator('.message-list-item[data-platform="boss"]');
     for(let index=0;index<await bossRows.count();index++){const viewKey=await bossRows.nth(index).locator('[data-message-view]').getAttribute('data-message-view');await bossRows.nth(index).click();const choice=page.locator('[data-message-detail-panel="'+viewKey+'"] [data-send-select]');await choice.waitFor({state:'visible'});await choice.check();}
@@ -299,7 +368,8 @@ async function activeBatchRemainsStoppableUnderZhaopinFilter(chromium) {
     assert.equal(await page.locator('[data-send-batch-panel]').isVisible(), false, 'terminal ZL view has no new send action');
     await filter.selectOption('boss');
     await page.waitForFunction(() => !document.querySelector('.message-list-item[data-platform="boss"]').hidden);
-    assert.equal(await page.locator('[data-send-batch]').isVisible(), true);
+    await page.locator('[data-send-batch-enter]').waitFor({state:'visible'});
+    assert.equal(await page.locator('[data-send-batch-panel]').isVisible(), false, 'after a terminal batch, BOSS returns to the compact explicit entry instead of an idle status panel');
     assert.equal(await page.locator('[data-send-stop]').isVisible(), false);
     assert.deepEqual(errors, []);
     assert.deepEqual(external, []);
