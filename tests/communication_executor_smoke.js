@@ -451,11 +451,11 @@ async function oneReadOnlyRecoverySmoke() {
   }
 }
 
-async function unavailableAndMismatchContinueSmoke() {
+async function unavailableItemsContinueSmoke() {
   const fixture = createFixture(3);
   const inspections = [
     { state: "job_unavailable", statusLabel: "\u505c\u6b62\u62db\u8058" },
-    { state: "target_mismatch" },
+    { state: "action_unavailable" },
     { state: "ready" }
   ];
   let inspected = 0;
@@ -472,11 +472,11 @@ async function unavailableAndMismatchContinueSmoke() {
     sleepFn: async () => {}
   });
   const items = listCommunicationBatchItems(fixture.db, fixture.batch.id);
-  assert.deepStrictEqual(items.map((item) => item.status), ["job_unavailable", "target_mismatch", "succeeded"]);
+  assert.deepStrictEqual(items.map((item) => item.status), ["job_unavailable", "action_unavailable", "succeeded"]);
   assert.deepStrictEqual(items[0].evidence, {
     inspection: { state: "job_unavailable", statusLabel: "\u505c\u6b62\u62db\u8058" }
   });
-  assert.deepStrictEqual(candidateStatuses(fixture), ["invalid", "review", ""]);
+  assert.deepStrictEqual(candidateStatuses(fixture), ["invalid", "later", ""]);
   assert.strictEqual(getProgressCardForJob(fixture.db, {
     profileId: fixture.profileId,
     jobId: fixture.jobIds[0]
@@ -490,6 +490,64 @@ async function unavailableAndMismatchContinueSmoke() {
     jobId: fixture.jobIds[2]
   }).stage, "waiting_reply");
   fixture.close();
+}
+
+async function targetMismatchStopsBatchSmoke() {
+  for (const singleItem of [false, true]) {
+    const fixture = createFixture(2);
+    try {
+      const workflow = attachReviewWorkflow(fixture);
+      const [first, second] = listCommunicationBatchItems(fixture.db, fixture.batch.id);
+      const visited = [];
+      let dispatches = 0;
+      let reservations = 0;
+      let waits = 0;
+      const input = {
+        db: fixture.db,
+        batchId: fixture.batch.id,
+        singleItemId: singleItem ? first.id : null,
+        accessController: { async reserve() { reservations += 1; } },
+        adapter: {
+          async inspectCommunicationJob(job) {
+            visited.push(job.id);
+            return { state: job.id === first.jobId ? "target_mismatch" : "ready" };
+          },
+          async dispatchCommunication() { dispatches += 1; },
+          async verifyCommunicationResult() { return { state: "succeeded" }; }
+        },
+        sleepFn: async () => { waits += 1; }
+      };
+      await assert.rejects(() => runPermittedBatch(input), { code: "COMMUNICATION_TARGET_MISMATCH" });
+      assert.deepStrictEqual(visited, [first.jobId]);
+      assert.strictEqual(dispatches, 0);
+      assert.strictEqual(reservations, 1);
+      assert.strictEqual(waits, 0, "a target mismatch stops before pacing or reserving the next job");
+      const batch = getCommunicationBatch(fixture.db, fixture.batch.id);
+      assert.strictEqual(batch.status, "interrupted");
+      assert.strictEqual(batch.stopCode, "COMMUNICATION_TARGET_MISMATCH");
+      assert.strictEqual(getWorkflowRun(fixture.db, workflow.id).status, "interrupted");
+      assert.strictEqual(getWorkflowRun(fixture.db, workflow.id).errorCode, "COMMUNICATION_TARGET_MISMATCH");
+      const items = listCommunicationBatchItems(fixture.db, fixture.batch.id);
+      assert.deepStrictEqual(items.map(item => [item.status, item.clickCount]), [["target_mismatch", 0], ["pending", 0]]);
+      assert.deepStrictEqual(items[0].evidence, { inspection: { state: "target_mismatch" } });
+      assert.deepStrictEqual(candidateStatuses(fixture), ["review", ""]);
+      assert.strictEqual(fixture.db.prepare("SELECT COUNT(*) n FROM candidate_progress_cards").get().n, 0);
+      assert.strictEqual(fixture.db.prepare("SELECT COUNT(*) n FROM candidate_funnel_entries").get().n, 0);
+      assert.strictEqual(fixture.db.prepare("SELECT COUNT(*) n FROM events WHERE event_type='communication_click'").get().n, 0);
+
+      await runPermittedBatch(input);
+      assert.deepStrictEqual(visited, [first.jobId], "an interrupted batch cannot restart itself");
+      resumeInterruptedCommunicationBatch(fixture.db, { batchId: fixture.batch.id });
+      await runPermittedBatch({ ...input, singleItemId: singleItem ? second.id : null });
+      assert.deepStrictEqual(visited, [first.jobId, second.jobId], "explicit resume skips the mismatched job");
+      assert.strictEqual(dispatches, 1);
+      assert.deepStrictEqual(listCommunicationBatchItems(fixture.db, fixture.batch.id).map(item => item.status), ["target_mismatch", "succeeded"]);
+      assert.strictEqual(getProgressCardForJob(fixture.db, { profileId: fixture.profileId, jobId: first.jobId }), null);
+      assert.strictEqual(getProgressCardForJob(fixture.db, { profileId: fixture.profileId, jobId: second.jobId }).stage, "waiting_reply");
+    } finally {
+      fixture.close();
+    }
+  }
 }
 
 async function atomicProgressFailureSmoke() {
@@ -1550,7 +1608,8 @@ Promise.resolve()
   .then(atomicProgressFailureSmoke)
   .then(alreadyCommunicatedSmoke)
   .then(oneReadOnlyRecoverySmoke)
-  .then(unavailableAndMismatchContinueSmoke)
+  .then(unavailableItemsContinueSmoke)
+  .then(targetMismatchStopsBatchSmoke)
   .then(ambiguousAndFatalStopSmoke)
   .then(pauseResumeSmoke)
   .then(pausedAmbiguityEntryGuardSmoke)

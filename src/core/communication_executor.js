@@ -207,6 +207,14 @@ async function runCommunicationBatch({
         batch: getCommunicationBatch(db, batchId), item, status: finalState, note: `RoleFlow batch #${batchId}`
       });
       recordAudit(db, item, "communication_result", finalState);
+      if (finalState === "target_mismatch") {
+        return interruptAndThrow(
+          db,
+          batchId,
+          codedError("COMMUNICATION_TARGET_MISMATCH", "inspected job does not match the confirmed communication target"),
+          logger
+        );
+      }
     }
 
     if (authorizedItemId !== null) return checkpointSingleItemRun(db, batchId, logger);

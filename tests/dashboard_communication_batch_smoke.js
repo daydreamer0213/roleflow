@@ -136,6 +136,25 @@ function assertCommunicationViewModel() {
   stoppedBeforeOpening.batch.status = "running";
   assert.doesNotMatch(renderCommunicationPage(buildCommunicationViewModel({ current: stoppedBeforeOpening })), /上次沟通被搜索条件检查拦住/);
 
+  for (const site of ["boss", "zhaopin"]) {
+    const mismatchVm = buildCommunicationViewModel({ current: communicationStatus({
+      site, status: "interrupted", stopCode: "COMMUNICATION_TARGET_MISMATCH",
+      stopMessage: "communication execution interrupted"
+    }, { batchStatus: "interrupted", total: 2, remaining: 1, statusCounts: { target_mismatch: 1, pending: 1 } }, [
+      { id: 1, batchId: 41, status: "target_mismatch", titleSnapshot: "Wrong target" },
+      { id: 2, batchId: 41, status: "pending", titleSnapshot: "Remaining job" }
+    ]) });
+    const html = renderCommunicationPage(mismatchVm);
+    assert.match(html, /岗位与确认清单不一致/);
+    assert.match(html, /未向该岗位发起沟通/);
+    assert.match(html, /剩余岗位已保留/);
+    assert.match(html, /沟通明细/);
+    assert.match(html, /继续沟通/);
+    assert.match(html, /<details[^>]*><summary>技术信息<\/summary>/);
+    assert.equal(mismatchVm.polling, null);
+    assert.notEqual(mismatchVm.state, "needs_resolution", "no dispatched click means no ambiguous-send resolution form");
+  }
+
   const completed = buildCommunicationViewModel({ scope: { profile: { id: 7 }, plan: { id: 11 } }, current: communicationStatus({ status: "completed" }, { batchStatus: "completed", total: 2, terminal: 2, remaining: 0, statusCounts: { succeeded: 1, stopped: 1 } }, [{ id: 1, status: "succeeded" }, { id: 2, status: "stopped" }]) });
   assert.equal(completed.state, "completed");
   assert.equal(completed.outcomes.succeeded, 1);

@@ -44,6 +44,7 @@ async function main() {
   quotaAndRuntimeIsolationSmoke();
   calibrationAndBrowserBindingSmoke();
   await executorResumeAndProgressSmoke();
+  await targetMismatchSingleItemSmoke();
   console.log("zhaopin_communication_storage_smoke ok");
 }
 
@@ -553,6 +554,53 @@ async function executorResumeAndProgressSmoke() {
         atomic.db.close();
       }
     }
+  } finally {
+    fixture.db.close();
+  }
+}
+
+async function targetMismatchSingleItemSmoke() {
+  const fixture = createFixture();
+  try {
+    const jobIds = [addJob(fixture, "ZLMISMATCH"), addJob(fixture, "ZLREMAINING")];
+    const batch = createCommunicationBatch(fixture.db, {
+      site: "zhaopin", planId: fixture.planId, jobIds, browserMode: "edge", now: NOW
+    });
+    const [first, second] = listCommunicationBatchItems(fixture.db, batch.id);
+    const visited = [];
+    let dispatches = 0;
+    const input = {
+      db: fixture.db, batchId: batch.id, singleItemId: first.id,
+      accessController: createSiteAccessController({ db: fixture.db, site: "zhaopin", nowFn: () => Date.parse(NOW) }),
+      adapter: {
+        ...successAdapter(),
+        async inspectCommunicationJob(job) {
+          visited.push(job.id);
+          return { state: job.id === jobIds[0] ? "target_mismatch" : "ready" };
+        },
+        async dispatchCommunication() { dispatches += 1; }
+      },
+      executionGate: () => ({ executionEnabled: true, acceptance: "e2e_pending" }),
+      sleepFn: async () => {}
+    };
+    await assert.rejects(() => runCommunicationBatch(input), { code: "COMMUNICATION_TARGET_MISMATCH" });
+    assert.equal(getCommunicationBatch(fixture.db, batch.id).status, "interrupted");
+    assert.equal(getCommunicationBatch(fixture.db, batch.id).stopCode, "COMMUNICATION_TARGET_MISMATCH",
+      "the mismatch reason must not become an ordinary single-item acceptance checkpoint");
+    assert.deepEqual(listCommunicationBatchItems(fixture.db, batch.id).map(item => [item.status, item.clickCount]),
+      [["target_mismatch", 0], ["pending", 0]]);
+    assert.deepEqual(visited, [jobIds[0]]);
+    assert.equal(dispatches, 0);
+    assert.equal(siteVisitCount(fixture.db, "zhaopin"), 1);
+    assert.equal(siteVisitCount(fixture.db, "boss"), 0);
+    assert.equal(fixture.db.prepare("SELECT COUNT(*) n FROM candidate_funnel_entries").get().n, 0);
+    resumeInterruptedCommunicationBatch(fixture.db, { batchId: batch.id });
+    await runCommunicationBatch({ ...input, singleItemId: second.id });
+    assert.deepEqual(visited, jobIds);
+    assert.equal(dispatches, 1);
+    assert.equal(getCommunicationBatch(fixture.db, batch.id).stopCode, "COMMUNICATION_SINGLE_ITEM_CHECKPOINT");
+    assert.equal(fixture.db.prepare("SELECT COUNT(*) n FROM candidate_funnel_entries").get().n, 1);
+    assert.equal(getProgressCardForJob(fixture.db, { profileId: fixture.profileId, jobId: jobIds[0] }), null);
   } finally {
     fixture.db.close();
   }

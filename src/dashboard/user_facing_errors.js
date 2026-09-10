@@ -76,6 +76,11 @@ const ERROR_GUIDANCE = Object.freeze({
     impact: "已确认的岗位清单仍然保留。",
     nextAction: "无需恢复旧搜索条件；确认 BOSS 工作区就绪后，点击继续沟通。"
   },
+  COMMUNICATION_TARGET_MISMATCH: {
+    title: "岗位与确认清单不一致",
+    impact: "未向该岗位发起沟通；本批次已停止，剩余岗位已保留。",
+    nextAction: "到沟通明细核对岗位；确认页面正常后，再手动继续沟通。该岗位保留待核对，不会自动重试。"
+  },
   COMMUNICATION_ACTION_NOT_TRIGGERED: {
     title: "未能确认本次沟通结果",
     impact: "尚未获得可确认的沟通结果，不代表发送失败；系统已停止，不会自动重试。",
