@@ -71,6 +71,7 @@ const tests = [
   "job_search_funnel_smoke.js",
   "funnel_message_observation_smoke.js",
   "funnel_diagnosis_smoke.js",
+  "incoming_contacts_smoke.js",
   "funnel_platform_feedback_smoke.js",
   "message_follow_up_smoke.js",
   "message_follow_up_service_smoke.js",

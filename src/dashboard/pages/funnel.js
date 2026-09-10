@@ -20,13 +20,13 @@ function renderFunnelPage({ plan = {}, dashboard = {}, view = 'current' } = {}) 
         <p class="feedback-scope">${lifetime ? '所有方案的本地记录' : '当前方案的联系与反馈'}</p>
         <div class="feedback-table-scroll" role="region" aria-label="平台反馈对照" tabindex="0">
           <table aria-label="${lifetime ? '累计记录' : '当前方案'}投递反馈"><thead><tr>
-            <th scope="col">平台</th><th scope="col">已联系岗位</th><th scope="col">已回复</th><th scope="col">索要简历</th><th scope="col">面试邀请</th>
+            <th scope="col">平台</th><th scope="col">已联系岗位</th><th scope="col">已回复</th><th scope="col">回复占比</th>
           </tr></thead><tbody>${platforms.map(item => renderPlatform(item, lifetime)).join('')}</tbody></table>
         </div>
         <p class="feedback-footnote">已联系包含确认投递或沟通的岗位；回复比例占本行已联系岗位，按已读取消息更新。</p>
         ${!started ? `<p class="feedback-empty">${lifetime ? '还没有联系岗位。' : '当前方案还没有联系岗位。'}<a href="/plan?planId=${planId}">去发现岗位</a></p>` : ''}
       </section>
-      ${renderOtherMessages(lifetime ? dashboard.lifetimeUntrackedFeedback : dashboard.untrackedFeedback, planId)}
+      ${renderIncomingContacts(dashboard.incomingContacts, planId)}
       ${!lifetime && started ? renderAdvice(dashboard, planId) : ''}
       ${!lifetime ? renderComparison(platforms) : ''}
       ${renderAdjustment(planId, dashboard.activeRevisionId)}
@@ -40,8 +40,7 @@ function renderPlatform(item, lifetime) {
   const changed = !lifetime && round.changeKinds?.some(kind => kind !== 'initial');
   return `<tr data-feedback-platform="${escapeAttr(item.site)}"><th scope="row">${escapeHtml(SITE_LABELS[item.site] || item.site)}
     ${changed ? `<small>${escapeHtml(localDate(round.startedAt))}调整后</small>` : ''}</th>
-    <td><strong>${started}</strong></td><td><strong>${replied}</strong><span class="feedback-reply-share">${started ? percent(replied, started) : '—'}</span></td>
-    <td>${count(values.resumeRequested)}</td><td>${count(values.interviewInvited)}</td></tr>`;
+    <td><strong>${started}</strong></td><td><strong>${replied}</strong></td><td><span class="feedback-reply-share">${started ? percent(replied, started) : '—'}</span></td></tr>`;
 }
 
 function renderAdvice(dashboard, planId) {
@@ -80,11 +79,58 @@ function renderComparison(platforms) {
   }).join('')}<p class="feedback-footnote">只比较已等待充分时间且回复状态明确的岗位；变化不一定由这次调整造成。</p></section>`;
 }
 
-function renderOtherMessages(counts = {}, planId) {
-  const invite = count(counts.interviewInvited), resume = count(counts.resumeRequested), replied = count(counts.replied);
-  if (!invite && !resume && !replied) return '';
-  const text = invite ? `${invite} 个岗位邀请面试` : resume ? `${resume} 个岗位索要简历` : `${replied} 个岗位有 HR 消息`;
-  return `<p class="feedback-other">其他消息中还有 ${text}。<a href="/messages?planId=${planId}">查看这些消息</a></p>`;
+function renderIncomingContacts(incoming = {}, planId) {
+  const items = Array.isArray(incoming.items) ? incoming.items : [];
+  const bySite = new Map((Array.isArray(incoming.platforms) ? incoming.platforms : [])
+    .map(item => [item.site, item]));
+  const platforms = ['boss', 'zhaopin'].map(site => bySite.get(site) || {
+    site, contacted: 0, resumeRequested: 0, interviewInvited: 0
+  });
+  return `<section class="feedback-incoming" aria-label="收到的联系"><h2>收到的联系</h2>
+    <p class="feedback-scope">已读取并保存在本地的会话，不因当前方案或累计记录切换而改变。</p>
+    <div class="feedback-table-scroll" role="region" aria-label="收到的联系平台统计" tabindex="0"><table aria-label="收到的联系平台统计"><thead><tr>
+      <th scope="col">平台</th><th scope="col">已收到联系</th><th scope="col">索要简历</th><th scope="col">面试邀请</th>
+    </tr></thead><tbody>${platforms.map(renderIncomingPlatform).join('')}</tbody></table></div>
+    ${platforms.map(platform => renderIncomingDetails(platform, items, planId)).join('')}
+  </section>`;
+}
+
+function renderIncomingPlatform(platform) {
+  const site = String(platform.site || '');
+  const allTarget = `#incoming-${site}-all-details`;
+  const resumeTarget = `#incoming-${site}-resume-details`;
+  const interviewTarget = `#incoming-${site}-interview-details`;
+  return `<tr data-incoming-platform="${escapeAttr(site)}"><th scope="row">${escapeHtml(SITE_LABELS[site] || site)}</th>
+    <td><a href="${allTarget}">${count(platform.contacted)}</a></td>
+    <td><a href="${resumeTarget}">${count(platform.resumeRequested)}</a></td>
+    <td><a href="${interviewTarget}">${count(platform.interviewInvited)}</a></td></tr>`;
+}
+
+function renderIncomingDetails(platform, items, planId) {
+  const site = String(platform.site || '');
+  const rows = items.filter(item => item?.platform === site);
+  return [
+    renderIncomingDetail(site, 'all', `${count(platform.contacted)} 条已保存联系`, rows, planId),
+    renderIncomingDetail(site, 'resume', `${count(platform.resumeRequested)} 条索要简历`, rows.filter(item => item.resumeRequested), planId),
+    renderIncomingDetail(site, 'interview', `${count(platform.interviewInvited)} 条面试邀请`, rows.filter(item => item.interviewInvited), planId)
+  ].join('');
+}
+
+function renderIncomingDetail(site, kind, label, rows, planId) {
+  return `<details id="incoming-${escapeAttr(site)}-${kind}-details" class="feedback-incoming-details"><summary>${escapeHtml(SITE_LABELS[site] || site)}：${escapeHtml(label)}</summary>
+    ${rows.length ? `<ul>${rows.map(item => renderIncomingItem(item, planId)).join('')}</ul>` : '<p>暂未保存可核对的会话。</p>'}
+  </details>`;
+}
+
+function renderIncomingItem(item, planId) {
+  const destination = `/messages?planId=${encodeURIComponent(planId)}&source=${encodeURIComponent(item.platform)}&contact=${encodeURIComponent(item.key)}&task=all`;
+  const labels = [item.resumeRequested ? '索要简历' : '', item.interviewInvited ? '面试邀请' : ''].filter(Boolean);
+  const message = (item.inboundMessages || []).map(entry => entry?.text).filter(Boolean).join(' / ');
+  const title = item.title || '未关联岗位';
+  return `<li><strong>${escapeHtml(title)}</strong>${item.company ? ` · ${escapeHtml(item.company)}` : ''}
+    ${labels.length ? ` <span>${escapeHtml(labels.join('、'))}</span>` : ''}
+    ${message ? `<p>${escapeHtml(message)}</p>` : '<p>已保存可靠分类记录；原消息展示内容不可用。</p>'}
+    <a href="${escapeAttr(destination)}">查看会话</a></li>`;
 }
 
 function renderAdjustment(planId, revisionId) {

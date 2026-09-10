@@ -11,6 +11,7 @@ const {
 } = require("../../storage/funnel_store");
 const { buildFunnelSnapshot, projectFunnelEntry } = require("../../core/funnel_maturity");
 const { listUnresolvedMessageDiscoveryItems } = require("../../core/message_preview_state");
+const { listIncomingContacts } = require("./incoming_contacts");
 
 function createFunnelAnalysisService({ db, now = () => new Date().toISOString() } = {}) {
   if (!db) throw new Error("funnel analysis database is required");
@@ -36,6 +37,7 @@ function createFunnelAnalysisService({ db, now = () => new Date().toISOString() 
 }
 
 function dashboard(db, { profileId, planId, now }) {
+  const incomingItems = listIncomingContacts(db, { profileId });
   const policy = getFunnelPolicy(db, { profileId });
   const current = ensureActiveFunnelStrategyRound(db, { profileId, planId, startedAt: now });
   syncVerifiedCommunicationFunnelEntries(db, { profileId });
@@ -84,6 +86,15 @@ function dashboard(db, { profileId, planId, now }) {
     roundComparison: single?.roundComparison || { status: 'none' },
     untrackedFeedback: untrackedFeedbackSummary(db, { profileId, planId, now }),
     lifetimeUntrackedFeedback: untrackedFeedbackSummary(db, { profileId, now }),
+    incomingContacts: {
+      items: incomingItems,
+      platforms: ['boss', 'zhaopin'].map(site => ({
+        site,
+        contacted: incomingItems.filter(item => item.platform === site).length,
+        resumeRequested: incomingItems.filter(item => item.platform === site && item.resumeRequested).length,
+        interviewInvited: incomingItems.filter(item => item.platform === site && item.interviewInvited).length
+      }))
+    },
     currentPool: currentRound,
     latestCohort: null,
     funnel: single?.currentRound.funnel || {},
@@ -407,4 +418,4 @@ function stageEligible(entry, stage) {
   return false;
 }
 
-module.exports = { createFunnelAnalysisService };
+module.exports = { createFunnelAnalysisService, listIncomingContacts };

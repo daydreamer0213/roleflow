@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const { openDb, ensureActiveFunnelStrategyRound, startFunnelStrategyRound } = require('../src/core/storage');
+const { openDb, ensureActiveFunnelStrategyRound, startFunnelStrategyRound, saveMessageInboundContext } = require('../src/core/storage');
 const { createFunnelAnalysisService } = require('../src/application/funnel_analysis');
 const { createDashboardServer } = require('../src/dashboard/server');
 const { renderFunnelPage } = require('../src/dashboard/pages/funnel');
@@ -16,6 +16,7 @@ let serial = 0;
     changeKinds: ['greeting'], platformScope: 'boss', startedAt: '2026-09-04T00:00:00.000Z' });
   for (let i = 0; i < 5; i++) seed(db, owner, active.id, 'boss', i < 2 ? 'resume_requested' : null, i === 0);
   seed(db, owner, active.id, 'zhaopin', 'resume_requested', true);
+  seedIncomingContact(db, owner);
   const service = createFunnelAnalysisService({ db, now: () => now });
   const server = createDashboardServer({ db, forceMock: true, allowOfflineMock: true, logger,
     browserAuthority: { browserMode: 'edge', cdpPort: null, profilePath: '' }, funnelAnalysisService: service });
@@ -29,6 +30,13 @@ let serial = 0;
     const pathname = `/funnel?planId=${owner.planId}`;
     const current = await (await fetch(base + pathname)).text();
     assert.match(current, /<table[^>]*aria-label="当前方案投递反馈"/, 'HTTP page identifies reporting scope');
+    assert.match(current, /收到的联系/);
+    assert.match(current, /已读取并保存在本地的会话/);
+    assert.match(incomingPlatformRow(current, 'boss'), /1[\s\S]*1[\s\S]*0/);
+    assert.match(incomingPlatformRow(current, 'boss'), /#incoming-boss-all-details[\s\S]*#incoming-boss-resume-details[\s\S]*#incoming-boss-interview-details/);
+    assert.match(current, /<details id="incoming-boss-resume-details"/);
+    assert.match(current, new RegExp(`/messages\\?planId=${owner.planId}&amp;source=boss&amp;contact=sha256%3A[a-f0-9]{64}&amp;task=all`));
+    assert.doesNotMatch(current, /其他消息中还有/);
     assert.match(platformRow(current, 'boss'), /5[\s\S]*2[\s\S]*40%/, 'fresh replies use all 5 contacts');
     assert.match(platformRow(current, 'zhaopin'), /2[\s\S]*1[\s\S]*50%/);
     const lifetime = await (await fetch(base + pathname + '&view=lifetime')).text();
@@ -81,8 +89,10 @@ let serial = 0;
       for (const width of [1280, 390]) {
         await page.setViewportSize({ width, height: 900 });
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `no page overflow at ${width}`);
-        assert.equal(await page.locator('.feedback-table-scroll').evaluate(el => el.scrollWidth <= el.clientWidth), true,
-          `all feedback columns remain visible at ${width}`);
+        for (const table of await page.locator('.feedback-table-scroll').all()) {
+          assert.equal(await table.evaluate(el => el.scrollWidth <= el.clientWidth), true,
+            `all feedback columns remain visible at ${width}`);
+        }
       }
       await page.getByText('记录方案调整', { exact: true }).click();
       await page.getByLabel('调整的平台', { exact: true }).selectOption('boss');
@@ -106,6 +116,7 @@ let serial = 0;
   }
 })().catch(error => { console.error(error.stack); process.exitCode = 1; });
 function platformRow(html, site) { return html.match(new RegExp(`<tr data-feedback-platform="${site}"[\\s\\S]*?</tr>`))?.[0] || ''; }
+function incomingPlatformRow(html, site) { return html.match(new RegExp(`<tr data-incoming-platform="${site}"[\\s\\S]*?</tr>`))?.[0] || ''; }
 function createOwner(db) {
   const profileId = Number(db.prepare("INSERT INTO candidate_profiles(display_name,profile_json,created_at,updated_at) VALUES ('Synthetic','{}',?,?)").run(now, now).lastInsertRowid);
   const planId = Number(db.prepare("INSERT INTO search_plans(profile_id,name,plan_json,is_active,created_at,updated_at) VALUES (?,'AI <应用>','{}',1,?,?)").run(profileId, now, now).lastInsertRowid);
@@ -120,4 +131,18 @@ function seed(db, owner, roundId, site, type = null, fresh = false) {
     VALUES (?,?,?,?,?,'communication',?,?,'AI','apply','',?,?)`).run(owner.profileId, jobId, cardId, owner.planId, roundId, stamp, new Date(Date.parse(stamp) + 172800000).toISOString(), stamp, stamp);
   if (type) db.prepare(`INSERT INTO candidate_progress_events(card_id,idempotency_key,type,actor,summary,metadata_json,occurred_at,created_at)
     VALUES (?,?,?,'system','','{}',?,?)`).run(cardId, `event-${serial}`, type, now, now);
+}
+function seedIncomingContact(db, owner) {
+  const conversationKey = `sha256:${'a'.repeat(64)}`;
+  const jobId = Number(db.prepare("INSERT INTO jobs(source,source_id,title,company,first_seen_at,last_seen_at) VALUES ('boss','incoming-1','Incoming','Incoming Co',?,?)").run(now, now).lastInsertRowid);
+  const cardId = Number(db.prepare(`INSERT INTO candidate_progress_cards(profile_id,plan_id,job_id,source,thread_key,stage,next_action,last_event_at,created_at,updated_at)
+    VALUES (?, ?, ?, 'boss', ?, 'needs_user_action', '', ?, ?, ?)`)
+    .run(owner.profileId, owner.planId, jobId, conversationKey, now, now, now).lastInsertRowid);
+  saveMessageInboundContext(db, {
+    profileId: owner.profileId, cardId, platform: 'boss', conversationKey,
+    messageGroupKey: `sha256:${'b'.repeat(64)}`, sourceJobId: 'boss:incoming_123456', lastMessageId: '123456789012345',
+    messageIntent: 'information_request', messageCategory: 'other',
+    inboundMessages: [{ kind: 'resume_request', text: 'HR 邀请你发送简历' }], manualActions: [{ kind: 'resume_request' }],
+    createdAt: now, updatedAt: now
+  });
 }
