@@ -87,7 +87,7 @@ function renderIncomingContacts(incoming = {}, planId) {
     site, contacted: 0, resumeRequested: 0, interviewInvited: 0
   });
   return `<section class="feedback-incoming" aria-label="收到的联系"><h2>收到的联系</h2>
-    <p class="feedback-scope">已读取并保存在本地的会话，不因当前方案或累计记录切换而改变。</p>
+    <p class="feedback-scope">包含 HR 新招呼和对投递的回复，同一会话只计一次。</p>
     <div class="feedback-table-scroll" role="region" aria-label="收到的联系平台统计" tabindex="0"><table aria-label="收到的联系平台统计"><thead><tr>
       <th scope="col">平台</th><th scope="col">已收到联系</th><th scope="col">索要简历</th><th scope="col">面试邀请</th>
     </tr></thead><tbody>${platforms.map(renderIncomingPlatform).join('')}</tbody></table></div>
@@ -117,7 +117,7 @@ function renderIncomingDetails(platform, items, planId) {
 }
 
 function renderIncomingDetail(site, kind, label, rows, planId) {
-  return `<details id="incoming-${escapeAttr(site)}-${kind}-details" class="feedback-incoming-details"><summary>${escapeHtml(SITE_LABELS[site] || site)}：${escapeHtml(label)}</summary>
+  return `<details id="incoming-${escapeAttr(site)}-${kind}-details" class="feedback-incoming-details" hidden><summary>${escapeHtml(SITE_LABELS[site] || site)}：${escapeHtml(label)}</summary>
     ${rows.length ? `<ul>${rows.map(item => renderIncomingItem(item, planId)).join('')}</ul>` : '<p>暂未保存可核对的会话。</p>'}
   </details>`;
 }
@@ -153,5 +153,5 @@ function localDate(value) {
   const date = new Date(value);
   return Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', month: 'numeric', day: 'numeric' }).format(date) : '';
 }
-const FUNNEL_STRATEGY_SCRIPT = `<script>(()=>{const form=document.querySelector('[data-funnel-strategy-form]');if(!form)return;const choices=Array.from(form.querySelectorAll('input[name="changeKinds"]'));const error=form.querySelector('[data-funnel-strategy-error]');const clear=()=>{if(choices[0])choices[0].setCustomValidity('');if(error)error.textContent='';};for(const choice of choices)choice.addEventListener('change',clear);form.addEventListener('submit',(event)=>{clear();if(choices.some((choice)=>choice.checked))return;event.preventDefault();const message='请选择本次调整的内容。';if(error)error.textContent=message;if(choices[0]){choices[0].setCustomValidity(message);choices[0].reportValidity();}});})();</script>`;
+const FUNNEL_STRATEGY_SCRIPT = `<script>(()=>{const form=document.querySelector('[data-funnel-strategy-form]');const showIncoming=(id)=>{for(const detail of document.querySelectorAll('.feedback-incoming-details')){detail.hidden=detail.id!==id;detail.open=detail.id===id;}document.getElementById(id)?.scrollIntoView({block:'nearest'});};for(const link of document.querySelectorAll('.feedback-incoming a[href^="#incoming-"]'))link.addEventListener('click',(event)=>{event.preventDefault();showIncoming(link.getAttribute('href').slice(1));});if(!form)return;const choices=Array.from(form.querySelectorAll('input[name="changeKinds"]'));const error=form.querySelector('[data-funnel-strategy-error]');const clear=()=>{if(choices[0])choices[0].setCustomValidity('');if(error)error.textContent='';};for(const choice of choices)choice.addEventListener('change',clear);form.addEventListener('submit',(event)=>{clear();if(choices.some((choice)=>choice.checked))return;event.preventDefault();const message='请选择本次调整的内容。';if(error)error.textContent=message;if(choices[0]){choices[0].setCustomValidity(message);choices[0].reportValidity();}});})();</script>`;
 module.exports = { renderFunnelPage, FUNNEL_STRATEGY_SCRIPT };

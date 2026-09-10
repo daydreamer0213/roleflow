@@ -41,8 +41,11 @@ try {
   assert.equal(dashboard.currentRound.started, 0, 'HR-initiated messages are not fabricated applications');
   assert.equal(db.prepare('SELECT COUNT(*) n FROM candidate_funnel_entries').get().n, 0);
   const page = renderFunnelPage({ plan: { id: planId }, dashboard });
-  assert.match(page, /其他消息中还有 3 个岗位索要简历/);
-  assert.match(page, /href="\/messages\?planId=/);
+  assert.match(page, /包含 HR 新招呼和对投递的回复，同一会话只计一次/);
+  assert.match(page, /data-incoming-platform="boss"[\s\S]*?<td><a href="#incoming-boss-all-details">1<\/a><\/td>[\s\S]*?<td><a href="#incoming-boss-resume-details">1<\/a><\/td>/);
+  assert.match(page, /data-incoming-platform="zhaopin"[\s\S]*?<td><a href="#incoming-zhaopin-all-details">4<\/a><\/td>[\s\S]*?<td><a href="#incoming-zhaopin-resume-details">4<\/a><\/td>/);
+  assert.match(page, /incoming-zhaopin-resume-details[\s\S]*?href="\/messages\?planId=1&amp;source=zhaopin&amp;contact=sha256%3A[\da-f]+&amp;task=all"/,
+    "the counted incoming contacts must expose a real matching conversation route");
 
   const entries = Array.from({ length: 18 }, (_, index) => ({ id: index + 1, startedAt: '2026-09-01T03:00:00.000Z' }));
   const events = new Map(entries.map(entry => [entry.id, entry.id === 1

@@ -112,8 +112,21 @@ async function main() {
     assert.equal(await page.getByRole('link',{name:'发送记录',exact:true}).count(),1);const today=page.getByRole('link',{name:'今日任务',exact:true});assert.equal(new URL(await today.getAttribute('href'),base).searchParams.get('site'),'zhaopin');
     assert.equal(await page.locator('.message-workspace').count(),1);assert.equal(await page.locator('.message-unresolved:not(.message-workspace *)').count(),0);assert.equal(await page.locator('[data-message-detail-panel]:visible').count(),1);
     const zlCard=page.locator('[data-message-detail-panel].message-result[data-platform="zhaopin"]').filter({has:page.locator('[data-draft-text]')});assert.equal(await zlCard.locator('[data-send-single], [data-send-select], [data-sent-draft]').count(),0);assert.equal(await zlCard.locator('[data-copy-draft]').count(),2);
-    const manualCard=page.locator('[data-message-detail-panel].message-result[data-platform="zhaopin"]').filter({hasNot:page.locator('[data-draft-text]')});assert.match(await manualCard.textContent(),/HR 邀请你发送简历/);assert.match(await manualCard.textContent(),/智联原始会话/);assert.equal(await manualCard.locator('button,form').count(),0);
+    const manualCard=page.locator('[data-message-detail-panel].message-result[data-platform="zhaopin"]').filter({hasNot:page.locator('[data-draft-text]')});assert.match(await manualCard.textContent(),/HR 邀请你发送简历/);assert.match(await manualCard.textContent(),/智联原始会话/);assert.equal(await manualCard.locator('button:not([data-message-back]),form').count(),0);
     assert.equal(await page.locator('[data-send-select]').count(),1,'only the BOSS draft enters the batch selection');
+    assert.equal(await page.locator('[data-send-select]:checked').count(),0,'batch starts with no implicit selection');
+    await page.getByRole('button',{name:'进入批量发送',exact:true}).click();
+    assert.equal(await page.locator('[data-send-batch]').isDisabled(),true,'an empty explicit batch cannot start');
+    await page.getByRole('button',{name:'退出批量',exact:true}).click();
+    assert.equal(await page.locator('[data-send-select]:checked').count(),0,'leaving batch clears selections');
+    await page.setViewportSize({width:584,height:694});await page.waitForFunction(()=>document.querySelector('.message-workspace')?.dataset.mobileList==='true');
+    assert.equal(await page.locator('.message-list').isVisible(),true,'narrow view starts with the list');
+    assert.equal(await page.locator('.message-detail').isVisible(),false,'narrow view does not cover the list with a preset detail');
+    await page.locator('.message-list-item').nth(1).click();
+    assert.equal(await page.locator('.message-detail').isVisible(),true,'selecting a contact opens its detail on narrow screens');
+    await page.getByRole('button',{name:'返回列表',exact:true}).click();
+    assert.equal(await page.locator('.message-list').isVisible(),true,'the narrow-screen return control restores the list');
+    await page.setViewportSize({width:1440,height:1000});
     assert.equal(await page.locator('.message-list-item[data-platform="boss"]').count(),2);assert.equal(await page.locator('.message-list-item[data-platform="zhaopin"]').count(),3);
     const pending=page.locator('.message-unresolved[data-platform="boss"]');assert.equal(await pending.count(),1);
     let zhaopinPendingRow=page.locator('.message-list-item[data-platform="zhaopin"]').filter({hasText:'待补岗位资料'});assert.equal(await zhaopinPendingRow.count(),1);
@@ -139,9 +152,9 @@ async function main() {
     await today.click();await page.waitForURL('**/plan?**');assert.equal(new URL(page.url()).searchParams.get('site'),'zhaopin');
     const dismiss=await fetch(base+'/api/message-discovery',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:'dismiss',profileId})});assert.equal(dismiss.status,200);
     const cleared=createMessageDiscoveryController({db});assert.equal(cleared.pageState(profileId).results.length,0);assert.equal(storage.listMessageInboundContexts(db,{profileId}).length,0);assert.equal(cleared.pageState(profileId).unresolved,3,'dismiss preserves every unprocessed pending message');await cleared.close();
-    await page.getByRole('link',{name:'消息与回复',exact:true}).click();assert.equal(await page.locator('.message-workspace').count(),1);assert.equal(await page.locator('[data-message-detail-panel]:visible').count(),1);await page.getByLabel('消息来源').selectOption('zhaopin');await page.locator('.message-list-item').filter({has:page.locator('[data-message-view="'+selectedPendingKey+'"]')}).click();await page.locator('[data-message-detail-panel="'+selectedPendingKey+'"]').waitFor({state:'visible'});assert.match(await page.locator('[data-message-detail-panel]:visible').innerText(),/合成待处理原文/);
+    await page.getByRole('link',{name:'消息与回复',exact:true}).click();await page.locator('.message-workspace').waitFor();assert.equal(await page.locator('.message-workspace').count(),1);await page.getByLabel('消息来源').selectOption('zhaopin');await page.locator('.message-list-item').filter({has:page.locator('[data-message-view="'+selectedPendingKey+'"]')}).click();await page.locator('[data-message-detail-panel="'+selectedPendingKey+'"]').waitFor({state:'visible'});assert.match(await page.locator('[data-message-detail-panel]:visible').innerText(),/合成待处理原文/);
     db.prepare("DELETE FROM message_discovery_unresolved_items WHERE profile_id=? AND platform='zhaopin'").run(profileId);await page.reload();await page.getByLabel('消息来源').selectOption('zhaopin');await page.locator('[data-source-empty]').waitFor({state:'visible'});assert.equal(await page.locator('[data-message-view]:checked').count(),0);assert.equal(await page.locator('[data-message-detail-panel]:visible').count(),0);assert.equal(await pending.isVisible(),false);
-    await page.getByRole('button',{name:'开始只读发现',exact:true}).click();
+    await page.getByRole('button',{name:'读取新消息',exact:true}).click();
     let completedStatus;for(let attempt=0;attempt<100;attempt++){completedStatus=await (await fetch(base+'/api/message-discovery-status?profileId='+profileId)).json();if(completedStatus.status!=='running')break;await new Promise(resolve=>setTimeout(resolve,5));}
     assert.equal(completedStatus.status,'completed');assert.equal(completedStatus.unresolved,0);assert.equal(completedStatus.reasonCode,'');assert(completedStatus.startedAt);
     await page.waitForFunction(()=>document.querySelector('.message-state h2')?.textContent==='本次发现已完成',null,{timeout:5000});
@@ -152,7 +165,7 @@ async function main() {
     await page.getByLabel('消息来源').selectOption('boss');assert.equal(await pending.isVisible(),true);
     await page.reload();assert.equal(await page.getByLabel('消息来源').inputValue(),'boss');assert.equal(await pending.isVisible(),true);assert.equal(db.prepare('SELECT COUNT(*) n FROM message_discovery_unresolved_items WHERE profile_id=? AND conversation_key=?').get(profileId,historicalConversationKey).n,1);
     httpReaderShouldWait=true;
-    await page.getByRole('button',{name:'开始只读发现',exact:true}).click();await page.waitForFunction(()=>!document.querySelector('button[data-page-primary]')||document.querySelector('button[data-page-primary]').disabled);await page.getByRole('button',{name:'安全停止',exact:true}).waitFor({state:'visible'});
+    await page.getByRole('button',{name:'读取新消息',exact:true}).click();await page.waitForFunction(()=>!document.querySelector('button[data-page-primary]')||document.querySelector('button[data-page-primary]').disabled);await page.getByRole('button',{name:'安全停止',exact:true}).waitFor({state:'visible'});
     await page.waitForFunction(()=>Array.from(document.querySelectorAll('form[data-discovery-form]')).find(form=>form.querySelector('[name=action]').value==='stop').querySelector('button').disabled===false);
     assert.match(await page.locator('main').innerText(),/正在加载并读取消息/);assert.equal(httpBossCalls,0);assert.equal(httpReaderCalls,2);
     await page.getByRole('button',{name:'安全停止',exact:true}).click();await page.waitForFunction(()=>document.querySelector('.message-state h2')?.textContent==='已安全停止');assert.equal(httpBrowserCalls,2);

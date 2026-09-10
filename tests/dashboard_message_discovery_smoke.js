@@ -170,7 +170,7 @@ async function main() {
 
   const page = await request(base, `/messages?profileId=${fixture.profileId}`);
   assert.strictEqual(page.status, 200);
-  assert(page.body.includes("开始只读发现"));
+  assert(page.body.includes("读取新消息"));
   assert(page.body.includes("人工粘贴"));
   assert(!page.body.includes("自动发送"));
   assert(!page.body.includes(".chat-input"));
@@ -617,8 +617,8 @@ async function main() {
   assert.strictEqual((understoodPage.body.match(/<textarea/g) || []).length, 3);
   assert.strictEqual((understoodPage.body.match(/type="radio" name="message-send-choice-\d+" data-send-select="\d+"/g) || []).length, 2,
     "alternative drafts for one HR conversation must use one radio group");
-  assert.strictEqual((understoodPage.body.match(/type="radio" name="message-send-choice-\d+" data-send-select="\d+" checked/g) || []).length, 1,
-    "only the first alternative may be selected by default");
+  assert.strictEqual((understoodPage.body.match(/type="radio" name="message-send-choice-\d+" data-send-select="\d+" checked/g) || []).length, 0,
+    "batch selection starts empty until the user explicitly enters it");
   assert(understoodPage.body.includes("选择这版回复"));
   assert(!understoodPage.body.includes("PRIVATE_RAW_ANALYSIS"));
   assert(!understoodPage.body.includes("PRIVATE_NAVIGATION_URL"));
@@ -746,7 +746,7 @@ async function main() {
   assert.strictEqual(progress.stage, "interview_invited");
   assert.strictEqual(progress.nextAction, "KEEP_INTERVIEW_NEXT_ACTION");
   assert.strictEqual(progress.events.at(-1).type, "reply_confirmed_sent");
-  const confirmedPage = await request(base, `/messages?profileId=${fixture.profileId}`);
+  const confirmedPage = await request(base, `/messages?profileId=${fixture.profileId}&task=all`);
   assert(confirmedPage.body.includes("PRIMARY_RESULT_SUMMARY"), "the confirmed message result must remain visible");
   assert(confirmedPage.body.includes("SECONDARY_RESULT_SUMMARY"), "other result summaries must remain visible");
   assert(!confirmedPage.body.includes("待手动发送草稿"), "the short-lived draft must be cleared");

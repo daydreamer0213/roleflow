@@ -433,6 +433,9 @@ function createMessageDiscoveryController(deps = {}) {
     return results.map((item) => {
       const persisted = db.prepare(`SELECT j.source, j.source_id FROM candidate_progress_cards c
         JOIN jobs j ON j.id = c.job_id WHERE c.id = ? AND c.job_id = ? AND c.source = j.source`).get(Number(item?.cardId) || 0, Number(item?.jobId) || 0);
+      const context = db.prepare(`SELECT message_group_key, conversation_key
+        FROM message_inbound_contexts WHERE card_id = ?
+        ORDER BY updated_at DESC, id DESC LIMIT 1`).get(Number(item?.cardId) || 0) || {};
       const platform = ["boss", "zhaopin"].includes(persisted?.source) ? persisted.source : "";
       const messages = Array.isArray(item?.messages)
         ? item.messages.slice(0, 2).map((message) => safeText(message, 4000)).filter(Boolean)
@@ -449,6 +452,8 @@ function createMessageDiscoveryController(deps = {}) {
         jobId: Math.max(0, Number(item?.jobId) || 0),
         platform,
         sourceJobId: safeText(persisted?.source_id, 180),
+        messageGroupKey: safeDigest(item?.messageGroupKey) || safeDigest(context.message_group_key),
+        conversationKey: safeDigest(item?.conversationKey) || safeDigest(context.conversation_key),
         stage: String(item?.stage || "").slice(0, 80),
         messageIntent: MESSAGE_INTENTS.has(item?.messageIntent) ? item.messageIntent : "manual_review",
         messageCategory: String(item?.messageCategory || "").slice(0, 80),
@@ -689,6 +694,8 @@ function createMessageDiscoveryController(deps = {}) {
       jobId: Number(row.job_id),
       platform,
       sourceJobId: row.source_id,
+      messageGroupKey: safeDigest(first.messageGroupKey) || safeDigest(activeContexts[0]?.messageGroupKey),
+      conversationKey: safeDigest(first.conversationKey) || safeDigest(activeContexts[0]?.conversationKey),
       stage: String(row.stage || "reply_ready"),
       messageIntent: MESSAGE_INTENTS.has(first.messageIntent) ? first.messageIntent : "manual_review",
       messageCategory: String(first.messageCategory || "other"),
@@ -868,6 +875,11 @@ function sanitizeJobUnderstanding(value) {
     opportunitySummary: safeInlineText(job.opportunitySummary, 180),
     availability: job.availability === "offline" ? "offline" : "unknown"
   };
+}
+
+function safeDigest(value) {
+  const text = String(value || "").trim().toLowerCase();
+  return /^sha256:[a-f0-9]{64}$/.test(text) ? text : "";
 }
 
 function safeText(value, limit) {

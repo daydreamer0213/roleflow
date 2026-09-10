@@ -77,8 +77,11 @@ const NOW = "2026-08-29T06:00:00.000Z";
     assert.match(page.body, /class="[^"]*message-list/);
     assert.match(page.body, /class="[^"]*message-detail/);
     assert.match(page.body, /data-send-single="\d+"/);
-    assert.equal((page.body.match(/data-send-select="\d+" checked/g) || []).length, 2);
-    assert.match(page.body, /<button type="button" data-send-batch>确认并串行发送 2 条<\/button>/);
+    assert.equal((page.body.match(/data-send-select="\d+" checked/g) || []).length, 0,
+      "batch entry must start with no selected drafts");
+    assert.match(page.body, /<button type="button" data-send-batch-enter>进入批量发送<\/button>/,
+      "batch selection must be an explicit user action");
+    assert.match(page.body, /<button type="button" data-send-batch hidden disabled>确认并串行发送 0 条<\/button>/);
     assert.match(page.body, /data-send-stop hidden disabled/);
     assert.match(page.body, /已读 0 · 送达 0/);
     assert(page.body.includes(TOKEN), "the local action token must be scoped to the rendered message page");
@@ -276,13 +279,15 @@ async function clientSavesBeforeConfirmSmoke(html, drafts) {
     dataset: { draftId: String(draft.id), revision: String(draft.revision), draftRevision: String(draft.revision) }
   }));
   const choices = drafts.map((draft) => element({
-    checked: true,
+    checked: false,
     dataset: { sendSelect: String(draft.id) }
   }));
   const singleButtons = drafts.map((draft) => element({ dataset: { sendSingle: String(draft.id) } }));
   const statuses = drafts.map((draft) => element({ dataset: { sendStatus: String(draft.id) } }));
   const draftSaveStatuses = drafts.map((draft) => element({ dataset: { draftSaveStatus: String(draft.id) } }));
   const batchButton = element();
+  const batchEnterButton = element();
+  const batchExitButton = element({ hidden: true });
   const stopButton = element({ hidden: true, disabled: true });
   const batchPanel = element({ dataset: { state: "idle" } });
   const batchTitle = element();
@@ -296,12 +301,14 @@ async function clientSavesBeforeConfirmSmoke(html, drafts) {
     };
   });
   fields.forEach((field, index) => { field.closest = () => cards[index]; });
-  controls.push(...fields, ...choices, ...singleButtons, ...statuses, ...draftSaveStatuses, batchButton, stopButton);
+  controls.push(...fields, ...choices, ...singleButtons, ...statuses, ...draftSaveStatuses, batchEnterButton, batchButton, batchExitButton, stopButton);
   const document = {
     querySelector(selector) {
       if (selector === "[data-discovery-feedback]") return feedback;
       if (selector === "[data-send-batch-panel]") return batchPanel;
       if (selector === "[data-send-batch]") return batchButton;
+      if (selector === "[data-send-batch-enter]") return batchEnterButton;
+      if (selector === "[data-send-batch-exit]") return batchExitButton;
       if (selector === "[data-send-stop]") return stopButton;
       if (selector === "[data-send-batch-title]") return batchTitle;
       if (selector === "[data-send-batch-status]") return batchStatus;
@@ -353,6 +360,8 @@ async function clientSavesBeforeConfirmSmoke(html, drafts) {
     clearTimeout() {},
     console
   });
+  batchEnterButton.listeners.click();
+  choices.forEach((choice) => { choice.checked = true; });
   await batchButton.listeners.click();
   await eventually(() => calls.some(([name]) => name === "confirm"));
   assert.deepStrictEqual(calls.map(([name]) => name), ["save", "save", "confirm"]);

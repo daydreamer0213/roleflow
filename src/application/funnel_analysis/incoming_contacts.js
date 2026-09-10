@@ -36,8 +36,10 @@ function listIncomingContacts(db, { profileId } = {}) {
 
   for (const row of classifiedHistory(db, profile)) {
     const metadata = safeObject(row.metadata_json);
-    if (metadata.threadKey !== row.thread_key || metadata.platform !== row.platform) continue;
-    const interviewInvited = row.type === 'interview_invited'
+    const manualInterview = row.actor === 'user'
+      && (row.type === 'interview_invited' || row.type === 'interview_scheduled');
+    if (!manualInterview && (metadata.threadKey !== row.thread_key || metadata.platform !== row.platform)) continue;
+    const interviewInvited = manualInterview || row.type === 'interview_invited'
       || row.type === 'interview_scheduled'
       || ([ 'incoming_message_classified', 'message_group_classified' ].includes(row.type)
         && metadata.messageIntent === INTERVIEW_INTENT);
@@ -160,7 +162,8 @@ function addContact(contacts, input) {
   if (!contact.title && safeText(input.title, 400)) contact.title = safeText(input.title, 400);
   if (!contact.company && safeText(input.company, 400)) contact.company = safeText(input.company, 400);
   if (observedAt > contact.observedAt) contact.observedAt = observedAt;
-  contact.resumeRequested ||= input.resumeRequested === true || explicitResumeRequest(input.inboundMessages || []);
+  contact.resumeRequested ||= input.resumeRequested === true || hasResumeRequestCard(input.inboundMessages || [])
+    || explicitResumeRequest(input.inboundMessages || []);
   contact.interviewInvited ||= input.interviewInvited === true;
   if (observedAt > contact.intentObservedAt && safeText(input.messageIntent, 80)) {
     contact.messageIntent = safeText(input.messageIntent, 80);

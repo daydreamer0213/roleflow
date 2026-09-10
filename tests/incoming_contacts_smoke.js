@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const storage = require('../src/core/storage');
 const { recordUnresolvedMessageDiscoveryItem } = require('../src/core/message_preview_state');
+const { recordManualProgressAction } = require('../src/core/candidate_progress');
 const { listIncomingContacts } = require('../src/application/funnel_analysis');
 
 const NOW = '2026-09-10T08:00:00.000Z';
@@ -62,6 +63,16 @@ try {
   const textRequestCard = createCard(owner, 'boss', textRequestConversation, 'Text request role', 'Text request Co');
   saveContext(owner, textRequestCard, 'boss', textRequestConversation, 'text-request',
     [{ kind: 'text', text: '08-04 14:53 您好，我们是一家软件企业，公司已上市，方便发份详细的简历过来吗？' }], [], 'information_request', NOW);
+  const cardOnlyConversation = digest('card-only-request-conversation');
+  const cardOnlyRequest = createCard(owner, 'boss', cardOnlyConversation, 'Card only request role', 'Card only Co');
+  saveContext(owner, cardOnlyRequest, 'boss', cardOnlyConversation, 'card-only-request',
+    [{ kind: 'resume_request', text: 'HR 邀请你发送简历' }], [], 'information_request', NOW);
+  const manualInterviewConversation = digest('manual-interview-conversation');
+  const manualInterviewCard = createCard(owner, 'zhaopin', manualInterviewConversation, 'Manual interview role', 'Manual interview Co');
+  recordManualProgressAction(db, {
+    cardId: manualInterviewCard, idempotencyKey: 'progress:00000000-0000-4000-8000-000000000012',
+    stage: 'interview_invited', eventType: 'interview_invited', summary: '用户确认收到面试邀请', now: NOW
+  });
   const noSendConversation = digest('no-send-conversation');
   const noSendCard = createCard(owner, 'boss', noSendConversation, 'No send role', 'No send Co');
   saveContext(owner, noSendCard, 'boss', noSendConversation, 'no-send',
@@ -84,8 +95,8 @@ try {
     [{ kind: 'text', text: '简历' }], [], 'information_request', NOW);
 
   const items = listIncomingContacts(db, { profileId: owner.profileId });
-  assert.equal(items.length, 10, 'linked, history, unresolved, and same-key other-platform conversations are counted once each');
-  assert.deepEqual(items.map(item => item.platform).sort(), ['boss', 'boss', 'boss', 'boss', 'boss', 'boss', 'boss', 'zhaopin', 'zhaopin', 'zhaopin']);
+  assert.equal(items.length, 12, 'linked, history, unresolved, and same-key other-platform conversations are counted once each');
+  assert.deepEqual(items.map(item => item.platform).sort(), ['boss', 'boss', 'boss', 'boss', 'boss', 'boss', 'boss', 'boss', 'zhaopin', 'zhaopin', 'zhaopin', 'zhaopin']);
 
   const linked = find(items, 'boss', linkedConversation);
   assert.equal(linked.cardId, bossCard);
@@ -117,6 +128,10 @@ try {
   assert.equal(items.some(item => item.conversationKey === blankConversation), false, 'blank loading-only unresolved items are excluded');
   assert.equal(items.some(item => item.cardId === orphanCard), false, 'a historical card event without its own thread key does not invent a conversation');
   assert.equal(find(items, 'boss', textRequestConversation).resumeRequested, true, 'an explicit request in a full safe message body counts as a resume request');
+  assert.equal(find(items, 'boss', cardOnlyConversation).resumeRequested, true,
+    'a stored resume request card is immediate evidence even when manual actions are empty');
+  assert.equal(find(items, 'zhaopin', manualInterviewConversation).interviewInvited, true,
+    'a user-confirmed interview invitation remains attached to its existing bound conversation');
   assert.equal(find(items, 'boss', noSendConversation).resumeRequested, false, 'a message saying not to send a resume does not count');
   assert.equal(find(items, 'boss', optionalNoSendConversation).resumeRequested, false, 'an optional no-send sentence does not count');
   assert.equal(find(items, 'boss', receivedNoSendConversation).resumeRequested, false, 'an already-received no-send sentence does not count');
