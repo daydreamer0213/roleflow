@@ -52,7 +52,11 @@ let serial = 0;
       ...service.getDashboard(owner), advice: { site: 'boss', stage: 'replied', title: '先检查招呼语和岗位匹配', numerator: 2, denominator: 20 }
     } });
     assert.match(advice, /20 个已读岗位中，2 个有回复/);
-    assert.match(advice, /查看岗位记录/);
+    assert.match(advice, /查看等待回复的岗位/);
+    const advicePath = advice.match(/href="([^"]+)">查看等待回复的岗位/)?.[1].replace(/&amp;/g, '&');
+    assert.match(advicePath || '', /pool=waiting_reply/);
+    const adviceDestination = await (await fetch(base + advicePath)).text();
+    assert.match(adviceDestination, /Synthetic/, 'advice opens existing contacted jobs, not an empty uncontacted queue');
     const comparable = service.getDashboard(owner);
     comparable.platforms[0].roundComparison = { status: 'ready', before: { replied: { numerator: 10, denominator: 50 } }, after: { replied: { numerator: 20, denominator: 50 } } };
     assert.match(renderFunnelPage({ plan: { id: owner.planId }, dashboard: comparable }), /20%[\s\S]*40%/);

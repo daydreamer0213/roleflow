@@ -259,7 +259,9 @@ function diagnose(snapshot, policy, site) {
     && interviewConfirmed !== null && interviewConfirmed < 0.5) {
     return {
       headline: `${prefix}：当前主要卡在“面试邀请到面试确认或后续结果”。`,
-      priorityCheck: "优先进入上下文模拟面试，检查回答结构、项目证据和追问表现。"
+      priorityCheck: "优先核对面试时间、确认状态和后续安排，再记录真实进展。",
+      advice: { stage: 'interviewConfirmed', title: '先核对面试安排和后续进展',
+        numerator: snapshot.stages.interviewConfirmed.numerator, denominator: snapshot.stages.interviewConfirmed.denominator }
     };
   }
   const checks = [

@@ -115,7 +115,8 @@ try {
   assert.equal(formalDashboard.currentRound.nextTarget, null);
   assert.equal(formalDashboard.currentRound.id, formal.roundId);
   assert.match(formalDashboard.headline, /正式诊断/);
-  assert.match(formalDashboard.priorityCheck, /模拟面试/);
+  assert.equal(formalDashboard.advice?.stage, 'interviewConfirmed', 'an evidenced interview follow-up issue must reach the user advice');
+  assert.match(formalDashboard.priorityCheck, /面试.*安排/);
   assert(!/证明|导致|准确率/.test(formalDashboard.headline));
   assert(!/证明|导致|准确率/.test(formalDashboard.priorityCheck));
 

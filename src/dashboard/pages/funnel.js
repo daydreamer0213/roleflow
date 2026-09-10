@@ -58,12 +58,14 @@ function renderAdvice(dashboard, planId) {
     read: `${d} 个已获取阅读状态的岗位中，${n} 个已读。`,
     replied: `${d} 个已读岗位中，${n} 个有回复。`,
     effectiveConversation: `${d} 个已确认回复内容的岗位中，${n} 个进入进一步沟通。`,
-    interviewInvited: `${d} 个已进入进一步沟通且反馈明确的岗位中，${n} 个邀请面试。`
+    interviewInvited: `${d} 个已进入进一步沟通且反馈明确的岗位中，${n} 个邀请面试。`,
+    interviewConfirmed: `${d} 个已收到面试邀请且反馈明确的岗位中，${n} 个已确认安排或后续进展。`
   };
   const destination = advice.stage === 'interviewInvited'
     ? [`/resume-optimization?planId=${planId}`, '打开简历工作室']
     : advice.stage === 'effectiveConversation' ? [`/messages?planId=${planId}`, '查看消息与回复']
-      : [`/queue?planId=${planId}&site=${encodeURIComponent(advice.site)}`, '查看岗位记录'];
+      : advice.stage === 'interviewConfirmed' ? [`/queue?planId=${planId}&site=${encodeURIComponent(advice.site)}&pool=interview`, '查看面试进展']
+        : [`/queue?planId=${planId}&site=${encodeURIComponent(advice.site)}&pool=waiting_reply`, '查看等待回复的岗位'];
   return `<section class="feedback-advice" aria-label="优先建议"><div><p class="section-label">${escapeHtml(SITE_LABELS[advice.site])} · 优先建议</p>
     <h2>${escapeHtml(advice.title)}</h2><p>${escapeHtml(reasons[advice.stage] || '')}可以先检查这一环节。</p></div>
     <a href="${escapeAttr(destination[0])}">${destination[1]}</a></section>`;
