@@ -6,6 +6,7 @@
   if (!region || !title || !message || !actionButton) return;
 
   const site = region.dataset.site || 'boss';
+  const siteLabel = site === 'zhaopin' ? '智联' : 'BOSS';
   let requestInFlight = false;
   let pollTimer = null;
   let actionEndpoint = "";
@@ -40,11 +41,10 @@
         endpoint: recoverable ? "/api/runtime/browser/recover" : ""
       };
     }
-    if (site === 'zhaopin') return { state: 'ready', title: '专用 Edge 已就绪 · 智联只读', message: '在今日任务准备智联搜索页并保存条件后开始。', button: '', endpoint: '' };
     if (workspace.status === "ready") {
       return {
         state: "ready",
-        title: "专用 Edge 和 BOSS 已就绪",
+        title: `专用 Edge 和${siteLabel}已就绪`,
         message: "需要浏览器的岗位操作现在可以开始。",
         button: "",
         endpoint: ""
@@ -53,11 +53,11 @@
     const loginRequired = workspace.status === "login_required";
     return {
       state: loginRequired ? "attention" : "waiting",
-      title: loginRequired ? "请在专用 Edge 登录 BOSS" : "专用 Edge 已就绪",
+      title: loginRequired ? `请在专用 Edge 登录${siteLabel}` : "专用 Edge 已就绪",
       message: loginRequired
         ? "登录完成后，回到这里重新检查。"
-        : String(workspace.message || "BOSS 工作区尚未确认；本地资料仍可正常查看。"),
-      button: "重新检查 BOSS 工作区",
+        : String(workspace.message || `${siteLabel}工作区尚未确认；本地资料仍可正常查看。`),
+      button: `重新检查${siteLabel}工作区`,
       endpoint: "/api/runtime/workspace/reconcile"
     };
   }
@@ -110,7 +110,7 @@
 
   function poll() {
     pollTimer = null;
-    return request(site === "boss" ? "/api/runtime-status" : "/api/runtime-status?site=" + encodeURIComponent(site));
+    return request("/api/runtime-status?site=" + encodeURIComponent(site));
   }
 
   actionButton.addEventListener("click", async () => {
@@ -120,7 +120,7 @@
     await request(actionEndpoint, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: site === "boss" ? "{}" : JSON.stringify({ site })
+      body: JSON.stringify({ site })
     });
   });
 

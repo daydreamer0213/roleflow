@@ -36,6 +36,7 @@ async function main() {
   let server, browser;const controllers=[];
   try {
     const profileId = Number(db.prepare("INSERT INTO candidate_profiles(display_name,profile_json,created_at,updated_at) VALUES ('合成候选人','{}',?,?)").run(NOW,NOW).lastInsertRowid);
+    storage.saveWorkspacePlatformPreference(db, ["boss", "zhaopin"]);
     const planId = Number(db.prepare("INSERT INTO search_plans(profile_id,name,plan_json,is_active,created_at,updated_at) VALUES (?,'合成计划','{}',1,?,?)").run(profileId,NOW,NOW).lastInsertRowid);
     const boss = seed(db,'boss',profileId,planId);
     const zl = seed(db,'zhaopin',profileId,planId,false,'9',['好的，可以沟通。','也可以先介绍具体安排。']);
@@ -78,7 +79,7 @@ async function main() {
     assert.equal(result.results[0].cardId,boss.cardId);assert.equal(result.platformRuns.find(r=>r.platform==='zhaopin').status,'not_connected');
     assertUnknownZhaopinReceipts(result);
     connected=['boss','zhaopin','zhaopin'];controller.start(profileId);result=await settle(controller,profileId);
-    assert.equal(result.results[0].cardId,boss.cardId);assert.equal(result.platformRuns.find(r=>r.platform==='zhaopin').reasonCode,'ZHAOPIN_MESSAGE_TAB_AMBIGUOUS');
+    assert.equal(result.results[0].cardId,boss.cardId);assert.equal(result.platformRuns.find(r=>r.platform==='zhaopin').status,'completed');assert.equal(result.platformRuns.find(r=>r.platform==='zhaopin').reasonCode,'','extra same-platform tabs must not block the managed message page');
     connected=['boss','zhaopin'];deps.blockBoss=true;controller.start(profileId);result=await settle(controller,profileId);assert.equal(result.results[0].cardId,zl.cardId);assert.equal(result.platformRuns.find(r=>r.platform==='boss').reasonCode,'BOSS_RUNTIME_BLOCKED');deps.blockBoss=false;
     await controller.close();
     const restored=createMessageDiscoveryController({db});const recovered=restored.pageState(profileId);

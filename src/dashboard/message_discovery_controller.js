@@ -56,8 +56,9 @@ function createMessageDiscoveryController(deps = {}) {
       if (browser && typeof browser.disconnect === "function") await browser.disconnect();
       else if (browser && typeof browser.cleanup === "function") await browser.cleanup();
     },
-    createReader = ({ browser, platform }) => platform === "zhaopin"
-      ? createZhaopinMessageReader({ browser }) : createBossMessageReader({ browser }),
+    createReader = ({ browser, platform, tabId }) => platform === "zhaopin"
+      ? createZhaopinMessageReader({ browser, expectedTabId: tabId })
+      : createBossMessageReader({ browser, expectedCommunicationTabId: tabId }),
     createDetailSafety = (options) => createMessageDiscoveryDetailSafety(options),
     createDetailReader = (options) => options.platform === "zhaopin"
       ? createZhaopinMessageDetailReader(options) : createBossMessageDetailReader(options),
@@ -70,6 +71,7 @@ function createMessageDiscoveryController(deps = {}) {
     pacingSleepFn,
     pacingRandomFn = Math.random,
     detailSleepFn,
+    getEnabledPlatforms = () => ["boss", "zhaopin"],
     now = () => new Date(),
     setTimeout: setTimeoutFn = setTimeout,
     clearTimeout: clearTimeoutFn = clearTimeout,
@@ -106,13 +108,18 @@ function createMessageDiscoveryController(deps = {}) {
       );
     }
     const modelConfig = getModelConfig();
+    const enabledPlatforms = normalizeEnabledPlatforms(getEnabledPlatforms());
+    if (!enabledPlatforms.length) {
+      throw messageDiscoveryError("WORKSPACE_PLATFORM_SELECTION_REQUIRED", "请先选择要读取消息的招聘平台。", 409);
+    }
     const owner = randomUUID();
+    const leaseSite = enabledPlatforms[0];
     try {
-      acquireLease(db, { site: "boss", owner, command: "discover-messages", planId: null });
+      acquireLease(db, { site: leaseSite, owner, command: "discover-messages", planId: null });
     } catch (error) {
       if (error?.code === "SCAN_ALREADY_RUNNING"
         || /constraint|locked|lease/i.test(String(error?.message || ""))) {
-        throw messageDiscoveryError("MESSAGE_DISCOVERY_LEASE_BUSY", "BOSS is already in use", 409);
+        throw messageDiscoveryError("MESSAGE_DISCOVERY_LEASE_BUSY", "招聘平台正在执行其他任务", 409);
       }
       throw error;
     }
@@ -149,9 +156,9 @@ function createMessageDiscoveryController(deps = {}) {
     const heartbeatMs = Math.max(1, Number(deps.leaseHeartbeatMs) || 30_000);
     const heartbeat = setIntervalFn(() => {
       try {
-        renewLease(db, { site: "boss", owner });
+        renewLease(db, { site: leaseSite, owner });
       } catch {
-        abortController.abort(messageDiscoveryError("MESSAGE_DISCOVERY_LEASE_LOST", "BOSS lease was lost"));
+        abortController.abort(messageDiscoveryError("MESSAGE_DISCOVERY_LEASE_LOST", "招聘平台任务占用状态已丢失"));
       }
     }, heartbeatMs);
 
@@ -167,7 +174,8 @@ function createMessageDiscoveryController(deps = {}) {
       browser = await createBrowser();
       if (abortController.signal.aborted) throw abortController.signal.reason;
       const tabs = await browser.listTabs();
-      run.platformRuns = ["boss", "zhaopin"].map((platform) => {
+      const workspaceWindowIds = new Set(tabs.filter(isDashboardMessageWorkspaceTab).map((tab) => tab.windowId));
+      run.platformRuns = enabledPlatforms.map((platform) => {
         const matches = tabs.filter((tab) => {
           try {
             const url = new URL(tab.url);
@@ -176,8 +184,10 @@ function createMessageDiscoveryController(deps = {}) {
               : isZhaopinMessageUrl(tab.url);
           } catch { return false; }
         });
-        return { platform, status: matches.length === 1 ? "pending" : matches.length ? "needs_user_action" : "not_connected",
-          reasonCode: matches.length > 1 ? (platform === "boss" ? "BOSS_MESSAGE_TAB_AMBIGUOUS" : "ZHAOPIN_MESSAGE_TAB_AMBIGUOUS") : "", counters: safeCounters(null, platform) };
+        const inWorkspace = matches.filter((tab) => workspaceWindowIds.has(tab.windowId));
+        const selected = stableMessageTab(inWorkspace.length ? inWorkspace : matches);
+        return { platform, status: selected ? "pending" : "not_connected",
+          reasonCode: "", bindingTabId: selected?.id ?? null, counters: safeCounters(null, platform) };
       });
       for (const entry of run.platformRuns) {
         if (abortController.signal.aborted) break;
@@ -205,7 +215,7 @@ function createMessageDiscoveryController(deps = {}) {
           else assertMessageDiscoveryRuntimeAvailable(db, now, { platform });
           readingStarted = true;
           setDetailPhase(run, "reading_messages", now);
-          const reader = createReader({ browser, platform });
+          const reader = createReader({ browser, platform, tabId: entry.bindingTabId });
           const safety = createDetailSafety({ db, profileId, owner, run, logger, signal: abortController.signal, now, sleepFn: pacingSleepFn, randomFn: pacingRandomFn, platform });
           const detailOptions = { browser, messageReader: reader, logger, beforeOpen: safety.beforeOpen, afterIssuedAttempt: safety.afterIssuedAttempt, sleepFn: detailSleepFn, platform };
           let actualDetailReader = platform === "boss" || Object.hasOwn(deps, "createDetailReader")
@@ -275,10 +285,11 @@ function createMessageDiscoveryController(deps = {}) {
         });
       }
       try {
-        releaseLease(db, { site: "boss", owner });
+        releaseLease(db, { site: leaseSite, owner });
       } catch (error) {
         logger?.warn("message_discovery_lease_release_failed", {
           profileId,
+          site: leaseSite,
           code: messageDiscoveryErrorCode(error)
         });
       }
@@ -550,10 +561,13 @@ function createMessageDiscoveryController(deps = {}) {
   }
 
   function visiblePlatformRuns(run) {
-    return (run.platformRuns || []).map(entry => ({ ...entry,
+    return (run.platformRuns || []).map(entry => {
+      const { bindingTabId: _privateBinding, ...visible } = entry;
+      return ({ ...visible,
       status: entry.status === "pending" ? "running" : entry.status,
       reasonCode: entry.status === "pending" ? "MESSAGE_DISCOVERY_WAITING_TURN" : entry.reasonCode
-    }));
+      });
+    });
   }
 
   function overlayOpenDrafts(profileId, results) {
@@ -1009,6 +1023,25 @@ function persistMessageDiscoveryRiskControl(db, {
 function createMessageModelAdapter(modelConfig, logger) {
   const { createModelAdapter } = require("../adapters/models");
   return createModelAdapter(modelConfig || { provider: "mock", providers: { mock: {} } }, { logger });
+}
+
+function normalizeEnabledPlatforms(value) {
+  const values = Array.isArray(value) ? value : [];
+  const selected = new Set(values.map((item) => String(item || "").trim().toLowerCase()));
+  return ["boss", "zhaopin"].filter((site) => selected.has(site));
+}
+
+function isDashboardMessageWorkspaceTab(tab) {
+  try {
+    return ["127.0.0.1", "localhost"].includes(new URL(String(tab?.url || "")).hostname);
+  } catch {
+    return false;
+  }
+}
+
+function stableMessageTab(tabs) {
+  return [...(tabs || [])].sort((left, right) => `${typeof left.id}:${String(left.id)}`
+    .localeCompare(`${typeof right.id}:${String(right.id)}`))[0] || null;
 }
 
 module.exports = {

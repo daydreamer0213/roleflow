@@ -320,7 +320,7 @@ async function testExistingDashboardRetriesTransientRuntimeStatus() {
     2,
     "launcher must wait until the workspace leaves unchecked"
   );
-  assert.match(combinedOutput(second), /工作区状态：需要登录 BOSS/);
+  assert.match(combinedOutput(second), /工作区状态：已选择的平台需要登录/);
 
   await stopRegisteredProcess(dashboard.pid);
   await waitForPortClosed(dashboardPort);

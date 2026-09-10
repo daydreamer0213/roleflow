@@ -134,16 +134,16 @@ function fixture({ searchUrl = "https://www.zhipin.com/web/geek/jobs?city=101280
   assert.strictEqual(missing.state.preflightCalls.length, 0);
   assert.strictEqual(missing.state.navigations.length, 0);
 
-  const ambiguous = fixture({
+  const withExtraPage = fixture({
     extraTabs: [{ id: "boss-detail", url: "https://www.zhipin.com/job_detail/extra.html", windowId: 7 }]
   });
-  await assert.rejects(() => prepareInitialSearchPage({
+  assert.deepStrictEqual(await prepareInitialSearchPage({
     plan: { keywords: [{ word: "电商运营", priority: "A" }] },
-    browser: ambiguous.browser,
-    adapter: ambiguous.adapter
-  }), (error) => error.code === "BOSS_TAB_REQUIRED");
-  assert.strictEqual(ambiguous.state.preflightCalls.length, 0);
-  assert.strictEqual(ambiguous.state.navigations.length, 0);
+    browser: withExtraPage.browser,
+    adapter: withExtraPage.adapter
+  }), { status: "prepared", tabId: "boss-search" });
+  assert.deepStrictEqual(withExtraPage.state.preflightCalls, ["boss-communication", "boss-search"]);
+  assert.strictEqual(withExtraPage.state.navigations.length, 1);
 
   console.log("initial_search_page_smoke: ok");
 })().catch((error) => {

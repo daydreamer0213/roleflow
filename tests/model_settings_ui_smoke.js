@@ -60,7 +60,24 @@ async function main() {
 
   const beforeSetup = await fetch(baseUrl + "/", { redirect: "manual" });
   assert.strictEqual(beforeSetup.status, 303);
-  assert.strictEqual(beforeSetup.headers.get("location"), "/settings?firstRun=1&next=%2Fonboarding");
+  assert.strictEqual(beforeSetup.headers.get("location"), "/settings/platforms?firstRun=1&next=%2Fsettings%3FfirstRun%3D1%26next%3D%252Fonboarding");
+  const platformSettings = await fetch(baseUrl + beforeSetup.headers.get("location"));
+  const platformHtml = await platformSettings.text();
+  assert.strictEqual(platformSettings.status, 200);
+  for (const text of ["你准备使用哪些招聘平台？", "只使用 BOSS", "只使用智联", "BOSS + 智联", "其他标签页可以照常保留"]) {
+    assert(platformHtml.includes(text), `platform settings must include ${text}`);
+  }
+  const savedPlatforms = await fetch(baseUrl + "/api/settings/platforms", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      choice: "both",
+      next: "/settings?firstRun=1&next=%2Fonboarding"
+    }),
+    redirect: "manual"
+  });
+  assert.strictEqual(savedPlatforms.status, 303);
+  assert.strictEqual(savedPlatforms.headers.get("location"), "/settings?firstRun=1&next=%2Fonboarding");
   const onboarding = await fetch(baseUrl + "/onboarding");
   assert((await onboarding.text()).includes("模型尚未通过连接测试"));
 

@@ -110,16 +110,24 @@ function dedicatedBrowser(initialTabs, createdTabs = []) {
     { id: "same-window-boss-detail", url: "https://www.zhipin.com/job_detail/extra.html", windowId: 42 },
     { id: "other-window-boss-detail", url: "https://www.zhipin.com/job_detail/extra.html", windowId: 99 }
   ]) {
-    assert.throws(
-      () => assertBossOperatorTabs([boss, fixedCommunication, unmanagedBoss]),
-      (error) => error.code === "BOSS_TAB_REQUIRED"
-    );
+    assert.deepStrictEqual(assertBossOperatorTabs([boss, fixedCommunication, unmanagedBoss]), {
+      searchTab: boss,
+      communicationTab: fixedCommunication,
+      windowId: 42
+    });
     let unmanagedInspectionCalls = 0;
-    await assert.rejects(() => inspectBossOperatorTabs({
+    await inspectBossOperatorTabs({
       browser: fakeBrowser([boss, fixedCommunication, unmanagedBoss]),
-      inspectTab: async () => { unmanagedInspectionCalls += 1; }
-    }), (error) => error.code === "BOSS_TAB_REQUIRED");
-    assert.strictEqual(unmanagedInspectionCalls, 0);
+      expectedSearchTabId: boss.id,
+      expectedCommunicationTabId: fixedCommunication.id,
+      inspectTab: async (tabId) => {
+        unmanagedInspectionCalls += 1;
+        return tabId === fixedCommunication.id
+          ? { tabId, url: fixedCommunication.url, isSearchPage: false }
+          : { tabId, url: boss.url, isSearchPage: true };
+      }
+    });
+    assert.strictEqual(unmanagedInspectionCalls, 2);
   }
 
   let multipleVisibleInspectionCalls = 0;
@@ -251,13 +259,17 @@ function dedicatedBrowser(initialTabs, createdTabs = []) {
     ]),
     (error) => error.code === "BOSS_WINDOW_MISMATCH"
   );
-  assert.throws(
-    () => assertBossOperatorTabs([
+  assert.deepStrictEqual(
+    assertBossOperatorTabs([
       boss,
       { ...boss, id: "duplicate-boss-search" },
       fixedCommunication
-    ]),
-    (error) => error.code === "BOSS_TAB_REQUIRED"
+    ], {
+      expectedSearchTabId: boss.id,
+      expectedCommunicationTabId: fixedCommunication.id
+    }),
+    { searchTab: boss, communicationTab: fixedCommunication, windowId: 42 },
+    "extra BOSS pages must not invalidate the managed pair"
   );
   assert.throws(
     () => assertBossOperatorTabs([

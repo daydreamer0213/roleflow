@@ -34,6 +34,7 @@ function renderNavigation({ currentPath = "", todayPath = "", planId = "" } = {}
         navigationLink(`/interview?planId=${encodedPlanId}`, "面试训练", currentRoute === "/interview")
       ]),
       navigationGroup("", [
+        navigationLink("/settings/platforms", "招聘平台", currentRoute === "/settings/platforms"),
         navigationLink("/settings", "模型与设置", currentRoute === "/settings"),
         navigationLink("/diagnostics", "运行诊断", currentRoute === "/diagnostics")
       ], "sidebar-utility")
@@ -48,6 +49,7 @@ function renderNavigation({ currentPath = "", todayPath = "", planId = "" } = {}
       navigationLink(resumeHref, "简历工作室", currentRoute === "/onboarding")
     ]),
     navigationGroup("", [
+      navigationLink("/settings/platforms", "招聘平台", currentRoute === "/settings/platforms"),
       navigationLink("/settings", "模型与设置", currentRoute === "/settings"),
       navigationLink("/diagnostics", "运行诊断", currentRoute === "/diagnostics")
     ], "sidebar-utility")

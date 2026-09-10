@@ -251,7 +251,7 @@ function assertSharedFrame(markup, href, name, current = true) {
 }
 
 async function assertRuntimeClient(source, site = "boss") {
-  const pollUrl = site === "boss" ? "/api/runtime-status" : "/api/runtime-status?site=zhaopin";
+  const pollUrl = "/api/runtime-status?site=" + site;
   const elements = {
     "[data-runtime-status]": { dataset: site === "boss" ? {} : { site } },
     "[data-runtime-title]": { textContent: "" },
@@ -311,7 +311,7 @@ async function assertRuntimeClient(source, site = "boss") {
   const clickPromise = click();
   assert.strictEqual(fetchCalls.at(-1).url, "/api/runtime/browser/recover");
   assert.strictEqual(fetchCalls.at(-1).options.method, "POST");
-  assert.strictEqual(fetchCalls.at(-1).options.body, site === "boss" ? "{}" : '{"site":"zhaopin"}');
+  assert.strictEqual(fetchCalls.at(-1).options.body, JSON.stringify({ site }));
   pending.shift()({
     ok: false,
     async json() {
@@ -334,8 +334,8 @@ async function assertRuntimeClient(source, site = "boss") {
   assert.strictEqual(fetchCalls.at(-1).url, pollUrl, "visible pages must resume local runtime polling");
   pending.shift()({ ok: true, async json() { return { browser: { ready: true }, workspace: { status: "login_required" } }; } });
   await settlePromises();
-  assert.strictEqual(elements["[data-runtime-recover]"].hidden, site === "zhaopin");
-  assert.match(elements["[data-runtime-title]"].textContent, site === "zhaopin" ? /智联只读/ : /登录 BOSS/);
+  assert.strictEqual(elements["[data-runtime-recover]"].hidden, false);
+  assert.match(elements["[data-runtime-title]"].textContent, site === "zhaopin" ? /登录智联/ : /登录BOSS/);
   assert(fetchCalls.every((call) => String(call.url).startsWith("/api/runtime")), "runtime client must call only local runtime endpoints");
 }
 

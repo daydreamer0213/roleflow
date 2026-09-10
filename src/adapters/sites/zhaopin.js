@@ -674,9 +674,13 @@ async function resolveZhaopinSearchTab(browser, expectedTabId = null) {
     if (expected) { assertZhaopinWorkspaceWindow(allTabs, expected); return expectedTabId; }
     throw zhaopinError('ZHAOPIN_TAB_BINDING_LOST', '本轮智联搜索标签页已丢失，请恢复后继续。');
   }
-  if (tabs.length !== 1) throw zhaopinError('ZHAOPIN_SEARCH_TAB_REQUIRED', '请保留一个智联岗位搜索页并保存条件后开始。');
-  assertZhaopinWorkspaceWindow(allTabs, tabs[0]);
-  return tabs[0].id;
+  const workspaceWindows = new Set(allTabs.filter(isZhaopinWorkspaceTab).map(tab => tab.windowId));
+  const managedCandidates = tabs.filter(tab => workspaceWindows.has(tab.windowId));
+  const selected = [...(managedCandidates.length ? managedCandidates : tabs)]
+    .sort((left, right) => `${typeof left.id}:${String(left.id)}`.localeCompare(`${typeof right.id}:${String(right.id)}`))[0];
+  if (!selected) throw zhaopinError('ZHAOPIN_SEARCH_TAB_REQUIRED', '请准备智联岗位搜索页并保存条件后开始。');
+  assertZhaopinWorkspaceWindow(allTabs, selected);
+  return selected.id;
 }
 
 function isZhaopinWorkspaceTab(tab) {

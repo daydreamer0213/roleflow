@@ -45,7 +45,18 @@ const generatedReports = [];
 
   const home = await fetch(`${baseUrl}/`, { redirect: "manual" });
   assert.strictEqual(home.status, 303);
-  assert.strictEqual(home.headers.get("location"), "/onboarding");
+  assert.strictEqual(home.headers.get("location"), "/settings/platforms?firstRun=1&next=%2Fsettings%3FfirstRun%3D1%26next%3D%252Fonboarding");
+  const platformSaved = await fetch(`${baseUrl}/api/settings/platforms`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ choice: "boss", next: "/onboarding" }),
+    redirect: "manual"
+  });
+  assert.strictEqual(platformSaved.status, 303);
+  assert.strictEqual(platformSaved.headers.get("location"), "/onboarding");
+  const configuredHome = await fetch(`${baseUrl}/`, { redirect: "manual" });
+  assert.strictEqual(configuredHome.status, 303);
+  assert.strictEqual(configuredHome.headers.get("location"), "/onboarding");
   const onboardingPage = await fetch(`${baseUrl}/onboarding`);
   const onboardingHtml = await onboardingPage.text();
   assert.strictEqual(onboardingPage.status, 200);

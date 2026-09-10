@@ -30,7 +30,7 @@ process.removeListener("warning", onWarning);
 
 assert.strictEqual(JOB_EXPORTS.length, 29);
 assert.strictEqual(CANDIDATE_EXPORTS.length, 29);
-assert.strictEqual(Object.keys(storage).length, 191);
+assert.strictEqual(Object.keys(storage).length, 193);
 assert.deepStrictEqual(Object.keys(jobStore).sort(), JOB_EXPORTS);
 assert.deepStrictEqual(Object.keys(candidateStore).sort(), CANDIDATE_EXPORTS);
 for (const name of JOB_EXPORTS) assert.strictEqual(storage[name], jobStore[name], `${name} must be a direct facade reference`);

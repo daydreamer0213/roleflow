@@ -707,6 +707,7 @@ async function durableResume() {
   let db = storage.openDb(filename);
   try {
     const saved = storage.saveProfileAnalysis(db, { profile: { candidate: { name: '恢复合成候选人', city: '广州', targetTitles: ['AI应用开发'] } }, document: { originalFileName: 'fixture.txt', format: 'text', contentHash: 'synthetic-resume', text: '合成简历', diagnostics: {} }, searchPlan: { name: '恢复', cities: ['广州'], directions: ['AI应用开发'], keywords: [{ word: 'AI', priority: 'A' }, { word: '工程', priority: 'A' }] } });
+    storage.saveWorkspacePlatformPreference(db, ['boss', 'zhaopin']);
     const scope = buildInheritedSearchScope({ site: 'zhaopin', profileId: saved.profileId, rawUrl: 'https://www.zhaopin.com/jobs/?pageMode=search&jl=548' });
     const keywords = [{ word: 'AI', priority: 'A', maxCards: 3 }, { word: '工程', priority: 'A', maxCards: 3 }];
     const acquisition = { site: 'zhaopin', ...scope, acquisitionMode: 'inherited', browserMode: 'edge', cdpPort: null,

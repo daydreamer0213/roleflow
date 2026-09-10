@@ -170,20 +170,19 @@ async function fixedBossScanPreflightSmoke() {
   assert.deepStrictEqual(blockedActions, { inheritedInspect: 0, generatedCatalog: 0, finalScan: 0, refreshActivity: 0 });
 
   for (const windowId of [7, 8]) {
-    await assert.rejects(
-      () => preflightBossScanBrowser({
-        browserMode: "edge",
-        browser: {
-          listTabs: async () => [...fixedTabs, {
-            id: `unmanaged-boss-${windowId}`,
-            windowId,
-            url: "https://www.zhipin.com/job_detail/unmanaged.html"
-          }]
-        },
-        adapter
-      }),
-      (error) => error.code === "BOSS_TAB_REQUIRED"
-    );
+    const withExtra = await preflightBossScanBrowser({
+      browserMode: "edge",
+      browser: {
+        listTabs: async () => [...fixedTabs, {
+          id: `unmanaged-boss-${windowId}`,
+          windowId,
+          url: "https://www.zhipin.com/job_detail/unmanaged.html"
+        }]
+      },
+      adapter
+    });
+    assert.strictEqual(withExtra.tabId, 31);
+    assert.strictEqual(withExtra.communicationTabId, 32);
   }
 
   let multipleVisibleActions = 0;
@@ -229,14 +228,12 @@ async function fixedBossScanPreflightSmoke() {
   }), (error) => error.code === "BROWSER_COMMAND_FAILED");
   assert.strictEqual(visibleDriftActions, 0);
 
-  await assert.rejects(
-    () => preflightBossScanBrowser({
-      browserMode: "edge",
-      browser: { listTabs: async () => [...fixedTabs, { id: 33, windowId: 7, url: "https://www.zhipin.com/web/geek/jobs?duplicate=1" }] },
-      adapter
-    }),
-    (error) => error.code === "BOSS_TAB_REQUIRED"
-  );
+  const duplicateSearch = await preflightBossScanBrowser({
+    browserMode: "edge",
+    browser: { listTabs: async () => [...fixedTabs, { id: 33, windowId: 7, url: "https://www.zhipin.com/web/geek/jobs?duplicate=1" }] },
+    adapter
+  });
+  assert.strictEqual(duplicateSearch.tabId, 31);
   await assert.rejects(
     () => preflightBossScanBrowser({
       browserMode: "edge",

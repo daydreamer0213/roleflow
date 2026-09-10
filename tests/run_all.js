@@ -46,6 +46,8 @@ const tests = [
   "workflow_scan_analysis_smoke.js",
   "scan_end_to_end_recovery_smoke.js",
   "storage_migration_smoke.js",
+  "workspace_platform_preferences_smoke.js",
+  "platform_workspace_smoke.js",
   "gate_d_baseline_smoke.js",
   "gate_d_evaluation_export_smoke.js",
   "communication_store_contract_smoke.js",

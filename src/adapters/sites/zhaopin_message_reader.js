@@ -172,11 +172,13 @@ function assertBrowser(browser) {
   }
 }
 
-function resolveMessageTab(tabs) {
+function resolveMessageTab(tabs, expectedTabId = null) {
   const matches = (tabs || []).filter((tab) => isZhaopinMessageUrl(tab?.url));
   if (!matches.length) throw codedError("ZHAOPIN_MESSAGE_TAB_MISSING", "zhaopin message tab is missing");
-  if (matches.length !== 1) throw codedError("ZHAOPIN_MESSAGE_TAB_AMBIGUOUS", "zhaopin message tab is ambiguous");
-  const tab = matches[0];
+  const tab = expectedTabId === null || expectedTabId === undefined
+    ? [...matches].sort((left, right) => `${typeof left.id}:${String(left.id)}`.localeCompare(`${typeof right.id}:${String(right.id)}`))[0]
+    : matches.find((item) => item.id === expectedTabId);
+  if (!tab) throw codedError("ZHAOPIN_MESSAGE_TAB_BINDING_LOST", "zhaopin message tab binding changed");
   if (!isBrowserTabId(tab.id) || !Number.isInteger(tab.windowId) || tab.windowId <= 0) {
     throw codedError("ZHAOPIN_MESSAGE_TAB_INVALID", "zhaopin message tab binding is invalid");
   }
@@ -380,7 +382,7 @@ function selectedJobTarget(snapshot, target) {
   });
 }
 
-function createZhaopinMessageReader({ browser, sleepFn = defaultSleep, nowFn = Date.now, timeoutMs = 120000, pollIntervalMs = 500 } = {}) {
+function createZhaopinMessageReader({ browser, sleepFn = defaultSleep, nowFn = Date.now, timeoutMs = 120000, pollIntervalMs = 500, expectedTabId = null } = {}) {
   assertBrowser(browser);
   if (typeof sleepFn !== "function" || typeof nowFn !== "function" || !Number.isFinite(timeoutMs) || timeoutMs <= 0 || !Number.isFinite(pollIntervalMs) || pollIntervalMs < 0) {
     throw codedError("ZHAOPIN_MESSAGE_OPTIONS_INVALID", "zhaopin message reader options are invalid");
@@ -400,7 +402,7 @@ function createZhaopinMessageReader({ browser, sleepFn = defaultSleep, nowFn = D
   async function assertActiveBindings(signal) {
     if (!binding) throw codedError("ZHAOPIN_MESSAGE_TARGET_INVALID", "zhaopin message reader has no active binding");
     throwIfAborted(signal);
-    const current = resolveMessageTab(await browser.listTabs());
+    const current = resolveMessageTab(await browser.listTabs(), binding.tabId);
     throwIfAborted(signal);
     if (current.tabId !== binding.tabId || current.windowId !== binding.windowId) {
       throw codedError("ZHAOPIN_MESSAGE_TAB_BINDING_LOST", "zhaopin message tab binding changed");
@@ -423,11 +425,11 @@ function createZhaopinMessageReader({ browser, sleepFn = defaultSleep, nowFn = D
         activeSelectedResult = null;
         activeSelectedTarget = null;
         throwIfAborted(signal);
-        const next = resolveMessageTab(await browser.listTabs());
+        const next = resolveMessageTab(await browser.listTabs(), expectedTabId);
         throwIfAborted(signal);
         await browser.setPageLifecycleActive(next.tabId);
         throwIfAborted(signal);
-        const confirmed = resolveMessageTab(await browser.listTabs());
+        const confirmed = resolveMessageTab(await browser.listTabs(), expectedTabId);
         throwIfAborted(signal);
         if (confirmed.tabId !== next.tabId || confirmed.windowId !== next.windowId) {
           throw codedError("ZHAOPIN_MESSAGE_TAB_BINDING_LOST", "zhaopin message tab binding changed");

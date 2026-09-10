@@ -185,7 +185,7 @@ if ($BrowserMode -eq "edge") {
   Write-Host "浏览器：RoleFlow 专用 Edge（推荐）"
 }
 if ([string]$RuntimeStatus.workspace.status -eq "login_required") {
-  Write-Host "工作区状态：需要登录 BOSS；登录后 RoleFlow 会在后台自动补齐页面。"
+  Write-Host "工作区状态：已选择的平台需要登录；登录后 RoleFlow 会在后台自动补齐页面。"
 } elseif ($null -ne $RuntimeStatus -and [string]$RuntimeStatus.workspace.status -ne "ready") {
   Write-Host "工作区状态：$([string]$RuntimeStatus.workspace.message)"
 } else {

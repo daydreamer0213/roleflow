@@ -41,18 +41,31 @@ function searchTabChanged(message, tab = null) {
   return workspaceError("BOSS_SEARCH_TAB_CHANGED", message, observedLocation ? { observedLocation } : {});
 }
 
-function assertBossOperatorTabs(tabs = []) {
-  const bossTabs = tabs.filter(isBossTab);
+function assertBossOperatorTabs(tabs = [], {
+  expectedSearchTabId = null,
+  expectedCommunicationTabId = null
+} = {}) {
   const searchTabs = tabs.filter((tab) => bossPath(tab) === "/web/geek/jobs");
   const communicationTabs = tabs.filter((tab) => bossPath(tab) === "/web/geek/chat");
-  if (bossTabs.length !== 2 || searchTabs.length !== 1 || communicationTabs.length !== 1) {
+  const searchTab = expectedSearchTabId === null || expectedSearchTabId === undefined
+    ? stableTab(searchTabs)
+    : searchTabs.find((tab) => sameBrowserTabId(tab.id, expectedSearchTabId));
+  const communicationTab = expectedCommunicationTabId === null || expectedCommunicationTabId === undefined
+    ? stableTab(communicationTabs.filter((tab) => !searchTab || tab.windowId === searchTab.windowId))
+      || stableTab(communicationTabs)
+    : communicationTabs.find((tab) => sameBrowserTabId(tab.id, expectedCommunicationTabId));
+  if (expectedSearchTabId !== null && expectedSearchTabId !== undefined && !searchTab) {
+    throw searchTabChanged("BOSS fixed search tab changed before preflight.");
+  }
+  if (expectedCommunicationTabId !== null && expectedCommunicationTabId !== undefined && !communicationTab) {
+    throw workspaceError("BOSS_OPERATOR_TABS_CHANGED", "BOSS fixed communication tab changed before preflight.");
+  }
+  if (!searchTab || !communicationTab) {
     throw workspaceError(
       "BOSS_TAB_REQUIRED",
-      "浏览器必须正好保留一个 BOSS 搜索页和一个 BOSS 沟通页。"
+      "浏览器中缺少 RoleFlow 已绑定的 BOSS 搜索页或沟通页。"
     );
   }
-  const [searchTab] = searchTabs;
-  const [communicationTab] = communicationTabs;
   if (!Number.isInteger(searchTab.windowId)
     || !Number.isInteger(communicationTab.windowId)) {
     throw workspaceError(
@@ -83,7 +96,10 @@ async function inspectBossOperatorTabs({
     throw new TypeError("inspectBossOperatorTabs requires browser.listTabs() and inspectTab()");
   }
   const initialTabs = await browser.listTabs({ scope: "boss" });
-  const fixed = assertBossOperatorTabs(initialTabs);
+  const fixed = assertBossOperatorTabs(initialTabs, {
+    expectedSearchTabId,
+    expectedCommunicationTabId
+  });
   const initialVisibleIds = visibleIdsInWindow(initialTabs, fixed.windowId);
   if (initialVisibleIds.length > 1) {
     throw workspaceError("BROWSER_COMMAND_FAILED", "固定 BOSS 标签页窗口同时出现多个前台标签页。");
@@ -106,7 +122,10 @@ async function inspectBossOperatorTabs({
   const refreshedTabs = await browser.listTabs({ scope: "boss" });
   let refreshed;
   try {
-    refreshed = assertBossOperatorTabs(refreshedTabs);
+    refreshed = assertBossOperatorTabs(refreshedTabs, {
+      expectedSearchTabId: fixed.searchTab.id,
+      expectedCommunicationTabId: fixed.communicationTab.id
+    });
   } catch (error) {
     if (error?.code !== "BOSS_TAB_REQUIRED") throw error;
     const currentSearchTab = refreshedTabs.find((tab) => sameBrowserTabId(tab.id, fixed.searchTab.id));
@@ -151,9 +170,6 @@ function assertBossRuntimeTabBindings(tabs = [], {
   expectedSearchTabId,
   expectedCommunicationTabId
 } = {}) {
-  if (tabs.filter(isBossTab).length !== 2) {
-    throw workspaceError("BOSS_TAB_REQUIRED", "运行期间只能保留固定的 BOSS 搜索页和沟通页。");
-  }
   const searchTab = tabs.find((tab) => sameBrowserTabId(tab.id, expectedSearchTabId));
   if (!searchTab) {
     throw searchTabChanged("BOSS fixed search tab changed during runtime.");
@@ -179,6 +195,11 @@ function assertBossRuntimeTabBindings(tabs = [], {
     throw workspaceError("BOSS_COMMUNICATION_PAGE_LOST", "BOSS fixed communication tab left its required page.");
   }
   return { searchTab, communicationTab, windowId: searchTab.windowId };
+}
+
+function stableTab(tabs = []) {
+  return [...tabs].sort((left, right) => `${typeof left.id}:${String(left.id)}`
+    .localeCompare(`${typeof right.id}:${String(right.id)}`))[0] || null;
 }
 
 function assertLiveBossOperatorState(state, { tabId, pathname, code, requiresSearchPage }) {

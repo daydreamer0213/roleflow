@@ -10,6 +10,7 @@ const messageReplySendStore = require("../storage/message_reply_send_store");
 const funnelStore = require("../storage/funnel_store");
 const resumeOptimizationStore = require("../storage/resume_optimization_store");
 const mockInterviewStore = require("../storage/mock_interview_store");
+const workspacePlatformStore = require("../storage/workspace_platform_store");
 const {
   recordMessageReplyDrafts,
   getMessageReplyDraft,
@@ -137,6 +138,15 @@ CREATE TABLE IF NOT EXISTS search_plan_platform_contexts (
   updated_at TEXT NOT NULL,
   PRIMARY KEY(plan_id, site),
   FOREIGN KEY(plan_id) REFERENCES search_plans(id)
+);
+`;
+
+const WORKSPACE_PLATFORM_PREFERENCES_SCHEMA = `
+CREATE TABLE IF NOT EXISTS workspace_platform_preferences (
+  id INTEGER PRIMARY KEY CHECK(id = 1),
+  platforms_json TEXT NOT NULL,
+  selected_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
 );
 `;
 
@@ -1413,8 +1423,51 @@ const MIGRATIONS = [
         if (!columns.has(name)) db.exec(`ALTER TABLE message_discovery_unresolved_items ADD COLUMN ${name} ${definition}`);
       }
     }
+  },
+  {
+    version: 31,
+    name: "workspace_platform_preferences_v1",
+    apply(db) {
+      db.exec(WORKSPACE_PLATFORM_PREFERENCES_SCHEMA);
+      backfillWorkspacePlatformPreference(db);
+    }
   }
 ];
+
+function backfillWorkspacePlatformPreference(db) {
+  const hasPreference = db.prepare("SELECT 1 FROM workspace_platform_preferences WHERE id = 1").get();
+  if (hasPreference) return;
+  const hasSite = (site) => {
+    for (const [table, column] of [
+      ["batches", "site"],
+      ["jobs", "source"],
+      ["workflow_runs", "site"],
+      ["search_plan_platform_contexts", "site"]
+    ]) {
+      const exists = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
+      if (!exists) continue;
+      const columns = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((item) => item.name));
+      if (!columns.has(column)) continue;
+      if (db.prepare(`SELECT 1 FROM ${table} WHERE lower(${column}) = ? LIMIT 1`).get(site)) return true;
+    }
+    return false;
+  };
+  const platforms = [];
+  if (hasSite("boss")) platforms.push("boss");
+  if (hasSite("zhaopin")) platforms.push("zhaopin");
+  if (!platforms.length) {
+    const hasProfilesTable = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'candidate_profiles'").get();
+    const hasExistingProfile = hasProfilesTable
+      ? db.prepare("SELECT 1 FROM candidate_profiles LIMIT 1").get()
+      : null;
+    if (hasExistingProfile) platforms.push("boss");
+  }
+  if (!platforms.length) return;
+  const now = nowIso();
+  db.prepare(`INSERT INTO workspace_platform_preferences(
+      id, platforms_json, selected_at, updated_at
+    ) VALUES (1, ?, ?, ?)`).run(JSON.stringify(platforms), now, now);
+}
 
 function migrateWorkflowRunPlatforms(db) {
   const exists = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'workflow_runs'").get();
@@ -2400,6 +2453,8 @@ module.exports = {
   SCAN_RUN_STATUSES: scanStore.SCAN_RUN_STATUSES,
   WORKFLOW_RUN_STATUSES,
   openDb,
+  getWorkspacePlatformPreference: workspacePlatformStore.getWorkspacePlatformPreference,
+  saveWorkspacePlatformPreference: workspacePlatformStore.saveWorkspacePlatformPreference,
   immediateTransaction,
   recordMessageReplyDrafts,
   getMessageReplyDraft,

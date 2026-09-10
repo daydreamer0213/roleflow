@@ -102,7 +102,7 @@ if ($OutputJson) {
   Write-Host "CDP URL: http://127.0.0.1:$Port"
   Write-Host "Profile dir: $ProfilePath"
   Write-Host "Browser: $($Version.Browser)"
-  Write-Host "RoleFlow 专用 Edge（推荐）已就绪。首次使用请登录 BOSS，并保留一个 BOSS 搜索结果页。"
+  Write-Host "RoleFlow 专用 Edge（推荐）已就绪。首次使用请在 RoleFlow 选择招聘平台并完成登录。"
 }
 
 exit 0

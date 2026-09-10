@@ -356,7 +356,7 @@ function assertBrowser(browser) {
   }
 }
 
-function createBossMessageReader({ browser, sleepFn = sleep } = {}) {
+function createBossMessageReader({ browser, sleepFn = sleep, expectedCommunicationTabId } = {}) {
   assertBrowser(browser);
   let activeTabId = null;
   let activeRowKeys = new Set();
@@ -461,7 +461,7 @@ function createBossMessageReader({ browser, sleepFn = sleep } = {}) {
     activeUnreadTargets = new Set();
     activeSelectedSnapshot = null;
     const tabs = await browser.listTabs();
-    const binding = captureBinding(tabs);
+    const binding = captureBinding(tabs, expectedCommunicationTabId);
     const tabId = binding.communicationTabId;
     await browser.setPageLifecycleActive(tabId);
     assertRestoredBaseline(await browser.listTabs(), binding);

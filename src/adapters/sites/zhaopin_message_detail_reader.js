@@ -257,8 +257,8 @@ function trustedJobTarget(value) {
 function captureBinding(tabs, communicationTabId) {
   const communication = (tabs || []).find((tab) => sameBrowserTabId(tab.id, communicationTabId));
   const messageTabs = (tabs || []).filter((tab) => isZhaopinMessageUrl(tab?.url));
-  if (messageTabs.length !== 1 || !communication || !isBrowserTabId(communication.id)
-    || communication.windowId <= 0 || !sameBrowserTabId(messageTabs[0].id, communication.id)) {
+  if (!communication || !isBrowserTabId(communication.id)
+    || communication.windowId <= 0 || !messageTabs.some((tab) => sameBrowserTabId(tab.id, communication.id))) {
     throw detailError("ZHAOPIN_MESSAGE_DETAIL_BINDING_INVALID", "zhaopin message tab binding is invalid");
   }
   return {

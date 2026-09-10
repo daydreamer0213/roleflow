@@ -428,7 +428,9 @@ function trustedJobTarget(value) {
 }
 
 function captureBinding(tabs, communicationTabId) {
-  const fixed = assertBossOperatorTabs(tabs);
+  const fixed = assertBossOperatorTabs(tabs, {
+    expectedCommunicationTabId: communicationTabId
+  });
   const expectedCommunicationTabId = communicationTabId === undefined
     ? fixed.communicationTab.id
     : communicationTabId;
@@ -443,9 +445,6 @@ function captureBinding(tabs, communicationTabId) {
     throw detailError("BOSS_MESSAGE_DETAIL_BINDING_INVALID", "browser tab identity transport is inconsistent");
   }
   const bossTabs = tabs.filter(isBossTab);
-  if (bossTabs.length !== 2) {
-    throw detailError("BOSS_MESSAGE_DETAIL_BASELINE_INVALID", "BOSS fixed-tab baseline is not at rest");
-  }
   const visibleTabIds = visibleTabIdsInWindow(tabs, fixed.windowId);
   if (visibleTabIds.length > 1) {
     throw detailError("BOSS_MESSAGE_DETAIL_NOT_BACKGROUND", "visible Edge tab identity is ambiguous");
@@ -462,11 +461,13 @@ function captureBinding(tabs, communicationTabId) {
 
 function assertRestoredBaseline(tabs, binding) {
   try {
-    const fixed = assertBossOperatorTabs(tabs);
+    const fixed = assertBossOperatorTabs(tabs, {
+      expectedSearchTabId: binding.searchTabId,
+      expectedCommunicationTabId: binding.communicationTabId
+    });
     const bossTabs = tabs.filter(isBossTab);
     const bossTabIds = sortedBrowserTabIds(bossTabs.map((tab) => tab.id));
-    if (bossTabs.length !== 2
-      || !sameBrowserTabId(fixed.searchTab.id, binding.searchTabId)
+    if (!sameBrowserTabId(fixed.searchTab.id, binding.searchTabId)
       || !sameBrowserTabId(fixed.communicationTab.id, binding.communicationTabId)
       || fixed.windowId !== binding.windowId
       || !sameIds(visibleTabIdsInWindow(tabs, binding.windowId), binding.visibleTabIds)

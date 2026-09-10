@@ -22,7 +22,8 @@ const {
   recordMessageReplyDrafts,
   saveMessageInboundContext,
   getMessageInboundContext,
-  closeMessageReplyDrafts
+  closeMessageReplyDrafts,
+  saveWorkspacePlatformPreference
 } = require("../src/core/storage");
 const {
   ensureProgressCard,
@@ -82,6 +83,7 @@ async function main() {
   await detailSafetyCompositionSmoke();
   await dashboardSignalShutdownSmoke();
   const fixture = createFixture();
+  saveWorkspacePlatformPreference(db, ["boss", "zhaopin"]);
   await modelReadinessGateSmoke(db, root, dbPath, logger, fixture.profileId);
   await browserRuntimeGateSmoke(db, root, dbPath, logger, fixture.profileId);
   const scenarios = [];

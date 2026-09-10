@@ -46,7 +46,13 @@ function buildTodayViewModel(input = {}) {
   };
 
   const vm = {
-    page: { title: "今日任务", profileId, planId, todayPath: `/plan?profileId=${profileId}&planId=${planId}` },
+    page: {
+      title: "今日任务",
+      profileId,
+      planId,
+      todayPath: `/plan?profileId=${profileId}&planId=${planId}`,
+      enabledPlatforms: Array.isArray(input.enabledPlatforms) ? [...input.enabledPlatforms] : [site]
+    },
     heading: {
       eyebrow: "今日工作台",
       title: "今天先把高质量机会推进到人工确认。",

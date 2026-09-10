@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { openDb } = require("../src/core/storage");
+const { openDb, getWorkspacePlatformPreference, saveWorkspacePlatformPreference } = require("../src/core/storage");
 const { createDashboardServer } = require("../src/dashboard/server");
 
 const root = path.resolve(__dirname, "..");
@@ -57,6 +57,7 @@ function quietLogger() {
 (async () => {
   fs.mkdirSync(smokeRoot, { recursive: true });
   const db = openDb(dbPath);
+  saveWorkspacePlatformPreference(db, ["boss"]);
   const supervisor = fakeSupervisor();
   const browserAuthority = {
     browserMode: "portable",
@@ -104,7 +105,7 @@ function quietLogger() {
     assert.deepStrictEqual(health.body.workspaceRuntime, {
       status: "unchecked",
       ready: false,
-      message: "BOSS 工作区尚未检查。"
+      message: "招聘平台工作区尚未检查。"
     });
     assert.deepStrictEqual(health.body.browserAuthority, browserAuthority);
 
@@ -115,7 +116,7 @@ function quietLogger() {
       workspace: {
         status: "unchecked",
         ready: false,
-        message: "BOSS 工作区尚未检查。"
+        message: "招聘平台工作区尚未检查。"
       }
     });
 
@@ -252,7 +253,7 @@ function quietLogger() {
     assert.deepStrictEqual(reconciled.body.workspace, {
       status: "ready",
       ready: true,
-      message: "BOSS 工作区已就绪。"
+      message: "已启用的招聘平台页面均已就绪。"
     });
     assert.doesNotMatch(JSON.stringify(reconciled.body), /boss-search|boss-chat|dashboard/);
     const readyRuntime = await getJson(base, "/api/runtime-status");
@@ -276,7 +277,7 @@ function quietLogger() {
       workspace: {
         status: "login_required",
         ready: false,
-        message: "请在专用 Edge 登录 BOSS，完成后重新检查。"
+        message: "部分招聘平台需要登录，登录后重新检查即可。"
       }
     });
     assert.doesNotMatch(JSON.stringify(recovered.body), /boss-login|dashboard/);
@@ -300,7 +301,7 @@ function quietLogger() {
     assert.deepStrictEqual(ambiguous.body.workspace, {
       status: "ambiguous",
       ready: false,
-      message: "BOSS 工作区存在无法安全判断的页面，请查看诊断。"
+      message: "招聘平台工作区存在暂时无法确认的页面，请查看诊断。"
     });
     const ambiguousRuntime = await getJson(base, "/api/runtime-status");
     assert.strictEqual(ambiguousRuntime.body.workspace.status, "ambiguous");
@@ -332,6 +333,7 @@ function quietLogger() {
   await workspaceLoginMonitorSmoke();
   await workspaceLoginMonitorDeadlineSmoke();
   await browserDependentWorkspaceGateSmoke();
+  await workspacePlatformChangeQueueSmoke();
 
   console.log("dashboard_runtime_smoke ok");
 })().catch((error) => {
@@ -378,6 +380,7 @@ function escapeRegExp(value) {
 async function serializedWorkspaceReconciliationSmoke() {
   const serializedDbPath = path.join(smokeRoot, `serialized-${process.pid}-${Date.now()}.sqlite`);
   const serializedDb = openDb(serializedDbPath);
+  saveWorkspacePlatformPreference(serializedDb, ["boss"]);
   const supervisor = fakeSupervisor();
   supervisor.setSnapshot(snapshot("ready"));
   let releaseReconciliation;
@@ -427,6 +430,7 @@ async function serializedWorkspaceReconciliationSmoke() {
 async function workspaceLoginMonitorSmoke() {
   const monitorDbPath = path.join(smokeRoot, `login-monitor-${process.pid}-${Date.now()}.sqlite`);
   const monitorDb = openDb(monitorDbPath);
+  saveWorkspacePlatformPreference(monitorDb, ["boss"]);
   const supervisor = fakeSupervisor();
   supervisor.setSnapshot(snapshot("ready"));
   const scheduled = [];
@@ -491,6 +495,7 @@ async function workspaceLoginMonitorSmoke() {
 async function workspaceLoginMonitorDeadlineSmoke() {
   const deadlineDbPath = path.join(smokeRoot, `login-deadline-${process.pid}-${Date.now()}.sqlite`);
   const deadlineDb = openDb(deadlineDbPath);
+  saveWorkspacePlatformPreference(deadlineDb, ["boss"]);
   const supervisor = fakeSupervisor();
   supervisor.setSnapshot(snapshot("ready"));
   const scheduled = [];
@@ -543,6 +548,7 @@ async function workspaceLoginMonitorDeadlineSmoke() {
 async function browserDependentWorkspaceGateSmoke() {
   const gateDbPath = path.join(smokeRoot, `workspace-gate-${process.pid}-${Date.now()}.sqlite`);
   const gateDb = openDb(gateDbPath);
+  saveWorkspacePlatformPreference(gateDb, ["boss"]);
   const supervisor = fakeSupervisor();
   supervisor.setSnapshot(snapshot("ready"));
   const calls = [];
@@ -597,5 +603,70 @@ async function browserDependentWorkspaceGateSmoke() {
     await close(server);
     gateDb.close();
     fs.rmSync(gateDbPath, { force: true });
+  }
+}
+
+async function workspacePlatformChangeQueueSmoke() {
+  const queueDbPath = path.join(smokeRoot, `platform-change-${process.pid}-${Date.now()}.sqlite`);
+  const queueDb = openDb(queueDbPath);
+  saveWorkspacePlatformPreference(queueDb, ["boss"]);
+  const supervisor = fakeSupervisor();
+  supervisor.setSnapshot(snapshot("ready"));
+  let releaseFirst;
+  let signalEntered;
+  const entered = new Promise((resolve) => { signalEntered = resolve; });
+  const blocked = new Promise((resolve) => { releaseFirst = resolve; });
+  const observedPreferences = [];
+  const server = createDashboardServer({
+    db: queueDb,
+    dbPath: queueDbPath,
+    root,
+    dataRoot: smokeRoot,
+    forceMock: true,
+    logger: quietLogger(),
+    browserAuthority: {
+      browserMode: "portable",
+      cdpPort: 9222,
+      profilePath: "C:\\Users\\Example\\AppData\\Local\\RoleFlow\\BrowserProfile"
+    },
+    browserSupervisor: supervisor,
+    workspaceReconciler: async () => {
+      const platforms = getWorkspacePlatformPreference(queueDb)?.platforms || [];
+      observedPreferences.push([...platforms]);
+      if (observedPreferences.length === 1) {
+        signalEntered();
+        await blocked;
+      }
+      return {
+        status: "ready",
+        enabledPlatforms: platforms,
+        platforms: Object.fromEntries(platforms.map((site) => [site, { site, status: "ready" }]))
+      };
+    }
+  });
+  const base = await listen(server);
+  try {
+    const startup = server.reconcileWorkspace({ startupGuidance: false, reason: "initial_startup" });
+    await entered;
+    const save = fetch(`${base}/api/settings/platforms`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ choice: "zhaopin", next: "/settings" }),
+      redirect: "manual"
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.deepStrictEqual(observedPreferences, [["boss"]],
+      "saving a platform choice must not overlap an active workspace reconciliation");
+    releaseFirst();
+    await startup;
+    const response = await save;
+    assert.strictEqual(response.status, 303);
+    assert.deepStrictEqual(observedPreferences, [["boss"], ["zhaopin"]],
+      "the queued reconciliation must use the newly saved platform choice");
+  } finally {
+    releaseFirst?.();
+    await close(server);
+    queueDb.close();
+    fs.rmSync(queueDbPath, { force: true });
   }
 }

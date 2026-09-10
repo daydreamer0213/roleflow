@@ -54,6 +54,7 @@ async function main() {
   let server;
   try {
     const saved = seed(db);
+    storage.saveWorkspacePlatformPreference(db, ["boss", "zhaopin"]);
     const bossBefore = storage.getSearchPlan(db, saved.planId).plan;
     const ids = [];
     for (const [source, title] of [['boss', '旧BOSS岗位'], ['zhaopin', '智联完整岗位'], ['boss', '新BOSS岗位']]) {

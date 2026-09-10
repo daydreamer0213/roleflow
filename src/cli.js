@@ -87,7 +87,8 @@ const {
   attachResumeDocumentFile,
   bindBatchToPlan,
   rescorePlanObservations,
-  reassessBatchObservations
+  reassessBatchObservations,
+  getWorkspacePlatformPreference
 } = require("./core/storage");
 const { listWorkflowInventory } = require("./core/workflow_inventory");
 const { createSiteAccessController } = require("./core/site_access_budget");
@@ -136,6 +137,7 @@ const {
 const { validateResumeBatch } = require("./core/scan_resume");
 const { inspectBossBrowserReadiness } = require("./core/browser_readiness");
 const { prepareWorkspaceTabs, inspectBossOperatorTabs, assertBossRuntimeTabBindings } = require("./core/workspace_tabs");
+const { preparePlatformWorkspaceTabs } = require("./core/platform_workspace");
 const { resolveRuntimePaths } = require("./core/runtime_paths");
 
 const ROOT = path.resolve(__dirname, "..");
@@ -2753,29 +2755,19 @@ function startDashboard(db, args) {
       logger
     });
     const workspaceBrowser = createBrowser({ browser: "portable", "cdp-port": Number(args["cdp-port"] || 9222) });
-    const workspaceAdapter = createSiteAdapter("boss", { browser: workspaceBrowser, logger });
     let workspaceReconciliationQueue = Promise.resolve();
-    workspaceReconciler = ({ startupGuidance = false } = {}) => {
-      const reconciliation = workspaceReconciliationQueue.then(() => prepareWorkspaceTabs({
-        browser: workspaceBrowser,
-        dashboardUrl,
-        requireFixedBossTabs: true,
-        bootstrapDedicatedTabs: true,
-        allowStartupGuidance: startupGuidance,
-        inspectReadiness: ({ guidanceTab, fixedTabs }) => inspectBossBrowserReadiness({
-          browserMode: "portable",
-          preflight: async () => {
-            if (!fixedTabs) return workspaceAdapter.preflight({ tabId: guidanceTab.id });
-            const inspected = await inspectBossOperatorTabs({
-              browser: workspaceBrowser,
-              inspectTab: (tabId) => workspaceAdapter.preflight({ tabId }),
-              expectedSearchTabId: fixedTabs.searchTab.id,
-              expectedCommunicationTabId: fixedTabs.communicationTab.id
-            });
-            return inspected.searchState;
-          }
-        })
-      }));
+    let latestWorkspace = null;
+    workspaceReconciler = () => {
+      const reconciliation = workspaceReconciliationQueue.then(async () => {
+        const preference = getWorkspacePlatformPreference(db);
+        latestWorkspace = await preparePlatformWorkspaceTabs({
+          browser: workspaceBrowser,
+          dashboardUrl,
+          enabledPlatforms: preference?.platforms || [],
+          previousWorkspace: latestWorkspace
+        });
+        return latestWorkspace;
+      });
       workspaceReconciliationQueue = reconciliation.catch(() => null);
       return reconciliation;
     };

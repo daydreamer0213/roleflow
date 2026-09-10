@@ -76,7 +76,9 @@ const {
   getMessageReplyDraft,
   isJobAwaitingAction,
   OUTCOME_STATUSES,
-  getOutcomeAnalyticsSnapshot
+  getOutcomeAnalyticsSnapshot,
+  getWorkspacePlatformPreference,
+  saveWorkspacePlatformPreference
 } = require("../core/storage");
 const {
   getCommunicationBatch,
@@ -334,15 +336,17 @@ const BROWSER_READINESS_STATUSES = new Set([
 ]);
 
 const WORKSPACE_RUNTIME_MESSAGES = Object.freeze({
-  unchecked: "BOSS 工作区尚未检查。",
-  login_required: "请在专用 Edge 登录 BOSS，完成后重新检查。",
-  search_page_required: "BOSS 搜索页需要重新确认。",
-  communication_page_required: "BOSS 沟通页需要重新确认。",
-  risk_control: "BOSS 正在要求安全验证，请先在浏览器中完成验证。",
-  ambiguous: "BOSS 工作区存在无法安全判断的页面，请查看诊断。",
+  unchecked: "招聘平台工作区尚未检查。",
+  platform_selection_required: "请先选择要使用的招聘平台。",
+  platform_disabled: "这个招聘平台尚未启用。",
+  login_required: "部分招聘平台需要登录，登录后重新检查即可。",
+  search_page_required: "招聘平台搜索页需要重新确认。",
+  communication_page_required: "招聘平台消息页需要重新确认。",
+  risk_control: "招聘平台正在要求安全验证，请先在浏览器中完成验证。",
+  ambiguous: "招聘平台工作区存在暂时无法确认的页面，请查看诊断。",
   browser_unavailable: "专用 Edge 暂时不可用。",
-  not_ready: "BOSS 工作区尚未准备好。",
-  ready: "BOSS 工作区已就绪。"
+  not_ready: "招聘平台工作区尚未准备好。",
+  ready: "已启用的招聘平台页面均已就绪。"
 });
 
 function normalizeDashboardBrowserAuthority(input) {
@@ -441,8 +445,12 @@ function resolveNewWorkflowBrowser(input = {}, frozenAuthority) {
   return { browserMode: authority.browserMode, cdpPort: authority.cdpPort };
 }
 
-function publicWorkspaceRuntimeSnapshot(workspace = null) {
-  const status = String(workspace?.status || "unchecked");
+function publicWorkspaceRuntimeSnapshot(workspace = null, site = null) {
+  const platformValues = Array.isArray(workspace?.platforms)
+    ? workspace.platforms
+    : Object.entries(workspace?.platforms || {}).map(([platformSite, value]) => ({ site: platformSite, ...value }));
+  const platform = site ? platformValues.find((value) => value.site === site) : null;
+  const status = String(platform?.status || workspace?.status || "unchecked");
   const message = WORKSPACE_RUNTIME_MESSAGES[status];
   if (!message) {
     return {
@@ -451,7 +459,19 @@ function publicWorkspaceRuntimeSnapshot(workspace = null) {
       message: WORKSPACE_RUNTIME_MESSAGES.ambiguous
     };
   }
-  return { status, ready: status === "ready", message };
+  const platforms = platformValues.map((value) => ({
+    site: value.site,
+    status: String(value?.status || "not_ready"),
+    ready: value?.status === "ready"
+  }));
+  const snapshot = {
+    status,
+    ready: status === "ready",
+    message
+  };
+  if (Array.isArray(workspace?.enabledPlatforms)) snapshot.enabledPlatforms = [...workspace.enabledPlatforms];
+  if (!site && (Array.isArray(workspace?.platforms) || workspace?.platforms)) snapshot.platforms = platforms;
+  return snapshot;
 }
 
 function resolveCommunicationBatchBrowserAuthority(db, input = {}, frozenAuthority) {
@@ -793,6 +813,7 @@ function createDashboardServer({
       browserMode: frozenBrowserAuthority.browserMode,
       cdpPort: frozenBrowserAuthority.cdpPort
     }),
+    getEnabledPlatforms: () => activeWorkspacePlatforms(db),
     ...messageDiscoveryDependencies
   });
   const messageReplySend = createMessageReplySendController({
@@ -912,7 +933,8 @@ function createDashboardServer({
         updateWorkspaceLoginMonitor(workspace);
         const initialSearchCatchUpAllowed = workspace?.status === "ready"
           || (workspace?.status === "search_page_required" && workspace?.communicationTabId != null);
-        if (initialSearchCatchUpAllowed
+        if (activeWorkspacePlatforms(db).includes("boss")
+          && initialSearchCatchUpAllowed
           && ["initial_startup", "login_monitor", "user_recovery", "user_reconcile"].includes(String(input?.reason || ""))) {
           Promise.resolve()
             .then(() => runInitialSearchCatchUp())
@@ -929,7 +951,21 @@ function createDashboardServer({
     pending.then(clear, clear);
     return pending;
   };
+  const reconcileWorkspaceAfterCurrent = async (input) => {
+    const current = activeWorkspaceReconciliation;
+    if (current) {
+      try { await current; } catch { /* A fresh pass still uses the newly saved preference. */ }
+    }
+    return reconcileWorkspace(input);
+  };
   const ensureManagedWorkspaceReady = async (reason, site = 'boss') => {
+    const enabledPlatforms = activeWorkspacePlatforms(db);
+    if (!enabledPlatforms.length) {
+      throw appError("WORKSPACE_PLATFORM_SELECTION_REQUIRED", "请先在招聘平台设置中选择要使用的平台。", { statusCode: 409 });
+    }
+    if (!enabledPlatforms.includes(site)) {
+      throw appError("WORKSPACE_PLATFORM_DISABLED", `${site === "zhaopin" ? "智联" : "BOSS"} 尚未启用，请先在招聘平台设置中启用。`, { statusCode: 409 });
+    }
     if (browserSupervisor?.getSnapshot && !browserSupervisor.getSnapshot()?.ready && browserSupervisor?.ensure) {
       const address = dashboardServer.address();
       if (!address || typeof address === "string") {
@@ -949,16 +985,17 @@ function createDashboardServer({
       }
     }
     assertBrowserRuntimeReady();
-    if (site === 'zhaopin') return null;
     if (!workspaceReconciler) return null;
     const workspace = await reconcileWorkspace({ startupGuidance: false, reason });
-    if (workspace?.status === "ready") return workspace;
-    const publicWorkspace = publicWorkspaceRuntimeSnapshot(workspace);
-    const code = workspace?.status === "login_required"
-      ? "BOSS_LOGIN_REQUIRED"
-      : workspace?.status === "risk_control"
-        ? "BOSS_RISK_CONTROL"
-        : "BOSS_WORKSPACE_NOT_READY";
+    const platform = workspace?.platforms?.[site] || (!workspace?.platforms ? { status: workspace?.status } : null);
+    if (platform?.status === "ready") return workspace;
+    const publicWorkspace = publicWorkspaceRuntimeSnapshot(workspace, site);
+    const prefix = site === "zhaopin" ? "ZHAOPIN" : "BOSS";
+    const code = platform?.status === "login_required"
+      ? `${prefix}_LOGIN_REQUIRED`
+      : platform?.status === "risk_control"
+        ? `${prefix}_RISK_CONTROL`
+        : `${prefix}_WORKSPACE_NOT_READY`;
     throw appError(code, publicWorkspace.message, { statusCode: 409 });
   };
   const initialSearchPlanRevision = (plan) => `${Number(plan?.id || 0)}:${String(plan?.updatedAt || "")}`;
@@ -1096,6 +1133,13 @@ function createDashboardServer({
           primaryModelsReady
         }));
       }
+      if (req.method === "GET" && url.pathname === "/settings/platforms") {
+        return sendHtml(res, renderWorkspacePlatformSettingsPage({
+          preference: getWorkspacePlatformPreference(db),
+          workspace: workspaceRuntime,
+          searchParams: url.searchParams
+        }));
+      }
       if (req.method === "GET" && url.pathname === "/profile") return sendHtml(res, renderProfilePage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/resumes") return sendHtml(res, renderResumeVersionsPage({ db, searchParams: url.searchParams }));
       if (req.method === "GET" && url.pathname === "/resume-file") return handleResumeFile(req, res, { db, root: dataRoot, searchParams: url.searchParams });
@@ -1155,10 +1199,11 @@ function createDashboardServer({
         });
       }
       if (req.method === "GET" && url.pathname === "/api/runtime-status") {
+        const site = requestedSite(url.searchParams.get('site'));
         return sendJson(res, 200, {
           application: { status: "ready", ready: true },
           browser: browserSupervisor?.getSnapshot?.() || null,
-          workspace: requestedSite(url.searchParams.get('site')) === 'zhaopin' ? { status: 'unchecked', site: 'zhaopin' } : workspaceRuntime
+          workspace: publicWorkspaceRuntimeSnapshot(workspaceRuntime, site)
         });
       }
       if (req.method === "GET" && url.pathname === "/api/runtime-diagnostics") {
@@ -1205,16 +1250,16 @@ function createDashboardServer({
           dashboardUrl: `http://127.0.0.1:${address.port}/`,
           reason: "user_recovery"
         });
-        const workspace = site === 'boss' && browser?.ready && workspaceReconciler
+        const workspace = browser?.ready && workspaceReconciler
           ? await reconcileWorkspace({ startupGuidance: false, reason: "user_recovery" })
           : null;
         return sendJson(res, 200, workspace
-          ? { browser, workspace: publicWorkspaceRuntimeSnapshot(workspace) }
+          ? { browser, workspace: publicWorkspaceRuntimeSnapshot(workspace, site) }
           : { browser });
       }
       if (req.method === "POST" && url.pathname === "/api/runtime/workspace/reconcile") {
         const params = parseBody(await readBody(req), req.headers['content-type'] || '');
-        if (requestedSite(params.site) === 'zhaopin') return sendJson(res, 200, { browser: browserSupervisor?.getSnapshot?.() || null, workspace: { status: 'unchecked', site: 'zhaopin' } });
+        const site = requestedSite(params.site);
         if (!workspaceReconciler) {
           throw appError("BROWSER_RUNTIME_UNMANAGED", "当前浏览器工作区不能由工作台整理。", { statusCode: 409 });
         }
@@ -1228,7 +1273,7 @@ function createDashboardServer({
         });
         return sendJson(res, 200, {
           browser,
-          workspace: publicWorkspaceRuntimeSnapshot(workspace)
+          workspace: publicWorkspaceRuntimeSnapshot(workspace, site)
         });
       }
       if (req.method === "GET" && url.pathname === "/api/browser-readiness") {
@@ -1415,6 +1460,31 @@ function createDashboardServer({
       });
       if (req.method === "POST" && url.pathname === "/api/match-card") return handleMatchCardSave(req, res, { db, logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/match-card/confirm") return handleMatchCardConfirm(req, res, { db, logger, requestId });
+      if (req.method === "POST" && url.pathname === "/api/settings/platforms") {
+        const params = parseBody(await readBody(req), req.headers["content-type"] || "");
+        const choices = {
+          boss: ["boss"],
+          zhaopin: ["zhaopin"],
+          both: ["boss", "zhaopin"]
+        };
+        const platforms = choices[String(params.choice || "").trim().toLowerCase()];
+        if (!platforms) throw appError("WORKSPACE_PLATFORM_REQUIRED", "请选择 BOSS、智联或两个平台。", { statusCode: 400 });
+        saveWorkspacePlatformPreference(db, platforms);
+        let workspacePending = false;
+        if (workspaceReconciler && browserSupervisor?.getSnapshot?.()?.ready) {
+          try {
+            await reconcileWorkspaceAfterCurrent({ startupGuidance: false, reason: "platform_settings_saved" });
+          } catch (error) {
+            workspacePending = true;
+            logger.warn("workspace_platform_reconciliation_deferred", {
+              requestId,
+              errorCode: String(error?.code || "WORKSPACE_RECONCILIATION_FAILED")
+            });
+          }
+        }
+        const next = safeDashboardNext(params.next, `/settings/platforms?saved=1${workspacePending ? "&workspacePending=1" : ""}`);
+        return redirect(res, next);
+      }
       if (req.method === "POST" && url.pathname === "/api/settings/model") return handleModelSettingsSave(req, res, { root: dataRoot, fallbackModelConfig: modelConfig, connectionTester, logger, requestId, runModelSettingsSave });
       if (req.method === "POST" && url.pathname === "/api/profile") return handleProfileSave(req, res, db, { logger, requestId });
       if (req.method === "POST" && url.pathname === "/api/resume-version") return handleResumeVersionSave(req, res, { db, root, dataRoot, modelConfig: getRuntimeModel("deep_analysis"), modelReady: modelReady("deep_analysis"), logger, requestId });
@@ -1545,9 +1615,13 @@ async function handleJobAnalysisRetry(req, res, { db, root, modelConfig, modelRe
 }
 
 function redirectHome(res, db, { deepModelReady = false } = {}) {
-  if (!deepModelReady) return redirect(res, "/settings?firstRun=1&next=%2Fonboarding");
   const onboardingRun = getLatestActiveOnboardingRun(db);
   if (onboardingRun) return redirect(res, onboardingProgressLocation(onboardingRun.id));
+  if (!getWorkspacePlatformPreference(db)) {
+    const next = encodeURIComponent("/settings?firstRun=1&next=%2Fonboarding");
+    return redirect(res, `/settings/platforms?firstRun=1&next=${next}`);
+  }
+  if (!deepModelReady) return redirect(res, "/settings?firstRun=1&next=%2Fonboarding");
   const profile = listCandidateProfiles(db)[0];
   if (!profile) return redirect(res, "/onboarding");
   const activeCard = getActiveMatchingCard(db, profile.id);
@@ -2763,6 +2837,12 @@ function requestedSite(value) {
   const site = String(value || 'boss').trim().toLowerCase();
   if (!['boss', 'zhaopin'].includes(site)) throw appError('UNKNOWN_SITE', '请选择 BOSS 或智联。', { statusCode: 400 });
   return site;
+}
+
+function activeWorkspacePlatforms(db) {
+  const selected = getWorkspacePlatformPreference(db)?.platforms;
+  if (selected?.length) return selected;
+  return listCandidateProfiles(db).length ? ["boss"] : [];
 }
 
 function createZhaopinOpenRequestCancellation(req, res, enabled) {
@@ -5404,6 +5484,46 @@ function resumePreviewScript() {
   return `<script>async function previewResumeModelInput(button){const form=button.closest("form");const box=form.querySelector(".resume-preview");const summary=box.querySelector("summary");const pre=box.querySelector("pre");button.disabled=true;try{const response=await fetch("/api/resume/preview",{method:"POST",body:new FormData(form)});const data=await response.json();if(!response.ok)throw new Error(data.error||"预览失败");const labels={name:"姓名",phone:"电话/手机",email:"邮箱",idCard:"身份证号",address:"详细住址"};const masked=Object.entries(data.redactions||{}).map(([key,count])=>(labels[key]||key)+" "+count+" 处").join("、")||"未发现需遮蔽字段";summary.textContent="将发送 "+data.charCount+" 字；"+masked;pre.textContent=data.text;box.hidden=false;box.open=true}catch(error){summary.textContent=error.message;pre.textContent="";box.hidden=false;box.open=true}finally{button.disabled=false}}</script>`;
 }
 
+function renderWorkspacePlatformSettingsPage({ preference, workspace, searchParams }) {
+  const selected = preference?.platforms?.length === 2
+    ? "both"
+    : preference?.platforms?.[0] || "";
+  const firstRun = searchParams.get("firstRun") === "1";
+  const next = safeDashboardNext(searchParams.get("next"), "");
+  const saved = searchParams.get("saved") === "1"
+    ? `<p class="notice">招聘平台已保存，专用 Edge 会按新选择补齐所需页面。</p>`
+    : "";
+  const pending = searchParams.get("workspacePending") === "1"
+    ? `<p class="setup-warning">选择已经保存；浏览器页面暂未准备完成，可稍后点击“重新检查工作区”。</p>`
+    : "";
+  const platformStates = new Map((workspace?.platforms || []).map((item) => [item.site, item.status]));
+  const statusText = (site) => ({
+    ready: "页面已就绪",
+    login_required: "需要登录",
+    not_ready: "正在准备"
+  })[platformStates.get(site)] || "保存后自动准备";
+  const option = (value, title, description, status) => `<label class="platform-choice${selected === value ? " selected" : ""}">
+    <input type="radio" name="choice" value="${escapeAttr(value)}"${selected === value ? " checked" : ""} required>
+    <span><strong>${escapeHtml(title)}</strong><small>${escapeHtml(description)}</small><em>${escapeHtml(status)}</em></span>
+  </label>`;
+  const body = `<style>
+    .platform-settings{max-width:860px;padding-top:38px}.platform-settings header{max-width:660px;margin:24px 0 24px}.platform-settings h1{font-size:32px;margin:6px 0 10px}.platform-settings .eyebrow{color:#176b5b;font-size:13px;font-weight:750;margin:0}.platform-settings-form{padding:24px}.platform-choices{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.platform-choice{display:block;position:relative;min-height:160px;border:1px solid #d6dde2;border-radius:12px;background:#fff;cursor:pointer;transition:border-color .15s ease,box-shadow .15s ease,transform .15s ease}.platform-choice:hover{border-color:#8cbeb3;transform:translateY(-1px)}.platform-choice:has(input:checked){border-color:#176b5b;box-shadow:0 0 0 3px #cfe7e1}.platform-choice input{position:absolute;top:16px;right:16px;width:18px;height:18px;accent-color:#176b5b}.platform-choice span{display:flex;min-height:128px;padding:22px 20px 10px;flex-direction:column}.platform-choice strong{font-size:20px}.platform-choice small{display:block;margin-top:10px;color:#57606a;line-height:1.55}.platform-choice em{margin-top:auto;color:#176b5b;font-size:13px;font-style:normal;font-weight:700}.platform-settings-actions{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:22px}.platform-settings-actions p{max-width:540px;margin:0;color:#57606a;font-size:13px;line-height:1.55}.platform-settings-actions button{min-width:150px}@media(max-width:780px){.platform-settings{padding-top:18px}.platform-choices{grid-template-columns:1fr}.platform-choice{min-height:120px}.platform-choice span{min-height:88px}.platform-settings-actions{align-items:stretch;flex-direction:column}.platform-settings-actions button{width:100%}}
+  </style><main id="main-content" class="platform-settings">
+    <header><p class="eyebrow">${firstRun ? "首次使用 · 第 1 步" : "工作区设置"}</p><h1>你准备使用哪些招聘平台？</h1><p class="hint">RoleFlow 只会为你选择的平台准备搜索页和消息页。其他标签页可以照常保留，不会影响运行。</p></header>
+    ${saved}${pending}
+    <form class="panel platform-settings-form" method="post" action="/api/settings/platforms">
+      <input type="hidden" name="next" value="${escapeAttr(next)}">
+      <div class="platform-choices">
+        ${option("boss", "只使用 BOSS", "准备 BOSS 搜索页和消息页。", statusText("boss"))}
+        ${option("zhaopin", "只使用智联", "准备智联搜索页和消息页。", statusText("zhaopin"))}
+        ${option("both", "BOSS + 智联", "两个平台都准备，找岗时再选择本轮使用哪一个。", preference ? "推荐给同时使用两个平台的用户" : "推荐")}
+      </div>
+      <div class="platform-settings-actions"><p>以后可以随时修改。取消某个平台只代表 RoleFlow 不再使用它，不会关闭你的网页或删除历史数据。</p><button type="submit">${firstRun ? "保存并继续" : "保存设置"}</button></div>
+    </form>
+  </main>`;
+  return renderLegacyDashboardPage({ title: "招聘平台", currentPath: "/settings/platforms", stage: "招聘平台", body });
+}
+
 function renderModelSettingsPage({ modelState, searchParams, primaryModelsReady = false }) {
   const settings = modelState.settings || {};
   const currentCredentials = [
@@ -5711,7 +5831,13 @@ const PLAN_JOB_TYPE_OPTIONS = PRODUCT_POLICY.searchPlan.jobTypeOptions;
 const PLAN_DEGREE_OPTIONS = PRODUCT_POLICY.searchPlan.degreeOptions;
 
 function renderPlanPage({ db, searchParams, scanRuns, browserAuthority = { browserMode: "edge", cdpPort: null }, messageFollowUpService = null }) {
-  const site = requestedSite(searchParams.get('site'));
+  const workspacePreference = getWorkspacePlatformPreference(db);
+  const site = searchParams.has('site')
+    ? requestedSite(searchParams.get('site'))
+    : workspacePreference?.platforms?.[0] || "boss";
+  if (workspacePreference && !workspacePreference.platforms.includes(site)) {
+    return renderErrorPage(`${site === "zhaopin" ? "智联" : "BOSS"} 尚未启用，请先修改招聘平台设置。`, "/settings/platforms");
+  }
   const profiles = listCandidateProfiles(db);
   const requestedPlan = getSearchPlan(db, searchParams.get("planId"));
   const profileId = Number(searchParams.get("profileId") || requestedPlan?.profileId || profiles[0]?.id || 0);
@@ -5737,6 +5863,7 @@ function renderPlanPage({ db, searchParams, scanRuns, browserAuthority = { brows
     : 0;
   const viewModel = buildTodayViewModel({
     site,
+    enabledPlatforms: workspacePreference?.platforms || [site],
     platformContext: site === 'zhaopin' ? getPlatformSearchContext(db, { planId: planRecord.id, site }) : null,
     profile,
     planRecord,
@@ -5981,6 +6108,18 @@ function navLinks({ currentPath = "", todayPath = "", planId = "" } = {}) {
 function redirect(res, location) {
   res.writeHead(303, { location });
   res.end();
+}
+
+function safeDashboardNext(value, fallback = "/") {
+  const raw = String(value || "").trim();
+  if (!raw) return fallback;
+  try {
+    const parsed = new URL(raw, "http://127.0.0.1");
+    if (parsed.origin !== "http://127.0.0.1" || !parsed.pathname.startsWith("/")) return fallback;
+    return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+  } catch {
+    return fallback;
+  }
 }
 
 function renderDashboard(data) {

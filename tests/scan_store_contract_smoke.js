@@ -45,7 +45,7 @@ try {
 }
 
 function contract01ExportsAndReferences() {
-  assert.equal(Object.keys(storage).length, 191);
+  assert.equal(Object.keys(storage).length, 193);
   assert.equal(Object.keys(candidateStore).length, 29);
   assert.equal(Object.keys(jobStore).length, 29);
   assert.deepEqual(Object.keys(scanStore).sort(), [...SCAN_OPERATIONS, "SCAN_RUN_STATUSES", "normalizeBossPacing"].sort());

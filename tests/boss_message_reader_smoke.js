@@ -416,7 +416,6 @@ function runGuardedExpression(expression, { innerText, unread = true, snapshotRe
   for (const tabs of [
     operatorTabs().filter((tab) => tab.id !== SEARCH_TAB_ID),
     operatorTabs().map((tab) => tab.id === COMMUNICATION_TAB_ID ? { ...tab, windowId: WINDOW_ID + 1 } : tab),
-    [...operatorTabs(), { id: 104, windowId: WINDOW_ID, active: false, url: "https://www.zhipin.com/job_detail/abcDEF123.html" }],
     operatorTabs().map((tab) => [SEARCH_TAB_ID, COMMUNICATION_TAB_ID].includes(tab.id) ? { ...tab, id: String(tab.id) } : tab)
   ]) {
     const invalidBindingBrowser = fakeBrowser({ tabs, snapshots: [snapshot()] });
@@ -429,6 +428,23 @@ function runGuardedExpression(expression, { innerText, unread = true, snapshotRe
       "an invalid fixed-tab baseline must stop before reading the message DOM"
     );
   }
+
+  const extraTabBrowser = fakeBrowser({
+    tabs: [...operatorTabs(), {
+      id: 104,
+      windowId: WINDOW_ID,
+      active: false,
+      url: "https://www.zhipin.com/job_detail/abcDEF123.html"
+    }],
+    snapshots: [snapshot()]
+  });
+  const extraTabScan = await createBossMessageReader({
+    browser: extraTabBrowser,
+    sleepFn: async () => {}
+  }).scanUnread();
+  assert.strictEqual(extraTabScan.tabId, COMMUNICATION_TAB_ID);
+  assert.strictEqual(extraTabScan.queue.length, 1,
+    "unrelated BOSS pages must not block the fixed search and communication tabs");
 
   const driftTabs = operatorTabs();
   const bindingDriftBrowser = fakeBrowser({ tabs: driftTabs, snapshots: [snapshot(), guardedSuccess, snapshot()] });
