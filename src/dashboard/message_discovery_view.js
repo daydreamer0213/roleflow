@@ -142,9 +142,8 @@ function renderMessageDiscoveryPage({ db, searchParams, controller, replySendCon
       <p class="line"><strong>沟通类型：</strong>${escapeHtml(messageIntentLabel(result.messageIntent))}${manualActions.length ? " · HR 邀请你发送简历" : ""}</p>
       <p class="line"><strong>这份机会：</strong>${escapeHtml(job.availability === "offline" ? "职位已下线，以下资料用于理解这段沟通" : job.opportunityVerdict || "信息不足，暂时无法判断")}${job.availability !== "offline" && job.opportunitySummary ? ` · ${escapeHtml(job.opportunitySummary)}` : ""}</p>
       <p class="line"><strong>岗位主要做什么：</strong>${escapeHtml(job.roleSummary || "岗位职责分析尚未完成。")}</p>
-      <p class="line"><strong>匹配与安排：</strong>${escapeHtml(job.fitLabel || "待确认")}${job.fitSummary ? ` · ${escapeHtml(job.fitSummary)}` : ""} · ${job.workSchedule && job.workSchedule !== "工作安排未确认"
-        ? `工作安排：${escapeHtml(job.workSchedule)}`
-        : "工作安排未确认"}</p>
+      <p class="line"><strong>简历匹配：</strong>${escapeHtml([job.fitLabel, job.fitSummary].filter(Boolean).join(" · ") || "待确认")}</p>
+      <p class="line"><strong>工作安排：</strong>${escapeHtml(job.workSchedule || "工作安排未确认")}</p>
       <details class="message-job-details"><summary>岗位与资料详情</summary>
         <p class="line"><strong>公司业务：</strong>${escapeHtml(job.companyBusiness || "JD 暂未说明公司的具体业务。")}</p>
         <p class="line"><strong>资料来源：</strong>${escapeHtml(source)}</p>

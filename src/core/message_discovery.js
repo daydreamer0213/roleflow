@@ -16,6 +16,8 @@ const {
 const { safeDigest, messageKey } = require("../adapters/sites/boss_message_dom");
 const { canonicalBossJobSourceId, bossLocationConflicts } = require("./boss_job_identity");
 const { MANUAL_ONLY_CATEGORIES } = require("./message_reply_contract");
+const { hardBoundaryReason } = require("./match_explainer");
+const { decisionHardBlockers } = require("./model_contract");
 const { recordFunnelRowObservations } = require("./funnel_observation");
 const {
   generateQualityCheckedDraft,
@@ -922,9 +924,12 @@ function projectMessageDecisionCard(job = {}) {
   const analysis = job.analysis && typeof job.analysis === "object" && !Array.isArray(job.analysis)
     ? job.analysis
     : {};
-  const fitLabel = decisionFitLabel(analysis.fitLevel);
-  const fitSummary = decisionFitSummary(analysis, fitLabel);
-  const opportunitySummary = decisionOpportunitySummary(analysis, fitSummary);
+  const boundaryExcluded = analysis.decisionSource === "hard_boundary";
+  const fitLabel = boundaryExcluded ? "" : decisionFitLabel(analysis.fitLevel);
+  const fitSummary = boundaryExcluded ? boundaryFitSummary(analysis) : decisionFitSummary(analysis, fitLabel);
+  const opportunitySummary = boundaryExcluded
+    ? safeProjectionText(hardBoundaryReason(job) || savedBoundaryReason(analysis), 180)
+    : decisionOpportunitySummary(analysis, fitSummary);
   const availability = job.availability === "offline" || analysis.sourceAvailability === "offline" ? "offline" : "unknown";
   return {
     title: safeProjectionText(job.title, 160),
@@ -981,6 +986,24 @@ function decisionFitSummary(analysis, fitLabel) {
     return ruleReason || blocker || gap || positive;
   }
   return "";
+}
+
+function boundaryFitSummary(analysis) {
+  // The rule guard overwrote the overall fit level, not the underlying resume evidence.
+  const blocker = safeProjectionList(decisionHardBlockers(analysis), 1, 180, (item) => item?.requirement ?? item)[0];
+  if (blocker) return `硬性要求缺口：${blocker}`.slice(0, 180);
+  const reasons = Array.isArray(analysis.fitReasons) ? analysis.fitReasons.slice(1) : [];
+  const match = safeProjectionList(reasons, 1, 89)[0];
+  const gaps = analysis.softGaps?.length ? analysis.softGaps : analysis.roleGaps;
+  const gap = safeProjectionList(Array.isArray(gaps) ? gaps.filter((item) => !/^D\d+\|/.test(String(item))) : [], 1, 89)[0];
+  return [match, gap].filter(Boolean).join("；") || "尚无足够的简历匹配依据。";
+}
+
+function savedBoundaryReason(analysis) {
+  const reason = safeProjectionList(analysis.fitReasons, 1, 180)[0];
+  return reason && reason !== "已确认的基础条件不满足。"
+    ? reason
+    : "具体筛选依据未保存，请核对岗位与筛选条件。";
 }
 
 function decisionOpportunitySummary(analysis, fitSummary) {

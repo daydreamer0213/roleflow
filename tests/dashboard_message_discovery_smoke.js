@@ -540,7 +540,7 @@ async function main() {
     "把企业知识转成可追溯的智能问答能力",
     "公司业务",
     "JD 显示该岗位服务于企业知识管理。",
-    "匹配与安排",
+    "简历匹配",
     "中",
     "薪资",
     "15-25K·13薪",
@@ -553,7 +553,7 @@ async function main() {
     OPEN_HR_TEXT,
     RESUME_REQUEST_SUMMARY,
     "岗位与资料详情",
-    "工作安排：双休",
+    "工作安排：</strong>双休",
     "您好，感谢邀请，请问面试时间和形式如何安排？",
     "JD 暂未说明公司的具体业务。"
   ]) assert(understoodPage.body.includes(expected), `missing user decision content: ${expected}`);
@@ -567,7 +567,7 @@ async function main() {
     "沟通类型",
     "这份机会",
     "岗位主要做什么",
-    "匹配与安排",
+    "简历匹配",
     "岗位与资料详情",
     "<h3>下一步</h3>"
   ]);
@@ -1970,15 +1970,35 @@ function durableDraftRecoverySmoke() {
       updatedAt: now
     });
     const controller = createMessageDiscoveryController({ db: durableDb });
+    durableDb.prepare("UPDATE jobs SET salary = ?, quality_tags_json = ?, risks_json = ?, analysis_json = ? WHERE id = ?")
+      .run("6-8K", JSON.stringify(["salary_out_of_range"]), JSON.stringify(["薪资低于期望下限"]), JSON.stringify({
+        recommendation: "not_recommended", fitLevel: "no_fit", decisionSource: "hard_boundary", ruleAdjusted: true,
+        fitReasons: ["已确认的基础条件不满足。", "知识库项目与岗位职责匹配"]
+      }), jobId);
     const pageState = controller.pageState(profileId);
     assert.strictEqual(pageState.status, "completed");
     assert.strictEqual(pageState.results[0].drafts[0].id, draft.id);
     assert.strictEqual(pageState.results[0].drafts[0].text, PRIVATE_DRAFT);
     assert.strictEqual(pageState.results[0].job.title, "持久化岗位");
+    assert.match(pageState.results[0].job.opportunitySummary, /6-8K.*低于期望下限/, "restart must retain concrete BOSS exclusion evidence");
+    assert.strictEqual(pageState.results[0].job.fitLabel, "");
+    assert.match(pageState.results[0].job.fitSummary, /知识库项目/);
     assert.deepStrictEqual(pageState.results[0].inboundMessages, [{ kind: "text", text: OPEN_HR_TEXT }]);
     const publicStatus = controller.status(profileId);
     assert(!JSON.stringify(publicStatus).includes(PRIVATE_DRAFT), "durable draft text must stay out of public status JSON");
     assert(!Object.hasOwn(publicStatus.results[0], "drafts"));
+    const trustedBatchId = createBatch(durableDb, "boss", "durable-context", "test", { profileId, searchPlanId: planId });
+    const savedAnalysis = JSON.parse(durableDb.prepare("SELECT analysis_json FROM jobs WHERE id = ?").get(jobId).analysis_json);
+    upsertJob(durableDb, {
+      source: "boss", sourceId: "durable-job", title: "持久化岗位", company: "持久化公司", salary: "6-8K",
+      description: "完整岗位职责与要求。".repeat(25), qualityTags: ["salary_out_of_range"], risks: ["薪资低于期望下限"],
+      analysis: { ...savedAnalysis, semanticStatus: "complete" }
+    }, trustedBatchId);
+    durableDb.prepare("UPDATE jobs SET salary = '99-100K', risks_json = '[]', quality_tags_json = '[]', analysis_json = ? WHERE id = ?")
+      .run(JSON.stringify({ semanticStatus: "failed", recommendation: "analysis_pending" }), jobId);
+    const recoveredJob = createMessageDiscoveryController({ db: durableDb }).pageState(profileId).results[0].job;
+    assert.match(recoveredJob.opportunitySummary, /6-8K.*低于期望下限/, "a newer failed job row must not replace the draft's trusted plan-scoped evidence after restart");
+    assert.strictEqual(recoveredJob.salary, "6-8K");
     controller.clearDraftForCard(profileId, cardId);
     assert.strictEqual(controller.pageState(profileId).results.length, 0);
     assert.strictEqual(getMessageInboundContext(durableDb, {

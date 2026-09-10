@@ -166,6 +166,47 @@ function decisionCardProjectionSmoke() {
   assert.strictEqual(guarded.fitSummary, "存在不可沟通的硬性缺口：必须具备行业资质");
   assert.strictEqual(guarded.opportunitySummary, "存在不可沟通的硬性缺口：必须具备行业资质");
 
+  for (const [tag, risks, salary, expected] of [
+    ["location_mismatch", ["地点非目标城市：深圳 龙华区"], "8-9K", /深圳 龙华区/],
+    ["salary_out_of_range", ["薪资低于期望下限，不在严格范围内"], "6-8K", /6-8K.*低于期望下限/]
+  ]) {
+    const legacy = projectMessageDecisionCard({
+      ...base, salary, qualityTags: [tag], risks,
+      analysis: { ...base.analysis, fitLevel: "no_fit", recommendation: "not_recommended",
+        decisionSource: "hard_boundary", ruleAdjusted: true,
+        fitReasons: ["已确认的基础条件不满足。", "RAG 项目经历与知识库问答职责匹配"],
+        roleGaps: ["D1|work_object"], softGaps: ["生产环境运维经验仍需确认"] }
+    });
+    assert.match(legacy.opportunitySummary, expected, "legacy generic decisions must expose stored concrete exclusion evidence");
+    assert.strictEqual(legacy.opportunityVerdict, "不建议优先投入时间");
+    assert.strictEqual(legacy.fitLabel, "", "a location or salary exclusion is not a low skill rating");
+    assert.match(legacy.fitSummary, /RAG 项目经历/);
+    assert.match(legacy.fitSummary, /运维经验仍需确认/);
+    assert(!legacy.fitSummary.includes("基础条件不满足"));
+    assert(!legacy.fitSummary.includes("D1|"), "internal role-evidence identifiers are not user-facing gap explanations");
+  }
+  const missingReason = projectMessageDecisionCard({ analysis: {
+    recommendation: "not_recommended", fitLevel: "no_fit", ruleAdjusted: true,
+    decisionSource: "hard_boundary", fitReasons: ["已确认的基础条件不满足。"]
+  } });
+  assert.match(missingReason.opportunitySummary, /未保存.*核对/);
+  assert.strictEqual(missingReason.fitLabel, "");
+  assert.match(missingReason.fitSummary, /尚无.*依据/);
+  assert.match(projectMessageDecisionCard({ analysis: {
+    recommendation: "not_recommended", fitLevel: "no_fit", decisionSource: "hard_boundary", ruleAdjusted: true,
+    fitReasons: ["岗位明确要求在校生，当前已毕业"]
+  } }).opportunitySummary, /在校生.*已毕业/, "specific historical guard evidence survives even without structured risks");
+  for (const [resumeEvidence, isBlocker] of [
+    ["简历：本科学历", false], ["简历：未提供学历信息", false], ["简历：最高学历为大专", true]
+  ]) {
+    const card = projectMessageDecisionCard({ analysis: {
+      recommendation: "not_recommended", fitLevel: "no_fit", decisionSource: "hard_boundary", ruleAdjusted: true,
+      fitReasons: ["地点非目标城市：示例城市", "技术项目与岗位职责匹配"],
+      hardBlockers: [{ kind: "eligibility", requirement: "本科及以上学历", jdEvidence: "JD：本科及以上学历", resumeEvidence }]
+    } });
+    assert.strictEqual(card.fitSummary.includes("硬性要求缺口"), isBlocker, "only validated conflicting evidence can be described as a definite resume gap");
+  }
+
   const qualityRisk = projectMessageDecisionCard({
     ...base,
     analysis: {

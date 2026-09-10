@@ -782,6 +782,7 @@ function listMessageDiscoveryCandidates(db, { profileId, platform = "boss" } = {
       context.tags_json AS context_tags_json,
       context.description AS context_description,
       context.quality_tags_json AS context_quality_tags_json,
+      context.risks_json AS context_risks_json,
       context.analysis_json AS context_analysis_json
     FROM candidate_progress_cards cards
     JOIN jobs ON jobs.id = cards.job_id
@@ -838,6 +839,7 @@ function findMessageDiscoveryJobContext(db, { profileId, planId, sourceId, platf
       context.tags_json AS context_tags_json,
       context.description AS context_description,
       context.quality_tags_json AS context_quality_tags_json,
+      context.risks_json AS context_risks_json,
       context.analysis_json AS context_analysis_json
     FROM jobs
     JOIN job_observations context ON context.job_id = jobs.id
@@ -1034,6 +1036,7 @@ function mapDiscoveryCandidate(row) {
     tags: contextComplete ? parseJson(row.context_tags_json, []) : [],
     description: contextComplete ? row.context_description || "" : "",
     qualityTags: contextComplete ? parseJson(row.context_quality_tags_json, []) : [],
+    risks: contextComplete ? parseJson(row.context_risks_json, []) : [],
     analysis: contextComplete ? parseJson(row.context_analysis_json, {}) : {},
     contextComplete,
     contextSource: contextComplete ? "local_cache" : ""

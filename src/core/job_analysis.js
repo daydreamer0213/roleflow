@@ -1,6 +1,6 @@
 const crypto = require("crypto");
 const { createLlmAnalyzer } = require("./llm_analyzer");
-const { explainJobMatch } = require("./match_explainer");
+const { explainJobMatch, hardBoundaryReason } = require("./match_explainer");
 const { validateModelResult, decisionHardBlockers, hardBlockerText } = require("./model_contract");
 const {
   getModelCache,
@@ -558,7 +558,7 @@ function applyRuleGuard(analysis, job) {
       analysis,
       "not_recommended",
       "no_fit",
-      hardBoundaryReason(job, qualityTags),
+      hardBoundaryReason(job, qualityTags) || "具体筛选依据未保存，请核对岗位与筛选条件。",
       semanticStatus,
       "hard_boundary"
     );
@@ -681,22 +681,6 @@ function applyRuleGuard(analysis, job) {
   }
 
   return guarded;
-}
-
-function hardBoundaryReason(job, qualityTags) {
-  const risks = Array.isArray(job?.risks) ? job.risks.filter(Boolean) : [];
-  const selectors = [
-    ["cohort_mismatch", /届|毕业年份/],
-    ["student_status_mismatch", /在校|已毕业/],
-    ["internship_role", /实习/],
-    ["part_time_role", /兼职|小时/]
-  ];
-  for (const [tag, pattern] of selectors) {
-    if (!qualityTags.has(tag)) continue;
-    const risk = risks.find((item) => pattern.test(String(item)));
-    if (risk) return risk;
-  }
-  return "已确认的基础条件不满足。";
 }
 
 function effectiveSemanticMatchingMode(configs = {}) {

@@ -663,8 +663,9 @@ function createMessageDiscoveryController(deps = {}) {
   }
 
   function durableDraftResult(profileId, cardId, drafts, contexts = []) {
-    const row = db.prepare(`SELECT c.id AS card_id, c.job_id, c.stage,
-      j.title, j.company, j.salary, j.description, j.analysis_json, j.source, j.source_id, c.source AS card_source
+    const row = db.prepare(`SELECT c.id AS card_id, c.job_id, c.plan_id, c.stage,
+      j.title, j.company, j.salary, j.description, j.analysis_json, j.quality_tags_json, j.risks_json,
+      j.source, j.source_id, c.source AS card_source
       FROM candidate_progress_cards c
       JOIN jobs j ON j.id = c.job_id
       WHERE c.id = ? AND c.profile_id = ?`).get(cardId, profileId);
@@ -681,14 +682,17 @@ function createMessageDiscoveryController(deps = {}) {
       revision: draft.revision
     }));
     const activePlan = getActiveSearchPlan(db, profileId);
-    const trusted = row.source === "zhaopin" && activePlan ? findMessageDiscoveryJobContext(db, { profileId, planId: activePlan.id, sourceId: row.source_id, platform: "zhaopin" }) : null;
-    const job = projectMessageDecisionCard(row.source === "zhaopin" ? (trusted || { title: row.title, company: row.company, salary: row.salary }) : {
+    const contextPlanId = row.source === "zhaopin" ? activePlan?.id : row.plan_id;
+    const trusted = platform && contextPlanId ? findMessageDiscoveryJobContext(db, { profileId, planId: contextPlanId, sourceId: row.source_id, platform }) : null;
+    const job = projectMessageDecisionCard(trusted || (row.source === "zhaopin" ? { title: row.title, company: row.company, salary: row.salary } : {
       title: row.title,
       company: row.company,
       salary: row.salary,
       description: row.description,
+      qualityTags: parseArray(row.quality_tags_json),
+      risks: parseArray(row.risks_json),
       analysis: parseObject(row.analysis_json)
-    });
+    }));
     return {
       cardId: Number(row.card_id),
       jobId: Number(row.job_id),
@@ -928,6 +932,15 @@ function safeCode(value) {
 
 function messageDiscoveryErrorCode(error) {
   return safeCode(error?.code) || "MESSAGE_DISCOVERY_FAILED";
+}
+
+function parseArray(value) {
+  try {
+    const parsed = JSON.parse(String(value || "[]"));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
 
 function isPlatformRiskControl(platform, code) {

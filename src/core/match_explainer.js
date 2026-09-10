@@ -83,4 +83,36 @@ function hasText(text, word) {
   return String(text || "").toLowerCase().includes(String(word || "").toLowerCase());
 }
 
-module.exports = { explainJobMatch };
+function hardBoundaryReason(job, qualityTags = new Set(job?.qualityTags || [])) {
+  const risks = Array.isArray(job?.risks) ? job.risks.filter((item) => typeof item === "string" && item.trim()) : [];
+  const selectors = [
+    ["cohort_mismatch", /届|毕业年份/],
+    ["student_status_mismatch", /在校|已毕业/],
+    ["internship_role", /实习/],
+    ["part_time_role", /兼职|小时/],
+    ["location_mismatch", /地点非目标城市/],
+    ["salary_out_of_range", /薪资低于期望下限/],
+    ["platform_district_mismatch", /区域不符合平台筛选/],
+    ["platform_salary_mismatch", /薪资不符合平台筛选/],
+    ["platform_experience_mismatch", /经验不符合平台筛选/],
+    ["platform_degree_mismatch", /学历不符合平台筛选/],
+    ["platform_job_type_mismatch", /求职类型不符合平台筛选/],
+    ["inactive_boss", /BOSS非.*活跃/],
+    ["hard_exclude", /排除词/],
+    ["invalid_job_link", /岗位链接无效/],
+    ["missing_link", /链接/]
+  ];
+  for (const [tag, pattern] of selectors) {
+    if (!qualityTags.has(tag)) continue;
+    const risk = risks.find((item) => pattern.test(item));
+    if (!risk) continue;
+    if (tag === "location_mismatch") return risk.replace("地点非目标城市：", "工作地点不符合筛选条件：");
+    if (["salary_out_of_range", "platform_salary_mismatch"].includes(tag) && typeof job.salary === "string" && job.salary.trim()) {
+      return `岗位薪资 ${job.salary.trim()}；${risk}`;
+    }
+    return risk;
+  }
+  return "";
+}
+
+module.exports = { explainJobMatch, hardBoundaryReason };

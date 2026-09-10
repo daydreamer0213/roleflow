@@ -259,7 +259,8 @@ try {
     description: "OLD_COMPLETE_JD ".repeat(12),
     analysis: { semanticStatus: "complete", marker: "old-same-observation" },
     tags: ["old-tag"],
-    qualityTags: ["trusted-detail"]
+    qualityTags: ["trusted-detail"],
+    risks: ["地点非目标城市：测试城市"]
   });
   recordContextObservation(db, contextFixture, {
     keyword: "message-new-failed",
@@ -302,6 +303,7 @@ try {
   assert.deepStrictEqual(contextCandidate.analysis, { semanticStatus: "complete", marker: "old-same-observation" });
   assert.deepStrictEqual(contextCandidate.tags, ["old-tag"]);
   assert.deepStrictEqual(contextCandidate.qualityTags, ["trusted-detail"]);
+  assert.deepStrictEqual(contextCandidate.risks, ["地点非目标城市：测试城市"], "exclusion evidence must belong to the selected trusted observation, not the latest job row");
   assert.strictEqual(contextCandidate.contextComplete, true);
   assert.strictEqual(contextCandidate.contextSource, "local_cache");
   assert.deepStrictEqual(
@@ -332,6 +334,7 @@ try {
     tags: [],
     description: "ZHAOPIN_COMPLETE_JD ".repeat(12),
     qualityTags: [],
+    risks: ["智联测试筛选依据"],
     analysis: { semanticStatus: "complete", marker: "zhaopin" }
   }, zhaopinBatchId);
   ensureProgressCard(db, {
@@ -350,6 +353,7 @@ try {
     platform: "zhaopin"
   }).find((item) => item.jobId === zhaopinJobId);
   assert.strictEqual(zhaopinCandidate.source, "zhaopin");
+  assert.deepStrictEqual(zhaopinCandidate.risks, ["智联测试筛选依据"]);
   assert.strictEqual(
     findMessageDiscoveryJobContext(db, {
       profileId: contextFixture.profileId,
@@ -419,6 +423,7 @@ function recordContextObservation(database, fixture, overrides = {}) {
     tags: overrides.tags || [],
     description: overrides.description,
     qualityTags: overrides.qualityTags || [],
+    risks: overrides.risks || [],
     analysis: overrides.analysis
   }, batchId);
   const row = database.prepare("SELECT id FROM job_observations WHERE batch_id = ? AND job_id = ?")

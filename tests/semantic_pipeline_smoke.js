@@ -79,6 +79,7 @@ const db = openDb(dbPath);
     await modelInferenceIsolationSmoke();
     await compactRoleEvidencePersistenceSmoke();
     await ruleGuardSmoke();
+    hardBoundaryExplanationSmoke();
     await localEvidenceGuardSmoke();
     await matchingCardContractSmoke();
     await mockResponsibilityEvidenceNormalizationSmoke();
@@ -142,6 +143,20 @@ function runtimeResumeVersionEntrySmoke() {
     const source = fs.readFileSync(path.join(root, relative), "utf8");
     assert(source.includes("listMatchingResumeVersions"), `${relative} 必须使用安全简历版本入口`);
     assert(!/profileToRuntimeConfigs\([^;]*listCandidateResumeVersions/.test(source), `${relative} 的运行时 configs 不得直接使用未过滤的简历版本列表`);
+  }
+}
+
+function hardBoundaryExplanationSmoke() {
+  for (const [tag, risk, salary, expected] of [
+    ["location_mismatch", "地点非目标城市：深圳 龙华区", "8-9K", /深圳 龙华区/],
+    ["salary_out_of_range", "薪资低于期望下限，不在严格范围内", "6-8K", /6-8K.*低于期望下限/]
+  ]) {
+    const result = applyRuleGuard({ recommendation: "apply", fitLevel: "fit", fitReasons: ["技术经历匹配"] },
+      completeJob(`boundary-${tag}`, { qualityTags: [tag], risks: [risk], salary }));
+    assert.strictEqual(result.recommendation, "not_recommended");
+    assert.strictEqual(result.decisionSource, "hard_boundary");
+    assert.match(result.fitReasons[0], expected, "new guarded analyses must retain the actual exclusion evidence");
+    assert(result.fitReasons.includes("技术经历匹配"));
   }
 }
 
