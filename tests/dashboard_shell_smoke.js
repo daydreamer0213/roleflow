@@ -137,8 +137,9 @@ const logger = { info() {}, warn() {}, error() {}, requestId() { return "dashboa
     const funnel = await getText(baseUrl, `/funnel?planId=${queueFixture.planId}`);
     assert.strictEqual(funnel.status, 200);
     assertSharedFrame(funnel.body, `/funnel?planId=${queueFixture.planId}`, "job search checkup");
-    assert.match(funnel.body, /<h1 id="funnel-title">求职体检<\/h1>/);
-    assert.match(funnel.body, /还没有可统计的求职动作/);
+    assert.match(funnel.body, /<h1(?:\s[^>]*)?>求职体检<\/h1>/);
+    assert.match(funnel.body, /当前方案还没有联系岗位/);
+    assert.match(funnel.body, /去发现岗位<\/a>/);
 
     const onboarding = await getText(baseUrl, "/onboarding");
     assertSharedFrame(onboarding.body, "/onboarding", "onboarding");
