@@ -6318,7 +6318,10 @@ function outcomeTierRows(aggregate) {
 
 function outcomeKeywordRows(aggregate) {
   const rows = Array.isArray(aggregate?.keywords) ? aggregate.keywords : [];
-  return rows.map((row) => ({ ...row, label: String(row?.label || row?.keyword || row?.word || "") }))
+  return rows.map((row) => {
+    const label = String(row?.label || row?.keyword || row?.word || "");
+    return { ...row, label: label === "message-discovery-detail" ? "消息发现" : label };
+  })
     .filter((row) => row.label);
 }
 

@@ -435,6 +435,8 @@ async function main() {
   assert(completedPage.body.includes("这条草稿与近期消息的表达比较接近，你可以直接发送，也可以改得更具体。"));
   assert(completedPage.body.includes("HR 消息"));
   assert(completedPage.body.includes(OPEN_HR_TEXT));
+  const messagePreviews = [...completedPage.body.matchAll(/<em>(.*?)<\/em>/g)].map(match => match[1]);
+  assert(messagePreviews.some(text => text.includes(OPEN_HR_TEXT)), "HR question must be understandable in the list, not only after opening details");
   assert(completedPage.body.includes("可见 52 · 已分析回复 1 · BOSS 已读 31 · 送达 20"));
   assert.match(completedPage.body, /class="[^"]*message-workspace/);
   assert.match(completedPage.body, /class="[^"]*message-list/);
@@ -521,14 +523,18 @@ async function main() {
   status = await getStatus(base, fixture.profileId);
   assertNoDraftMessagesInJson(status);
   const understoodPage = await request(base, `/messages?profileId=${fixture.profileId}`);
+  const understoodPreviews = [...understoodPage.body.matchAll(/<em>(.*?)<\/em>/g)].map(match => match[1]);
+  assert(understoodPreviews.some(text => text.includes(RESUME_REQUEST_SUMMARY)), "resume request card must be visible in the preview");
+  assert(understoodPreviews.some(text => text.includes(OPEN_HR_TEXT)), "newest question must precede an older long greeting");
+  assert(understoodPreviews.some(text => text.includes("有 &lt;证书&gt; 吗？")), "same intent must still show its distinct question with HTML escaping");
+  assert(!understoodPage.body.includes("有 <证书> 吗？"));
   assert(understoodPage.body.includes("AI 应用开发工程师"));
   for (const expected of [
-    "沟通结论",
+    "沟通类型",
     "需要你补充信息",
     "正式面试邀约",
     "这份机会",
     "可以了解，但要先确认关键问题",
-    "对方正在确认候选人的任职资格。",
     "岗位主要做什么",
     "把企业知识转成可追溯的智能问答能力",
     "公司业务",
@@ -557,7 +563,7 @@ async function main() {
   );
   assertHeadingsInOrder(understoodPage.body, [
     "<h3>HR 消息原文</h3>",
-    "沟通结论",
+    "沟通类型",
     "这份机会",
     "岗位主要做什么",
     "匹配与安排",
@@ -1672,7 +1678,7 @@ function jobUnderstandingCompletedRun(fixture) {
         contextSource: "local_cache",
         contextComplete: true,
         job,
-        inboundMessages: [{ kind: "text", text: OPEN_HR_TEXT }],
+        inboundMessages: [{ kind: "text", text: "我们有一个岗位想和你聊聊。".repeat(15) }, { kind: "text", text: OPEN_HR_TEXT }],
         manualActions: [{
           kind: "resume_request",
           title: "ATTACKER ACTION TITLE",
@@ -1716,6 +1722,7 @@ function jobUnderstandingCompletedRun(fixture) {
         contextSource: "message_discovery_detail",
         contextComplete: true,
         job: { ...job, title: "待补事实岗位", salary: "", companyBusiness: "" },
+        inboundMessages: [{ kind: "text", text: "有 <证书> 吗？" }],
         messages: []
       }]
     };

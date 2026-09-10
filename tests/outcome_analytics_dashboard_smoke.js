@@ -108,6 +108,18 @@ let server;
   });
   assert.strictEqual(extractAnalyticsPanel(directFailurePage), "统计暂不可用", "direct queue rendering is fail-open without a logger");
 
+  const messageSourcePage = renderQueuePage({ db,
+    searchParams: new URLSearchParams({ planId: String(planId) }),
+    outcomeAnalyticsReader: () => ({ keywords: [
+      { keyword: "message-discovery-detail", total: 14 },
+      { keyword: "Python <开发>", total: 2 }
+    ] })
+  });
+  const messageSourcePanel = extractAnalyticsPanel(messageSourcePage);
+  assertContains(messageSourcePanel, /<th scope="row">消息发现<\/th><td>14<\/td>/, "internal source is readable with unchanged counts");
+  assertExcludes(messageSourcePanel, /message-discovery-detail/, "internal source marker is not a user keyword");
+  assertContains(messageSourcePanel, /Python &lt;开发&gt;/, "real search terms remain escaped and unchanged");
+
   const unknownTierPage = renderQueuePage({
     db,
     searchParams: new URLSearchParams({ planId: String(planId) }),

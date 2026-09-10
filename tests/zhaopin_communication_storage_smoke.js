@@ -364,6 +364,9 @@ function calibrationAndBrowserBindingSmoke() {
 
 async function executorResumeAndProgressSmoke() {
   const fixture = createFixture();
+  const originalResume = Number(fixture.db.prepare(`INSERT INTO candidate_resume_versions(
+    profile_id,version_key,name,is_active,created_at,updated_at
+  ) VALUES (?,'original','Original resume',1,?,?)`).run(fixture.profileId, NOW, NOW).lastInsertRowid);
   try {
     const jobId = addJob(fixture, "ZLEXECUTOR");
     const batch = createCommunicationBatch(fixture.db, {
@@ -460,7 +463,47 @@ async function executorResumeAndProgressSmoke() {
       endpointKind: "zhaopin_prechat", httpStatus: 200, businessCategory: "success", elapsedMs: 17
     }]);
     assert.equal(getProgressCardForJob(fixture.db, { profileId: fixture.profileId, jobId }).stage, "waiting_reply");
-    assert.equal(fixture.db.prepare("SELECT COUNT(*) AS count FROM candidate_funnel_entries").get().count, 0);
+    assert.equal(fixture.db.prepare("SELECT COUNT(*) AS count FROM candidate_funnel_entries").get().count, 1,
+      "verified Zhaopin greeting must enter feedback exactly once");
+    const entry = fixture.db.prepare("SELECT * FROM candidate_funnel_entries WHERE job_id = ?").get(jobId);
+    assert.equal(entry.profile_id, fixture.profileId);
+    assert.equal(entry.plan_id, fixture.planId);
+    assert.equal(entry.source_kind, "communication");
+    assert(Date.parse(entry.mature_at) - Date.parse(entry.started_at) >= 48 * 60 * 60 * 1000);
+    const { createFunnelAnalysisService } = require("../src/application/funnel_analysis");
+    const { startFunnelStrategyRound } = require("../src/storage/funnel_store");
+    const boundary = new Date(Date.parse(entry.started_at) + 24 * 60 * 60 * 1000).toISOString();
+    fixture.db.prepare('UPDATE candidate_resume_versions SET is_active=0,updated_at=? WHERE id=?').run(boundary, originalResume);
+    const secondRound = startFunnelStrategyRound(fixture.db, {
+      profileId: fixture.profileId, planId: fixture.planId, fromRoundId: entry.strategy_round_id,
+      sourceKey: "feedback-test-next-round", changeKinds: ["greeting"], startedAt: boundary
+    });
+    // Simulate an upgrade from the version that saved the verified event but omitted its funnel entry.
+    fixture.db.prepare("DELETE FROM candidate_funnel_entries WHERE id = ?").run(entry.id);
+    const feedback = createFunnelAnalysisService({ db: fixture.db, now: () => boundary });
+    for (const status of ["pending", "ambiguous", "already_communicated"]) {
+      fixture.db.prepare("UPDATE communication_batch_items SET status=? WHERE id=?").run(status, item.id);
+      feedback.refresh({ profileId: fixture.profileId, planId: fixture.planId });
+      assert.equal(fixture.db.prepare("SELECT COUNT(*) n FROM candidate_funnel_entries").get().n, 0,
+        `${status} cannot establish a verified outbound start`);
+    }
+    const { ensureFunnelEntry } = require("../src/storage/funnel_store");
+    assert.throws(() => ensureFunnelEntry(fixture.db, {
+      profileId: fixture.profileId, planId: fixture.planId, jobId, cardId: entry.card_id,
+      sourceKind: "reply_sent", startedAt: entry.started_at
+    }), { code: "READONLY_SITE_FUNNEL_FORBIDDEN" }, "copied Zhaopin drafts cannot be counted as sent replies");
+    fixture.db.prepare("UPDATE communication_batch_items SET status='succeeded' WHERE id=?").run(item.id);
+    feedback.refresh({ profileId: fixture.profileId, planId: fixture.planId });
+    feedback.refresh({ profileId: fixture.profileId, planId: fixture.planId });
+    const repaired = fixture.db.prepare("SELECT * FROM candidate_funnel_entries WHERE job_id = ?").get(jobId);
+    assert.equal(repaired.strategy_round_id, entry.strategy_round_id, "late repair belongs to the original strategy");
+    assert.equal(repaired.started_at, entry.started_at, "repair cannot reset the 48-hour clock");
+    assert.equal(repaired.resume_version_id, originalResume, "historical repair retains the original strategy's resume even after it is updated or disabled");
+    assert.equal(fixture.db.prepare("SELECT COUNT(*) AS count FROM candidate_funnel_entries").get().count, 1);
+    const after = feedback.refresh({ profileId: fixture.profileId, planId: fixture.planId });
+    assert.equal(after.currentRound.id, secondRound.id);
+    assert.equal(after.currentRound.started, 0, "old communication must not enter the new strategy");
+    assert.equal(after.previousRound.started, 1);
 
     const bypass = createFixture();
     try {
@@ -482,30 +525,33 @@ async function executorResumeAndProgressSmoke() {
       bypass.db.close();
     }
 
-    const atomic = createFixture();
-    try {
-      const atomicJob = addJob(atomic, "ZLATOMIC");
-      const atomicBatch = createCommunicationBatch(atomic.db, {
-        site: "zhaopin", planId: atomic.planId, jobIds: [atomicJob], browserMode: "edge", now: NOW
-      });
-      const atomicItem = listCommunicationBatchItems(atomic.db, atomicBatch.id)[0];
-      atomic.db.exec(`CREATE TEMP TRIGGER fail_zhaopin_progress
-        BEFORE INSERT ON candidate_progress_events
-        BEGIN SELECT RAISE(ABORT, 'forced zhaopin progress failure'); END`);
-      await assert.rejects(() => runCommunicationBatch({
-        db: atomic.db,
-        batchId: atomicBatch.id,
-        singleItemId: atomicItem.id,
-        adapter: successAdapter(),
-        accessController: { async reserve() {} },
-        executionGate,
-        sleepFn: async () => {}
-      }), /forced zhaopin progress failure/);
-      assert.deepEqual(listCommunicationBatchItems(atomic.db, atomicBatch.id).map((entry) => [entry.status, entry.clickCount]),
-        [["click_dispatched", 1]]);
-      assert.equal(getProgressCardForJob(atomic.db, { profileId: atomic.profileId, jobId: atomicJob }), null);
-    } finally {
-      atomic.db.close();
+    for (const failedTable of ["candidate_progress_events", "candidate_funnel_entries"]) {
+      const atomic = createFixture();
+      try {
+        const atomicJob = addJob(atomic, "ZLATOMIC");
+        const atomicBatch = createCommunicationBatch(atomic.db, {
+          site: "zhaopin", planId: atomic.planId, jobIds: [atomicJob], browserMode: "edge", now: NOW
+        });
+        const atomicItem = listCommunicationBatchItems(atomic.db, atomicBatch.id)[0];
+        atomic.db.exec(`CREATE TEMP TRIGGER fail_zhaopin_progress
+          BEFORE INSERT ON ${failedTable}
+          BEGIN SELECT RAISE(ABORT, 'forced zhaopin progress failure'); END`);
+        await assert.rejects(() => runCommunicationBatch({
+          db: atomic.db,
+          batchId: atomicBatch.id,
+          singleItemId: atomicItem.id,
+          adapter: successAdapter(),
+          accessController: { async reserve() {} },
+          executionGate,
+          sleepFn: async () => {}
+        }), /forced zhaopin progress failure/);
+        assert.deepEqual(listCommunicationBatchItems(atomic.db, atomicBatch.id).map((entry) => [entry.status, entry.clickCount]),
+          [["click_dispatched", 1]]);
+        assert.equal(getProgressCardForJob(atomic.db, { profileId: atomic.profileId, jobId: atomicJob }), null);
+        assert.equal(atomic.db.prepare("SELECT COUNT(*) n FROM candidate_funnel_entries").get().n, 0);
+      } finally {
+        atomic.db.close();
+      }
     }
   } finally {
     fixture.db.close();

@@ -100,7 +100,7 @@ function renderMessageDiscoveryPage({ db, searchParams, controller, replySendCon
         ? "本次后台只读岗位详情"
         : "岗位资料来源待确认";
     const decisionCard = `<section class="message-job-understanding">
-      <p class="line"><strong>沟通结论：</strong>${escapeHtml(messageIntentLabel(result.messageIntent))}${result.messageSummary ? ` · ${escapeHtml(result.messageSummary)}` : ""}</p>
+      <p class="line"><strong>沟通类型：</strong>${escapeHtml(messageIntentLabel(result.messageIntent))}${manualActions.length ? " · HR 邀请你发送简历" : ""}</p>
       <p class="line"><strong>这份机会：</strong>${escapeHtml(job.availability === "offline" ? "职位已下线，以下资料用于理解这段沟通" : job.opportunityVerdict || "信息不足，暂时无法判断")}${job.availability !== "offline" && job.opportunitySummary ? ` · ${escapeHtml(job.opportunitySummary)}` : ""}</p>
       <p class="line"><strong>岗位主要做什么：</strong>${escapeHtml(job.roleSummary || "岗位职责分析尚未完成。")}</p>
       <p class="line"><strong>匹配与安排：</strong>${escapeHtml(job.fitLabel || "待确认")}${job.fitSummary ? ` · ${escapeHtml(job.fitSummary)}` : ""} · ${job.workSchedule && job.workSchedule !== "工作安排未确认"
@@ -122,7 +122,7 @@ function renderMessageDiscoveryPage({ db, searchParams, controller, replySendCon
     const viewId = `message-view-${viewKey}`;
     const title = job.title || "岗位处理结果";
     const company = job.company || "公司待确认";
-    const preview = result.messageSummary || messageIntentLabel(result.messageIntent);
+    const preview = messagePreview(result);
     return {
       key: viewKey,
       list: `<label class="message-list-item" data-platform="${escapeAttr(result.platform || "")}" for="${viewId}"><input id="${viewId}" type="radio" name="message-current" data-message-view="${viewKey}" aria-controls="message-detail-${viewKey}"${resultIndex === 0 ? " checked" : ""}><span><strong>${escapeHtml(title)}</strong><small class="message-source">${escapeHtml(platformLabel)}</small><small>${escapeHtml(company)}</small><em>${escapeHtml(preview)}</em></span></label>`,
@@ -151,7 +151,7 @@ function renderMessageDiscoveryPage({ db, searchParams, controller, replySendCon
     const checked = resultViews.length === 0 && unresolvedIndex === 0;
     return {
       key: viewKey,
-      list: `<label class="message-list-item" data-platform="${escapeAttr(item.platform || "")}" for="${viewId}"><input id="${viewId}" type="radio" name="message-current" data-message-view="${viewKey}" aria-controls="message-detail-${viewKey}"${checked ? " checked" : ""}><span><strong>${escapeHtml(title)}</strong><small class="message-source">${escapeHtml(platformLabel)}</small><small>${escapeHtml(company)}</small><em>待补岗位资料</em></span></label>`,
+      list: `<label class="message-list-item" data-platform="${escapeAttr(item.platform || "")}" for="${viewId}"><input id="${viewId}" type="radio" name="message-current" data-message-view="${viewKey}" aria-controls="message-detail-${viewKey}"${checked ? " checked" : ""}><span><strong>${escapeHtml(title)}</strong><small class="message-source">${escapeHtml(platformLabel)}</small><small>${escapeHtml(company)}</small><em>${escapeHtml(messagePreview(item, "待补岗位资料"))}</em></span></label>`,
       detail: renderUnresolvedItem(db, item, { profileId, viewKey, hidden: !checked, escapeHtml, escapeAttr })
     };
   });
@@ -181,6 +181,19 @@ function renderMessageDiscoveryPage({ db, searchParams, controller, replySendCon
     content: `<main id="main-content" class="message-layout"><header class="page-heading"><p class="eyebrow">消息工作台</p><h1>消息发现与回复</h1><p class="lede">从已连接的 BOSS 和智联读取 HR 新消息并准备草稿。BOSS 回复经你确认后发送；智联回复可修改、复制，再到原始会话自行处理。</p></header>${controls}<p class="message-feedback" data-discovery-feedback role="status" aria-live="polite" aria-busy="false"></p><section class="panel message-state"><h2>${escapeHtml(statusLabel)}</h2><p class="line">可见 ${Math.max(0, Number(counters.visible) || 0)} · 已分析回复 ${Math.max(0, Number(counters.newReplies) || 0)} · BOSS 已读 ${Math.max(0, Number(counters.currentRead) || 0)} · 送达 ${Math.max(0, Number(counters.currentDelivered) || 0)}</p><p class="line">排队 ${status.queued} · 已处理 ${status.processed} · 未解决 ${Math.max(0, Number(status.unresolved) || 0)}</p>${retainedRecords}${phaseNotice ? `<p class="line">${escapeHtml(phaseNotice)}</p>` : ""}${reason ? `<p class="risk-text">${escapeHtml(reason)}</p>` : ""}</section>${platformNotices}<p class="message-source-filter"><label for="message-source-filter">消息来源</label> <select id="message-source-filter" data-source-filter><option value="all">全部平台</option><option value="boss">BOSS</option><option value="zhaopin">智联</option></select></p><p data-source-empty hidden role="status">这个来源暂时没有消息。</p>${messageWorkspace || '<section class="panel"><p class="line">当前没有岗位处理结果。</p></section>'}${sendBatchPanel}<p class="button-row"><a class="button-link secondary" data-flush-drafts href="/communication-profile?profileId=${encodeURIComponent(profileId)}">管理我的沟通资料</a><a class="button-link secondary" data-flush-drafts href="${escapeAttr(manualPath)}">返回人工粘贴流程</a></p></main>`,
     scripts: [messageDiscoveryClientScript(scriptState)]
   });
+}
+
+function messagePreview(result, fallback = "") {
+  const messages = Array.isArray(result.inboundMessages) ? result.inboundMessages : [];
+  const resumeRequested = messages.some(message => message.kind === "resume_request")
+    || (result.manualActions || []).some(action => action.kind === "resume_request");
+  const text = messages.filter(message => message.kind !== "resume_request")
+    .map(message => String(message.text || "").replace(/\s+/gu, " ").trim())
+    .filter(Boolean).slice(-2).reverse().join("；");
+  const parts = [resumeRequested ? "HR 邀请你发送简历" : "", text].filter(Boolean);
+  const preview = parts.join(" · ") || fallback || result.messageSummary || messageIntentLabel(result.messageIntent);
+  const characters = Array.from(preview);
+  return characters.length > 140 ? `${characters.slice(0, 140).join("")}…` : preview;
 }
 
 function messageDiscoveryClientScript(scriptState) {

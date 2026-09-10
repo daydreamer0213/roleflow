@@ -27,6 +27,7 @@ const tests = [
   "inherited_search_scope_smoke.js",
   "zhaopin_readonly_smoke.js",
   "zhaopin_communication_adapter_smoke.js",
+  "funnel_message_linkage_smoke.js",
   "zhaopin_message_reader_smoke.js",
   "zhaopin_message_detail_reader_smoke.js",
   "zhaopin_message_job_context_smoke.js",

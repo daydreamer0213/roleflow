@@ -256,7 +256,8 @@ function recordVerifiedCommunicationStart(db, input = {}) {
         || card.jobId !== jobId) {
         throw progressError("PROGRESS_COMMUNICATION_SOURCE_MISMATCH", "verified communication progress source changed");
       }
-    } else {
+    }
+    if (!zhaopin || outcome === "succeeded") {
       ensureFunnelEntry(db, {
         profileId: card.profileId,
         planId: card.planId,

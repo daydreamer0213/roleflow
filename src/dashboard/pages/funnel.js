@@ -7,7 +7,7 @@ const {
 } = require("../../core/funnel_maturity");
 
 const STAGES = Object.freeze([
-  ["started", "发起求职动作"],
+  ["started", "已满观察期的岗位"],
   ["read", "招聘方已读"],
   ["replied", "招聘方回复"],
   ["effectiveConversation", "有效沟通"],
@@ -65,12 +65,13 @@ function renderFunnelPage({ plan = {}, dashboard = {} } = {}) {
         unknown
       })}</details>
       ${renderEarlyPositive(currentRound.earlyPositive || {})}
-      ${started ? renderFunnelStages(dashboard.funnel || {}) : renderEmptyState()}
+      ${renderUntrackedFeedback(dashboard.untrackedFeedback, planId)}
+      ${started ? renderFunnelStages(dashboard.funnel || {}, currentRound) : renderEmptyState()}
       ${renderComparisons(dashboard.comparisons || {}, activePolicy, strength)}
       ${renderRoundComparison(dashboard.previousRound, dashboard.roundComparison)}
       ${renderStrategyBoundary(planId, currentRound)}
       ${renderEvidenceNotes(dashboard.evidenceNotes || [])}
-    </main><p class="footer-note">本页只读取本地记录并更新本地策略轮次；不会访问 BOSS，不会填写、粘贴或发送，也不会替你修改外部招呼语或求职设置。</p>`
+    </main>`
   });
 }
 
@@ -116,7 +117,7 @@ function renderSampleMetrics({ diagnosticSample, started, waiting, unknown }) {
     <div class="metric"><span class="metric-label">本轮成熟样本</span><strong class="metric-value">${diagnosticSample}</strong><span class="metric-note">只统计当前策略</span></div>
     <div class="metric"><span class="metric-label">本轮已进入</span><strong class="metric-value">${started}</strong><span class="metric-note">含成熟与等待反馈</span></div>
     <div class="metric"><span class="metric-label">等待反馈成熟</span><strong class="metric-value">${waiting}</strong><span class="metric-note">至少 48 小时；周末顺延</span></div>
-    <div class="metric"><span class="metric-label">状态未知</span><strong class="metric-value">${unknown}</strong><span class="metric-note">不当作失败</span></div>
+    <div class="metric"><span class="metric-label">反馈待补充</span><strong class="metric-value">${unknown}</strong><span class="metric-note">尚未读到完整状态，不代表求职失败</span></div>
   </section>`;
 }
 
@@ -133,19 +134,48 @@ function renderEarlyPositive(counts) {
   return `<aside class="card pad funnel-early-positive"><strong>48 小时等待期内已有积极结果：</strong><span>${escapeHtml(parts.join("，"))}。这些结果立即显示，但样本仍要等窗口结束后才进入诊断分母。</span></aside>`;
 }
 
-function renderFunnelStages(funnel) {
-  const rows = STAGES.map(([key, label]) => renderStage(label, funnel[key] || {})).join("");
-  return `<section class="card pad funnel-stages funnel-flow" aria-labelledby="funnel-stages-title"><div class="funnel-section-head"><div><p class="section-label">成熟样本漏斗</p><h2 id="funnel-stages-title">反馈走到了哪一步</h2></div><p class="muted">分母只使用已到达上一环节、且本环节状态明确的成熟样本；等待单列。</p></div><div class="funnel-stage-list">${rows}</div></section>`;
+function renderFunnelStages(funnel, round) {
+  const mature = Math.max(0, Number(round.mature || 0));
+  const rows = STAGES.map(([key, label]) => {
+    const count = key === 'started' ? mature : round.immediatePositive
+      ? Math.max(0, Number(round.immediatePositive[key] || 0) - Number(round.earlyPositive?.[key] || 0))
+      : Number(funnel[key]?.numerator || 0);
+    return renderStage(key, label, { numerator: count, denominator: mature });
+  }).join('');
+  const conditionalLabels = {
+    read: '发起沟通后已读', replied: '已读后收到回复', effectiveConversation: '回复后进入有效沟通',
+    resumeRequested: '有效沟通后索要简历', interviewInvited: '有效沟通后邀请面试', interviewConfirmed: '邀请后确认面试或后续'
+  };
+  const missingLabels = {
+    read: '尚未获取阅读状态', replied: '尚未确认回复状态', effectiveConversation: '尚未读到完整回复内容',
+    resumeRequested: '尚未确认简历请求', interviewInvited: '尚未确认面试邀请', interviewConfirmed: '尚未确认面试安排'
+  };
+  const missing = STAGES.filter(([key]) => Number(funnel[key]?.unknown || 0) > 0)
+    .map(([key]) => `${Number(funnel[key].unknown)} 个${missingLabels[key]}`).join('；');
+  const details = STAGES.filter(([key]) => key !== 'started').map(([key]) => {
+    const stage = funnel[key] || {};
+    const count = Number(stage.numerator || 0);
+    const total = Number(stage.denominator || 0);
+    return `<p><strong>${escapeHtml(conditionalLabels[key])}：</strong>${total ? `${count} / ${total}（${formatPercent(count / total)}）` : '尚无可计算的上一环节样本'}${Number(stage.waiting) > 0 ? ` · ${Number(stage.waiting)} 个仍在等待反馈` : ''}</p>`;
+  }).join('');
+  return `<section class="card pad funnel-stages funnel-flow" aria-labelledby="funnel-stages-title"><div class="funnel-section-head"><div><p class="section-label">本轮已确认的反馈</p><h2 id="funnel-stages-title">反馈走到了哪一步</h2></div><p class="muted">本轮 ${Number(round.started || 0)} 个岗位，其中 ${mature} 个已满观察期。下方比例统一占这 ${mature} 个成熟岗位；表示已确认的进展，不把其余岗位判为失败。</p></div><div class="funnel-stage-list">${rows}</div>${missing ? `<p class="muted">${escapeHtml(missing)}。再次发现消息后会更新，暂不计为失败。</p>` : ''}<details class="funnel-sample-details"><summary>环节转化明细</summary><p>这里按上一环节中状态明确的岗位计算，用于定位卡点，不是全部投递的成功率。</p>${details}</details></section>`;
 }
 
-function renderStage(label, value) {
+function renderStage(key, label, value) {
   const numerator = Math.max(0, Number(value.numerator || 0));
   const denominator = Math.max(0, Number(value.denominator || 0));
-  const unknown = Math.max(0, Number(value.unknown || 0));
-  const waiting = Math.max(0, Number(value.waiting || 0));
   const percentage = denominator ? Math.min(100, (numerator / denominator) * 100) : 0;
-  const summary = denominator ? `${numerator} / ${denominator}（${formatPercent(numerator / denominator)}）` : "暂无明确状态";
-  return `<div class="funnel-stage-row"><div class="funnel-stage-copy"><strong>${escapeHtml(label)}</strong><span>${escapeHtml(summary)}</span></div><div class="funnel-stage-track" role="progressbar" aria-label="${escapeAttr(label)} ${escapeAttr(summary)}" aria-valuemin="0" aria-valuemax="${denominator || 1}" aria-valuenow="${numerator}"><span style="width:${escapeAttr(percentage.toFixed(2))}%"></span></div><small>未知 ${unknown} · 等待 ${waiting}</small></div>`;
+  const summary = denominator ? `${numerator} 个 · ${formatPercent(numerator / denominator)}` : '等待岗位满观察期';
+  return `<div class="funnel-stage-row" data-feedback-stage="${escapeAttr(key)}"><div class="funnel-stage-copy"><strong>${escapeHtml(label)}</strong><span>${escapeHtml(summary)}</span></div><div class="funnel-stage-track" role="progressbar" aria-label="${escapeAttr(label)} ${escapeAttr(summary)}" aria-valuemin="0" aria-valuemax="${denominator || 1}" aria-valuenow="${numerator}"><span style="width:${escapeAttr(percentage.toFixed(2))}%"></span></div></div>`;
+}
+
+function renderUntrackedFeedback(counts = {}, planId) {
+  if (!Number(counts.replied || 0) && !Number(counts.pendingConversations || 0)) return '';
+  const parts = [`${Number(counts.replied)} 个岗位有 HR 消息`,
+    `${Number(counts.resumeRequested || 0)} 个已索要简历`, `${Number(counts.interviewInvited || 0)} 个已邀请面试`];
+  const pending = Number(counts.pendingConversations || 0)
+    ? `<p class="muted">账号消息中另有 ${Number(counts.pendingConversations)} 条待核对会话${Number(counts.pendingResumeRequests || 0) ? `，其中 ${Number(counts.pendingResumeRequests)} 条含简历请求` : ''}。岗位或方案归属尚未核实，不计入上方岗位数。</p>` : '';
+  return `<section class="card pad funnel-inbound" aria-labelledby="funnel-inbound-title"><div class="funnel-section-head"><div><p class="section-label">投递时间待核对</p><h2 id="funnel-inbound-title">消息中发现的机会</h2></div><a href="/messages?planId=${encodeURIComponent(planId)}">查看消息与回复</a></div>${Number(counts.replied || 0) ? `<p>${escapeHtml(parts.join(' · '))}</p><p class="muted">这些岗位尚无可核验的本人投递或沟通时间，因此先展示收到的消息，不计入本轮投递转化率。</p>` : ''}${pending}</section>`;
 }
 
 function renderEmptyState() {

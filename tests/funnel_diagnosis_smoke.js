@@ -46,7 +46,7 @@ try {
     unknown: 0,
     waiting: 20
   });
-  assert.match(replyWindowDashboard.headline, /证据不足|等待/);
+  assert.match(replyWindowDashboard.headline, /20 个尚未获取完整反馈，暂时无法判断/);
   assert.doesNotMatch(replyWindowDashboard.headline, /主要卡在/);
 
   const comparable = createOwner(db, "comparable");
@@ -98,7 +98,7 @@ try {
   seedEntries(db, unknown, 35, () => []);
   const unknownDashboard = service.getDashboard({ profileId: unknown.profileId, planId: unknown.planId });
   assert.equal(unknownDashboard.currentRound.unknown, 35);
-  assert.match(unknownDashboard.headline, /状态未知|证据不足/);
+  assert.match(unknownDashboard.headline, /35 个尚未获取完整反馈，暂时无法判断/);
   assert.match(unknownDashboard.priorityCheck, /补充/);
 
   const formal = createOwner(db, "formal");

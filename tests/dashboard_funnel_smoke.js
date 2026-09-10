@@ -68,7 +68,7 @@ const logger = {
     assert.match(response.body, /至少 48 小时；周末顺延/);
     await funnelStrategyClientSmoke(FUNNEL_STRATEGY_SCRIPT);
 
-    for (const label of ["发起求职动作", "招聘方已读", "招聘方回复", "有效沟通", "索要简历", "发出面试邀请", "确认面试或后续"]) {
+    for (const label of ["已满观察期的岗位", "招聘方已读", "招聘方回复", "有效沟通", "索要简历", "发出面试邀请", "确认面试或后续"]) {
       assert.match(response.body, new RegExp(label), `funnel stage is visible: ${label}`);
     }
     assert.doesNotMatch(response.body, /AI &lt;应用&gt;|Java 后端/,

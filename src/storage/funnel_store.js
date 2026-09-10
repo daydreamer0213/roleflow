@@ -163,7 +163,12 @@ function ensureFunnelEntry(db, input = {}) {
   const profileId = positiveInteger(input.profileId, "profileId");
   const jobId = positiveInteger(input.jobId, "jobId");
   const job = db.prepare('SELECT source FROM jobs WHERE id = ?').get(jobId);
-  if (job && job.source !== 'boss') throw Object.assign(new Error('智联只读岗位不能记录为已投递或加入求职反馈样本。'), { code: 'READONLY_SITE_FUNNEL_FORBIDDEN' });
+  if (job && job.source !== 'boss') {
+    const verified = job.source === 'zhaopin' && input.sourceKind === 'communication'
+      && verifiedZhaopinStarts(db, { profileId, planId: input.planId, jobId }).some(event =>
+        Number(input.cardId) === event.cardId && input.startedAt === event.occurredAt);
+    if (!verified) throw storageError('READONLY_SITE_FUNNEL_FORBIDDEN', '该岗位尚无可核验的沟通起点，不能计为已投递或加入求职样本。');
+  }
   const existing = getFunnelEntry(db, { profileId, jobId });
   if (existing) return existing;
   const sourceKind = String(input.sourceKind || "").trim();
@@ -176,11 +181,15 @@ function ensureFunnelEntry(db, input = {}) {
     const card = optionalCard(db, input.cardId, { profileId, jobId });
     const planId = resolvePlanId(db, input.planId || card?.plan_id, profileId);
     const context = contactContext(db, { profileId, planId, jobId, startedAt });
-    const strategyRound = ensureActiveFunnelStrategyRound(db, {
+    const activeRound = ensureActiveFunnelStrategyRound(db, {
       profileId,
       planId,
       startedAt
     });
+    const strategyRound = job.source === 'zhaopin'
+      ? strategyRoundAt(db, { profileId, planId, startedAt })
+      : activeRound;
+    if (!strategyRound) throw storageError('FUNNEL_ROUND_NOT_FOUND', '无法确认这次沟通当时的策略轮次。');
     const result = db.prepare(`INSERT OR IGNORE INTO candidate_funnel_entries(
       profile_id, job_id, card_id, cohort_id, plan_id, strategy_round_id, source_kind,
       started_at, mature_at, direction_key, decision_bucket,
@@ -197,7 +206,7 @@ function ensureFunnelEntry(db, input = {}) {
         feedbackMaturesAt(startedAt),
         context.directionKey,
         context.decisionBucket,
-        context.resumeVersionId,
+        job.source === 'zhaopin' ? strategyRound.resumeVersionId : context.resumeVersionId,
         context.greetingKey,
         startedAt,
         startedAt
@@ -349,6 +358,58 @@ function listFunnelProgressEvents(db, { profileId, entryIds = [] } = {}) {
   return [...progress, ...jobEvents]
     .sort((left, right) => Date.parse(left.occurredAt) - Date.parse(right.occurredAt)
       || left.eventId.localeCompare(right.eventId));
+}
+
+function verifiedZhaopinStarts(db, { profileId, planId, jobId = null }) {
+  return db.prepare(`SELECT e.id, c.id AS card_id, c.job_id, c.plan_id, e.occurred_at
+    FROM candidate_progress_events e
+    JOIN candidate_progress_cards c ON c.id = e.card_id
+    JOIN jobs j ON j.id = c.job_id AND j.source = c.source
+    JOIN communication_batch_items i ON i.id = json_extract(e.metadata_json, '$.itemId')
+      AND i.batch_id = json_extract(e.metadata_json, '$.batchId') AND i.job_id = c.job_id
+    JOIN communication_batches b ON b.id = i.batch_id AND b.site = c.source
+      AND b.profile_id = c.profile_id AND b.plan_id = c.plan_id
+    WHERE c.profile_id = ? AND c.plan_id = ? AND c.source = 'zhaopin'
+      AND (? IS NULL OR c.job_id = ?) AND e.type = 'contact_started'
+      AND e.actor = 'system' AND i.status = 'succeeded'
+    ORDER BY e.occurred_at, e.id`).all(profileId, planId, jobId, jobId).map(row => ({
+    id: Number(row.id), cardId: Number(row.card_id), jobId: Number(row.job_id),
+    planId: Number(row.plan_id), occurredAt: row.occurred_at
+  }));
+}
+
+function strategyRoundAt(db, { profileId, planId, startedAt }) {
+  return mapStrategyRound(db.prepare(`SELECT * FROM candidate_funnel_strategy_rounds
+    WHERE profile_id = ? AND plan_id = ? AND started_at <= ?
+      AND (closed_at IS NULL OR closed_at > ?)
+    ORDER BY started_at DESC, id DESC LIMIT 1`).get(profileId, planId, startedAt, startedAt));
+}
+
+function syncVerifiedCommunicationFunnelEntries(db, { profileId, planId }) {
+  const owner = ownedPlan(db, { profileId, planId });
+  return inTransaction(db, () => {
+    for (const event of verifiedZhaopinStarts(db, { profileId: owner.profileId, planId: owner.id })) {
+      if (getFunnelEntry(db, { profileId: owner.profileId, jobId: event.jobId })) continue;
+      // A historical event without an identifiable strategy boundary must not become a current sample.
+      if (!strategyRoundAt(db, { profileId: owner.profileId, planId: owner.id, startedAt: event.occurredAt })) continue;
+      ensureFunnelEntry(db, { profileId: owner.profileId, planId: owner.id, jobId: event.jobId,
+        cardId: event.cardId, sourceKind: 'communication', startedAt: event.occurredAt });
+    }
+  });
+}
+
+function listUntrackedMessageFeedback(db, { profileId, planId }) {
+  const owner = ownedPlan(db, { profileId, planId });
+  return db.prepare(`SELECT c.id AS card_id, e.type, e.actor, e.occurred_at, e.metadata_json
+    FROM candidate_progress_cards c JOIN jobs j ON j.id = c.job_id AND j.source = c.source
+    JOIN candidate_progress_events e ON e.card_id = c.id
+    WHERE c.profile_id = ? AND c.plan_id = ? AND c.source IN ('boss', 'zhaopin')
+      AND NOT EXISTS (SELECT 1 FROM candidate_funnel_entries f
+        WHERE f.profile_id = c.profile_id AND f.job_id = c.job_id)
+    ORDER BY c.id, e.occurred_at, e.id`).all(owner.profileId, owner.id).map(row => ({
+    cardId: Number(row.card_id), type: row.type, actor: row.actor,
+    occurredAt: row.occurred_at, metadata: parseJson(row.metadata_json, {})
+  }));
 }
 
 function contactContext(db, { profileId, planId, jobId, startedAt }) {
@@ -588,5 +649,7 @@ module.exports = {
   freezeReadyFunnelCohort,
   listFunnelCohorts,
   getFunnelCohort,
-  listFunnelProgressEvents
+  listFunnelProgressEvents,
+  syncVerifiedCommunicationFunnelEntries,
+  listUntrackedMessageFeedback
 };

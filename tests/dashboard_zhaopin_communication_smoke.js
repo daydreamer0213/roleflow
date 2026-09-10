@@ -168,7 +168,8 @@ async function main() {
     assert.match(conflictingSite, /batch_site_mismatch/);
     const conflictingOwner = await getText(`${base}/communication?batchId=${created.body.batch.id}&profileId=${other.profileId}`);
     assert.match(conflictingOwner, /batch_profile_mismatch/);
-    assert.equal(Number(db.prepare("SELECT COUNT(*) AS count FROM candidate_funnel_entries").get().count), 0);
+    assert.equal(Number(db.prepare("SELECT COUNT(*) AS count FROM candidate_funnel_entries").get().count), 1,
+      "the verified greeting joins feedback; previewing other jobs does not");
     assert.equal(Number(db.prepare("SELECT COUNT(*) AS count FROM message_reply_send_batches").get().count), 0);
     assert.equal(Number(db.prepare("SELECT COUNT(*) AS count FROM message_reply_send_items").get().count), 0);
     console.log("dashboard_zhaopin_communication_smoke ok");

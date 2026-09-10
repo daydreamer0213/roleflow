@@ -5,9 +5,12 @@ const {
   listFunnelStrategyRounds,
   startFunnelStrategyRound,
   listFunnelEntries,
-  listFunnelProgressEvents
+  listFunnelProgressEvents,
+  syncVerifiedCommunicationFunnelEntries,
+  listUntrackedMessageFeedback
 } = require("../../storage/funnel_store");
-const { buildFunnelSnapshot } = require("../../core/funnel_maturity");
+const { buildFunnelSnapshot, projectFunnelEntry } = require("../../core/funnel_maturity");
+const { listUnresolvedMessageDiscoveryItems } = require("../../core/message_preview_state");
 
 function createFunnelAnalysisService({ db, now = () => new Date().toISOString() } = {}) {
   if (!db) throw new Error("funnel analysis database is required");
@@ -35,6 +38,7 @@ function createFunnelAnalysisService({ db, now = () => new Date().toISOString() 
 function dashboard(db, { profileId, planId, now }) {
   const policy = getFunnelPolicy(db, { profileId });
   const current = ensureActiveFunnelStrategyRound(db, { profileId, planId, startedAt: now });
+  syncVerifiedCommunicationFunnelEntries(db, { profileId, planId });
   const currentPolicy = roundPolicy(current);
   const currentEntries = listFunnelEntries(db, {
     profileId,
@@ -68,6 +72,7 @@ function dashboard(db, { profileId, planId, now }) {
     currentRound,
     previousRound,
     roundComparison: compareRounds({ current, currentSnapshot, previous, previousSnapshot }),
+    untrackedFeedback: untrackedFeedbackSummary(db, { profileId, planId, now }),
     currentPool: currentRound,
     latestCohort: null,
     funnel: currentAnalysis.funnel,
@@ -79,9 +84,27 @@ function dashboard(db, { profileId, planId, now }) {
       "每个岗位至少经过 48 小时；跨周末顺延到周一。",
       "当前诊断只读取当前策略轮次；较晚出现的结果仍回到原轮次。",
       "岗位已成熟后若出现新的已读，未回复结论从这次已读重新等待 48 小时。",
-      "等待和未知状态不进入失败分母，观察关系不代表因果。"
+      "未读到状态不代表失败；智联暂不提供已读和送达状态。",
+      "主图显示已确认结果占成熟岗位的比例；环节转化明细仅计算上一环节中状态明确的岗位。"
     ]
   };
+}
+
+function untrackedFeedbackSummary(db, { profileId, planId, now }) {
+  const grouped = new Map();
+  for (const event of listUntrackedMessageFeedback(db, { profileId, planId })) {
+    if (!grouped.has(event.cardId)) grouped.set(event.cardId, []);
+    grouped.get(event.cardId).push(event);
+  }
+  const counts = { replied: 0, resumeRequested: 0, interviewInvited: 0 };
+  for (const [cardId, events] of grouped) {
+    const projection = projectFunnelEntry({ id: cardId, startedAt: events[0].occurredAt }, events, { now });
+    for (const key of Object.keys(counts)) if (projection[key].value === true) counts[key] += 1;
+  }
+  const pending = listUnresolvedMessageDiscoveryItems(db, { profileId, platform: null });
+  return { ...counts, pendingConversations: pending.length,
+    pendingResumeRequests: pending.filter(item => (item.inboundMessages || [])
+      .some(message => message.kind === 'resume_request')).length };
 }
 
 function roundPolicy(round) {
@@ -188,12 +211,12 @@ function diagnose(snapshot, policy) {
   if (snapshot.strength === "facts") {
     return {
       headline: `当前有 ${mature} 个成熟样本，少于 ${policy.preliminarySampleTarget}，先展示事实，不判断瓶颈。`,
-      priorityCheck: `继续积累到 ${policy.preliminarySampleTarget} 个成熟样本；等待和未知状态先不算失败。`
+      priorityCheck: `继续积累到 ${policy.preliminarySampleTarget} 个成熟样本；已收到的反馈可在下方查看。`
     };
   }
   if (snapshot.unknown >= Math.ceil(mature / 2)) {
     return {
-      headline: `当前有 ${mature} 个成熟样本，但 ${snapshot.unknown} 个状态未知，现有证据不足以判断主要瓶颈。`,
+      headline: `当前有 ${mature} 个成熟样本，其中 ${snapshot.unknown} 个尚未获取完整反馈，暂时无法判断主要瓶颈。`,
       priorityCheck: "先补充消息读取或后续结果，再比较岗位方向和材料版本。"
     };
   }
