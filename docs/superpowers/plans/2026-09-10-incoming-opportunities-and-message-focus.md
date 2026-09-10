@@ -22,7 +22,7 @@
 **Ownership / files:**
 - Create `src/application/funnel_analysis/incoming_contacts.js`：只读聚合和明细，不经通用 storage facade 新增导出。
 - Modify `src/application/funnel_analysis/index.js`、`src/dashboard/pages/funnel.js`。
-- Tests `tests/funnel_platform_dashboard_smoke.js`、`tests/dashboard_funnel_browser_smoke.js`（核验实际现有文件名），必要时单独 `tests/incoming_contacts_smoke.js` 并登记 `tests/run_all.js`。
+- Tests `tests/funnel_platform_feedback_smoke.js`、`tests/dashboard_funnel_smoke.js`，必要时单独 `tests/incoming_contacts_smoke.js` 并登记 `tests/run_all.js`。
 - 不修改消息页、共享 CSS、浏览器执行器、用户 DB；确实需要 storage 变更先与主控协调。
 
 **Requirements / interface:**
@@ -30,7 +30,7 @@
 - 可靠 conversationKey 是会话去重依据；上下文→已绑定卡片 thread_key→未关联会话可以合并，跨平台/跨用户不能合并。历史只有卡片事件且缺少 thread_key 时不猜新会话；其主动联系数据仍保留在原表。
 - 保留真实正文/请求卡的未关联消息；排除空白加载项；多个分组或重读不能重复计数；同一线程解除未关联后仍为同一条。使用全部记录，不能只调 bounded 500 的列表函数冒充累计。
 - 读取可靠分类事件识别已发生的 résumé 请求/邀请；请求卡本身足以证实请求。只对已有消息内容做有限安全规范化，不用宽泛正则猜测邀请。后续礼貌消息不能抹掉历史已收到请求。撤销/无效关联按现有事实状态处理。
-- `dashboard.incomingContacts = { items, platforms }`，platforms 固定 BOSS/智联，各行 `site, contacted, resumeRequested, interviewInvited`；contaced 按会话计数，名称实现需保持一致并在报告列出。
+- `dashboard.incomingContacts = { items, platforms }`，platforms 固定 BOSS/智联，各行 `site, contacted, resumeRequested, interviewInvited`；contacted 按会话计数，名称实现需保持一致并在报告列出。
 - 体检正式第二节“收到的联系”，说明“已读取并保存在本地的会话”；平台三项计数，不再输出“其他消息中还有”。数字跳到同页可展开的精确对应明细（用原生 details 或独立安全 GET 筛选），每条可到 `/messages?planId=…&source=boss|zhaopin&contact=<key>&task=all`。不要用默认待处理列表承诺覆盖全部历史。
 - 原主动联系表保留已联系、回复占比；索要/邀请属于对应已联系子集时可保留，必须清楚与收到联系全体的不同口径，避免两个无说明同名表格。推荐主动联系表只保留平台、已联系岗位、已回复及占比。
 - 全体联系人属于当前 profile 的已保存记录，不受体检当前方案/累计切换改变。不编造 HR 主动占比。
