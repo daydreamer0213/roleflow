@@ -785,7 +785,7 @@ async function main() {
   assert.strictEqual(durableStatus.reasonCode, "BOSS_MESSAGE_CARD_NOT_FOUND");
   assertNoPrivateData(durableStatus);
   let durablePage = await request(base, `/messages?profileId=${retainedFixture.profileId}`);
-  assert(durablePage.body.includes("\u672a\u89e3\u51b3 1"), "the no-run page state must show durable unresolved work");
+  assert(!durablePage.body.includes('class="panel message-state"'), "one unresolved contact belongs in its own list item, not a page-wide error panel");
   const unresolvedViewKey = durablePage.body.match(/data-message-view="(unresolved-[a-f0-9]{64})"/)?.[1];
   assert(unresolvedViewKey, "pending-only pages must expose a selectable stable unresolved key");
   assert(durablePage.body.includes(`data-message-detail-panel="${unresolvedViewKey}"`), "the pending list row and detail must share one selection key");
@@ -813,7 +813,7 @@ async function main() {
   assert.strictEqual(durableStatus.unresolved, 1);
   assert.strictEqual(durableStatus.reasonCode, "BOSS_MESSAGE_CARD_NOT_FOUND");
   durablePage = await request(base, `/messages?profileId=${retainedFixture.profileId}`);
-  assert(durablePage.body.includes("\u672a\u89e3\u51b3 1"));
+  assert.match(durablePage.body, /class="message-list-item"[^>]*data-pending="true"/, "retained work remains selectable after cleanup without recreating the global error panel");
   assertNoPrivateData(durablePage.body);
 
   await inboundResolutionDashboardSmoke({

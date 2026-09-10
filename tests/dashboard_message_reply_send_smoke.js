@@ -79,11 +79,11 @@ const NOW = "2026-08-29T06:00:00.000Z";
     assert.match(page.body, /data-send-single="\d+"/);
     assert.equal((page.body.match(/data-send-select="\d+" checked/g) || []).length, 0,
       "batch entry must start with no selected drafts");
-    assert.match(page.body, /<button type="button" data-send-batch-enter>进入批量发送<\/button>/,
+    assert.match(page.body, /<button type="button" class="secondary message-batch-entry" data-send-batch-enter>进入批量发送<\/button>/,
       "batch selection must be an explicit user action");
     assert.match(page.body, /<button type="button" data-send-batch hidden disabled>确认并串行发送 0 条<\/button>/);
     assert.match(page.body, /data-send-stop hidden disabled/);
-    assert.match(page.body, /已读 0 · 送达 0/);
+    assert.doesNotMatch(page.body, /已读 0 · 送达 0/, "an untouched inbox does not spend first-screen space on empty receipt counters");
     assert(page.body.includes(TOKEN), "the local action token must be scoped to the rendered message page");
     assert(page.body.includes("草稿里有系统找不到依据的个人信息，请修改后再发送。"));
 
