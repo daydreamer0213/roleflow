@@ -165,7 +165,8 @@ const tests = [
 
 const timeoutByTest = {
   "windows_installer_smoke.js": 180_000,
-  "startup_scripts_smoke.js": 240_000,
+  // Measured at 232s on Windows; keep room for cleanup without changing per-case deadlines.
+  "startup_scripts_smoke.js": 300_000,
   "model_task_profiles_smoke.js": 180_000
 };
 
