@@ -17,7 +17,7 @@ function renderFunnelPage({ plan = {}, dashboard = {}, view = 'current' } = {}) 
           <a href="${path}"${!lifetime ? ' aria-current="true"' : ''}>当前方案</a>
           <a href="${path}&amp;view=lifetime"${lifetime ? ' aria-current="true"' : ''}>累计记录</a>
         </nav><a class="feedback-message-link" href="/messages?planId=${planId}">查看消息</a></div>
-        <p class="feedback-scope">${lifetime ? '所有方案的本地记录' : '当前方案下，各平台正在使用的投递方式'}</p>
+        <p class="feedback-scope">${lifetime ? '所有方案的本地记录' : '当前方案的联系与反馈'}</p>
         <div class="feedback-table-scroll" role="region" aria-label="平台反馈对照" tabindex="0">
           <table aria-label="${lifetime ? '累计记录' : '当前方案'}投递反馈"><thead><tr>
             <th scope="col">平台</th><th scope="col">已联系岗位</th><th scope="col">已回复</th><th scope="col">索要简历</th><th scope="col">面试邀请</th>

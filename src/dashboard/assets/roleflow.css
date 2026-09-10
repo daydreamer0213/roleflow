@@ -255,7 +255,7 @@ h2{font-size:19px;font-weight:600}
 .feedback-adjustment fieldset label{display:flex;align-items:center;gap:8px}
 .feedback-adjustment input[type=checkbox]{min-height:18px;width:18px;accent-color:var(--rf-teal)}
 .feedback-adjustment button{justify-self:start}
-@media(max-width:600px){.feedback-overview{padding:16px}.feedback-toolbar nav{gap:16px}.feedback-advice{display:block}.feedback-advice>a{margin-top:12px}.feedback-adjustment button{width:100%}}
+@media(max-width:600px){.feedback-overview{padding:16px}.feedback-toolbar nav{gap:16px}.feedback-advice{display:block}.feedback-advice>a{margin-top:12px}.feedback-adjustment button{width:100%}.feedback-table-scroll table{min-width:0}.feedback-table-scroll th,.feedback-table-scroll td{padding-inline:4px}.feedback-table-scroll thead th{font-size:12px}.feedback-table-scroll td{font-size:18px}}
 .funnel-sample-details{margin:12px 0 18px;border-top:1px solid var(--rf-rule);border-bottom:1px solid var(--rf-rule)}
 
 /* Growth workbenches: edit or answer first; rationale and history stay nearby. */
