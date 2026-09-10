@@ -1,317 +1,109 @@
-const { escapeHtml, escapeAttr } = require("../http/response");
-const { renderDashboardFrame } = require("../ui/shell");
-const {
-  DEFAULT_PRELIMINARY_SAMPLE_TARGET,
-  DEFAULT_COMPARABLE_SAMPLE_TARGET,
-  DEFAULT_FORMAL_SAMPLE_TARGET
-} = require("../../core/funnel_maturity");
+const { escapeHtml, escapeAttr } = require('../http/response');
+const { renderDashboardFrame } = require('../ui/shell');
+const SITE_LABELS = { boss: 'BOSS', zhaopin: '智联' };
 
-const STAGES = Object.freeze([
-  ["started", "已满观察期的岗位"],
-  ["read", "招聘方已读"],
-  ["replied", "招聘方回复"],
-  ["effectiveConversation", "有效沟通"],
-  ["resumeRequested", "索要简历"],
-  ["interviewInvited", "发出面试邀请"],
-  ["interviewConfirmed", "确认面试或后续"]
-]);
-
-const STRENGTH_LABELS = Object.freeze({
-  facts: "样本不足",
-  preliminary: "初步观察",
-  comparable: "可比较结论",
-  formal: "正式诊断"
-});
-
-const CHANGE_LABELS = Object.freeze({
-  initial: "初始策略",
-  greeting: "招呼语",
-  resume: "定向简历",
-  strategy: "求职策略"
-});
-
-function renderFunnelPage({ plan = {}, dashboard = {} } = {}) {
+function renderFunnelPage({ plan = {}, dashboard = {}, view = 'current' } = {}) {
   const planId = Number(plan.id || 0);
-  const currentPath = `/funnel?planId=${encodeURIComponent(planId)}`;
-  const todayPath = `/plan?planId=${encodeURIComponent(planId)}`;
-  const policy = dashboard.policy || {};
-  const currentRound = dashboard.currentRound || dashboard.currentPool || {};
-  const activePolicy = strategyRoundPolicy(currentRound, policy);
-  const diagnosticSample = Number(currentRound.mature || 0);
-  const strength = String(currentRound.strength || "facts");
-  const unknown = Number(currentRound.unknown || 0);
-  const waiting = Number(currentRound.waiting || 0);
-  const started = Number(currentRound.started || 0);
-
-  return renderDashboardFrame({
-    currentPath,
-    todayPath,
-    planId,
-    stage: "求职体检",
-    brandHref: todayPath,
-    content: `<main id="main-content" class="funnel-main">
-      <section class="page-heading" aria-labelledby="funnel-title">
-        <p class="eyebrow">阶段二 · 本地结果分析</p>
-        <h1 id="funnel-title">求职体检</h1>
-        <p class="lede">每次招呼语、简历或求职策略调整都单独验证。先等真实反馈成熟，再比较调整前后发生了什么。</p>
-        <div class="heading-meta"><span>${escapeHtml(plan.name || "当前筛选方案")}</span><span class="status ${strengthTone(strength)}">${escapeHtml(STRENGTH_LABELS[strength] || STRENGTH_LABELS.facts)}</span></div>
+  const path = `/funnel?planId=${encodeURIComponent(planId)}`;
+  const lifetime = view === 'lifetime';
+  const platforms = dashboard.platforms || [];
+  const started = platforms.reduce((sum, item) => sum + count(lifetime ? item.lifetime?.started : item.currentRound?.started), 0);
+  return renderDashboardFrame({ currentPath: path, todayPath: `/plan?planId=${planId}`, planId,
+    stage: '求职体检', brandHref: `/plan?planId=${planId}`,
+    content: `<main id="main-content" class="funnel-main feedback-main">
+      <header class="page-heading"><h1>求职体检</h1><p class="lede">${escapeHtml(plan.name || '当前求职方案')}</p></header>
+      <section class="feedback-overview" aria-label="投递反馈">
+        <div class="feedback-toolbar"><nav aria-label="统计范围">
+          <a href="${path}"${!lifetime ? ' aria-current="true"' : ''}>当前方案</a>
+          <a href="${path}&amp;view=lifetime"${lifetime ? ' aria-current="true"' : ''}>累计记录</a>
+        </nav><a class="feedback-message-link" href="/messages?planId=${planId}">查看消息</a></div>
+        <p class="feedback-scope">${lifetime ? '所有方案的本地记录' : '当前方案下，各平台正在使用的投递方式'}</p>
+        <div class="feedback-table-scroll" role="region" aria-label="平台反馈对照" tabindex="0">
+          <table aria-label="${lifetime ? '累计记录' : '当前方案'}投递反馈"><thead><tr>
+            <th scope="col">平台</th><th scope="col">已联系岗位</th><th scope="col">已回复</th><th scope="col">索要简历</th><th scope="col">面试邀请</th>
+          </tr></thead><tbody>${platforms.map(item => renderPlatform(item, lifetime)).join('')}</tbody></table>
+        </div>
+        <p class="feedback-footnote">已联系包含确认投递或沟通的岗位；回复比例占本行已联系岗位，按已读取消息更新。</p>
+        ${!started ? `<p class="feedback-empty">${lifetime ? '还没有联系岗位。' : '当前方案还没有联系岗位。'}<a href="/plan?planId=${planId}">去发现岗位</a></p>` : ''}
       </section>
-      <section class="funnel-focus" aria-label="当前诊断与证据强度">${renderConclusion(dashboard, strength)}${renderThresholdRuler(activePolicy, diagnosticSample, strength)}</section>
-      ${renderCurrentRound(currentRound)}
-      <details class="funnel-sample-details"><summary>查看本轮样本与等待情况</summary>${renderSampleMetrics({
-        diagnosticSample,
-        started,
-        waiting,
-        unknown
-      })}</details>
-      ${renderEarlyPositive(currentRound.earlyPositive || {})}
-      ${renderUntrackedFeedback(dashboard.untrackedFeedback, planId)}
-      ${started ? renderFunnelStages(dashboard.funnel || {}, currentRound) : renderEmptyState()}
-      ${renderComparisons(dashboard.comparisons || {}, activePolicy, strength)}
-      ${renderRoundComparison(dashboard.previousRound, dashboard.roundComparison)}
-      ${renderStrategyBoundary(planId, currentRound)}
-      ${renderEvidenceNotes(dashboard.evidenceNotes || [])}
-    </main>`
-  });
+      ${renderOtherMessages(lifetime ? dashboard.lifetimeUntrackedFeedback : dashboard.untrackedFeedback, planId)}
+      ${!lifetime && started ? renderAdvice(dashboard, planId) : ''}
+      ${!lifetime ? renderComparison(platforms) : ''}
+      ${renderAdjustment(planId, dashboard.activeRevisionId)}
+    </main>` });
 }
 
-function renderCurrentRound(round) {
-  const sequence = Math.max(1, Number(round.sequenceNumber || 1));
-  const labels = (Array.isArray(round.changeKinds) ? round.changeKinds : ["initial"])
-    .map((kind) => CHANGE_LABELS[kind]).filter(Boolean);
-  const changeNote = String(round.changeNote || "").trim();
-  return `<section class="card pad funnel-round" aria-labelledby="funnel-round-title">
-    <div class="funnel-round-mark" aria-hidden="true">${sequence}</div>
-    <div><p class="section-label">当前策略轮次</p><h2 id="funnel-round-title">第 ${sequence} 轮</h2><p>${escapeHtml(changeNote || "继续验证当前招呼语、简历和求职策略。")}</p></div>
-    <div class="funnel-round-change"><span>本轮从 ${escapeHtml(formatLocalTime(round.startedAt))} 开始</span><strong>${escapeHtml(labels.join(" + ") || "初始策略")}</strong></div>
-  </section>`;
+function renderPlatform(item, lifetime) {
+  const round = item.currentRound || {};
+  const values = lifetime ? item.lifetime || {} : { started: round.started, ...round.immediatePositive };
+  const started = count(values.started), replied = count(values.replied);
+  const changed = !lifetime && round.changeKinds?.some(kind => kind !== 'initial');
+  return `<tr data-feedback-platform="${escapeAttr(item.site)}"><th scope="row">${escapeHtml(SITE_LABELS[item.site] || item.site)}
+    ${changed ? `<small>${escapeHtml(localDate(round.startedAt))}调整后</small>` : ''}</th>
+    <td><strong>${started}</strong></td><td><strong>${replied}</strong><span class="feedback-reply-share">${started ? percent(replied, started) : '—'}</span></td>
+    <td>${count(values.resumeRequested)}</td><td>${count(values.interviewInvited)}</td></tr>`;
 }
 
-function renderConclusion(dashboard, strength) {
-  return `<section class="funnel-conclusion" aria-labelledby="funnel-conclusion-title">
-    <div><p class="section-label">当前结论 · ${escapeHtml(STRENGTH_LABELS[strength] || STRENGTH_LABELS.facts)}</p><h2 id="funnel-conclusion-title">${escapeHtml(dashboard.headline || "当前证据还不足以形成诊断。")}</h2></div>
-    <div class="funnel-priority"><span>优先检查</span><strong>${escapeHtml(dashboard.priorityCheck || "继续积累真实结果。")}</strong></div>
-  </section>`;
-}
-
-function renderThresholdRuler(policy, mature, strength) {
-  const preliminary = positiveNumber(policy.preliminarySampleTarget, DEFAULT_PRELIMINARY_SAMPLE_TARGET);
-  const comparable = positiveNumber(policy.comparableSampleTarget, DEFAULT_COMPARABLE_SAMPLE_TARGET);
-  const formal = positiveNumber(policy.formalSampleTarget, DEFAULT_FORMAL_SAMPLE_TARGET);
-  const capped = Math.max(0, Math.min(100, (mature / formal) * 100));
-  return `<section class="card pad funnel-evidence" aria-labelledby="evidence-strength-title">
-    <div class="funnel-section-head"><div><p class="section-label">证据强度</p><h2 id="evidence-strength-title">当前 ${mature} 个成熟样本</h2></div><p class="muted">${escapeHtml(distanceToNext(mature, strength, { preliminary, comparable, formal }))}</p></div>
-    <div class="funnel-ruler" style="--funnel-progress:${escapeAttr(capped.toFixed(2))}%" role="img" aria-label="当前 ${mature} 个成熟样本；初步观察 ${preliminary} 个，阶段诊断 ${comparable} 个，正式诊断 ${formal} 个">
-      <span class="funnel-ruler-fill" aria-hidden="true"></span>
-      <ol>
-        <li style="--funnel-mark:${escapeAttr(((preliminary / formal) * 100).toFixed(2))}%"><strong>${preliminary} 个成熟样本 · 初步观察</strong><span>可以提出待验证的主要卡点</span></li>
-        <li style="--funnel-mark:${escapeAttr(((comparable / formal) * 100).toFixed(2))}%"><strong>${comparable} 个成熟样本 · 可比较结论</strong><span>可以比较方向、材料和前后轮次</span></li>
-        <li style="--funnel-mark:100%"><strong>${formal} 个成熟样本 · 正式诊断</strong><span>结论强度充分，本轮仍继续积累</span></li>
-      </ol>
-    </div>
-  </section>`;
-}
-
-function renderSampleMetrics({ diagnosticSample, started, waiting, unknown }) {
-  return `<section class="metric-grid funnel-metrics" aria-label="求职样本状态">
-    <div class="metric"><span class="metric-label">本轮成熟样本</span><strong class="metric-value">${diagnosticSample}</strong><span class="metric-note">只统计当前策略</span></div>
-    <div class="metric"><span class="metric-label">本轮已进入</span><strong class="metric-value">${started}</strong><span class="metric-note">含成熟与等待反馈</span></div>
-    <div class="metric"><span class="metric-label">等待反馈成熟</span><strong class="metric-value">${waiting}</strong><span class="metric-note">至少 48 小时；周末顺延</span></div>
-    <div class="metric"><span class="metric-label">反馈待补充</span><strong class="metric-value">${unknown}</strong><span class="metric-note">尚未读到完整状态，不代表求职失败</span></div>
-  </section>`;
-}
-
-function renderEarlyPositive(counts) {
-  const replied = Math.max(0, Number(counts.replied || 0));
-  const resume = Math.max(0, Number(counts.resumeRequested || 0));
-  const interview = Math.max(0, Number(counts.interviewInvited || 0));
-  if (!replied && !resume && !interview) return "";
-  const parts = [
-    replied ? `${replied} 个已收到回复` : "",
-    resume ? `${resume} 个已索要简历` : "",
-    interview ? `${interview} 个已发出面试邀请` : ""
-  ].filter(Boolean);
-  return `<aside class="card pad funnel-early-positive"><strong>48 小时等待期内已有积极结果：</strong><span>${escapeHtml(parts.join("，"))}。这些结果立即显示，但样本仍要等窗口结束后才进入诊断分母。</span></aside>`;
-}
-
-function renderFunnelStages(funnel, round) {
-  const mature = Math.max(0, Number(round.mature || 0));
-  const rows = STAGES.map(([key, label]) => {
-    const count = key === 'started' ? mature : round.immediatePositive
-      ? Math.max(0, Number(round.immediatePositive[key] || 0) - Number(round.earlyPositive?.[key] || 0))
-      : Number(funnel[key]?.numerator || 0);
-    return renderStage(key, label, { numerator: count, denominator: mature });
-  }).join('');
-  const conditionalLabels = {
-    read: '发起沟通后已读', replied: '已读后收到回复', effectiveConversation: '回复后进入有效沟通',
-    resumeRequested: '有效沟通后索要简历', interviewInvited: '有效沟通后邀请面试', interviewConfirmed: '邀请后确认面试或后续'
+function renderAdvice(dashboard, planId) {
+  const advice = dashboard.advice;
+  if (!advice) {
+    const rounds = (dashboard.platforms || []).map(item => item.currentRound).filter(item => item?.started);
+    const waiting = rounds.some(round => round.waiting > 0);
+    const enough = rounds.some(round => round.strength !== 'facts' && round.unknown < Math.ceil(round.mature / 2));
+    return `<p class="feedback-status">${waiting ? '最近联系的部分岗位还需等待反馈。' : enough
+      ? '目前没有足够依据建议调整投递方式。' : '现有反馈还不足以判断是否需要调整。'}</p>`;
+  }
+  const n = count(advice.numerator), d = count(advice.denominator);
+  const reasons = {
+    read: `${d} 个已获取阅读状态的岗位中，${n} 个已读。`,
+    replied: `${d} 个已读岗位中，${n} 个有回复。`,
+    effectiveConversation: `${d} 个已确认回复内容的岗位中，${n} 个进入进一步沟通。`,
+    interviewInvited: `${d} 个已进入进一步沟通且反馈明确的岗位中，${n} 个邀请面试。`
   };
-  const missingLabels = {
-    read: '尚未获取阅读状态', replied: '尚未确认回复状态', effectiveConversation: '尚未读到完整回复内容',
-    resumeRequested: '尚未确认简历请求', interviewInvited: '尚未确认面试邀请', interviewConfirmed: '尚未确认面试安排'
-  };
-  const missing = STAGES.filter(([key]) => Number(funnel[key]?.unknown || 0) > 0)
-    .map(([key]) => `${Number(funnel[key].unknown)} 个${missingLabels[key]}`).join('；');
-  const details = STAGES.filter(([key]) => key !== 'started').map(([key]) => {
-    const stage = funnel[key] || {};
-    const count = Number(stage.numerator || 0);
-    const total = Number(stage.denominator || 0);
-    return `<p><strong>${escapeHtml(conditionalLabels[key])}：</strong>${total ? `${count} / ${total}（${formatPercent(count / total)}）` : '尚无可计算的上一环节样本'}${Number(stage.waiting) > 0 ? ` · ${Number(stage.waiting)} 个仍在等待反馈` : ''}</p>`;
-  }).join('');
-  return `<section class="card pad funnel-stages funnel-flow" aria-labelledby="funnel-stages-title"><div class="funnel-section-head"><div><p class="section-label">本轮已确认的反馈</p><h2 id="funnel-stages-title">反馈走到了哪一步</h2></div><p class="muted">本轮 ${Number(round.started || 0)} 个岗位，其中 ${mature} 个已满观察期。下方比例统一占这 ${mature} 个成熟岗位；表示已确认的进展，不把其余岗位判为失败。</p></div><div class="funnel-stage-list">${rows}</div>${missing ? `<p class="muted">${escapeHtml(missing)}。再次发现消息后会更新，暂不计为失败。</p>` : ''}<details class="funnel-sample-details"><summary>环节转化明细</summary><p>这里按上一环节中状态明确的岗位计算，用于定位卡点，不是全部投递的成功率。</p>${details}</details></section>`;
+  const destination = advice.stage === 'interviewInvited'
+    ? [`/resume-optimization?planId=${planId}`, '打开简历工作室']
+    : advice.stage === 'effectiveConversation' ? [`/messages?planId=${planId}`, '查看消息与回复']
+      : [`/queue?planId=${planId}&site=${encodeURIComponent(advice.site)}`, '查看岗位记录'];
+  return `<section class="feedback-advice" aria-label="优先建议"><div><p class="section-label">${escapeHtml(SITE_LABELS[advice.site])} · 优先建议</p>
+    <h2>${escapeHtml(advice.title)}</h2><p>${escapeHtml(reasons[advice.stage] || '')}可以先检查这一环节。</p></div>
+    <a href="${escapeAttr(destination[0])}">${destination[1]}</a></section>`;
 }
 
-function renderStage(key, label, value) {
-  const numerator = Math.max(0, Number(value.numerator || 0));
-  const denominator = Math.max(0, Number(value.denominator || 0));
-  const percentage = denominator ? Math.min(100, (numerator / denominator) * 100) : 0;
-  const summary = denominator ? `${numerator} 个 · ${formatPercent(numerator / denominator)}` : '等待岗位满观察期';
-  return `<div class="funnel-stage-row" data-feedback-stage="${escapeAttr(key)}"><div class="funnel-stage-copy"><strong>${escapeHtml(label)}</strong><span>${escapeHtml(summary)}</span></div><div class="funnel-stage-track" role="progressbar" aria-label="${escapeAttr(label)} ${escapeAttr(summary)}" aria-valuemin="0" aria-valuemax="${denominator || 1}" aria-valuenow="${numerator}"><span style="width:${escapeAttr(percentage.toFixed(2))}%"></span></div></div>`;
+function renderComparison(platforms) {
+  const ready = platforms.filter(item => item.roundComparison?.status === 'ready');
+  if (!ready.length) return '';
+  return `<section class="feedback-comparison" aria-label="调整前后"><h2>调整前后</h2>${ready.map(item => {
+    const { before, after } = item.roundComparison;
+    return `<p><strong>${escapeHtml(SITE_LABELS[item.site])}</strong> · 可比较记录的回复比例：${percent(before.replied.numerator, before.replied.denominator)} → ${percent(after.replied.numerator, after.replied.denominator)}</p>`;
+  }).join('')}<p class="feedback-footnote">只比较已等待充分时间的岗位；变化不一定由这次调整造成。</p></section>`;
 }
 
-function renderUntrackedFeedback(counts = {}, planId) {
-  if (!Number(counts.replied || 0) && !Number(counts.pendingConversations || 0)) return '';
-  const parts = [`${Number(counts.replied)} 个岗位有 HR 消息`,
-    `${Number(counts.resumeRequested || 0)} 个已索要简历`, `${Number(counts.interviewInvited || 0)} 个已邀请面试`];
-  const pending = Number(counts.pendingConversations || 0)
-    ? `<p class="muted">账号消息中另有 ${Number(counts.pendingConversations)} 条待核对会话${Number(counts.pendingResumeRequests || 0) ? `，其中 ${Number(counts.pendingResumeRequests)} 条含简历请求` : ''}。岗位或方案归属尚未核实，不计入上方岗位数。</p>` : '';
-  return `<section class="card pad funnel-inbound" aria-labelledby="funnel-inbound-title"><div class="funnel-section-head"><div><p class="section-label">投递时间待核对</p><h2 id="funnel-inbound-title">消息中发现的机会</h2></div><a href="/messages?planId=${encodeURIComponent(planId)}">查看消息与回复</a></div>${Number(counts.replied || 0) ? `<p>${escapeHtml(parts.join(' · '))}</p><p class="muted">这些岗位尚无可核验的本人投递或沟通时间，因此先展示收到的消息，不计入本轮投递转化率。</p>` : ''}${pending}</section>`;
+function renderOtherMessages(counts = {}, planId) {
+  const invite = count(counts.interviewInvited), resume = count(counts.resumeRequested), replied = count(counts.replied);
+  if (!invite && !resume && !replied) return '';
+  const text = invite ? `${invite} 个岗位邀请面试` : resume ? `${resume} 个岗位索要简历` : `${replied} 个岗位有 HR 消息`;
+  return `<p class="feedback-other">其他消息中还有 ${text}。<a href="/messages?planId=${planId}">查看这些消息</a></p>`;
 }
 
-function renderEmptyState() {
-  return `<section class="card pad funnel-empty" aria-labelledby="funnel-empty-title"><p class="section-label">开始积累</p><h2 id="funnel-empty-title">还没有可统计的求职动作</h2><p>确认已投、已验证发起沟通或确认已发送回复后，RoleFlow 才把岗位放进当前策略轮次；仅收藏、稍后处理或查看岗位不会计数。</p></section>`;
-}
-
-function renderComparisons(comparisons, policy, strength) {
-  if (!["comparable", "formal"].includes(strength)) return "";
-  const sections = [
-    ["direction", "岗位方向", (item) => item.label || item.key],
-    ["decisionBucket", "推荐档位", (item) => item.label || decisionLabel(item.key)],
-    ["resumeVersion", "简历版本", (item, index) => item.label || `简历版本 ${index + 1}`]
-  ].map(([key, label, labelFor]) => renderComparisonGroup(label, comparisons[key] || [], labelFor)).filter(Boolean);
-  if (!sections.length) return "";
-  const minimum = Math.max(10, Math.floor(positiveNumber(policy.preliminarySampleTarget, DEFAULT_PRELIMINARY_SAMPLE_TARGET) / 2));
-  return `<section class="card pad funnel-comparisons" aria-labelledby="funnel-comparisons-title"><div class="funnel-section-head"><div><p class="section-label">分组观察</p><h2 id="funnel-comparisons-title">哪些方向或材料值得优先检查</h2></div><p class="muted">每组至少 ${minimum} 个成熟样本才显示；差异用于排查，不代表因果。</p></div><div class="funnel-comparison-groups">${sections.join("")}</div></section>`;
-}
-
-function renderComparisonGroup(title, items, labelFor) {
-  if (!items.length) return "";
-  return `<section class="funnel-comparison-group" aria-label="${escapeAttr(title)}"><h3>${escapeHtml(title)}</h3><div class="funnel-comparison-grid">${items.map((item, index) => `<article><div class="funnel-comparison-title"><strong>${escapeHtml(labelFor(item, index) || `分组 ${index + 1}`)}</strong><span>${Number(item.sampleCount || 0)} 个成熟样本</span></div><dl>${renderMetricRows(item)}</dl></article>`).join("")}</div></section>`;
-}
-
-function renderMetricRows(item) {
-  return [
-    ["read", "已读"],
-    ["replied", "回复"],
-    ["effectiveConversation", "有效沟通"],
-    ["interviewInvited", "面试邀请"]
-  ].filter(([key]) => item[key] && Number(item[key].denominator || 0) > 0)
-    .map(([key, label]) => `<div><dt>${label}</dt><dd>${metricText(item[key])}</dd></div>`)
-    .join("");
-}
-
-function strategyRoundPolicy(round, fallback) {
-  const thresholds = round?.thresholds || {};
-  return {
-    preliminarySampleTarget: positiveNumber(
-      thresholds.preliminary,
-      positiveNumber(fallback.preliminarySampleTarget, DEFAULT_PRELIMINARY_SAMPLE_TARGET)
-    ),
-    comparableSampleTarget: positiveNumber(
-      thresholds.comparable,
-      positiveNumber(fallback.comparableSampleTarget, DEFAULT_COMPARABLE_SAMPLE_TARGET)
-    ),
-    formalSampleTarget: positiveNumber(
-      thresholds.formal,
-      positiveNumber(fallback.formalSampleTarget, DEFAULT_FORMAL_SAMPLE_TARGET)
-    )
-  };
-}
-
-function renderRoundComparison(previous, comparison = {}) {
-  if (!previous || comparison.status === "none") return "";
-  const previousNumber = Math.max(1, Number(previous.sequenceNumber || 1));
-  const note = String(comparison.note || "前后轮次暂时不能比较。");
-  const metrics = comparison.status === "ready"
-    ? `<div class="funnel-round-comparison-grid">${[
-      ["read", "招聘方已读"],
-      ["replied", "招聘方回复"],
-      ["effectiveConversation", "有效沟通"],
-      ["interviewInvited", "面试邀请"]
-    ].map(([key, label]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(metricText(comparison.before?.stages?.[key]))}</strong><i aria-hidden="true">→</i><strong>${escapeHtml(metricText(comparison.after?.stages?.[key]))}</strong></div>`).join("")}</div>`
-    : "";
-  return `<section class="card pad funnel-round-comparison funnel-round-compare" aria-labelledby="funnel-round-comparison-title">
-    <div class="funnel-section-head"><div><p class="section-label">上一策略轮次 · 第 ${previousNumber} 轮</p><h2 id="funnel-round-comparison-title">调整前后对照</h2></div><p class="muted">${escapeHtml(note)}</p></div>
-    ${metrics}
-    ${comparison.status === "ready" ? '<p class="funnel-round-comparison-legend"><span>上一轮</span><span>当前轮</span></p>' : `<p>${escapeHtml(previous.headline || "上一轮结果已保留，迟到反馈仍会继续更新。")}</p>`}
-  </section>`;
-}
-
-function renderStrategyBoundary(planId, currentRound) {
-  const roundId = Number(currentRound.id || 0);
-  if (!roundId) return "";
-  return `<section class="card pad funnel-round-boundary" aria-labelledby="funnel-round-boundary-title">
-    <div><p class="section-label">我已经完成外部调整</p><h2 id="funnel-round-boundary-title">从下一次求职动作开始验证新方案</h2><p>先在外部完成修改，再在这里记录边界。旧岗位继续留在第 ${Math.max(1, Number(currentRound.sequenceNumber || 1))} 轮，新岗位进入下一轮。</p></div>
+function renderAdjustment(planId, revisionId) {
+  if (!revisionId) return '';
+  return `<details class="feedback-adjustment"><summary>记录方案调整</summary>
+    <p>已在招聘平台改好招呼语或投递方式？记下这次调整，之后就能查看效果变化。</p>
     <form method="post" action="/api/funnel/strategy-round" data-funnel-strategy-form>
-      <input type="hidden" name="planId" value="${escapeAttr(planId)}">
-      <input type="hidden" name="fromRoundId" value="${escapeAttr(roundId)}">
-      <fieldset><legend>这次调整了什么？</legend><label><input type="checkbox" name="changeKinds" value="greeting"> 招呼语</label><label><input type="checkbox" name="changeKinds" value="strategy"> 求职方向或投递策略</label></fieldset>
-      <label>调整说明（可选）<textarea name="changeNote" maxlength="300" rows="3" placeholder="例如：缩短招呼语，突出 RAG 项目经验"></textarea></label>
-      <button type="submit">修改完成，开始验证新方案</button>
-      <p class="alert" data-funnel-strategy-error role="alert"></p>
-    </form>
-  </section>`;
+      <input type="hidden" name="planId" value="${escapeAttr(planId)}"><input type="hidden" name="fromRoundId" value="${escapeAttr(revisionId)}">
+      <div class="feedback-field"><label for="feedback-platform">调整的平台</label><select id="feedback-platform" name="platformScope"><option value="all">BOSS 和智联</option><option value="boss">仅 BOSS</option><option value="zhaopin">仅智联</option></select></div>
+      <fieldset><legend>调整了什么？</legend><label><input type="checkbox" name="changeKinds" value="greeting"> 招呼语</label><label><input type="checkbox" name="changeKinds" value="strategy"> 求职方向或投递方式</label></fieldset>
+      <label>调整说明（可选）<textarea name="changeNote" maxlength="300" rows="2" placeholder="例如：招呼语增加相关项目经历"></textarea></label>
+      <button type="submit">保存调整记录</button><p class="alert" data-funnel-strategy-error role="alert"></p>
+    </form></details>`;
 }
-
-function renderEvidenceNotes(notes) {
-  if (!notes.length) return "";
-  return `<aside class="funnel-notes" aria-labelledby="funnel-notes-title"><h2 id="funnel-notes-title">这份体检如何计算</h2><ul>${notes.map((note) => `<li>${escapeHtml(note)}</li>`).join("")}</ul></aside>`;
+function count(value) { return Math.max(0, Number(value) || 0); }
+function percent(numerator, denominator) {
+  return denominator ? `${Number((100 * numerator / denominator).toFixed(1))}%` : '—';
 }
-
-function metricText(metric = {}) {
-  const numerator = Math.max(0, Number(metric.numerator || 0));
-  const denominator = Math.max(0, Number(metric.denominator || 0));
-  return denominator ? `${numerator} / ${denominator}（${formatPercent(numerator / denominator)}）` : "状态不足";
+function localDate(value) {
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', month: 'numeric', day: 'numeric' }).format(date) : '';
 }
-
-function formatPercent(rate) {
-  return `${(Math.max(0, Math.min(1, Number(rate) || 0)) * 100).toFixed(1)}%`;
-}
-
-function distanceToNext(mature, strength, policy) {
-  if (strength === "facts") return `距离初步观察还差 ${Math.max(0, policy.preliminary - mature)} 个。`;
-  if (strength === "preliminary") return `距离可比较结论还差 ${Math.max(0, policy.comparable - mature)} 个。`;
-  if (strength === "comparable") return `距离正式诊断还差 ${Math.max(0, policy.formal - mature)} 个。`;
-  return "已达到正式诊断强度；本轮继续积累，直到策略发生变化。";
-}
-
-function formatLocalTime(value) {
-  const timestamp = Date.parse(String(value || ""));
-  if (!Number.isFinite(timestamp)) return "本轮记录时";
-  return new Intl.DateTimeFormat("zh-CN", {
-    timeZone: "Asia/Shanghai",
-    month: "numeric",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit"
-  }).format(new Date(timestamp));
-}
-
-function strengthTone(strength) {
-  if (strength === "formal") return "good";
-  if (strength === "facts") return "waiting";
-  return "neutral";
-}
-
-function decisionLabel(value) {
-  return { primary: "主投", apply: "可投", caution: "慎投", not_recommended: "不推荐" }[String(value || "")] || "其他已记录档位";
-}
-
-function positiveNumber(value, fallback) {
-  const number = Number(value);
-  return Number.isFinite(number) && number > 0 ? number : fallback;
-}
-
-const FUNNEL_STRATEGY_SCRIPT = `<script>(()=>{const form=document.querySelector('[data-funnel-strategy-form]');if(!form)return;const choices=Array.from(form.querySelectorAll('input[name="changeKinds"]'));const error=form.querySelector('[data-funnel-strategy-error]');const clear=()=>{if(choices[0])choices[0].setCustomValidity('');if(error)error.textContent='';};for(const choice of choices)choice.addEventListener('change',clear);form.addEventListener('submit',(event)=>{clear();if(choices.some((choice)=>choice.checked))return;event.preventDefault();const message='请至少选择招呼语或求职方向 / 投递策略。';if(error)error.textContent=message;if(choices[0]){choices[0].setCustomValidity(message);choices[0].reportValidity();}});})();</script>`;
-
+const FUNNEL_STRATEGY_SCRIPT = `<script>(()=>{const form=document.querySelector('[data-funnel-strategy-form]');if(!form)return;const choices=Array.from(form.querySelectorAll('input[name="changeKinds"]'));const error=form.querySelector('[data-funnel-strategy-error]');const clear=()=>{if(choices[0])choices[0].setCustomValidity('');if(error)error.textContent='';};for(const choice of choices)choice.addEventListener('change',clear);form.addEventListener('submit',(event)=>{clear();if(choices.some((choice)=>choice.checked))return;event.preventDefault();const message='请选择本次调整的内容。';if(error)error.textContent=message;if(choices[0]){choices[0].setCustomValidity(message);choices[0].reportValidity();}});})();</script>`;
 module.exports = { renderFunnelPage, FUNNEL_STRATEGY_SCRIPT };

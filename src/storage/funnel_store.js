@@ -62,7 +62,7 @@ function getFunnelStrategyRound(db, { profileId, planId, roundId } = {}) {
 
 function listFunnelStrategyRounds(db, { profileId, planId, limit = 30 } = {}) {
   const owner = ownedPlan(db, { profileId, planId });
-  const boundedLimit = Math.max(1, Math.min(200, Number(limit) || 30));
+  const boundedLimit = limit === null ? -1 : Math.max(1, Math.min(200, Number(limit) || 30));
   return db.prepare(`SELECT * FROM candidate_funnel_strategy_rounds
     WHERE profile_id = ? AND plan_id = ?
     ORDER BY sequence_number DESC, id DESC LIMIT ?`)
@@ -96,6 +96,10 @@ function startFunnelStrategyRound(db, input = {}) {
   const owner = ownedPlan(db, input);
   const sourceKey = requiredInlineText(input.sourceKey, "sourceKey", 200);
   const changeKinds = normalizeStrategyChangeKinds(input.changeKinds);
+  const platformScope = input.platformScope === undefined ? 'all' : String(input.platformScope);
+  if (!['all', 'boss', 'zhaopin'].includes(platformScope)) {
+    throw storageError('FUNNEL_PLATFORM_INVALID', '请选择调整的平台。');
+  }
   const changeNote = shortText(input.changeNote, 300);
   const startedAt = isoText(input.startedAt || new Date().toISOString(), "startedAt");
   const requestedFrom = input.fromRoundId === undefined || input.fromRoundId === null || input.fromRoundId === ""
@@ -106,7 +110,13 @@ function startFunnelStrategyRound(db, input = {}) {
     const repeated = db.prepare(`SELECT * FROM candidate_funnel_strategy_rounds
       WHERE profile_id = ? AND plan_id = ? AND source_key = ?`)
       .get(owner.profileId, owner.id, sourceKey);
-    if (repeated) return mapStrategyRound(repeated);
+    if (repeated) {
+      const recorded = mapStrategyRound(repeated);
+      if ((recorded.strategySnapshot.platformScope || 'all') !== platformScope) {
+        throw storageError('FUNNEL_ROUND_STALE', '已保存的调整平台不同，请刷新后重新记录。');
+      }
+      return recorded;
+    }
 
     const active = db.prepare(`SELECT * FROM candidate_funnel_strategy_rounds
       WHERE profile_id = ? AND plan_id = ? AND status = 'active'
@@ -143,7 +153,7 @@ function startFunnelStrategyRound(db, input = {}) {
         owner.id,
         sequence,
         sourceKey,
-        JSON.stringify(strategySnapshot(owner, resumeVersionId)),
+        JSON.stringify({ ...strategySnapshot(owner, resumeVersionId), platformScope }),
         JSON.stringify(changeKinds),
         changeNote,
         resumeVersionId,
@@ -258,7 +268,7 @@ function listFunnelEntries(db, {
   } else if (unassignedOnly) {
     clauses.push("cohort_id IS NULL");
   }
-  return db.prepare(`SELECT * FROM candidate_funnel_entries
+  return db.prepare(`SELECT *, (SELECT source FROM jobs WHERE jobs.id = candidate_funnel_entries.job_id) AS site FROM candidate_funnel_entries
     WHERE ${clauses.join(" AND ")}
     ORDER BY started_at, id`).all(...params).map(mapEntry);
 }
@@ -386,6 +396,14 @@ function strategyRoundAt(db, { profileId, planId, startedAt }) {
 }
 
 function syncVerifiedCommunicationFunnelEntries(db, { profileId, planId }) {
+  if (planId === undefined || planId === null) {
+    const profile = ownedProfile(db, profileId);
+    return inTransaction(db, () => {
+      for (const plan of db.prepare('SELECT id FROM search_plans WHERE profile_id = ?').all(profile)) {
+        syncVerifiedCommunicationFunnelEntries(db, { profileId: profile, planId: Number(plan.id) });
+      }
+    });
+  }
   const owner = ownedPlan(db, { profileId, planId });
   return inTransaction(db, () => {
     for (const event of verifiedZhaopinStarts(db, { profileId: owner.profileId, planId: owner.id })) {
@@ -399,15 +417,16 @@ function syncVerifiedCommunicationFunnelEntries(db, { profileId, planId }) {
 }
 
 function listUntrackedMessageFeedback(db, { profileId, planId }) {
-  const owner = ownedPlan(db, { profileId, planId });
-  return db.prepare(`SELECT c.id AS card_id, e.type, e.actor, e.occurred_at, e.metadata_json
+  const profile = ownedProfile(db, profileId);
+  const owner = planId == null ? null : ownedPlan(db, { profileId, planId });
+  return db.prepare(`SELECT c.id AS card_id, c.job_id, e.type, e.actor, e.occurred_at, e.metadata_json
     FROM candidate_progress_cards c JOIN jobs j ON j.id = c.job_id AND j.source = c.source
     JOIN candidate_progress_events e ON e.card_id = c.id
-    WHERE c.profile_id = ? AND c.plan_id = ? AND c.source IN ('boss', 'zhaopin')
+    WHERE c.profile_id = ? AND (? IS NULL OR c.plan_id = ?) AND c.source IN ('boss', 'zhaopin')
       AND NOT EXISTS (SELECT 1 FROM candidate_funnel_entries f
         WHERE f.profile_id = c.profile_id AND f.job_id = c.job_id)
-    ORDER BY c.id, e.occurred_at, e.id`).all(owner.profileId, owner.id).map(row => ({
-    cardId: Number(row.card_id), type: row.type, actor: row.actor,
+    ORDER BY e.occurred_at, e.id`).all(profile, owner?.id || null, owner?.id || null).map(row => ({
+    cardId: Number(row.card_id), jobId: Number(row.job_id), type: row.type, actor: row.actor,
     occurredAt: row.occurred_at, metadata: parseJson(row.metadata_json, {})
   }));
 }
@@ -503,6 +522,7 @@ function mapEntry(row) {
     planId: Number(row.plan_id || 0) || null,
     strategyRoundId: Number(row.strategy_round_id || 0) || null,
     sourceKind: row.source_kind,
+    site: row.site || null,
     startedAt: row.started_at,
     matureAt: row.mature_at,
     directionKey: row.direction_key || "",

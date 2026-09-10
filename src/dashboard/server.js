@@ -6008,7 +6008,8 @@ function renderFunnelDashboardPage({ db, searchParams, funnelAnalysis }) {
   const plan = getSearchPlan(db, searchParams.get("planId"));
   if (!plan) return renderErrorPage("找不到这份筛选方案，请从今日任务重新进入求职体检。", "/plan");
   const dashboard = funnelAnalysis.refresh({ profileId: plan.profileId, planId: plan.id });
-  return renderPage("求职体检", `${renderFunnelPage({ plan, dashboard })}${FUNNEL_STRATEGY_SCRIPT}`);
+  const view = searchParams.get('view') === 'lifetime' ? 'lifetime' : 'current';
+  return renderPage("求职体检", `${renderFunnelPage({ plan, dashboard, view })}${FUNNEL_STRATEGY_SCRIPT}`);
 }
 
 async function handleFunnelStrategyRound(req, res, { db, funnelAnalysis }) {
@@ -6024,12 +6025,17 @@ async function handleFunnelStrategyRound(req, res, { db, funnelAnalysis }) {
   if (!changeKinds.length || changeKinds.some((kind) => !["greeting", "strategy"].includes(kind))) {
     throw appError("FUNNEL_CHANGE_KIND_INVALID", "请选择本次调整了招呼语还是求职策略。", { statusCode: 400 });
   }
+  const platformScope = params.platformScope === undefined ? 'all' : String(params.platformScope);
+  if (!['all', 'boss', 'zhaopin'].includes(platformScope)) {
+    throw appError('FUNNEL_PLATFORM_INVALID', '请选择调整的平台。', { statusCode: 400 });
+  }
   try {
     funnelAnalysis.startStrategyRound({
       profileId: plan.profileId,
       planId: plan.id,
       fromRoundId,
       sourceKey: `manual:${fromRoundId}`,
+      platformScope,
       changeKinds,
       changeNote: String(params.changeNote || "").trim().slice(0, 300)
     });

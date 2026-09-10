@@ -38,63 +38,87 @@ function createFunnelAnalysisService({ db, now = () => new Date().toISOString() 
 function dashboard(db, { profileId, planId, now }) {
   const policy = getFunnelPolicy(db, { profileId });
   const current = ensureActiveFunnelStrategyRound(db, { profileId, planId, startedAt: now });
-  syncVerifiedCommunicationFunnelEntries(db, { profileId, planId });
-  const currentPolicy = roundPolicy(current);
-  const currentEntries = listFunnelEntries(db, {
-    profileId,
-    planId,
-    strategyRoundId: current.id
+  syncVerifiedCommunicationFunnelEntries(db, { profileId });
+  const entries = listFunnelEntries(db, { profileId });
+  const rounds = listFunnelStrategyRounds(db, { profileId, planId, limit: null }).reverse();
+  const platforms = ['boss', 'zhaopin'].map(site => {
+    const history = platformRounds(rounds, site);
+    const latest = history.at(-1);
+    const previous = history.at(-2) || null;
+    const siteEntries = entries.filter(entry => entry.site === site);
+    const build = group => {
+      const selected = siteEntries.filter(entry => entry.planId === Number(planId) && group.revisionIds.has(entry.strategyRoundId));
+      const samplePolicy = roundPolicy(group.round);
+      const snapshot = snapshotFor(db, selected, { profileId, now, policy: samplePolicy });
+      const analysis = analyze(db, selected, snapshot, samplePolicy, profileId, site);
+      return { snapshot, summary: roundSummary(group.round, snapshot, analysis, samplePolicy) };
+    };
+    const currentResult = build(latest);
+    const previousResult = previous ? build(previous) : null;
+    const lifetime = snapshotFor(db, siteEntries, { profileId, now, policy });
+    return {
+      site,
+      currentRound: currentResult.summary,
+      previousRound: previousResult?.summary || null,
+      roundComparison: compareRounds({ current: latest.round, currentSnapshot: currentResult.snapshot,
+        previous: previous?.round, previousSnapshot: previousResult?.snapshot }),
+      lifetime: { started: lifetime.started, ...lifetime.immediatePositive }
+    };
   });
-  const currentSnapshot = snapshotFor(db, currentEntries, { profileId, now, policy: currentPolicy });
-  const currentAnalysis = analyze(db, currentEntries, currentSnapshot, currentPolicy, profileId);
-  const previous = listFunnelStrategyRounds(db, { profileId, planId, limit: 30 })
-    .find((round) => round.id !== current.id) || null;
-  const previousPolicy = previous ? roundPolicy(previous) : null;
-  const previousEntries = previous ? listFunnelEntries(db, {
-    profileId,
-    planId,
-    strategyRoundId: previous.id
-  }) : [];
-  const previousSnapshot = previous
-    ? snapshotFor(db, previousEntries, { profileId, now, policy: previousPolicy })
-    : null;
-  const previousAnalysis = previous
-    ? analyze(db, previousEntries, previousSnapshot, previousPolicy, profileId)
-    : null;
-  const currentRound = roundSummary(current, currentSnapshot, currentAnalysis, currentPolicy);
-  const previousRound = previous
-    ? roundSummary(previous, previousSnapshot, previousAnalysis, previousPolicy)
-    : null;
-
+  // Compatibility consumers may use a single platform, but never a pooled diagnosis.
+  const populated = platforms.filter(item => item.currentRound.started || item.previousRound?.started);
+  const single = populated.length === 1 ? populated[0] : populated.length === 0 ? platforms[0] : null;
+  const currentRound = single?.currentRound || {
+    ...current, started: platforms.reduce((sum, item) => sum + item.currentRound.started, 0),
+    mature: platforms.reduce((sum, item) => sum + item.currentRound.mature, 0),
+    waiting: platforms.reduce((sum, item) => sum + item.currentRound.waiting, 0),
+    unknown: platforms.reduce((sum, item) => sum + item.currentRound.unknown, 0), strength: 'facts', nextTarget: null
+  };
   return {
-    policy,
+    policy, platforms, activeRevisionId: current.id,
+    advice: platforms.map(item => item.currentRound.advice && { site: item.site, ...item.currentRound.advice })
+      .find(Boolean) || null,
     analysisSource: "current_pool",
     currentRound,
-    previousRound,
-    roundComparison: compareRounds({ current, currentSnapshot, previous, previousSnapshot }),
+    previousRound: single?.previousRound || null,
+    roundComparison: single?.roundComparison || { status: 'none' },
     untrackedFeedback: untrackedFeedbackSummary(db, { profileId, planId, now }),
+    lifetimeUntrackedFeedback: untrackedFeedbackSummary(db, { profileId, now }),
     currentPool: currentRound,
     latestCohort: null,
-    funnel: currentAnalysis.funnel,
-    comparisons: currentAnalysis.comparisons,
-    headline: currentAnalysis.headline,
-    priorityCheck: currentAnalysis.priorityCheck,
+    funnel: single?.currentRound.funnel || {},
+    comparisons: single?.currentRound.comparisons || { direction: [], decisionBucket: [], resumeVersion: [] },
+    headline: single?.currentRound.headline || '各平台分别判断，不合并样本形成诊断。',
+    priorityCheck: single?.currentRound.priorityCheck || '根据各平台反馈检查当前方案。',
     evidenceNotes: [
       "仅统计用户确认已投、已验证发起沟通或确认已发送回复的岗位。",
       "每个岗位至少经过 48 小时；跨周末顺延到周一。",
       "当前诊断只读取当前策略轮次；较晚出现的结果仍回到原轮次。",
       "岗位已成熟后若出现新的已读，未回复结论从这次已读重新等待 48 小时。",
       "未读到状态不代表失败；智联暂不提供已读和送达状态。",
-      "主图显示已确认结果占成熟岗位的比例；环节转化明细仅计算上一环节中状态明确的岗位。"
+      "反馈计数包含刚联系的岗位；诊断按平台、当前有效策略与成熟规则独立计算。"
     ]
   };
+}
+
+function platformRounds(rounds, site) {
+  const groups = [];
+  for (const round of rounds) {
+    const scope = round.strategySnapshot?.platformScope || 'all';
+    if (!groups.length || scope === 'all' || scope === site) {
+      if (groups.length) Object.assign(groups.at(-1).round, { status: 'closed', closedAt: round.startedAt });
+      groups.push({ round: { ...round, status: 'active', closedAt: null }, revisionIds: new Set() });
+    }
+    groups.at(-1).revisionIds.add(round.id);
+  }
+  return groups;
 }
 
 function untrackedFeedbackSummary(db, { profileId, planId, now }) {
   const grouped = new Map();
   for (const event of listUntrackedMessageFeedback(db, { profileId, planId })) {
-    if (!grouped.has(event.cardId)) grouped.set(event.cardId, []);
-    grouped.get(event.cardId).push(event);
+    if (!grouped.has(event.jobId)) grouped.set(event.jobId, []);
+    grouped.get(event.jobId).push(event);
   }
   const counts = { replied: 0, resumeRequested: 0, interviewInvited: 0 };
   for (const [cardId, events] of grouped) {
@@ -123,6 +147,7 @@ function roundSummary(round, snapshot, analysis, policy) {
     comparisons: analysis.comparisons,
     headline: analysis.headline,
     priorityCheck: analysis.priorityCheck,
+    advice: analysis.advice || null,
     immediatePositive: snapshot.immediatePositive,
     earlyPositive: snapshot.earlyPositive
   };
@@ -133,8 +158,9 @@ function compareRounds({ current, currentSnapshot, previous, previousSnapshot })
   if (!previous || !previousSnapshot) {
     return { status: "none", note: "暂无可比较的上一策略轮次", ...empty };
   }
-  const before = { roundId: previous.id, mature: previousSnapshot.mature, stages: previousSnapshot.stages };
-  const after = { roundId: current.id, mature: currentSnapshot.mature, stages: currentSnapshot.stages };
+  const feedback = snapshot => ({ numerator: snapshot.immediatePositive.replied - snapshot.earlyPositive.replied, denominator: snapshot.mature });
+  const before = { roundId: previous.id, mature: previousSnapshot.mature, stages: previousSnapshot.stages, replied: feedback(previousSnapshot) };
+  const after = { roundId: current.id, mature: currentSnapshot.mature, stages: currentSnapshot.stages, replied: feedback(currentSnapshot) };
   if (current.legacyUncertain || previous.legacyUncertain
     || !sameDirections(current.strategySnapshot?.directions, previous.strategySnapshot?.directions)) {
     return {
@@ -166,13 +192,14 @@ function normalizedDirections(value) {
     .filter(Boolean))].sort();
 }
 
-function analyze(db, entries, snapshot, policy, profileId) {
-  const diagnosis = diagnose(snapshot, policy);
+function analyze(db, entries, snapshot, policy, profileId, site) {
+  const diagnosis = diagnose(snapshot, policy, site);
   return {
     funnel: snapshot.stages,
     comparisons: buildComparisons(db, entries, snapshot, policy, profileId),
     headline: diagnosis.headline,
     priorityCheck: diagnosis.priorityCheck,
+    advice: diagnosis.advice || null,
     immediatePositive: snapshot.immediatePositive,
     earlyPositive: snapshot.earlyPositive
   };
@@ -206,7 +233,7 @@ function nextTarget(strength, policy) {
   return null;
 }
 
-function diagnose(snapshot, policy) {
+function diagnose(snapshot, policy, site) {
   const mature = snapshot.mature;
   if (snapshot.strength === "facts") {
     return {
@@ -242,11 +269,16 @@ function diagnose(snapshot, policy) {
     ["interviewInvited", 0.25, "有效沟通到简历或约面", "优先检查定向简历、项目证据和岗位资格表达。"]
   ];
   for (const [stage, threshold, label, priorityCheck] of checks) {
+    if (site === 'zhaopin' && ['read', 'replied'].includes(stage)) continue;
     const rate = stageRate(snapshot.stages[stage]);
     if (rate !== null && stageEvidenceSufficient(snapshot, stage) && rate < threshold) {
       return {
         headline: `${prefix}：当前主要卡在“${label}”。`,
-        priorityCheck
+        priorityCheck,
+        advice: { stage, title: {
+          read: '先检查投递岗位和招聘活跃度', replied: '先检查招呼语和岗位匹配',
+          effectiveConversation: '先检查回复内容是否回答了HR的问题', interviewInvited: '先检查简历中的相关经历表达'
+        }[stage], numerator: snapshot.stages[stage].numerator, denominator: snapshot.stages[stage].denominator }
       };
     }
   }

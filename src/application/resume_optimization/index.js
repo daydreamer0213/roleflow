@@ -304,6 +304,8 @@ function compactDiagnosis(value) {
   if (!value) return null;
   return {
     analysisSource: value.analysisSource || "",
+    platforms: (value.platforms || []).map(item => ({ site: item.site, strength: item.currentRound.strength,
+      headline: item.currentRound.headline, priorityCheck: item.currentRound.priorityCheck })),
     strength: value.currentRound?.strength || value.currentPool?.strength || "facts",
     headline: value.headline || "",
     priorityCheck: value.priorityCheck || ""

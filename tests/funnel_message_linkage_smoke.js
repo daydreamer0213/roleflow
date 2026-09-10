@@ -35,15 +35,14 @@ try {
   assert.equal(dashboard.untrackedFeedback?.resumeRequested, 3,
     'trusted resume requests must remain visible even without a known outbound start');
   assert.equal(dashboard.untrackedFeedback.replied, 3, 'duplicate classification is one opportunity');
+  assert.equal(dashboard.lifetimeUntrackedFeedback?.resumeRequested, 4, 'cumulative extra messages include other owned plans only');
   assert.equal(dashboard.untrackedFeedback.pendingConversations, 1, 'pending conversations remain account-scoped without including another profile');
   assert.equal(dashboard.untrackedFeedback.pendingResumeRequests, 1, 'unverified identity must not hide a readable resume card');
   assert.equal(dashboard.currentRound.started, 0, 'HR-initiated messages are not fabricated applications');
   assert.equal(db.prepare('SELECT COUNT(*) n FROM candidate_funnel_entries').get().n, 0);
   const page = renderFunnelPage({ plan: { id: planId }, dashboard });
-  assert.match(page, /消息中发现的机会/);
-  assert.match(page, /3 个[^<]*索要简历/);
+  assert.match(page, /其他消息中还有 3 个岗位索要简历/);
   assert.match(page, /href="\/messages\?planId=/);
-  assert.match(page, /账号消息中另有 1 条待核对会话/);
 
   const entries = Array.from({ length: 18 }, (_, index) => ({ id: index + 1, startedAt: '2026-09-01T03:00:00.000Z' }));
   const events = new Map(entries.map(entry => [entry.id, entry.id === 1
@@ -52,12 +51,11 @@ try {
   const snapshot = buildFunnelSnapshot(entries, events, { now });
   assert.equal(snapshot.stages.replied.denominator, 1, 'conditional diagnosis stays conditional');
   const statsPage = renderFunnelPage({ plan: { id: planId }, dashboard: {
-    currentRound: snapshot, funnel: snapshot.stages, comparisons: {}, evidenceNotes: []
+    platforms: [{ site: 'boss', currentRound: snapshot, lifetime: { started: 18, ...snapshot.immediatePositive } }]
   } });
-  const replyRow = statsPage.match(/data-feedback-stage="replied"[\s\S]*?<\/div><\/div>/)?.[0] || '';
-  assert.match(replyRow, /5\.6%/, 'main reply share is 1 of 18 mature jobs, never 100%');
+  const replyRow = statsPage.match(/data-feedback-platform="boss"[\s\S]*?<\/tr>/)?.[0] || '';
+  assert.match(replyRow, /5\.6%/, 'main reply share is 1 of 18 contacted jobs, never conditional 100%');
   assert.doesNotMatch(replyRow, /100\.0%/);
-  assert.match(statsPage, /环节转化明细/);
   assert.doesNotMatch(statsPage, /暂无明确状态|未知 0/);
   console.log('funnel_message_linkage_smoke ok');
 } finally { db.close(); }
